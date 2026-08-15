@@ -47,7 +47,7 @@ class ShiyinApp : Application() {
                 val ts = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
                 val file = File(logDir, "crash_$ts.txt")
                 FileWriter(file).use { w ->
-                    w.write("=== Shiyin v2.0 Crash Report ===\n")
+                    w.write("=== PickUpMusic v1.0.0 Crash Report ===\n")
                     w.write("Time: ${SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date())}\n")
                     w.write("Device: ${Build.MANUFACTURER} ${Build.MODEL} (API ${Build.VERSION.SDK_INT})\n")
                     w.write("Thread: ${thread.name}\n\n")

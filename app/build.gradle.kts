@@ -15,8 +15,8 @@ android {
         applicationId = "com.shiyin.music"
         minSdk = 31
         targetSdk = 36
-        versionCode = 2
-        versionName = "2.0.0"
+        versionCode = 10000
+        versionName = "1.0.0"
     }
 
     signingConfigs {
@@ -29,7 +29,9 @@ android {
             if (ksPropsFile.exists()) {
                 val props = Properties()
                 props.load(ksPropsFile.inputStream())
-                storeFile = file(props.getProperty("storeFile"))
+                // storeFile 在 keystore.properties 中通常是相对项目根的路径，
+                //故用 rootProject.file 解析（相对 app 模块会错位到 app/keystore/）。
+                storeFile = rootProject.file(props.getProperty("storeFile"))
                 storePassword = props.getProperty("storePassword")
                 keyAlias = props.getProperty("keyAlias")
                 keyPassword = props.getProperty("keyPassword")

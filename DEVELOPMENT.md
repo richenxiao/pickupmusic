@@ -55,23 +55,23 @@
 
 ## 6. 版本号规范（SemVer）
 
-- 格式：`MAJOR.MINOR.PATCH`，如 `2.0.0`。
+- 格式：`MAJOR.MINOR.PATCH`，如 `1.0.0`。
 - MAJOR：不兼容破坏性变更；MINOR：向下兼容的新功能；PATCH：向下兼容的缺陷修复。
-- Git tag 带 `v` 前缀：`v2.0.0`。
+- Git tag 带 `v` 前缀：`v1.0.0`。
 - 不机械沿用旧的 `0.0.x`；以当前完成度定合理基线（见 `CHANGELOG.md`）。
 
 ## 7. versionName / versionCode 对应
 
-- `versionName`：`app/build.gradle.kts` 的 `versionName`，与 Git tag / GitHub Release 三者一致（如 `2.0.0`）。
-- `versionCode`：整数，每个发布版本递增。建议公式 `MAJOR*10000 + MINOR*100 + PATCH`（如 `2.0.0` → 20000），保证单调递增即可。
-- 当前基线：`versionName = "2.0.0"`，`versionCode = 2`（延续既有值，后续按公式递增）。
+- `versionName`：`app/build.gradle.kts` 的 `versionName`，与 Git tag / GitHub Release 三者一致（如 `1.0.0`）。
+- `versionCode`：整数，每个发布版本递增。公式 `MAJOR*10000 + MINOR*100 + PATCH`（如 `1.0.0` → 10000），保证单调递增即可。
+- 当前基线：`versionName = "1.0.0"`，`versionCode = 10000`。
 
 ## 8. Release 发布规范
 
 仅当维护者明确确认"这个版本可以发布"后执行：
 
 1. develop 合并到 main。
-2. 在 main 打 tag：`git tag v2.0.0`，推送 `git push origin v2.0.0`。
+2. 在 main 打 tag：`git tag v1.0.0`，推送 `git push origin v1.0.0`。
 3. GitHub Release 关联该 tag，说明含：新功能 / 修复 / 破坏性变更 / 已知问题 / 升级注意。
 4. Release 资产上传对应 Release APK（由维护者用官方签名构建）。
 
