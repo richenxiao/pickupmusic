@@ -1,0 +1,49 @@
+# ─── Build outputs ───
+/build/
+/app/build/
+/*/build/
+captures/
+.externalNativeBuild/
+.cxx/
+
+# ─── Gradle / Kotlin caches ───
+.gradle/
+.kotlin/
+
+# ─── Local SDK / machine config (NEVER commit) ───
+local.properties
+
+# ─── Release signing — 真实签名文件与密码绝不入库 (NEVER commit) ───
+keystore.properties
+*.jks
+*.keystore
+keystore/
+
+# ─── IDE ───
+.idea/
+*.iml
+.DS_Store
+
+# ─── Build artifacts / APK / AAB / heap dumps ───
+*.apk
+*.aab
+*.hprof
+*.prof
+*.profm
+
+# ─── Misc temp / backup ───
+*.zip
+*.rar
+*.log
+*.bin
+*.dat
+*.lock
+
+# ─── JS toolchain (sharp 等，仅用于资源预处理) ───
+node_modules/
+
+# ─── 私密安全备忘（绝不入库，仅本地保存作者签名/密钥管理信息）───
+PRIVATE_SECURITY.md
+
+# ─── Claude Code 本地设置（如有）───
+.claude/

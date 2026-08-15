@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  v3.3: Adaptive-icon foreground. The glyph (pickupmusic.png) inset 10% per side
+  so it fits the 66dp safe zone with a bit more presence than the 18% version.
+-->
+<inset xmlns:android="http://schemas.android.com/apk/res/android"
+    android:drawable="@drawable/pickupmusic"
+    android:insetLeft="10%"
+    android:insetTop="10%"
+    android:insetRight="10%"
+    android:insetBottom="10%" />
