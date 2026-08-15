@@ -1,140 +1,103 @@
-# 拾音音乐 PickUpMusic
+# PickUpMusic
 
-[![Kotlin](https://img.shields.io/badge/Kotlin-2.1+-7F52FF.svg)](https://kotlinlang.org/)
-[![Compose](https://img.shields.io/badge/Jetpack%20Compose-2025.05-%234285F4.svg)](https://developer.android.com/jetpack/compose)
-[![API](https://img.shields.io/badge/Min%20SDK-31-%2344CC11.svg)](https://developer.android.com/about/versions/12/features)
-[![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+> 本地音乐文件从不缺，缺的是完整的音乐体验。
 
-> **拾音** — 一个极简、现代的本地音乐播放器，采用 Material 3 设计语言和 Jetpack Compose 构建。
-> 专注于本地音乐播放体验，并在此基础上提供 AI 歌曲信息识别、歌手头像自动抓取、
-> Spotify 风格动态取色、收听统计、最近播放、歌手页专辑分类浏览等进阶能力。
+你手机里的本地音乐往往没有封面、缺歌词、元数据残缺，多数播放器只负责把文件播出来，残缺原样留给你。PickUpMusic 反过来：通过站点 API 自动匹配歌词、封面与歌曲信息，匹配不准的再交给一套完整的人工修正工具，最后用以专辑为中心的方式把散落的文件重新拼回完整的音乐形态——让本地音乐库接近你熟悉的那种音乐软件的体验，而不是再多一个能播歌的 App。
 
-## ✨ 功能特性
+<p align="center">
+  <img src="docs/screenshots/now-playing.jpg" width="400" alt="PickUpMusic 播放页：专辑封面随播放旋转，整页配色取自封面，歌词由 LRCLIB 自动匹配" />
+</p>
 
-### 播放与音频
+## 核心能力
 
-- **🎵 本地音乐播放** — 扫描并播放设备上的本地音频文件，支持多种格式
-- **▶️ 后台播放** — 前台服务 + Media3 实现后台持续播放，支持锁屏控制
-- **🔔 通知栏控制** — 系统通知栏显示播放信息，支持播放/暂停/切歌
-- **📋 播放队列** — 自定义播放列表，支持循环、随机播放模式
-- **🔗 无缝播放** — 可切换的无间隙音轨过渡（gapless）
-- **🎧 音频设备路由** — 在扬声器 / 耳机 / 蓝牙设备间切换输出，支持蓝牙连接感知
+### 1. 音乐资源匹配 —— 自动补全缺失的歌词、封面与信息
 
-### 歌词
+- **歌词自动匹配**：LRCLIB 与网易云两源级联，命中即填；文件内嵌的 USLT 歌词也会被直接读取。
+- **封面自动匹配**：从 iTunes 拉取候选封面，自动挑最合适的一张。
+- **歌曲信息**：基于文件名与已有元数据，向在线来源补全专辑归属、艺人、发行信息。
 
-- **📃 歌词同步** — 支持 LRC 歌词解析与自动匹配，逐行滚动同步
-- **📝 歌词导入** — 支持为本地歌曲手动导入歌词并持久化保存
+### 2. 人工修正 —— 自动匹配不准时，每一项都能手动修
 
-### 音乐库与浏览
+- **歌词**：一键换源（切到另一个来源重新匹配）、删除不合适的、或手动导入一份 LRC。
+- **封面**：重新搜索、在多个候选里挑一张、或从相册上传一张。
+- **歌曲信息**：逐字段编辑，并基于编辑后的信息重新匹配封面与歌词——改一次信息，封面和歌词跟着重新对齐。
 
-- **📚 音乐库管理** — 按歌曲、专辑、歌手分类浏览，支持搜索
-- **🎤 歌手详情页** — 歌手头像、歌曲列表、专辑区块
-- **💿 歌手专辑区块** — 歌手页默认横向展示前 4 张专辑，点击「显示全部」进入完整专辑列表；
-  按 iTunes 发行日期排序（最新优先 / 最早优先），并自动分类为 **单曲（1-3 首）/ EP（4-6 首且 ≤30 分钟）/ 专辑（≥7 首或 >30 分钟）**
-  > 注：发行日期来自 iTunes 商店日期，仅用于排序，并非歌曲原始发行日期。
-- **🔀 歌手归一化** — 自动合并同一歌手被识别为多个名字的情况（如 `fujiikaze` / `藤井风`），支持事后撤销
-- **🖼️ 歌手头像自动抓取** — 通过 MusicBrainz → Wikidata → iTunes 三级回退获取歌手头像
+### 3. 本地音乐库管理 —— 不该当音乐的，一开始就别收进来
 
-### 智能 & 个性化
+- **排除目录与文件**：录音、通话录音、通知音、其他 App 的音频，先挡在音乐库之外，而不是扫进来再一个个手动删。
+- **歌手归一化**：同一歌手被识别成多个名字（如 `fujiikaze` / `藤井风`）时自动合并，支持事后撤销。
 
-- **🤖 AI 歌曲信息识别** — 集成 DeepSeek，辅助补全歌曲的专辑归属、艺人、发行信息等元数据（需在设置中填入自己的 API Key）
-- **🎨 动态取色** — 借鉴 Spotify 加权评分算法从专辑封面提取主色，沉浸式播放界面与歌词页随封面色调联动（WCAG 4.5 对比度调整，深灰兜底）
-- **🕘 最近播放** — 持久化的最近播放列表，最多保留 12 首，侧边栏直达
-- **📊 收听统计** — 基于带时间戳的播放事件，按周聚合统计最常听的专辑 / 歌手 / 歌曲
-- **🔔 你的更新** — 新扫描入库的专辑一次性提醒，避免错过新增内容
+### 4. 完整的音乐组织 —— 以专辑为中心，而非以文件夹为中心
 
-### 界面与主题
+- **自动分类单曲 / EP / 专辑**：按曲目数与时长判定（单曲 1–3 首 / EP 4–6 首且 ≤30 分钟 / 专辑 ≥7 首或 >30 分钟）。
+- **专辑与歌曲分开维护**：一张专辑的元数据单独编辑，不与单首歌耦合；歌曲信息也能单独改。
+- **无缝播放（gapless）默认开启**：尊重专辑内音轨的连续性，不把曲目之间的衔接打断。
 
-- **🎨 Material 3 设计** — 动态主题配色，沉浸式播放界面
-- **🔄 专辑封面动画** — 播放界面旋转唱片动画
-- **🌙 深色模式** — 跟随系统主题或手动切换，夜间使用更舒适
-- **🏷️ 应用图标** — 自适应图标 + Android 13+ 单色主题图标支持
+### 5. 更接近音乐软件的体验
 
-## 🛠️ 技术栈
+- **歌手页**：从一首歌进到歌手，再看这位歌手的其他作品——而不是停留在文件夹浏览。
+- **歌词书**：独立的全屏歌词阅读界面，配色随封面联动。
+- **沉浸式播放页**：从专辑封面提取主色，整页配色随之变化（遵循 WCAG 4.5 对比度，深灰兜底）。
+- **深色模式**、**Material 3** 设计语言。
 
-| 技术 | 用途 |
-|------|------|
-| **Kotlin** | 开发语言 |
-| **Jetpack Compose** | UI 框架，声明式界面构建 |
-| **Material 3** | 设计系统，Material You 动态主题 |
-| **AndroidX Media3 (ExoPlayer)** | 音频播放引擎，支持后台播放与 MediaSession |
-| **Room** | 本地数据库，存储播放列表、缓存、播放事件、歌手/专辑元数据 |
-| **DataStore** | 键值对存储，保存设置偏好与最近播放 |
-| **KSP** | 编译时注解处理，Room 代码生成 |
-| **Coroutines / Flow** | 异步与响应式编程 |
-| **OkHttp** | 网络请求（歌手头像、AI 识别、在线元数据） |
-| **Gson** | JSON 解析 |
-| **AndroidX Palette** | 专辑封面主色提取，驱动动态取色 |
+### 其他
 
-## 📱 界面一览
+- **收听统计**（按周聚合）、**最近播放**（最多 12 首）、**"你的更新"**（新扫描专辑一次性提醒，不错过新增内容）。
+- **AI 歌曲信息识别**（DeepSeek，自配 API Key，运行时作为参数传入，源码不存任何密钥）。
+- **音频输出路由**：扬声器 / 耳机 / 蓝牙切换；部分 OEM 上交给系统级媒体输出切换器处理，保证真实路由生效。
 
-| 页面 | 功能 |
-|------|------|
-| **首页** | 推荐歌曲、最近播放、快捷操作 |
-| **搜索** | 本地音乐搜索 |
-| **音乐库** | 按歌曲 / 专辑 / 歌手分类浏览，含歌手详情与专辑分类列表 |
-| **播放器** | 唱片动画、歌词同步、播放控制、进度条、设备路由 |
-| **歌词** | 全屏逐行歌词显示，随封面取色联动 |
-| **最近播放** | 持久化的最近播放历史 |
-| **收听统计** | 按周聚合的收听榜单 |
-| **你的更新** | 新扫描专辑的更新提醒 |
-| **设置** | 主题、播放设置、DeepSeek API Key、关于 |
+## 下载与构建
 
-## 🚀 快速开始
+首个正式版本 `v1.0.0` 的源码与 tag 已公开。官方 Release APK 将随 GitHub Release 提供；在此之前，可从源码自行构建。
 
-### 环境要求
-
-- Android Studio Hedgehog (2024.1+) 或更高版本
-- JDK 17+
-- Android SDK 36（compileSdk / targetSdk），最低支持 Android 12（minSdk 31）
-- Gradle 8.13+
-
-### 构建与运行
-
-> Debug 构建无需任何签名 / 密码配置，克隆后即可直接构建。
+### 从源码构建（Debug，无需任何签名 / 密码）
 
 ```bash
-# 克隆仓库
-git clone https://github.com/richenxiao/PickUpMusic.git
-cd PickUpMusic
-
-# 使用 Gradle Wrapper 构建 Debug APK（Windows 下用 gradlew.bat）
-./gradlew assembleDebug
-
-# 或直接用 Android Studio 打开项目运行
-# （首次打开时 Android Studio 会自动生成 local.properties 指向本机 Android SDK；
-#   命令行构建可参考 local.properties.example 自行填写 sdk.dir）
+git clone https://github.com/richenxiao/pickupmusic.git
+cd pickupmusic
+./gradlew assembleDebug        # Windows 下用 gradlew.bat
 ```
 
-Debug APK 输出路径：`app/build/outputs/apk/debug/app-debug.apk`
+产物路径：`app/build/outputs/apk/debug/app-debug.apk`
 
-### 生成 Release APK（需自行配置签名）
+环境要求：JDK 17+、Android SDK 36（compileSdk / targetSdk）、最低支持 Android 12（minSdk 31）。仓库自带 Gradle Wrapper，克隆后无需全局安装 Gradle。
 
-仓库不包含任何真实签名密钥与密码。要构建 Release，请按 `keystore.properties.example` 自行准备你自己的签名：
+### 构建 Release（需自行配置签名）
 
-1. 生成你自己的 release keystore：
+仓库不含任何真实签名密钥与密码。要构建 Release，按 `keystore.properties.example` 自行准备你自己的签名：
+
+1. 生成你自己的 keystore：
    ```bash
    keytool -genkey -v -keystore my-release.keystore -alias my-key \
      -keyalg RSA -keysize 2048 -validity 10000
    ```
-2. 复制 `keystore.properties.example` 为 `keystore.properties`，填入你的 keystore 路径与密码：
-   ```properties
-   storeFile=/absolute/path/to/my-release.keystore
-   storePassword=你的密码
-   keyAlias=my-key
-   keyPassword=你的密码
-   ```
-   （`keystore.properties` 与 `*.jks` 均在 `.gitignore`，不会被提交。）
+2. 复制 `keystore.properties.example` 为 `keystore.properties`，填入你的 keystore 路径与密码。
+   （`keystore.properties` 与 `*.jks` / `*.keystore` 均在 `.gitignore`，不会被提交。）
 3. 构建：
    ```bash
    ./gradlew assembleRelease
    ```
 
-Release APK 输出路径：`app/build/outputs/apk/release/app-release.apk`
+产物路径：`app/build/outputs/apk/release/app-release.apk`
 
 > 作者的正式发布签名身份（keystore / 密码）绝不公开；fork 后请使用你自己的签名构建你自己的 Release。
 
-## 📁 项目结构
+## 技术栈
+
+| 技术 | 用途 |
+|------|------|
+| Kotlin | 开发语言 |
+| Jetpack Compose | UI 框架 |
+| Material 3 | 设计系统 |
+| AndroidX Media3 (ExoPlayer) | 音频播放引擎，后台播放 + MediaSession |
+| Room / DataStore | 本地数据库 / 键值偏好 |
+| Coroutines / Flow | 异步与响应式 |
+| OkHttp / Gson | 网络请求 / JSON 解析 |
+| AndroidX Palette | 专辑封面主色提取，驱动动态取色 |
+
+完整版本号、依赖与构建细节见 [DEVELOPMENT.md](DEVELOPMENT.md)。
+
+## 项目结构
 
 ```
 PickUpMusic/
@@ -144,55 +107,40 @@ PickUpMusic/
 │   │   │   ├── data/
 │   │   │   │   ├── ai/              # AI 服务（DeepSeek 元数据识别）
 │   │   │   │   ├── colors/          # 封面主色提取（PaletteExtractor）
-│   │   │   │   ├── normalize/       # 歌手名归一化（ArtistNormalizer）
-│   │   │   │   ├── recognition/     # 歌手头像抓取（ArtistAvatarFetcher）
-│   │   │   │   ├── db/             # Room 数据库（AppDatabase, DAO, 实体, 迁移）
-│   │   │   │   ├── lyrics/         # 歌词解析（LRC, USLT）
-│   │   │   │   ├── MediaScanner.kt   # 媒体库扫描
-│   │   │   │   ├── SettingsStore.kt  # DataStore 设置与最近播放
-│   │   │   │   └── Track.kt         # 歌曲数据模型
-│   │   │   ├── playback/
-│   │   │   │   ├── PlaybackService.kt  # 后台播放服务
-│   │   │   │   ├── PlayerController.kt # 播放器控制器
-│   │   │   │   └── DeviceRouter.kt    # 音频输出设备路由
+│   │   │   │   ├── normalize/       # 歌手名归一化
+│   │   │   │   ├── recognition/     # 歌手头像抓取
+│   │   │   │   ├── db/             # Room 数据库（实体、DAO、迁移）
+│   │   │   │   ├── lyrics/         # 歌词解析与匹配（LRC / USLT / LRCLIB / 网易云）
+│   │   │   │   ├── MediaScanner.kt  # 媒体库扫描
+│   │   │   │   └── SettingsStore.kt  # DataStore 设置与最近播放
+│   │   │   ├── playback/            # 后台播放服务、播放控制器、音频设备路由
 │   │   │   ├── ui/
-│   │   │   │   ├── components/    # 通用 UI 组件（PillButton, CoverArt, OIcon…）
-│   │   │   │   ├── icons/        # 图标库 (Lucide)
-│   │   │   │   ├── screens/      # 页面（首页/搜索/音乐库/播放器/歌词/最近播放/收听统计/你的更新/设置；歌手详情与专辑列表内嵌于 LibraryScreen）
-│   │   │   │   └── theme/        # 主题配置与 OrganicColors
-│   │   │   ├── MainActivity.kt   # 主 Activity
-│   │   │   ├── MainViewModel.kt  # 主 ViewModel
-│   │   │   ├── ShiyinApp.kt      # Application 类
-│   │   │   └── AppRoot.kt        # 导航根组件
-│   │   ├── res/                  # 资源文件（含各档位应用图标）
+│   │   │   │   ├── components/      # 通用 UI 组件
+│   │   │   │   ├── screens/         # 页面（首页 / 搜索 / 音乐库 / 播放器 / 歌词 / 设置 等）
+│   │   │   │   └── theme/           # 主题与配色
+│   │   │   ├── MainActivity.kt
+│   │   │   ├── MainViewModel.kt
+│   │   │   └── AppRoot.kt           # 导航根组件
+│   │   ├── res/                     # 资源文件（含各档位应用图标）
 │   │   └── AndroidManifest.xml
 │   └── build.gradle.kts
-├── build.gradle.kts               # 根构建脚本
-├── settings.gradle.kts
-├── gradle.properties
-├── gradlew / gradlew.bat          # Gradle Wrapper（仓库自带，无需全局安装 Gradle）
-├── keystore.properties.example    # Release 签名占位模板（自行复制为 keystore.properties 填真实值，不入库）
-├── local.properties.example       # 本机 Android SDK 路径占位模板（自行复制为 local.properties，不入库）
-├── DEVELOPMENT.md                 # 开发规范（分支/命名/提交/版本/签名/PR 流程）
-├── CHANGELOG.md                   # 版本变更记录
-├── LICENSE                         # MIT 许可证
-├── CLAUDE.md                       # AI 协作工作规范
+├── gradlew / gradlew.bat            # Gradle Wrapper（仓库自带）
+├── keystore.properties.example      # Release 签名占位模板
+├── local.properties.example         # 本机 Android SDK 路径占位模板
+├── DEVELOPMENT.md                   # 开发规范
+├── CHANGELOG.md                     # 版本变更记录
+├── LICENSE                          # MIT 许可证
 └── README.md
 ```
 
-> 真实签名文件（`*.jks` / `*.keystore`）、`keystore.properties`、`local.properties`、
-> 以及作者私密签名管理备忘 `PRIVATE_SECURITY.md` 均在 `.gitignore` 中，绝不入库。
+> 真实签名文件（`*.jks` / `*.keystore`）、`keystore.properties`、`local.properties` 均在 `.gitignore` 中，绝不入库。
 
-## 🔒 隐私说明
+## 隐私说明
 
-- 所有本地音乐扫描与播放均在设备本地完成。
-- 网络访问仅用于：抓取歌手头像（MusicBrainz / Wikidata / iTunes）、调用用户自配的 DeepSeek API 进行元数据识别。
+- 本地音乐扫描与播放均在设备本地完成。
+- 网络访问仅用于：抓取歌手头像（MusicBrainz / Wikidata / iTunes）、调用你自配的 DeepSeek API 做元数据识别。
 - 不会上传你的本地音乐文件或收听记录到任何服务器。
 
-## 📄 许可证
+## 许可证
 
-本项目基于 MIT 许可证开源。详见 [LICENSE](LICENSE) 文件。
-
----
-
-**拾音** — 用心聆听每一个音符 🎶
+本项目基于 MIT 许可证开源。详见 [LICENSE](LICENSE)。
