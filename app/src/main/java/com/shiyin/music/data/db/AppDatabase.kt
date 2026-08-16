@@ -458,7 +458,7 @@ interface ShiyinDao {
         // v4.3: single-track re-parenting into its real album
         TrackAlbumMoveEntity::class,
     ],
-    version = 10,
+    version = 11,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -631,9 +631,21 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        // v1.1.0: 取色算法在 360b90f 重写（聚类合并 + 亮度下限），但旧颜色早已
+        // 持久化进 album_art_cache、启动时 primeColors 装进内存缓存，ensureColors
+        // 命中缓存就短路、根本不会再走新算法——所以旧库里取色"没变"。此迁移把
+        // 所有已缓存的 bgArgb/fgArgb 清零：primeColors 跳过 0/0 的行，下次打开
+        // 播放页/歌词页时 ensureColors 会用新算法重新提取并回填。url/source 等
+        // 封面缓存字段不动，只清颜色。
+        private val MIGRATION_10_11 = object : Migration(10, 11) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("UPDATE album_art_cache SET bgArgb = 0, fgArgb = 0")
+            }
+        }
+
         fun get(context: Context): AppDatabase = instance ?: synchronized(this) {
             instance ?: Room.databaseBuilder(context.applicationContext, AppDatabase::class.java, "shiyin.db")
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11)
                 .fallbackToDestructiveMigration()
                 .addCallback(object : Callback() {
                     override fun onCreate(db: SupportSQLiteDatabase) {
