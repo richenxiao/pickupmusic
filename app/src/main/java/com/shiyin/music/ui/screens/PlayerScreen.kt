@@ -17,6 +17,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.basicMarquee
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Arrangement
@@ -42,8 +44,10 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -279,13 +283,32 @@ fun PlayerScreen(vm: MainViewModel) {
             }
 
             // progress
+            // v5.3: 进度条支持拖动 scrub。原实现只有 detectTapGestures(点按跳转)，
+            // 按住拖动滑块无任何响应。用 awaitEachGesture 统一处理 按下→拖动→抬起:
+            // 按下/拖动期间把 scrubFraction 覆盖到手指位置(让滑块实时跟手),抬起时
+            // commit 一次 seekToFraction。scrub 期间忽略播放器 ticker 写回的
+            // positionMs,避免滑块被每帧拉回播放位置。
+            var scrubFraction by remember { mutableStateOf<Float?>(null) }
+            val shownPct = scrubFraction ?: pct
+            val shownPosMs = (scrubFraction?.let { it * durMs } ?: vm.player.positionMs).toLong()
             Box(
                 Modifier
                     .fillMaxWidth()
                     .height(22.dp)
                     .pointerInput(durMs) {
-                        detectTapGestures { offset ->
-                            vm.player.seekToFraction(offset.x / size.width)
+                        awaitEachGesture {
+                            awaitFirstDown(requireUnconsumed = false)
+                            do {
+                                val event = awaitPointerEvent()
+                                event.changes.firstOrNull()?.let { change ->
+                                    val f = (change.position.x / size.width).coerceIn(0f, 1f)
+                                    scrubFraction = f
+                                    change.consume()
+                                }
+                            } while (event.changes.any { it.pressed })
+                            // 抬手:提交一次 seek 并结束 scrub,bar 回到播放器真实位置。
+                            scrubFraction?.let { vm.player.seekToFraction(it) }
+                            scrubFraction = null
                         }
                     },
                 contentAlignment = Alignment.CenterStart,
@@ -299,7 +322,7 @@ fun PlayerScreen(vm: MainViewModel) {
                 )
                 Box(
                     Modifier
-                        .fillMaxWidth(pct)
+                        .fillMaxWidth(shownPct)
                         .height(6.dp)
                         .clip(RoundedCornerShape(3.dp))
                         .background(c.accent)
@@ -307,7 +330,7 @@ fun PlayerScreen(vm: MainViewModel) {
                 androidx.compose.foundation.layout.BoxWithConstraints(Modifier.fillMaxWidth()) {
                     Box(
                         Modifier
-                            .offset(x = (maxWidth - 15.dp) * pct)
+                            .offset(x = (maxWidth - 15.dp) * shownPct)
                             .size(15.dp)
                             .clip(CircleShape)
                             .background(c.accent)
@@ -315,7 +338,7 @@ fun PlayerScreen(vm: MainViewModel) {
                 }
             }
             Row(Modifier.fillMaxWidth().padding(bottom = 14.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text(formatDuration(vm.player.positionMs / 1000), style = body(12f, FontWeight.Normal, c.n600))
+                Text(formatDuration(shownPosMs / 1000), style = body(12f, FontWeight.Normal, c.n600))
                 Text(formatDuration(durMs / 1000), style = body(12f, FontWeight.Normal, c.n600))
             }
 

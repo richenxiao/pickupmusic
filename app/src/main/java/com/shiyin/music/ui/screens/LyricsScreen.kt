@@ -8,6 +8,8 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -43,7 +45,6 @@ import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -215,12 +216,30 @@ fun LyricsScreen(vm: MainViewModel) {
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             val pct = if (durMs > 0) (vm.player.positionMs.toFloat() / durMs).coerceIn(0f, 1f) else 0f
+            // v5.3: 进度条支持拖动 scrub(与 PlayerScreen 同一逻辑)。原只有
+            // detectTapGestures 点按跳转,按住拖动无响应。按下/拖动期间 scrubFraction
+            // 覆盖到手指位置,抬手时 commit 一次 seek,期间忽略 ticker 写回。
+            var scrubFraction by remember { mutableStateOf<Float?>(null) }
+            val shownPct = scrubFraction ?: pct
+            val shownPosMs = (scrubFraction?.let { it * durMs } ?: vm.player.positionMs).toLong()
             Box(
                 Modifier
                     .fillMaxWidth()
                     .height(18.dp)
                     .pointerInput(durMs) {
-                        detectTapGestures { offset -> vm.player.seekToFraction(offset.x / size.width) }
+                        awaitEachGesture {
+                            awaitFirstDown(requireUnconsumed = false)
+                            do {
+                                val event = awaitPointerEvent()
+                                event.changes.firstOrNull()?.let { change ->
+                                    val f = (change.position.x / size.width).coerceIn(0f, 1f)
+                                    scrubFraction = f
+                                    change.consume()
+                                }
+                            } while (event.changes.any { it.pressed })
+                            scrubFraction?.let { vm.player.seekToFraction(it) }
+                            scrubFraction = null
+                        }
                     },
                 contentAlignment = Alignment.CenterStart,
             ) {
@@ -233,7 +252,7 @@ fun LyricsScreen(vm: MainViewModel) {
                 )
                 Box(
                     Modifier
-                        .fillMaxWidth(pct)
+                        .fillMaxWidth(shownPct)
                         .height(4.dp)
                         .clip(RoundedCornerShape(2.dp))
                         .background(artFg)
@@ -245,7 +264,7 @@ fun LyricsScreen(vm: MainViewModel) {
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
                 Text(
-                    formatDuration(vm.player.positionMs / 1000),
+                    formatDuration(shownPosMs / 1000),
                     style = body(11.5f, FontWeight.Bold, dimC),
                     modifier = Modifier.width(44.dp),
                 )
