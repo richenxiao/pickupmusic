@@ -45,5 +45,10 @@ node_modules/
 # ─── 私密安全备忘（绝不入库，仅本地保存作者签名/密钥管理信息）───
 PRIVATE_SECURITY.md
 
+# ─── 内部开发文档（仅本地保留，不上 GitHub；仓库访客只需 README + 代码）───
+DEVELOPMENT.md
+CHANGELOG.md
+CLAUDE.md
+
 # ─── Claude Code 本地设置（如有）───
 .claude/
