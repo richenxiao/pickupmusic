@@ -259,7 +259,7 @@ fun AppRoot(vm: MainViewModel) {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Row(verticalAlignment = Alignment.Bottom, modifier = Modifier.padding(bottom = 12.dp)) {
                         Text("拾音", style = heading(24))
-                        Text("Pickup Music", style = body(13f, FontWeight.Normal, c.n500), modifier = Modifier.padding(start = 8.dp, bottom = 3.dp))
+                        Text("PickUpMusic", style = body(13f, FontWeight.Normal, c.n500), modifier = Modifier.padding(start = 8.dp, bottom = 3.dp))
                     }
                     // v4: sidebar restructured — 5 items, no file-management here
                     SidebarItem(Lucide.History, "最近播放") { vm.sidebarOpen = false; vm.recentOpen = true; vm.settingsOpen = false }
