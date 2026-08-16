@@ -1166,7 +1166,7 @@ private fun ArtistDetail(vm: MainViewModel, name: String) {
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                        Text("把其他歌手合并到「$name」：", style = body(13.5f, FontWeight.ExtraBold, c.text))
+                        Text("合并以下歌手：", style = body(13.5f, FontWeight.ExtraBold, c.text))
                         if (selected.isNotEmpty()) {
                             PillButton(
                                 "完成（${selected.size}）",
