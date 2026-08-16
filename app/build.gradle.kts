@@ -15,8 +15,8 @@ android {
         applicationId = "com.shiyin.music"
         minSdk = 31
         targetSdk = 36
-        versionCode = 10000
-        versionName = "1.0.0"
+        versionCode = 10100
+        versionName = "1.1.0"
     }
 
     signingConfigs {

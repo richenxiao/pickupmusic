@@ -233,7 +233,7 @@ private fun SettingsRoot(vm: MainViewModel) {
         ) {
             OIcon(Lucide.CircleInfo, 19.dp, c.n700)
             Text("关于我们", style = body(15f, FontWeight.SemiBold, c.text), modifier = Modifier.weight(1f))
-            Text("拾音 v5.2", style = body(12.5f, FontWeight.Normal, c.n600))
+            Text("拾音 v1.1.0", style = body(12.5f, FontWeight.Normal, c.n600))
             OIcon(Lucide.ChevronRight, 18.dp, c.n500)
         }
 
@@ -653,14 +653,7 @@ private fun AboutScreen(vm: MainViewModel) {
                     .clip(RoundedCornerShape(999.dp))
                     .background(c.n100)
                     .padding(horizontal = 10.dp, vertical = 3.dp)
-            ) { Text("v5.2", style = body(12f, FontWeight.Normal, c.n800)) }
-            // v3.3 build timestamp — 编译时写入，用于验证版本
-            val buildTime = "2026-08-13"
-            Text(
-                "build $buildTime",
-                style = body(10f, FontWeight.Normal, c.n400),
-                modifier = Modifier.padding(top = 2.dp),
-            )
+            ) { Text("v1.1.0", style = body(12f, FontWeight.Normal, c.n800)) }
             Text(
                 "识别手机里的每一段声音，\n帮你留下想听的，清走不要的。",
                 style = body(14f, FontWeight.Normal, c.n600).copy(lineHeight = 22.sp),
@@ -685,28 +678,54 @@ private fun AboutScreen(vm: MainViewModel) {
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 Text("更新内容", style = body(13f, FontWeight.ExtraBold, c.text).copy(letterSpacing = 1.sp))
-                val changes = listOf(
-                    "v5.2 隐藏歌曲：歌曲三点菜单新增「隐藏此曲」，隐藏后变灰、整张/整库/随机播放自动跳过，但单曲点击仍能正常播放。",
-                    "v5.2 播放设备切换改用系统级媒体输出选择器：播放页点设备按钮直接弹出 Android 系统输出切换器（手机扬声器/蓝牙耳机/蓝牙音箱等），由系统完成真实音频路由，兼容 ColorOS 等定制系统；不再走应用内自建设备列表。",
-                    "v5.2 播放页二级菜单修复：三点菜单、播放队列、歌词本之前打不开（被播放页弹层压住、歌词本渲染到播放页后面），现已正确盖在播放页之上、可正常打开。",
-                    "v5.2 歌词本歌名/歌手名改为居中显示。",
-                    "v4.3 搜索升级：模糊搜索支持繁简互通、空格灵活与错字容错（如 weekend 也能找到 weeknd），命中词在结果中高亮。",
-                    "v4.3 播放页下拉关闭重做：像两张纸重叠的效果，下拉跟手丝滑，松手自然滑出。",
-                    "v4.3 侧边栏改为并列布局（侧边栏｜首页），不再遮挡首页内容。",
-                    "v4.3 单曲信息编辑新增「迁移专辑」：误识别成独立单曲的歌可以归入正确的专辑。",
-                    "v4.3 专辑与单曲信息支持手动修改（名称/歌手/封面）。",
-                    "v4.3 收听统计修复歌手次数显示换行问题。",
-                    "v4.3 歌手页专辑栏恢复横向滑动，不再被截断。",
-                    "v4.3 播放专辑自动整张循环：播完最后一首自动回到第一首。",
-                    "v4.3 播放设备弹层修复蓝牙音箱不显示：列表实时刷新，连接后立刻出现；首次使用会请求蓝牙权限。",
-                    "v3.3 歌词本自适应反色：浅色专辑保持原色背景配深色文字，暗色专辑配白字，封面色调不再被强制压暗。",
-                    "v3.3 桌面图标缩小到安全区内，不再被启动器圆角裁掉。",
-                    "v3.2 歌词背景改取专辑封面主体色，不再偏向角落暗色。",
-                    "v3.1 歌词本动态取色重做 + 播放进度条下时间数字紧贴进度条两端。",
-                    "v3.0 播放页/歌词页跟随专辑封面取色，设备选择器改为上滑面板。",
+                // 按版本分组：每组一个版本号标题 + 该版本条目，新版本在前。
+                data class VerChange(val version: String, val items: List<String>)
+                val versions = listOf(
+                    VerChange("v1.1.0", listOf(
+                        "进度条支持拖动：原进度条只能点按跳转，按住拖动无响应；现按下/拖动滑块实时跟手，抬手时提交跳转。",
+                        "歌词背景取色修复：大面积主色被小面积鲜艳贴纸抢选（如蓝色封面被黄色标签覆盖），以及暗紫等封面背景过暗的问题。",
+                        "合并歌手对话框与交互修复。",
+                    )),
+                    VerChange("v5.2", listOf(
+                        "隐藏歌曲：歌曲三点菜单新增「隐藏此曲」，隐藏后变灰、整张/整库/随机播放自动跳过，但单曲点击仍能正常播放。",
+                        "播放设备切换改用系统级媒体输出选择器：播放页点设备按钮直接弹出 Android 系统输出切换器（手机扬声器/蓝牙耳机/蓝牙音箱等），由系统完成真实音频路由，兼容 ColorOS 等定制系统；不再走应用内自建设备列表。",
+                        "播放页二级菜单修复：三点菜单、播放队列、歌词本之前打不开（被播放页弹层压住、歌词本渲染到播放页后面），现已正确盖在播放页之上、可正常打开。",
+                        "歌词本歌名/歌手名改为居中显示。",
+                    )),
+                    VerChange("v4.3", listOf(
+                        "搜索升级：模糊搜索支持繁简互通、空格灵活与错字容错（如 weekend 也能找到 weeknd），命中词在结果中高亮。",
+                        "播放页下拉关闭重做：像两张纸重叠的效果，下拉跟手丝滑，松手自然滑出。",
+                        "侧边栏改为并列布局（侧边栏｜首页），不再遮挡首页内容。",
+                        "单曲信息编辑新增「迁移专辑」：误识别成独立单曲的歌可以归入正确的专辑。",
+                        "专辑与单曲信息支持手动修改（名称/歌手/封面）。",
+                        "收听统计修复歌手次数显示换行问题。",
+                        "歌手页专辑栏恢复横向滑动，不再被截断。",
+                        "播放专辑自动整张循环：播完最后一首自动回到第一首。",
+                        "播放设备弹层修复蓝牙音箱不显示：列表实时刷新，连接后立刻出现；首次使用会请求蓝牙权限。",
+                    )),
+                    VerChange("v3.3", listOf(
+                        "歌词本自适应反色：浅色专辑保持原色背景配深色文字，暗色专辑配白字，封面色调不再被强制压暗。",
+                        "桌面图标缩小到安全区内，不再被启动器圆角裁掉。",
+                    )),
+                    VerChange("v3.2", listOf(
+                        "歌词背景改取专辑封面主体色，不再偏向角落暗色。",
+                    )),
+                    VerChange("v3.1", listOf(
+                        "歌词本动态取色重做 + 播放进度条下时间数字紧贴进度条两端。",
+                    )),
+                    VerChange("v3.0", listOf(
+                        "播放页/歌词页跟随专辑封面取色，设备选择器改为上滑面板。",
+                    )),
                 )
-                for (ch in changes) {
-                    Text("· $ch", style = body(12f, FontWeight.Normal, c.n700).copy(lineHeight = 17.sp))
+                for (ver in versions) {
+                    Text(
+                        ver.version,
+                        style = body(12.5f, FontWeight.Bold, c.text).copy(letterSpacing = 0.5.sp),
+                        modifier = Modifier.padding(top = 4.dp),
+                    )
+                    for (ch in ver.items) {
+                        Text("· $ch", style = body(12f, FontWeight.Normal, c.n700).copy(lineHeight = 17.sp))
+                    }
                 }
             }
         }
