@@ -110,8 +110,6 @@ PickUpMusic/
 ├── gradlew / gradlew.bat            # Gradle Wrapper（仓库自带）
 ├── keystore.properties.example      # Release 签名占位模板
 ├── local.properties.example         # 本机 Android SDK 路径占位模板
-├── DEVELOPMENT.md                   # 开发规范
-├── CHANGELOG.md                     # 版本变更记录
 ├── LICENSE                          # MIT 许可证
 └── README.md
 ```
