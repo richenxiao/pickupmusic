@@ -97,7 +97,7 @@ object ArtCache {
     // primeColors only loads DB rows whose source ends with this version tag;
     // rows from older algorithms are skipped (not deleted), forcing ensureColors
     // to re-extract with the new algorithm and overwrite the DB row.
-    internal const val PALETTE_VERSION = "v4"
+    internal const val PALETTE_VERSION = "v5"
     private val colorCache = HashMap<Long, Pair<Int, Int>>()
     private val colorPending = HashSet<Long>()
 
@@ -245,21 +245,18 @@ object ArtCache {
             if (pair != null) colorCache[albumId] = pair.bgArgb to pair.fgArgb
         }
         // Persist asynchronously — never block the cover path on a DB write.
-        // v4: tag source with PALETTE_VERSION so primeColors can distinguish
+        // tag source with PALETTE_VERSION so primeColors can distinguish
         // new-algorithm colors from old ones without a schema migration.
+        // v5: upsertColorsPreservingMeta 只更 bg/fg/source，绝不抹掉
+        // url/fetchedAt/releaseDate（旧 upsertAlbumArtCache(REPLACE) 每次取色都
+        // 把 iTunes 封面 URL 与发行日期一并清空）。source 必须升到 v5，否则
+        // primeColors 不装载该行、每次冷启都重算。
         if (pair != null) {
             kotlinx.coroutines.GlobalScope.launch(Dispatchers.IO) {
                 try {
                     val db = com.shiyin.music.data.db.AppDatabase.get(context).dao()
-                    db.upsertAlbumArtCache(
-                        com.shiyin.music.data.db.AlbumArtCacheEntity(
-                            albumId = albumId,
-                            url = "",
-                            source = "local:$PALETTE_VERSION",
-                            fetchedAt = 0,
-                            bgArgb = pair.bgArgb,
-                            fgArgb = pair.fgArgb,
-                        )
+                    db.upsertColorsPreservingMeta(
+                        albumId, pair.bgArgb, pair.fgArgb, "local:$PALETTE_VERSION",
                     )
                 } catch (_: Exception) { }
             }

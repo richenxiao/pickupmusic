@@ -430,6 +430,14 @@ interface ShiyinDao {
     @Query("UPDATE album_art_cache SET bgArgb = :bg, fgArgb = :fg WHERE albumId = :albumId")
     suspend fun updateAlbumArtColors(albumId: Long, bg: Int, fg: Int)
 
+    // v5: 取色回写——只更 bg/fg/source，保留 url/fetchedAt/releaseDate；无行时
+    // 插入占位行（url/releaseDate 空，待 iTunes 匹配回填）。取代旧
+    // upsertAlbumArtCache(REPLACE)：后者每次取色都把 iTunes 封面 URL 与发行
+    // 日期清空。source 升到 PALETTE_VERSION 让 primeColors 装载、避免每次冷
+    // 启都重算（source 不升则 primeColors 按 :v5 过滤会跳过该行 → 无限重算）。
+    @Query("INSERT INTO album_art_cache(albumId, url, source, fetchedAt, bgArgb, fgArgb, releaseDate) VALUES (:albumId, '', :source, 0, :bg, :fg, '') ON CONFLICT(albumId) DO UPDATE SET bgArgb = :bg, fgArgb = :fg, source = :source")
+    suspend fun upsertColorsPreservingMeta(albumId: Long, bg: Int, fg: Int, source: String)
+
     // ── v4: play events (最近播放 + 收听统计) ─────────────────────────────
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertPlayEvent(e: PlayEventEntity)
