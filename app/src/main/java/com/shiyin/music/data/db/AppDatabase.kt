@@ -23,6 +23,9 @@ data class SavedLyricEntity(
     val source: String,
     val offsetMs: Long,
     val savedAt: Long,
+    // v1.1+: autoSaved=1 表示该歌词是「自动识别」匹配后由"自动保存识别结果"开关自动持久化的
+    // （清理缓存时清掉，重新识别）；=0 表示用户手动确认保存/导入的（清理缓存保留）。
+    val autoSaved: Int = 0,
 )
 
 @Entity(tableName = "artist_alias")
@@ -193,6 +196,48 @@ data class NewAlbumEntity(
     val firstSeenAt: Long,  // epoch millis, drives newest-first ordering
 )
 
+// v1.1.0: 振假名 Song Override（歌曲专属读法，如当て字 何→なん / 魏→たか）。
+// 按「出现位置」存取：PK = (scope, mediaId, lyricsHash, lineIndex, charStart)，
+// 使同一 surface 在歌里多次出现、读法不同时可分别设（何 有的なに 有的なん，不归一）。
+// 绑 mediaId+lyricsHash，换歌词源/改文本（hash 变）自动失效，不污染其他歌。优先级
+// 最高。索引 (mediaId, lyricsHash) 供按曲批量查与删除歌词时级联清理。
+@Entity(
+    tableName = "reading_override",
+    primaryKeys = ["scope", "mediaId", "lyricsHash", "lineIndex", "charStart"],
+    indices = [Index(value = ["mediaId", "lyricsHash"])],
+)
+data class ReadingOverrideEntity(
+    val scope: String,        // "GLOBAL" or "SONG"
+    val mediaId: Long,        // 0 for GLOBAL
+    val lyricsHash: String,   // "" for GLOBAL; SONG 绑歌词 raw 的 hash
+    val lineIndex: Int,       // 歌词第几行（0-based）
+    val charStart: Int,       // 该 surface 在该行中的起始字符偏移（定位"哪一次出现"）
+    val surface: String,      // 原文（展示用，不参与定位）
+    val reading: String,
+    val updatedAt: Long = 0,
+)
+
+// v1.1+: 外部歌词假名 evidence 缓存（UtaTen 等带假名歌词站解析对齐后的 occurrence 读法）。
+// 按 (mediaId+lyricsHash+lineIndex+charStart) 定位，与 Song Override 同坐标系但低优先级。
+// 联网抓取一次后缓存，后续完全离线。source 记来源，confidence 记可信度（多源一致=高）。
+@Entity(
+    tableName = "external_reading_evidence",
+    primaryKeys = ["mediaId", "lyricsHash", "lineIndex", "charStart"],
+    indices = [Index(value = ["mediaId", "lyricsHash"])],
+)
+data class ExternalReadingEvidenceEntity(
+    val mediaId: Long,
+    val lyricsHash: String,
+    val lineIndex: Int,
+    val charStart: Int,
+    val length: Int,
+    val surface: String,
+    val reading: String,
+    val source: String,        // provider 名 + matched song（evidence 元数据）
+    val confidence: Int,      // 0=低 1=中(单源) 2=高(多源一致)
+    val fetchedAt: Long,
+)
+
 @Dao
 interface ShiyinDao {
     // Lyrics
@@ -201,6 +246,12 @@ interface ShiyinDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertLyric(e: SavedLyricEntity)
+
+    // v1.1+: 自动保存专用——只在「无行」或「已有自动行(autoSaved=1)」时写入/更新。
+    // 若该 mediaId 已有手动保存(autoSaved=0)，ON CONFLICT 触发但 WHERE autoSaved=1 为假
+    // → 不更新，手动行被保留，绝不覆盖用户手动保存。修 code-review 数据丢失 bug。
+    @Query("INSERT INTO saved_lyrics(mediaId, lyrics, source, offsetMs, savedAt, autoSaved) VALUES (:mediaId, :lyrics, :source, :offsetMs, :savedAt, 1) ON CONFLICT(mediaId) DO UPDATE SET lyrics=:lyrics, source=:source, offsetMs=:offsetMs, savedAt=:savedAt WHERE autoSaved=1")
+    suspend fun upsertAutoSavedLyric(mediaId: Long, lyrics: String, source: String, offsetMs: Long, savedAt: Long)
 
     @Query("DELETE FROM saved_lyrics WHERE mediaId = :mediaId")
     suspend fun deleteLyric(mediaId: Long)
@@ -372,6 +423,9 @@ interface ShiyinDao {
     @Query("SELECT * FROM album_art_cache")
     suspend fun allArtCache(): List<AlbumArtCacheEntity>
 
+    @Query("SELECT COUNT(*) FROM album_art_cache")
+    suspend fun albumArtCacheCount(): Int
+
     // v3.0: persist extracted dominant colors without rewriting url/source/fetchedAt.
     @Query("UPDATE album_art_cache SET bgArgb = :bg, fgArgb = :fg WHERE albumId = :albumId")
     suspend fun updateAlbumArtColors(albumId: Long, bg: Int, fg: Int)
@@ -440,6 +494,50 @@ interface ShiyinDao {
 
     @Query("DELETE FROM playlist WHERE id = :id")
     suspend fun deletePlaylist(id: String)
+
+    // ── v1.1.0: 振假名 Song Override ───────────────────────────────────────
+    /** 某曲某版本的全部 Song Override（按出现位置定位）。 */
+    @Query("SELECT * FROM reading_override WHERE scope = 'SONG' AND mediaId = :mediaId AND lyricsHash = :lyricsHash")
+    suspend fun songReadingOverrides(mediaId: Long, lyricsHash: String): List<ReadingOverrideEntity>
+
+    /** 全局 Override（稳定词汇；当前主要靠内存小表，此查询预留扩展）。 */
+    @Query("SELECT * FROM reading_override WHERE scope = 'GLOBAL'")
+    suspend fun globalReadingOverrides(): List<ReadingOverrideEntity>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertReadingOverride(e: ReadingOverrideEntity)
+
+    /** 删除某曲某版本某出现位置的 Song Override（用户在编辑器里清空读法时）。 */
+    @Query("DELETE FROM reading_override WHERE scope = 'SONG' AND mediaId = :mediaId AND lyricsHash = :lyricsHash AND lineIndex = :lineIndex AND charStart = :charStart")
+    suspend fun deleteReadingOverride(mediaId: Long, lyricsHash: String, lineIndex: Int, charStart: Int)
+
+    /** 删除某曲所有版本的 Song Override（删除歌词时级联清理，避免孤儿）。 */
+    @Query("DELETE FROM reading_override WHERE scope = 'SONG' AND mediaId = :mediaId")
+    suspend fun deleteReadingOverridesForMedia(mediaId: Long)
+
+    // ── v1.1+: 外部歌词假名 evidence 缓存 ─────────────────────────────────
+    /** 某曲某版本的全部外部 evidence（occurrence 读法）。 */
+    @Query("SELECT * FROM external_reading_evidence WHERE mediaId = :mediaId AND lyricsHash = :lyricsHash")
+    suspend fun externalEvidence(mediaId: Long, lyricsHash: String): List<ExternalReadingEvidenceEntity>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertExternalEvidence(list: List<ExternalReadingEvidenceEntity>)
+
+    @Query("DELETE FROM external_reading_evidence WHERE mediaId = :mediaId AND lyricsHash = :lyricsHash")
+    suspend fun deleteExternalEvidence(mediaId: Long, lyricsHash: String)
+
+    @Query("DELETE FROM external_reading_evidence WHERE mediaId = :mediaId")
+    suspend fun deleteExternalEvidenceForMedia(mediaId: Long)
+
+    // ── v1.1+: 自动识别缓存清理 ─────────────────────────────────────────────
+    /** 清理「自动识别」持久化的歌词（autoSaved=1）与全部封面缓存。保留：手动保存/导入的
+     *  歌词(autoSaved=0)、Song Override(reading_override)、外部假名 evidence、track_info_override。
+     *  用户空间不够时一键清空重新识别。返回清理掉的 saved_lyrics 行数。 */
+    @Query("DELETE FROM saved_lyrics WHERE autoSaved = 1")
+    suspend fun deleteAutoSavedLyrics()
+
+    @Query("DELETE FROM album_art_cache")
+    suspend fun clearAlbumArtCache()
 }
 
 @Database(
@@ -457,8 +555,12 @@ interface ShiyinDao {
         TrackInfoOverrideEntity::class,
         // v4.3: single-track re-parenting into its real album
         TrackAlbumMoveEntity::class,
+        // v1.1.0: 振假名 Song Override（歌曲专属读法/当て字）
+        ReadingOverrideEntity::class,
+        // v1.1+: 外部歌词假名 evidence 缓存（UtaTen 等对齐后的 occurrence 读法）
+        ExternalReadingEvidenceEntity::class,
     ],
-    version = 11,
+    version = 14,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -643,10 +745,89 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        // v1.1.0: 振假名 Song Override 表。按出现位置（lineIndex+charStart）定位，使同
+        // 一 surface 多次出现可分别设不同读法。绑 mediaId+lyricsHash+lineIndex+charStart。
+        // ⚠️ 用 DROP+CREATE 而非 CREATE TABLE IF NOT EXISTS：早期 dev 构建曾用「surface 做
+        // 主键」的旧 schema 建过此表，IF NOT EXISTS 对旧表是 no-op，会导致迁移后 schema 与
+        // 实体不一致 → Room 校验崩溃（code-review 启动即崩 bug）。DROP 重建保证 schema 正确。
+        // 该表仅 dev 构建存在过（正式版从未发布），DROP 不丢生产用户数据。
+        private val MIGRATION_11_12 = object : Migration(11, 12) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("DROP TABLE IF EXISTS reading_override")
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS reading_override (
+                        scope TEXT NOT NULL,
+                        mediaId INTEGER NOT NULL,
+                        lyricsHash TEXT NOT NULL,
+                        lineIndex INTEGER NOT NULL,
+                        charStart INTEGER NOT NULL,
+                        surface TEXT NOT NULL,
+                        reading TEXT NOT NULL,
+                        updatedAt INTEGER NOT NULL,
+                        PRIMARY KEY(scope, mediaId, lyricsHash, lineIndex, charStart)
+                    )
+                """)
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_reading_override_mediaId_lyricsHash ON reading_override(mediaId, lyricsHash)")
+            }
+        }
+
+        // v1.1+: 外部歌词假名 evidence 缓存表。UtaTen 等带假名歌词站解析对齐后的
+        // occurrence 读法，按 (mediaId+lyricsHash+lineIndex+charStart) 定位。联网一次后离线复用。
+        // 同 MIGRATION_11_12：用 DROP+CREATE 防 dev 构建残留旧 schema 导致 Room 校验崩溃。
+        // 额外：本迁移也重建 reading_override（DROP+CREATE）——若设备已停在 v12（旧 dev 构建跑过
+        // 11→12 建了「surface 主键」的坏表），11_12 的 DROP 不会再触发，须在 12_13 补一次重建，
+        // 保证无论设备停在 v11/v12/v13，迁移后两表 schema 都与实体一致。
+        private val MIGRATION_12_13 = object : Migration(12, 13) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("DROP TABLE IF EXISTS external_reading_evidence")
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS external_reading_evidence (
+                        mediaId INTEGER NOT NULL,
+                        lyricsHash TEXT NOT NULL,
+                        lineIndex INTEGER NOT NULL,
+                        charStart INTEGER NOT NULL,
+                        length INTEGER NOT NULL,
+                        surface TEXT NOT NULL,
+                        reading TEXT NOT NULL,
+                        source TEXT NOT NULL,
+                        confidence INTEGER NOT NULL,
+                        fetchedAt INTEGER NOT NULL,
+                        PRIMARY KEY(mediaId, lyricsHash, lineIndex, charStart)
+                    )
+                """)
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_external_reading_evidence_mediaId_lyricsHash ON external_reading_evidence(mediaId, lyricsHash)")
+                // 重建 reading_override 到正确 schema（lineIndex+charStart 主键）
+                db.execSQL("DROP TABLE IF EXISTS reading_override")
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS reading_override (
+                        scope TEXT NOT NULL,
+                        mediaId INTEGER NOT NULL,
+                        lyricsHash TEXT NOT NULL,
+                        lineIndex INTEGER NOT NULL,
+                        charStart INTEGER NOT NULL,
+                        surface TEXT NOT NULL,
+                        reading TEXT NOT NULL,
+                        updatedAt INTEGER NOT NULL,
+                        PRIMARY KEY(scope, mediaId, lyricsHash, lineIndex, charStart)
+                    )
+                """)
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_reading_override_mediaId_lyricsHash ON reading_override(mediaId, lyricsHash)")
+            }
+        }
+
+        // v1.1+: saved_lyrics 加 autoSaved 列。=1 为自动识别匹配后由"自动保存识别结果"
+        // 开关自动持久化（清理缓存时清掉重新识别）；=0 为用户手动确认/导入（保留）。
+        private val MIGRATION_13_14 = object : Migration(13, 14) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE saved_lyrics ADD COLUMN autoSaved INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
         fun get(context: Context): AppDatabase = instance ?: synchronized(this) {
             instance ?: Room.databaseBuilder(context.applicationContext, AppDatabase::class.java, "shiyin.db")
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11)
-                .fallbackToDestructiveMigration()
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14)
+                // 不使用 fallbackToDestructiveMigration：迁移失败时宁可崩溃也不要删全库。
+                // 之前该选项导致迁移异常时删除所有用户数据（排序、专辑名、播放历史等）。
                 .addCallback(object : Callback() {
                     override fun onCreate(db: SupportSQLiteDatabase) {
                         db.execSQL("INSERT INTO playlist (id, name, sortIdx) VALUES ('p3', '我最喜爱', 0)")

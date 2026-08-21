@@ -42,6 +42,15 @@ keystore/
 # ─── JS toolchain (sharp 等，仅用于资源预处理) ───
 node_modules/
 
+# ─── Furigana JMdict 构建工作区 ───
+# tools/jmdict-build/ 下存放派生词表构建脚本与产物。上游原始 JMdict
+# （jmdict-eng-common-*.json / *.zip，~16MB）属第三方数据、体积大且可随时
+# 由脚本重新下载，绝不入库；只保留构建脚本 build_jmdict_derived.py 与最终
+# 派生产物（*.json 派生词表 + LICENSE/NOTICE）随仓库分发。
+tools/jmdict-build/jmdict-eng-common-*.json
+tools/jmdict-build/jmdict-eng-common-*.json.zip
+tools/jmdict-build/*.gz
+
 # ─── 私密安全备忘（绝不入库，仅本地保存作者签名/密钥管理信息）───
 PRIVATE_SECURITY.md
 
@@ -52,3 +61,6 @@ CLAUDE.md
 
 # ─── Claude Code 本地设置（如有）───
 .claude/
+
+# v1.1+ 外部假名 PoC 抓取的原始 UtaTen HTML（dev 探针，不入库；测试 fixture 在 app/src/test/resources）
+tools/jmdict-build/tools/

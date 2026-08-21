@@ -77,6 +77,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private val db = AppDatabase.get(app)
     private val dao = db.dao()
+    // 共享 OkHttpClient，避免每次切歌新建连接池/线程池泄漏
+    private val sharedHttpClient = okhttp3.OkHttpClient.Builder()
+        .connectTimeout(8, java.util.concurrent.TimeUnit.SECONDS)
+        .readTimeout(10, java.util.concurrent.TimeUnit.SECONDS).build()
 
     // ── v4: expose release dates for the artist album list ──────────────────
     /** Returns a map of albumId -> releaseDate ISO string from album_art_cache. */
@@ -104,6 +108,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     // v4.3: 单曲迁移专辑（mediaId -> 目标 albumId），修正扫描错误的专辑归属
     var trackAlbumMoves by mutableStateOf<Map<Long, Long>>(emptyMap()); private set
 
+    // v1.1.0: 振假名准确率层
+    val furiganaJmdict = com.shiyin.music.data.furigana.JMdictReadingDictionary()
+    /** 全局 Override（surface→reading），当前来自 DB GLOBAL 行；启动加载一次。 */
+    var globalReadingOverrides by mutableStateOf<Map<String, String>>(emptyMap()); private set
+    /** furigana 重算触发器：保存/删除 Song Override 后 bump，produceState 重算。 */
+    var furiganaRevision by mutableStateOf(0); private set
+    fun bumpFuriganaRevision() { furiganaRevision++ }
+
     // settings
     var settingsLoaded by mutableStateOf(false); private set
     var darkTheme by mutableStateOf(false); private set
@@ -117,6 +129,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     var firstScanDone by mutableStateOf(false); private set
     var recentIds by mutableStateOf<List<Long>>(emptyList()); private set
     var deepseekApiKey by mutableStateOf(""); private set
+    // v1.1+: 自动保存识别结果（默认开）。关时识别结果临时展示不写入持久化。
+    var autoSaveRecognition by mutableStateOf(true); private set
+    // v1.1+: 自动识别缓存占用（歌词+封面），供设置页显示与清理。null=未统计。
+    var recognitionCacheBytes by mutableStateOf<Long?>(null); private set
+    // v1.1+: 外部假名校验状态反馈。
+    var externalFetchStatus by mutableStateOf<String?>(null); private set
+    // v2: 播放速度调节（全局持久化）
+    var playbackSpeed by mutableStateOf(1.0f); private set
+    var retroSpeedMode by mutableStateOf(true); private set
 
     // ── UI state (mirrors the prototype's state machine) ────────────────────
     var isOnboarding by mutableStateOf(true)
@@ -240,6 +261,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 firstScanDone = s.firstScanDone
                 recentIds = s.recentIds
                 deepseekApiKey = s.deepseekApiKey
+                autoSaveRecognition = s.autoSaveRecognition
+                playbackSpeed = s.playbackSpeed
+                retroSpeedMode = s.retroSpeedMode
                 if (!settingsLoaded) {
                     settingsLoaded = true
                     isOnboarding = !s.onboarded
@@ -268,6 +292,19 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch { dao.albumInfoOverrideFlow().collect { l -> albumInfoOverrides = l.associateBy { it.albumId } } }
         viewModelScope.launch { dao.trackInfoOverrideFlow().collect { l -> trackInfoOverrides = l.associateBy { it.mediaId } } }
         viewModelScope.launch { dao.trackAlbumMoveFlow().collect { l -> trackAlbumMoves = l.associate { it.mediaId to it.albumId } } }
+        // v1.1.0: 振假名准确率层——后台加载 JMdict 派生词典 + 全局 override。
+        // JMdict 冷解析在 IO 线程；未完成时 pipeline 跳过该层（安全降级，Kuromoji 兜底）。
+        // ⚠️ 加载完成后必须 bump furiganaRevision——否则 produceState 不重算，第一首歌
+        // 一直停在 Kuromoji-only（code-review C：JMdict 加载与 produceState key 解耦）。
+        viewModelScope.launch(Dispatchers.IO) {
+            furiganaJmdict.load(getApplication())
+            withContext(Dispatchers.Main) { bumpFuriganaRevision() }
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                globalReadingOverrides = dao.globalReadingOverrides().associate { it.surface to it.reading }
+            } catch (_: Exception) { }
+        }
         // v3.0: prime the in-memory color cache from disk so the very first
         // player/lyrics paint already shows the album's true mood, rather than
         // the fixed fallback that only morphs once the bitmap decodes.
@@ -852,6 +889,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     // ── playback actions ───────────────────────────────────────────────────
     private fun onTrackStarted(id: Long) {
         lyState = LyState.Idle
+        // v2: 恢复全局播放速度设置
+        player.setPlaybackSpeed(playbackSpeed, retroSpeedMode)
         viewModelScope.launch { settingsStore.pushRecent(id) }
         // v2.0: increment play count
         viewModelScope.launch(Dispatchers.IO) {
@@ -876,25 +915,48 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         // lock screen, quick-settings media control). Uses setArtworkData
         // (bitmap bytes) because the system MediaController can't read
         // content:// URIs that the old setArtworkUri relied on.
+        // v1.1+: 统一用「App 识别匹配后的封面」(AlbumArtCacheEntity.url)，与 App UI
+        // 同源——此前读 content://media/.../albumart（文件内嵌旧封面）导致通知栏/锁屏
+        // 仍显旧封面。识别封面缺失时回退文件内嵌封面。
         viewModelScope.launch(Dispatchers.IO) {
             val t = trackById(id) ?: return@launch
-            if (t.albumId <= 0) return@launch
+            val bitmap = fetchMediaSessionCover(t) ?: return@launch
             try {
-                val uri = ContentUris.withAppendedId(
-                    android.net.Uri.parse("content://media/external/audio/albumart"),
-                    t.albumId,
-                )
-                val bitmap = getApplication<android.app.Application>().contentResolver.openInputStream(uri)?.use { stream ->
-                    android.graphics.BitmapFactory.decodeStream(stream)
-                } ?: return@launch
-                // v5: WEBP is ~5-10× smaller than PNG at quality 90 for the same
-                // cover-art perceptual quality, so setArtworkData finishes faster
-                // and the binder transaction to the system MediaSession stays light.
                 val bos = java.io.ByteArrayOutputStream()
                 bitmap.compress(android.graphics.Bitmap.CompressFormat.WEBP_LOSSY, 90, bos)
                 player.updateArtworkData(bos.toByteArray(), forMediaId = id)
             } catch (_: Exception) { }
         }
+    }
+
+    /** v1.1+: 取 MediaSession 封面 bitmap。优先 App 识别匹配的封面（albumArtCache.url），
+     *  缺失则回退文件内嵌封面（content://media/.../albumart/<albumId>）。 */
+    private suspend fun fetchMediaSessionCover(t: com.shiyin.music.data.Track): android.graphics.Bitmap? {
+        // 1. 识别封面（AlbumArtCacheEntity.url，与 App UI 同源）
+        if (t.albumId > 0) {
+            try {
+                val cache = dao.albumArtCache(t.albumId)
+                val url = cache?.takeIf { it.url.isNotBlank() }?.url
+                if (url != null) {
+                    val hq = url.replace("100x100bb", "600x600bb").replace("100x100", "600x600")
+                    val req = okhttp3.Request.Builder().url(hq).build()
+                    // 复用共享 OkHttpClient，避免每次切歌新建连接池/线程池泄漏
+                    sharedHttpClient.newCall(req).execute().body?.byteStream()?.use { stream ->
+                        android.graphics.BitmapFactory.decodeStream(stream)
+                    }?.let { return it }
+                }
+            } catch (_: Exception) { }
+        }
+        // 2. 回退：文件内嵌封面
+        if (t.albumId <= 0) return null
+        return try {
+            val uri = android.content.ContentUris.withAppendedId(
+                android.net.Uri.parse("content://media/external/audio/albumart"), t.albumId,
+            )
+            getApplication<android.app.Application>().contentResolver.openInputStream(uri)?.use { stream ->
+                android.graphics.BitmapFactory.decodeStream(stream)
+            }
+        } catch (_: Exception) { null }
     }
 
     /** v5: fires when a track fully plays to completion (STATE_ENDED). Marks
@@ -1371,6 +1433,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun setDark(v: Boolean) = viewModelScope.launch { settingsStore.setDark(v) }
     fun setGapless(v: Boolean) = viewModelScope.launch { settingsStore.setGapless(v) }
     fun setAutoMatch(v: Boolean) = viewModelScope.launch { settingsStore.setAutoMatch(v) }
+    fun setAutoSaveRecognition(v: Boolean) = viewModelScope.launch { settingsStore.setAutoSaveRecognition(v) }
+    fun setSpeed(v: Float) {
+        playbackSpeed = v
+        player.setPlaybackSpeed(v, retroSpeedMode)
+        viewModelScope.launch { settingsStore.setPlaybackSpeed(v) }
+    }
+    fun setRetroMode(v: Boolean) {
+        retroSpeedMode = v
+        player.setPlaybackSpeed(playbackSpeed, v)
+        viewModelScope.launch { settingsStore.setRetroSpeedMode(v) }
+    }
     fun setDeepSeekKey(v: String) = viewModelScope.launch { settingsStore.setDeepSeekKey(v) }
 
     // ── playlists ──────────────────────────────────────────────────────────
@@ -1528,6 +1601,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                         currentLyrics = LoadedLyrics(track.id, raw, parsed, "deepseek", LyricsKind.Online, saved = false, offsetMs = 0)
                         lyState = LyState.Idle
                         lySheet = true
+                        autoSaveRecognizedLyrics(track.id, raw, "deepseek")
                         return@launch
                     }
                 }
@@ -1592,6 +1666,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         currentLyrics = LoadedLyrics(track.id, raw, parsed, src, LyricsKind.Online, saved = false, offsetMs = 0)
         lyState = LyState.Idle
         if (reopenSheet) lySheet = true
+        // v1.1+: 自动保存识别结果——开关开时把匹配成功的歌词持久化（autoSaved=1），
+        // 下次打开直接从本地加载，不再联网。关时仅临时展示。封面已由 album_art_cache 持久化。
+        autoSaveRecognizedLyrics(track.id, raw, src)
     }
 
     /** [targetId] is captured when the picker is launched, so a track change
@@ -1647,7 +1724,53 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         if (!cur.canAdjust) return
         currentLyrics = cur.copy(saved = true)
         viewModelScope.launch(Dispatchers.IO) {
-            dao.upsertLyric(SavedLyricEntity(cur.mediaId, cur.raw, cur.source, cur.offsetMs, System.currentTimeMillis()))
+            // 手动确认保存 → autoSaved=0（清理缓存时保留）
+            dao.upsertLyric(SavedLyricEntity(cur.mediaId, cur.raw, cur.source, cur.offsetMs, System.currentTimeMillis(), autoSaved = 0))
+        }
+    }
+
+    /** v1.1+: 自动保存识别结果。开关开时把联网匹配成功的歌词持久化（autoSaved=1），
+     *  下次打开直接本地加载。关时不写。任一异常静默（不影响展示）。
+     *  ⚠️ 用 upsertAutoSavedLyric：只更新已有自动行或插入新行，**绝不覆盖手动保存
+     *  (autoSaved=0)**——否则 clearRecognitionCache 会误删手动歌词（code-review 数据丢失 bug）。 */
+    fun autoSaveRecognizedLyrics(mediaId: Long, raw: String, source: String) {
+        if (!autoSaveRecognition) return
+        val cur = currentLyrics ?: return
+        // 不在写入前设 saved=true：DB 写入失败时 UI 不应显示"已保存"。
+        // 旧代码在 launch 前设 saved=true，写入失败被 catch 吞掉 → 假成功。
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                dao.upsertAutoSavedLyric(mediaId, raw, source, cur.offsetMs, System.currentTimeMillis())
+                withContext(Dispatchers.Main) {
+                    currentLyrics = currentLyrics?.copy(saved = true)
+                }
+            } catch (_: Exception) { }
+        }
+    }
+
+    /** v1.1+: 统计自动识别缓存占用（自动保存的歌词字节数 + 封面缓存行数*估算）。 */
+    fun refreshRecognitionCacheSize() {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val autoLyrics = savedLyricsMap.values.filter { it.autoSaved == 1 }
+                    .sumOf { it.lyrics.toByteArray(Charsets.UTF_8).size }
+                val coverRows = dao.albumArtCacheCount()
+                recognitionCacheBytes = (autoLyrics + coverRows * 30 * 1024).toLong()
+            } catch (_: Exception) { recognitionCacheBytes = 0L }
+        }
+    }
+
+    /** v1.1+: 清理自动识别缓存（自动保存歌词 autoSaved=1 + 封面缓存）。保留：手动保存/导入
+     *  歌词(autoSaved=0)、Song Override、外部假名 evidence、track_info_override。 */
+    fun clearRecognitionCache() {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                dao.deleteAutoSavedLyrics()
+                dao.clearAlbumArtCache()
+                // 清色缓存内存态，下次按新算法重取
+                com.shiyin.music.ui.components.ArtCache.clearAll(getApplication())
+            } catch (_: Exception) { }
+            refreshRecognitionCacheSize()
         }
     }
 
@@ -1658,7 +1781,138 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         lyricsOn = false
         lyState = LyState.Idle
         triedAuto -= cur.mediaId
-        viewModelScope.launch(Dispatchers.IO) { dao.deleteLyric(cur.mediaId) }
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                dao.deleteLyric(cur.mediaId)
+                dao.deleteReadingOverridesForMedia(cur.mediaId)
+                dao.deleteExternalEvidenceForMedia(cur.mediaId)
+            } catch (_: Exception) { }
+        }
+    }
+
+    // ── v1.1.0: 振假名 Song Override（当て字/歌曲专属读法）─────────────────────
+    /** 对当前歌词跑 V1.1+ 准确率流水线，返回逐行 RubySegment（含 startOffset）。
+     *  优先级：Occurrence Override > 外部 evidence（缓存）> 纠错小表 > JMdict
+     *  （单读法/CONFLICT→ContextResolver）> Kuromoji > No Reading。后台线程调用。 */
+    suspend fun furiganaSegmentsFor(ly: com.shiyin.music.LoadedLyrics): List<List<com.shiyin.music.ui.components.RubySegment>> {
+        val hash = com.shiyin.music.data.furigana.LyricsHash.of(ly.raw)
+        val overrides = try {
+            dao.songReadingOverrides(ly.mediaId, hash)
+        } catch (_: Exception) { emptyList() }
+        val byLine: Map<Int, Map<Int, String>> = overrides.groupBy { it.lineIndex }
+            .mapValues { (_, rows) -> rows.associate { it.charStart to it.reading } }
+        // 外部 evidence（缓存，离线）—— 优先级 2，介于 Occurrence Override 与 ContextResolver。
+        // charStart→(length, reading)：保留 run 长度，使合并段（音楽）能拼接逐字 run（おん+がく）。
+        val extByLine: Map<Int, Map<Int, Pair<Int, String>>> = try {
+            dao.externalEvidence(ly.mediaId, hash).groupBy { it.lineIndex }
+                .mapValues { (_, rows) -> rows.associate { it.charStart to (it.length to it.reading) } }
+        } catch (_: Exception) { emptyMap() }
+        return ly.parsed.lines.mapIndexed { idx, line ->
+            com.shiyin.music.data.lyrics.FuriganaTokenizer.toSegments(
+                line.text,
+                lineOverrides = byLine[idx],
+                externalEvidence = extByLine[idx],
+                correction = com.shiyin.music.data.furigana.LyricsReadingOverrides,
+                jmdict = furiganaJmdict,
+            )
+        }
+    }
+
+    /**
+     * v1.1+: 异步抓取外部带假名歌词 evidence。每步给用户明确反馈（不吞异常）。
+     * 成功后缓存到 (mediaId+lyricsHash)，后续完全离线。任一失败不影响本地显示。
+     * ⚠️ UtaTen 假名为第三方内容——正式发行前须合规评估，当前为实验性手动触发。
+     */
+    fun fetchExternalReadingEvidence() {
+        val cur = currentLyrics ?: run {
+            externalFetchStatus = "错误：歌词尚未加载"
+            return
+        }
+        val track = trackById(cur.mediaId) ?: run {
+            externalFetchStatus = "错误：未找到曲目信息"
+            return
+        }
+        val hash = com.shiyin.music.data.furigana.LyricsHash.of(cur.raw)
+        externalFetchStatus = "loading"
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                // 已缓存则跳过
+                if (dao.externalEvidence(cur.mediaId, hash).isNotEmpty()) {
+                    withContext(Dispatchers.Main) { externalFetchStatus = "已有缓存（无需重复获取）" }
+                    return@launch
+                }
+                val localLines = cur.parsed.lines.map { it.text }
+                val provider = com.shiyin.music.data.furigana.external.UtaTenProvider(
+                    diagFilePath = getApplication<android.app.Application>().getExternalFilesDir(null)?.resolve("furigana_align_diag.txt")?.absolutePath
+                )
+                val occ = provider.resolve(track.title, track.artist, localLines)
+                if (occ == null) {
+                    withContext(Dispatchers.Main) { externalFetchStatus = "失败：未知原因" }
+                    return@launch
+                }
+                // 存 evidence
+                val now = System.currentTimeMillis()
+                val rows = occ.map {
+                    com.shiyin.music.data.db.ExternalReadingEvidenceEntity(
+                        mediaId = cur.mediaId, lyricsHash = hash,
+                        lineIndex = it.lineIndex, charStart = it.charStart, length = it.length,
+                        surface = "", reading = it.reading, source = it.source, confidence = 1, fetchedAt = now,
+                    )
+                }
+                dao.upsertExternalEvidence(rows)
+                bumpFuriganaRevision()
+                withContext(Dispatchers.Main) { externalFetchStatus = "成功：保存了 ${occ.size} 个注音" }
+            } catch (e: com.shiyin.music.data.furigana.external.UtaTenProvider.ResolveException) {
+                val msg = when (e.reason) {
+                    com.shiyin.music.data.furigana.external.UtaTenProvider.Reason.NO_MATCH -> "失败：未找到匹配歌曲"
+                    com.shiyin.music.data.furigana.external.UtaTenProvider.Reason.NO_FURIGANA -> "失败：来源页面无假名数据"
+                    com.shiyin.music.data.furigana.external.UtaTenProvider.Reason.NETWORK -> "失败：${e.message}"
+                    com.shiyin.music.data.furigana.external.UtaTenProvider.Reason.PARSE -> "失败：解析异常"
+                    com.shiyin.music.data.furigana.external.UtaTenProvider.Reason.ALIGN -> "失败：本地歌词无法可靠对齐"
+                }
+                withContext(Dispatchers.Main) { externalFetchStatus = msg }
+            } catch (t: Throwable) {
+                withContext(Dispatchers.Main) { externalFetchStatus = "失败：${t.message ?: "未知错误"}" }
+            }
+        }
+    }
+
+    /** 保存当前曲当前版本某出现位置的 Song Override（当て字/歌曲专属读法）。
+     *  按 lineIndex+charStart 定位，同一 surface 多次出现可分别设（何 有的なに 有的なん）。
+     *  绑 mediaId+lyricsHash，换源/改文本自动失效。不碰 raw LRC/LyricLine/SavedLyrics。 */
+    fun saveReadingOverrideAt(lineIndex: Int, charStart: Int, surface: String, reading: String) {
+        val cur = currentLyrics ?: return
+        val hash = com.shiyin.music.data.furigana.LyricsHash.of(cur.raw)
+        val clean = reading.trim()
+        viewModelScope.launch(Dispatchers.IO) {
+            if (clean.isEmpty()) {
+                dao.deleteReadingOverride(cur.mediaId, hash, lineIndex, charStart)
+            } else {
+                dao.upsertReadingOverride(
+                    com.shiyin.music.data.db.ReadingOverrideEntity(
+                        scope = "SONG",
+                        mediaId = cur.mediaId,
+                        lyricsHash = hash,
+                        lineIndex = lineIndex,
+                        charStart = charStart,
+                        surface = surface,
+                        reading = clean,
+                        updatedAt = System.currentTimeMillis(),
+                    ),
+                )
+            }
+            bumpFuriganaRevision()
+        }
+    }
+
+    /** 清除当前曲当前版本某出现位置的 Song Override（回退到 JMdict/Kuromoji）。 */
+    fun deleteReadingOverrideAt(lineIndex: Int, charStart: Int) {
+        val cur = currentLyrics ?: return
+        val hash = com.shiyin.music.data.furigana.LyricsHash.of(cur.raw)
+        viewModelScope.launch(Dispatchers.IO) {
+            dao.deleteReadingOverride(cur.mediaId, hash, lineIndex, charStart)
+            bumpFuriganaRevision()
+        }
     }
 
     // ── clean-suggestion selection (prefilled per prototype) ───────────────

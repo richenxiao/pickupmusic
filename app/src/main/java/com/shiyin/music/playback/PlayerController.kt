@@ -463,6 +463,18 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
     }
 
     /**
+     * v2: 播放速度调节。retroMode=true 时 pitch 随 speed 联动（复古磁带效果）；
+     * retroMode=false 时 pitch 固定 1.0（现代变速不变调）。
+     */
+    fun setPlaybackSpeed(speed: Float, retroMode: Boolean) {
+        val c = controller ?: return
+        val pitch = if (retroMode) speed else 1.0f
+        c.playbackParameters = androidx.media3.common.PlaybackParameters(speed, pitch)
+    }
+
+    fun currentSpeed(): Float = controller?.playbackParameters?.speed ?: 1.0f
+
+    /**
      * v5.2: timed sleep mode (mode 1). Counts down the chosen minutes, then
      * fades out on an exponential curve and pauses. Passing minutes <= 0
      * cancels any active sleep mode and restores full volume.

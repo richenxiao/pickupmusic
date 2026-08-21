@@ -3,6 +3,7 @@ package com.shiyin.music.data
 import android.content.Context
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
@@ -22,6 +23,11 @@ class SettingsStore(private val context: Context) {
      *  Until this flips true, `detectNewAlbums` no-ops (absorbs ids + return),
      *  so覆盖安装升级的第一次扫描不会再把整个老库灌进你的更新. */
     private val keyFirstScanDone = booleanPreferencesKey("first_scan_done")
+    // v1.1+: 自动保存识别结果（联网识别匹配成功的歌词/封面默认持久化，默认开）
+    private val keyAutoSaveRecognition = booleanPreferencesKey("auto_save_recognition")
+    // v2: 播放速度调节（全局，不是每首歌独立）
+    private val keyPlaybackSpeed = floatPreferencesKey("playback_speed")
+    private val keyRetroSpeedMode = booleanPreferencesKey("retro_speed_mode")
 
     data class Settings(
         val dark: Boolean,
@@ -31,6 +37,9 @@ class SettingsStore(private val context: Context) {
         val recentIds: List<Long>,
         val deepseekApiKey: String,
         val firstScanDone: Boolean,
+        val autoSaveRecognition: Boolean,
+        val playbackSpeed: Float,
+        val retroSpeedMode: Boolean,
     )
 
     val flow: Flow<Settings> = context.dataStore.data.map { p ->
@@ -42,6 +51,9 @@ class SettingsStore(private val context: Context) {
             recentIds = (p[keyRecent] ?: "").split(",").mapNotNull { it.toLongOrNull() },
             deepseekApiKey = p[keyDeepSeek] ?: "",
             firstScanDone = p[keyFirstScanDone] ?: false,
+            autoSaveRecognition = p[keyAutoSaveRecognition] ?: true,
+            playbackSpeed = p[keyPlaybackSpeed] ?: 1.0f,
+            retroSpeedMode = p[keyRetroSpeedMode] ?: true,
         )
     }
 
@@ -54,6 +66,9 @@ class SettingsStore(private val context: Context) {
      *  *next* scan onward is the one that starts diffing against
      *  `knownAlbumIds` and seeding `new_album`. */
     suspend fun setFirstScanDone(v: Boolean) = context.dataStore.edit { it[keyFirstScanDone] = v }
+    suspend fun setAutoSaveRecognition(v: Boolean) = context.dataStore.edit { it[keyAutoSaveRecognition] = v }
+    suspend fun setPlaybackSpeed(v: Float) = context.dataStore.edit { it[keyPlaybackSpeed] = v }
+    suspend fun setRetroSpeedMode(v: Boolean) = context.dataStore.edit { it[keyRetroSpeedMode] = v }
 
     suspend fun pushRecent(id: Long) = context.dataStore.edit { p ->
         val cur = (p[keyRecent] ?: "").split(",").mapNotNull { it.toLongOrNull() }

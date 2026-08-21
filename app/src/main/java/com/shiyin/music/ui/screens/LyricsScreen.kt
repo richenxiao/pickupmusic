@@ -8,6 +8,7 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
@@ -25,13 +26,16 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -53,11 +57,15 @@ import androidx.compose.ui.unit.sp
 import com.shiyin.music.MainViewModel
 import com.shiyin.music.data.formatDuration
 import com.shiyin.music.ui.components.OIcon
+import com.shiyin.music.ui.components.RubySegment
+import com.shiyin.music.ui.components.RubyText
 import com.shiyin.music.ui.components.body
 import com.shiyin.music.ui.components.coverPalette
 import com.shiyin.music.ui.components.rememberCoverPalette
 import com.shiyin.music.ui.components.shadowMd
 import com.shiyin.music.ui.icons.Lucide
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 @Composable
 fun LyricsScreen(vm: MainViewModel) {
@@ -84,6 +92,27 @@ fun LyricsScreen(vm: MainViewModel) {
     val durMs = if (vm.player.durationMs > 0) vm.player.durationMs else track.durationMs
     val activeI = ly.parsed.activeIndex(vm.player.positionMs, durMs, ly.offsetMs)
     val unsynced = !ly.parsed.synced
+
+    // v1.1.0: 振假名（furigana）。仅对日文歌词生效——以「是否存在平/片假名」
+    // 判定（中文无假名，可区分）。开关默认关闭，只影响本全屏页，不影响播放页
+    // 迷你预览条。分词在后台线程 eagerly 进行（Kuromoji 冷启动 ~0.5s），开关
+    // 切换不重复分词，只切换渲染分支。
+    val hasKana = remember(lines) {
+        lines.any { line -> line.text.any { ch -> ch.code in 0x3040..0x30FF } }
+    }
+    var furiganaOn by remember { mutableStateOf(false) }
+    // V1.1: 跑准确率流水线（Song Override>纠错表>JMdict>Kuromoji>No Reading）。
+    // key 含 furiganaRevision，保存/删除 Song Override 后 bump 即重算该曲。
+    val segmentsByLine by produceState<List<List<RubySegment>>?>(initialValue = null, ly, vm.furiganaRevision) {
+        if (!hasKana) { value = emptyList(); return@produceState }
+        value = withContext(Dispatchers.Default) {
+            vm.furiganaSegmentsFor(ly)
+        }
+    }
+    // V1.1: 长按编辑 Song Override 入口（最小可用）
+    var pickerLine by remember { mutableStateOf<Int?>(null) }
+    // (lineIndex, segment, currentReading)：按出现位置存，同 surface 多次出现可分别设
+    var editing by remember { mutableStateOf<Triple<Int, RubySegment, String>?>(null) }
 
     Box(Modifier
         .fillMaxSize()
@@ -175,20 +204,39 @@ fun LyricsScreen(vm: MainViewModel) {
                     Modifier
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(8.dp))
-                        .clickable {
-                            val target = line.timeMs?.let { (it - ly.offsetMs).coerceAtLeast(0) }
-                                ?: (i.toLong() * durMs / lines.size.coerceAtLeast(1))
-                            vm.player.seekToMs(target)
-                        }
+                        .combinedClickable(
+                            onClick = {
+                                val target = line.timeMs?.let { (it - ly.offsetMs).coerceAtLeast(0) }
+                                    ?: (i.toLong() * durMs / lines.size.coerceAtLeast(1))
+                                vm.player.seekToMs(target)
+                            },
+                            onLongClick = {
+                                // V1.1: 长按带振假名的行 → 打开该行注音段选择器（编辑 Song Override）
+                                if (furiganaOn && hasKana && segmentsByLine != null) pickerLine = i
+                            },
+                        )
                         .padding(vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Text(
-                        line.text,
-                        style = body(26f, FontWeight.ExtraBold, if (i <= activeI) artFg else inactiveC)
-                            .copy(lineHeight = 36.sp),
-                        modifier = Modifier.weight(1f),
-                    )
+                    val lineColor = if (i <= activeI) artFg else inactiveC
+                    val rubySegs = segmentsByLine?.getOrElse(i) { null }
+                    if (furiganaOn && hasKana && rubySegs != null) {
+                        RubyText(
+                            text = line.text,
+                            segments = rubySegs,
+                            style = body(26f, FontWeight.ExtraBold, lineColor)
+                                .copy(lineHeight = 36.sp),
+                            color = lineColor,
+                            modifier = Modifier.weight(1f),
+                        )
+                    } else {
+                        Text(
+                            line.text,
+                            style = body(26f, FontWeight.ExtraBold, lineColor)
+                                .copy(lineHeight = 36.sp),
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
                     // v2.0: per-line sync button for unsynced lyrics
                     if (unsynced) {
                         Box(
@@ -275,21 +323,48 @@ fun LyricsScreen(vm: MainViewModel) {
                     textAlign = TextAlign.End,
                 )
             }
-            // play/pause centered between the time row and the screen bottom.
-            Box(
-                Modifier
-                    .size(58.dp)
-                    .shadowMd(CircleShape)
-                    .clip(CircleShape)
-                    .background(artFg)
-                    .clickable { vm.player.toggle() },
-                contentAlignment = Alignment.Center,
+            // v1.1.0: 播放键同行左侧放「あ」振假名开关（仅日文歌词显示）。
+            // 右侧放等宽占位平衡，使播放键始终居中。开关只影响本全屏页渲染。
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                OIcon(
-                    if (vm.player.isPlaying) Lucide.Pause else Lucide.Play,
-                    22.dp, safeBg,
-                    modifier = if (vm.player.isPlaying) Modifier else Modifier.padding(start = 3.dp),
-                )
+                if (hasKana) {
+                    Box(
+                        Modifier
+                            .size(38.dp)
+                            .clip(CircleShape)
+                            .background(if (furiganaOn) artFg else btnBg)
+                            .clickable { furiganaOn = !furiganaOn },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            "あ",
+                            style = body(18f, FontWeight.ExtraBold, if (furiganaOn) safeBg else artFg),
+                        )
+                    }
+                }
+                Spacer(Modifier.weight(1f))
+                // play/pause centered between the time row and the screen bottom.
+                Box(
+                    Modifier
+                        .size(58.dp)
+                        .shadowMd(CircleShape)
+                        .clip(CircleShape)
+                        .background(artFg)
+                        .clickable { vm.player.toggle() },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    OIcon(
+                        if (vm.player.isPlaying) Lucide.Pause else Lucide.Play,
+                        22.dp, safeBg,
+                        modifier = if (vm.player.isPlaying) Modifier else Modifier.padding(start = 3.dp),
+                    )
+                }
+                Spacer(Modifier.weight(1f))
+                // 右侧平衡占位，与左侧「あ」等宽，保证播放键视觉居中
+                if (hasKana) { Spacer(Modifier.size(38.dp)) }
             }
             // breathing room so the play button sits above the bottom edge.
             Spacer(Modifier.height(4.dp))
@@ -310,9 +385,96 @@ fun LyricsScreen(vm: MainViewModel) {
             onBumpOffset = { vm.bumpLyricsOffset(it) },
             onOpenSourcePicker = { vm.lyricsSourcePicker = true },
             onRematchAI = { vm.rematchWithAI() },
+            onFetchExternalReading = { vm.fetchExternalReadingEvidence() },
+            externalFetchStatus = vm.externalFetchStatus,
             onSave = { vm.saveLyrics() },
             onDelete = { vm.deleteLyrics() },
         )
+    }
+    // V1.1: 长按编辑 Song Override —— 行注音段选择器
+    // 对话框用与歌词页同源的暗色 colorScheme（封面取色 safeBg/artFg），避免 Material3
+    // 默认亮色方案在暗色歌词页上"亮得刺眼"。
+    val dialogScheme = androidx.compose.material3.darkColorScheme(
+        surface = safeBg, background = safeBg,
+        surfaceContainer = safeBg, surfaceContainerHigh = safeBg,
+        onSurface = artFg, onBackground = artFg,
+        onSurfaceVariant = dimC, surfaceVariant = btnBg,
+        primary = artFg, onPrimary = safeBg, outline = btnBg,
+    )
+    pickerLine?.let { idx ->
+        val segs = segmentsByLine?.getOrNull(idx) ?: emptyList()
+        val editable = segs.filter { it.surface.any { ch -> ch.code in 0x4E00..0x9FFF || ch.code in 0x3400..0x4DBF || ch.code in 0xF900..0xFAFF } }
+        androidx.compose.material3.MaterialTheme(colorScheme = dialogScheme) {
+            androidx.compose.material3.AlertDialog(
+                onDismissRequest = { pickerLine = null },
+                title = { Text("选择要修正的词", style = body(14f, FontWeight.ExtraBold, artFg)) },
+                text = {
+                    if (editable.isEmpty()) {
+                        Text("这行没有可注音的汉字。", style = body(12f, FontWeight.Normal, dimC))
+                    } else {
+                        Column(Modifier.verticalScroll(rememberScrollState())) {
+                            editable.forEach { seg ->
+                                Row(
+                                    Modifier.fillMaxWidth().clickable {
+                                        editing = Triple(idx, seg, seg.reading ?: "")
+                                        pickerLine = null
+                                    }.padding(vertical = 8.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Text(seg.surface, style = body(15f, FontWeight.ExtraBold, artFg))
+                                    Text(
+                                        seg.reading?.ifEmpty { null } ?: "无注音",
+                                        style = body(12f, FontWeight.Normal, if (seg.reading.isNullOrEmpty()) dimC else artFg),
+                                    )
+                                }
+                            }
+                        }
+                    }
+                },
+                confirmButton = {
+                    androidx.compose.material3.TextButton(onClick = { pickerLine = null }) { Text("取消") }
+                },
+            )
+        }
+    }
+    // V1.1: 编辑器 —— 原文 + 读音输入 + 保存/删除（仅当前曲生效，换源/改文本自动失效）
+    // editing = (lineIndex, segment, currentReading)：按"出现位置"存，同一 surface 多次
+    // 出现可分别设不同读法（解决「何」在歌里有的なに有的なん、不能归一的问题）。
+    editing?.let { (lineIdx, seg, current) ->
+        val surface = seg.surface
+        val charStart = seg.startOffset
+        var input by remember(surface, current) { mutableStateOf(current) }
+        androidx.compose.material3.MaterialTheme(colorScheme = dialogScheme) {
+            androidx.compose.material3.AlertDialog(
+                onDismissRequest = { editing = null },
+                title = { Text("修正读法", style = body(14f, FontWeight.ExtraBold, artFg)) },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("原文：$surface", style = body(13f, FontWeight.Bold, dimC))
+                        androidx.compose.material3.OutlinedTextField(
+                            value = input,
+                            onValueChange = { input = it },
+                            label = { Text("读音（平假名，留空清除）") },
+                            singleLine = true,
+                            textStyle = body(15f, FontWeight.Normal, artFg),
+                        )
+                        Text(
+                            "仅对当前这首歌的此处生效（第${lineIdx + 1}行），换歌词源/改文本自动失效。",
+                            style = body(10.5f, FontWeight.Normal, dimC).copy(lineHeight = 14.sp),
+                        )
+                    }
+                },
+                confirmButton = {
+                    androidx.compose.material3.TextButton(onClick = {
+                        vm.saveReadingOverrideAt(lineIdx, charStart, surface, input); editing = null
+                    }) { Text("保存") }
+                },
+                dismissButton = {
+                    androidx.compose.material3.TextButton(onClick = { editing = null }) { Text("取消") }
+                },
+            )
+        }
     }
     // v3.0: lyrics import dialog moved to AppRoot (LyricsImportDialog) so it is
     // reachable from the player menu as well as the fullscreen lyrics view —
@@ -350,6 +512,8 @@ private fun LyricsAdjustSheet(
     onBumpOffset: (Long) -> Unit,
     onOpenSourcePicker: () -> Unit,
     onRematchAI: () -> Unit,
+    onFetchExternalReading: () -> Unit,
+    externalFetchStatus: String?,
     onSave: () -> Unit,
     onDelete: () -> Unit,
 ) {
@@ -456,6 +620,26 @@ private fun LyricsAdjustSheet(
                         ) {
                             Text("AI 补全", style = body(13f, FontWeight.ExtraBold, Color.Black))
                         }
+                    }
+                }
+                // v1.1+: 外部假名校验（实验）——Phase 2: 按钮有明确执行反馈。
+                Row(Modifier.fillMaxWidth()) {
+                    val status = externalFetchStatus
+                    val label = when {
+                        status == null -> "外部假名校验（实验）"
+                        status == "loading" -> "搜索中…"
+                        else -> status
+                    }
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(999.dp))
+                            .background(panelBtnBg)
+                            .clickable { if (status != "loading") onFetchExternalReading() }
+                            .padding(vertical = 11.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(label, style = body(12.5f, FontWeight.ExtraBold, panelFg))
                     }
                 }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(9.dp)) {

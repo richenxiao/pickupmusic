@@ -38,6 +38,7 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
 import com.shiyin.music.FilesView
 import com.shiyin.music.MainViewModel
 import com.shiyin.music.data.Track
@@ -122,6 +123,8 @@ private fun CardEntryRow(
 @Composable
 private fun SettingsRoot(vm: MainViewModel) {
     val c = LocalOrganic.current
+    // v1.1+: 进入设置页时统计识别缓存占用
+    androidx.compose.runtime.LaunchedEffect(Unit) { vm.refreshRecognitionCacheSize() }
     Column(
         Modifier
             .fillMaxSize()
@@ -196,6 +199,31 @@ private fun SettingsRoot(vm: MainViewModel) {
             SettingRow(Lucide.Mic, "自动匹配歌词", "无歌词时自动在线获取，确认后保存到本地", divider = true) {
                 OrganicSwitch(vm.autoMatch) { vm.setAutoMatch(!vm.autoMatch) }
             }
+            // v1.1+: 自动保存识别结果（默认开）+ 缓存占用 + 清理按钮
+            SettingRow(Lucide.Download, "自动保存识别结果", "联网识别成功的歌词/封面默认持久化，关闭则仅临时展示", divider = true) {
+                OrganicSwitch(vm.autoSaveRecognition) { vm.setAutoSaveRecognition(!vm.autoSaveRecognition) }
+            }
+            Row(
+                Modifier.fillMaxWidth().padding(vertical = 13.dp),
+                horizontalArrangement = Arrangement.spacedBy(13.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                OIcon(Lucide.Folder, 19.dp, c.n700)
+                Column(Modifier.weight(1f)) {
+                    Text("识别缓存", style = body(15f, FontWeight.SemiBold, c.text))
+                    Text(
+                        "已缓存歌词/封面 ${formatCacheSize(vm.recognitionCacheBytes)}（不含人工修正）",
+                        style = body(11.5f, FontWeight.Normal, c.n600),
+                    )
+                }
+                Box(
+                    Modifier
+                        .clip(RoundedCornerShape(999.dp))
+                        .background(c.n100)
+                        .clickable { vm.clearRecognitionCache() }
+                        .padding(horizontal = 12.dp, vertical = 7.dp),
+                ) { Text("清理缓存", style = body(12.5f, FontWeight.Bold, c.text)) }
+            }
             Row(
                 Modifier
                     .fillMaxWidth()
@@ -239,6 +267,14 @@ private fun SettingsRoot(vm: MainViewModel) {
 
         Box(Modifier.height(114.dp))
     }
+}
+
+/** v1.1+: 格式化识别缓存占用。null=未统计 → "—"。 */
+private fun formatCacheSize(bytes: Long?): String {
+    val b = bytes ?: return "—"
+    if (b < 1024) return "${b}B"
+    if (b < 1024 * 1024) return "%.1f KB".format(b / 1024.0)
+    return "%.1f MB".format(b / (1024.0 * 1024.0))
 }
 
 @Composable
@@ -678,6 +714,7 @@ private fun AboutScreen(vm: MainViewModel) {
                 data class VerChange(val version: String, val items: List<String>)
                 val versions = listOf(
                     VerChange("v1.1.0", listOf(
+                        "日文歌词振假名：歌词本展开页新增「あ」开关，开启后日文歌词汉字上方标注假名注音，其他语言不生效。",
                         "进度条支持拖动：原进度条只能点按跳转，按住拖动无响应；现按下/拖动滑块实时跟手，抬手时提交跳转。",
                         "歌词背景取色修复：重写取色算法（相近色聚类合并、暗色封面亮度兜底），并清除旧版缓存让所有专辑按新算法重新取色——解决大面积主色被小面积鲜艳贴纸抢选、暗紫等封面背景过暗的问题。",
                         "合并歌手对话框标题过长导致「完成」按钮被挤出屏幕的问题修复。",

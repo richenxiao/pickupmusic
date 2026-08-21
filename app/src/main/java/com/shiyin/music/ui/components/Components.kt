@@ -93,6 +93,11 @@ object ArtCache {
 
     // v3.0: in-memory albumId -> (bg, fg) color pair. Read on the main thread
     // (Compose) without touching disk; populated as covers load.
+    // v4: PALETTE_VERSION — bump when PaletteExtractor algorithm changes.
+    // primeColors only loads DB rows whose source ends with this version tag;
+    // rows from older algorithms are skipped (not deleted), forcing ensureColors
+    // to re-extract with the new algorithm and overwrite the DB row.
+    internal const val PALETTE_VERSION = "v4"
     private val colorCache = HashMap<Long, Pair<Int, Int>>()
     private val colorPending = HashSet<Long>()
 
@@ -240,6 +245,8 @@ object ArtCache {
             if (pair != null) colorCache[albumId] = pair.bgArgb to pair.fgArgb
         }
         // Persist asynchronously — never block the cover path on a DB write.
+        // v4: tag source with PALETTE_VERSION so primeColors can distinguish
+        // new-algorithm colors from old ones without a schema migration.
         if (pair != null) {
             kotlinx.coroutines.GlobalScope.launch(Dispatchers.IO) {
                 try {
@@ -248,7 +255,7 @@ object ArtCache {
                         com.shiyin.music.data.db.AlbumArtCacheEntity(
                             albumId = albumId,
                             url = "",
-                            source = "local",
+                            source = "local:$PALETTE_VERSION",
                             fetchedAt = 0,
                             bgArgb = pair.bgArgb,
                             fgArgb = pair.fgArgb,
@@ -278,12 +285,28 @@ object ArtCache {
         }
     }
 
-    /** Warm the in-memory color cache from disk (called once at startup). */
+    /** Warm the in-memory color cache from disk (called once at startup).
+     *  v4: only loads rows whose source matches PALETTE_VERSION; older rows are
+     *  skipped (not deleted) so ensureColors re-extracts with the new algorithm. */
     suspend fun primeColors(context: Context, rows: List<com.shiyin.music.data.db.AlbumArtCacheEntity>) {
         synchronized(colorCache) {
             for (r in rows) {
-                if (r.bgArgb != 0 && r.fgArgb != 0) colorCache[r.albumId] = r.bgArgb to r.fgArgb
+                // Only accept colors from the current palette algorithm version.
+                // Old-version rows have source like "local" (no :vN suffix) → skip.
+                if (r.bgArgb != 0 && r.fgArgb != 0 && r.source.endsWith(":$PALETTE_VERSION")) {
+                    colorCache[r.albumId] = r.bgArgb to r.fgArgb
+                }
             }
+        }
+    }
+
+    /** v1.1+: 清空全部内存封面/颜色缓存（清理识别缓存后调用，强制下次重新取色/加载）。 */
+    fun clearAll(context: Context) {
+        synchronized(this) {
+            cache.evictAll()
+            misses.clear()
+            colorCache.clear()
+            colorPending.clear()
         }
     }
 

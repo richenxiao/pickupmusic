@@ -173,6 +173,9 @@ object Lucide {
     val Disc by lazy {
         stroke("disc", "M12 12m-10 0a10 10 0 1 0 20 0a10 10 0 1 0 -20 0", "M12 12m-3 0a3 3 0 1 0 6 0a3 3 0 1 0 -6 0")
     }
+    val Gauge by lazy {
+        stroke("gauge", "M12 14a4 4 0 1 0 0-8 4 4 0 0 0 0 8ZM9.14 9.14 4.5 4.5M12 14l4-4", width = 1.5f)
+    }
     val User by lazy { stroke("user", "M12 8m-5 0a5 5 0 1 0 10 0a5 5 0 1 0 -10 0", "M20 21a8 8 0 0 0-16 0") }
     val Users by lazy {
         stroke("users", "M18 21a8 8 0 0 0-16 0", "M10 8m-5 0a5 5 0 1 0 10 0a5 5 0 1 0 -10 0", "M22 20c0-3.37-2-6.5-4-8a5 5 0 0 0-.45-8.3")

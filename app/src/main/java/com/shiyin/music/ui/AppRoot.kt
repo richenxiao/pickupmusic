@@ -67,6 +67,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
@@ -117,6 +118,10 @@ import com.shiyin.music.ui.screens.SearchScreen
 import com.shiyin.music.ui.screens.SettingsHost
 import com.shiyin.music.ui.theme.LocalOrganic
 import kotlin.math.roundToInt
+import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.key
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.KeyboardType
 
 @OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
@@ -325,7 +330,7 @@ fun AppRoot(vm: MainViewModel) {
                     when {
                         vm.lyricsOn -> vm.lyricsOn = false
                         vm.qSheetOpen -> { vm.qSheetOpen = false; vm.qEdit = false }
-                        vm.pMenuView != null -> vm.pMenuView = if (vm.pMenuView == "timer-custom") "timer" else if (vm.pMenuView == "timer") "root" else null
+                        vm.pMenuView != null -> vm.pMenuView = if (vm.pMenuView == "timer-custom") "timer" else if (vm.pMenuView == "timer" || vm.pMenuView == "speed") "root" else null
                         else -> { vm.playerOpen = false; vm.sleepMenu = false }
                     }
                 },
@@ -639,6 +644,7 @@ private fun RootBackHandler(vm: MainViewModel) {
             vm.trackMenuFor != null -> vm.trackMenuFor = null
             vm.pMenuView == "timer-custom" -> vm.pMenuView = "timer"
             vm.pMenuView == "timer" -> vm.pMenuView = "root"
+            vm.pMenuView == "speed" -> vm.pMenuView = "root"
             vm.pMenuView != null -> vm.pMenuView = null
             vm.qSheetOpen -> { vm.qSheetOpen = false; vm.qEdit = false }
             vm.lySheet -> vm.lySheet = false
@@ -846,7 +852,7 @@ private fun BoxScope.PlayerMenuSheet(vm: MainViewModel) {
     SheetOverlay(visible = visible, onDismiss = { vm.pMenuView = null }) {
         if (track == null) return@SheetOverlay
         Column(Modifier.padding(start = 10.dp, end = 10.dp, top = 16.dp, bottom = 10.dp)) {
-            if (vm.pMenuView != "timer" && vm.pMenuView != "timer-custom") {
+            if (vm.pMenuView != "timer" && vm.pMenuView != "timer-custom" && vm.pMenuView != "speed") {
                 SheetSongHeader(track)
                 SheetActionRow(Lucide.ListPlus, "保存到歌单") {
                     vm.pMenuView = null
@@ -857,7 +863,7 @@ private fun BoxScope.PlayerMenuSheet(vm: MainViewModel) {
                 }
                 SheetActionRow(Lucide.User, "查看歌手") { vm.goArtistOf(track.id) }
                 // v3.0: lyrics entries in player menu
-                SheetActionRow(Lucide.Mic, "打开歌词") {
+                SheetActionRow(Lucide.ListMusic, "打开歌词") {
                     vm.pMenuView = null
                     vm.lyricsOn = true
                     vm.lySheet = false
@@ -896,6 +902,14 @@ private fun BoxScope.PlayerMenuSheet(vm: MainViewModel) {
                         OIcon(Lucide.ChevronRight, 16.dp, c.n500)
                     },
                 ) { vm.pMenuView = "timer" }
+                SheetActionRow(
+                    Lucide.Gauge, "播放速度",
+                    trailing = {
+                        val spd = if (vm.playbackSpeed == 1.0f) "正常" else "%.1f×".format(vm.playbackSpeed)
+                        Text(spd, style = body(12.5f, FontWeight.SemiBold, c.n500))
+                        OIcon(Lucide.ChevronRight, 16.dp, c.n500)
+                    },
+                ) { vm.pMenuView = "speed" }
                 SheetDivider()
                 SheetActionRow(Lucide.Trash, "移入回收站", tint = c.a700) {
                     vm.pMenuView = null
@@ -936,11 +950,11 @@ private fun BoxScope.PlayerMenuSheet(vm: MainViewModel) {
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Text("小时", style = body(13f, FontWeight.Normal, c.n500), modifier = Modifier.width(36.dp))
+                        // 连续滑块，无 steps → 无刻度点；取值时 roundToInt
                         Slider(
                             value = h,
-                            onValueChange = { h = it },
+                            onValueChange = { h = it.roundToInt().toFloat().coerceIn(0f, 10f) },
                             valueRange = 0f..10f,
-                            steps = 9,
                             modifier = Modifier.weight(1f),
                         )
                         Text(
@@ -954,11 +968,11 @@ private fun BoxScope.PlayerMenuSheet(vm: MainViewModel) {
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Text("分钟", style = body(13f, FontWeight.Normal, c.n500), modifier = Modifier.width(36.dp))
+                        // 连续滑块，无 steps → 无刻度点；取值时 roundToInt
                         Slider(
                             value = m,
-                            onValueChange = { m = it },
+                            onValueChange = { m = it.roundToInt().toFloat().coerceIn(0f, 59f) },
                             valueRange = 0f..59f,
-                            steps = 58,
                             modifier = Modifier.weight(1f),
                         )
                         Text(
@@ -981,7 +995,7 @@ private fun BoxScope.PlayerMenuSheet(vm: MainViewModel) {
                             .padding(horizontal = 10.dp, vertical = 12.dp),
                     )
                 }
-            } else {
+            } else if (vm.pMenuView == "timer") {
                 // timer subview
                 Column {
                     Row(
@@ -1052,6 +1066,123 @@ private fun BoxScope.PlayerMenuSheet(vm: MainViewModel) {
                             .clickable { vm.player.setSleepTimer(0); vm.pMenuView = null }
                             .padding(horizontal = 10.dp, vertical = 12.dp),
                     )
+                }
+            } else if (vm.pMenuView == "speed") {
+                // v2: 播放速度调节 — 0.05 步进滑块 + 自定义输入 + 复古/现代模式
+                Column {
+                    // 返回键：只用图标，不用文字
+                    Row(Modifier.fillMaxWidth().padding(bottom = 14.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            Modifier.size(34.dp).clip(CircleShape).clickable { vm.pMenuView = "root" },
+                            contentAlignment = Alignment.Center,
+                        ) { OIcon(Lucide.ChevronLeft, 20.dp, c.n500) }
+                        Spacer(Modifier.weight(1f))
+                    }
+                    // 当前速度大字显示（格式化避免浮点误差）
+                    val speedDisplay = "%.2f".format(vm.playbackSpeed).trimEnd('0').trimEnd('.').plus("×")
+                    Text(
+                        speedDisplay,
+                        style = heading(36, c.text),
+                        modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp),
+                        textAlign = TextAlign.Center,
+                    )
+                    Text(
+                        if (vm.retroSpeedMode) "复古模式 · 音调随速度变化" else "现代模式 · 音调不变",
+                        style = body(12f, FontWeight.Normal, c.n500),
+                        modifier = Modifier.fillMaxWidth().padding(bottom = 18.dp),
+                        textAlign = TextAlign.Center,
+                    )
+                    // 0.05 步进滑块：0.5~2.0，(2.0-0.5)/0.05-1 = 29 steps
+                    var sliderVal by remember { mutableFloatStateOf(vm.playbackSpeed) }
+                    androidx.compose.material3.Slider(
+                        value = sliderVal,
+                        onValueChange = {
+                            // 量化到 0.05 步进
+                            val stepped = (it / 0.05f).roundToInt() * 0.05f
+                            sliderVal = stepped
+                            vm.setSpeed(stepped)
+                        },
+                        valueRange = 0.5f..2.0f,
+                        steps = 29, // (2.0-0.5)/0.05 - 1
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
+                    )
+                    // 快捷按钮 + 自定义输入
+                    Row(
+                        Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        val presets = listOf(1.0f, 1.1f, 1.2f, 2.0f)
+                        for (p in presets) {
+                            val isCur = kotlin.math.abs(vm.playbackSpeed - p) < 0.01f
+                            Text(
+                                if (p == 1.0f) "正常" else "%.1f×".format(p),
+                                style = body(12.5f, if (isCur) FontWeight.ExtraBold else FontWeight.Normal, if (isCur) c.a700 else c.n600),
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(999.dp))
+                                    .background(if (isCur) c.n100 else Color.Transparent)
+                                    .clickable { sliderVal = p; vm.setSpeed(p) }
+                                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                            )
+                        }
+                        // 自定义输入框
+                        var inputText by remember { mutableStateOf("") }
+                        var inputError by remember { mutableStateOf(false) }
+                        androidx.compose.material3.OutlinedTextField(
+                            value = inputText,
+                            onValueChange = { raw ->
+                                inputText = raw.filter { it.isDigit() || it == '.' }
+                                inputError = false
+                            },
+                            placeholder = { Text("自定义", style = body(11f, FontWeight.Normal, c.n400)) },
+                            singleLine = true,
+                            isError = inputError,
+                            textStyle = body(12.5f, FontWeight.Normal, if (inputError) c.a700 else c.text),
+                            modifier = Modifier
+                                .width(72.dp)
+                                .height(36.dp)
+                                .onKeyEvent { keyEvent ->
+                                    if (keyEvent.key == androidx.compose.ui.input.key.Key.Enter && inputText.isNotBlank()) {
+                                        val parsed = inputText.toFloatOrNull()
+                                        if (parsed != null && parsed in 0.5f..2.0f) {
+                                            val stepped = (parsed / 0.05f).roundToInt() * 0.05f
+                                            sliderVal = stepped
+                                            vm.setSpeed(stepped)
+                                            inputText = ""
+                                            inputError = false
+                                        } else {
+                                            inputError = true
+                                        }
+                                        true
+                                    } else false
+                                },
+                            keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                                keyboardType = androidx.compose.ui.text.input.KeyboardType.Decimal,
+                            ),
+                        )
+                    }
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(c.n100)
+                            .clickable { vm.setRetroMode(!vm.retroSpeedMode) }
+                            .padding(horizontal = 14.dp, vertical = 13.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        OIcon(if (vm.retroSpeedMode) Lucide.Disc else Lucide.Gauge, 18.dp, c.text)
+                        Column(Modifier.weight(1f).padding(start = 10.dp)) {
+                            Text(
+                                if (vm.retroSpeedMode) "复古模式" else "现代模式",
+                                style = body(14f, FontWeight.ExtraBold, c.text),
+                            )
+                            Text(
+                                if (vm.retroSpeedMode) "音调随速度变化（磁带效果）" else "变速不变调（播客效果）",
+                                style = body(11f, FontWeight.Normal, c.n500),
+                            )
+                        }
+                        OIcon(Lucide.Settings, 16.dp, c.n400)
+                    }
                 }
             }
         }

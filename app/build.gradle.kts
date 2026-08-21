@@ -56,6 +56,24 @@ android {
     buildFeatures {
         compose = true
     }
+    // Kuromoji IPADIC 自带词表 jar 与其它依赖在 META-INF 下存在重复资源，
+    // 打包阶段会报 DuplicateFileException。排除这些路径即可，不影响运行时词表加载。
+    packaging {
+        resources {
+            excludes += setOf(
+                "META-INF/DEPENDENCIES",
+                "META-INF/INDEX.LIST",
+                "META-INF/io.netty.versions.properties",
+                "META-INF/*.kotlin_module",
+                // kuromoji-ipadic 与 kuromoji-core 两个 jar 在 META-INF 下重复携带
+                // 这些 markdown / 文本元数据，排除其一即可（非运行时所需）。
+                "META-INF/*.md",
+                "META-INF/*.txt",
+                "META-INF/LICENSE",
+                "META-INF/NOTICE",
+            )
+        }
+    }
 }
 
 dependencies {
@@ -98,4 +116,9 @@ dependencies {
 
     // v4.3: fuzzy-search unit tests
     testImplementation("junit:junit:4.13.2")
+
+    // v1.1.0: 日文歌词振假名（furigana）分词引擎。Kuromoji IPADIC 为纯 Java，
+    // 无 .so / JNI / 网络，词表内置（APK 增大约 14MB）。Token.getReading() 返回
+    // 片假名读音，渲染层据此生成振假名注音。仅用于「歌词本」全屏页。
+    implementation("com.atilika.kuromoji:kuromoji-ipadic:0.9.0")
 }

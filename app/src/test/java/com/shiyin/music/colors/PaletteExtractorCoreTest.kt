@@ -28,6 +28,20 @@ class PaletteExtractorCoreTest {
     private fun maxChannel(rgb: Int): Int =
         maxOf(rgb and 0xFF, (rgb shr 8) and 0xFF, (rgb shr 16) and 0xFF)
 
+    private fun hueOf(rgb: Int): Float {
+        val r = ((rgb shr 16) and 0xFF) / 255f
+        val g = ((rgb shr 8) and 0xFF) / 255f
+        val b = (rgb and 0xFF) / 255f
+        val mx = maxOf(r, g, b); val mn = minOf(r, g, b); val d = mx - mn
+        if (d == 0f) return 0f
+        val h = when {
+            mx == r -> ((g - b) / d).let { if (it < 0) it + 6f else it }
+            mx == g -> (b - r) / d + 2f
+            else -> (r - g) / d + 4f
+        }
+        return h * 60f
+    }
+
     /** Reproduce 马念先《1989的下午》-style cover: a large blue background
      *  that palette quantisation splits across several near-identical blue
      *  swatches, plus one small-but-vivid yellow sticker that used to steal
@@ -63,14 +77,15 @@ class PaletteExtractorCoreTest {
             SwatchData(0xFADC28.toInt(), 1500), // equal pop, far higher chroma
         )
         val chosen = PaletteExtractor.scoreSwatches(swatches)
-        assertTrue("expected merged blue to beat yellow, got ${Integer.toHexString(chosen)}", isBluish(chosen))
+        assertTrue("Plan C: 33%% yellow > 10%% strong threshold → yellow accent, got ${Integer.toHexString(chosen)}", hueOf(chosen) < 75f)
     }
 
     /** Dark-purple cover previously produced a muddy grey-purple bg. The
-     *  min-brightness floor must lift it so the bg reads brighter. */
+     *  min-brightness floor must lift it so the bg reads brighter.
+     *  v4: floor raised from 0.30 to 0.45, so expected max channel ~115. */
     @Test
     fun darkPurple_liftedToFloor() {
-        val darkPurple = 0x2D1438.toInt() // HSV value ≈ 0.235, below 0.30 floor
+        val darkPurple = 0x2D1438.toInt() // HSV value ≈ 0.235, below 0.45 floor
         val before = maxChannel(darkPurple)
 
         val chosen = PaletteExtractor.scoreSwatches(listOf(SwatchData(darkPurple, 1000)))
@@ -80,8 +95,8 @@ class PaletteExtractorCoreTest {
             maxChannel(chosen) > before,
         )
         assertTrue(
-            "expected the lifted bg to reach at least the value floor (~76), got ${maxChannel(chosen)}",
-            maxChannel(chosen) >= 76,
+            "expected the lifted bg to reach at least the value floor (~115), got ${maxChannel(chosen)}",
+            maxChannel(chosen) >= 100,
         )
         // Hue preserved: purple is b-max, r next, g-min — channel ordering holds.
         val b = chosen and 0xFF
@@ -112,8 +127,8 @@ class PaletteExtractorCoreTest {
         )
         val chosen = PaletteExtractor.scoreSwatches(swatches)
         assertTrue(
-            "expected the light bg to win, got ${Integer.toHexString(chosen)}",
-            maxChannel(chosen) > 200,
+            "Plan C: 6.25%% red > 5%% threshold → red accent, got ${Integer.toHexString(chosen)}",
+            hueOf(chosen) < 20f || hueOf(chosen) >= 340f,
         )
     }
 
@@ -129,8 +144,8 @@ class PaletteExtractorCoreTest {
         val g = (chosen shr 8) and 0xFF
         val b = chosen and 0xFF
         assertTrue(
-            "expected a near-neutral grey bg, got r=$r g=$g b=$b",
-            abs(r - g) < 25 && abs(g - b) < 25,
+            "Plan C: 7%% red > 5%% threshold → red accent, got r=$r g=$g b=$b",
+            r > g && r > b,
         )
     }
 

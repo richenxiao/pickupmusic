@@ -6,176 +6,247 @@ import kotlin.math.abs
 import kotlin.math.sqrt
 
 /**
- * v3.3: Extract a (background, foreground) color pair from an album-cover
- * bitmap for **adaptive-contrast** lyric/player tinting.
+ * Plan C — Visual Accent Color extraction.
  *
- * ## The adaptive idea
+ * 不找"population 最大"也不找"chroma 最大"，而是找：
+ * "面积足够 + 色彩足够明显 + 与整体背景有明显视觉对比"的真实颜色。
  *
- * Earlier versions forced every background dark so white text was legible,
- * which turned light/gold covers into muddy grey-brown. v3.3 keeps the bg
- * true to the cover's main colour and instead picks the text colour to match:
+ * ## 两步架构
  *
- *   - light cover  → light bg  → **dark text**  (dark-grey body, black active)
- *   - dark  cover  → dark bg    → **light text** (white body, bright active)
+ * 1. **Background foundation**: preMerge 后 population 最大的 cluster。决定背景明度。
+ * 2. **Accent color**: 对每个非 foundation cluster，计算 Visual Accent Score。
+ *    accent 提供 hue/saturation；foundation 提供 value。
  *
- * The returned `fgArgb` is whichever of pure-black / pure-white clears WCAG
- * 4.5:1 against the chosen bg; the bg itself is nudged toward black or white
- * **only when neither end clears** (mid-tone backgrounds — medium greens,
- * dusty blues). So a gold cover stays gold, a white cover stays white; only
- * the genuinely awkward middles get pulled.
+ * ## Visual Accent Score（加权和，不乘积，避免 score 通缩）
  *
- * ## Scoring (which swatch is "the cover's main colour")
+ * ```
+ * raw_score = 0.40 × share + 0.35 × chromaNorm + 0.25 × brightnessContrast
+ * score = raw_score × extremePenalty × areaGate
+ * ```
  *
- *   score = 4.0 × dominance + 1.5 × chroma + 0.5 × darkness
+ * - share: population / totalPop [0,1]
+ * - chromaNorm: chroma / 255 [0,1]
+ * - brightnessContrast: |lum(swatch) - lum(foundation)| [0,1]
+ * - extremePenalty: 0 if V<0.08 or (V>0.95 and S<0.05), else 1
+ * - areaGate: hard gate — 1 if share >= pop_threshold, else 0
+ *   - pop_threshold = 0.10 if foundation chroma >= 80 (strong color)
+ *   - pop_threshold = 0.05 otherwise (weak/neutral foundation)
  *
- *  - **dominance** (population share) — leading term; the bg is the cover's
- *    main colour, not a corner accent. Weight raised from 3.0 → 4.0 so a
- *    small-but-vivid sticker can no longer out-score the true majority.
- *  - **chroma** — keeps a vivid dominant colour; demoted 2.0 → 1.5 so high-
- *    saturation accents don't steal the pick. Still breaks near-ties.
- *  - **darkness** — tiny tiebreaker only; the picker never *prefers* dark.
+ * ## 最终 bg 生成
  *
- * ## Swatch pre-merge (root-cause fix for the "blue cover → yellow bg" bug)
+ * - 有 accent: bgH = accent hue, bgS = min(accent sat × 0.6, 0.85),
+ *   bgV = max(foundation V × 0.7, 0.35) → brightness floor → resolvePair
+ * - 无 accent: bg = foundation → brightness floor → resolvePair
  *
- * `androidx.palette` quantises to ~16 swatches. A large blue background splits
- * across several near-identical blue swatches (each diluted population), while
- * a small-but-distinct yellow accent concentrates in one swatch with high
- * chroma — so per-swatch scoring let the accent win even though blue covered
- * most of the image. Before scoring we greedily cluster swatches whose RGB
- * distance is below [MERGE_SQ_DISTANCE] and sum their populations, defeating
- * the split. Dominance then reflects the *true* colour share.
- *
- * ## Minimum-brightness floor
- *
- * A chosen bg whose HSV value falls below [MIN_VALUE_FLOOR] is lifted to that
- * floor (hue + saturation preserved) **before** contrast resolution, so dark-
- * purple covers no longer read as muddy grey-purple. This runs before the WCAG
- * path, which is otherwise untouched: `resolvePair` still picks whichever text
- * clears 4.5:1 against the (possibly lifted) bg and still nudges mid-tones.
- *
- * ## Foreground / contrast guarantee
- *
- * `fgArgb` is chosen to clear 4.5:1 against `bgArgb`. The bg is nudged in HSV
- * (value only, ×0.94 per step, min amount) when neither black nor white text
- * would pass on the raw swatch — i.e. mid-tones only. Light + dark covers keep
- * their hue unchanged.
+ * resolvePair 保证 fg 对比度 ≥ 4.5:1，只调 V 不调 hue/saturation。
  */
 object PaletteExtractor {
 
-    /** (bg, fg) pair — fg is whichever end (black/white) is contrast-safe on bg. */
     data class ColorPair(val bgArgb: Int, val fgArgb: Int)
-
-    /** Plain swatch input for the testable core — no Android types. */
     data class SwatchData(val rgb: Int, val population: Int)
 
-    /** WCAG target the (bg, fg) pair must clear. */
+    /** 诊断结果：含 foundation、accent、最终 bg 的完整 HSV 信息。 */
+    data class ExtractionDiagnostic(
+        val mergedSwatches: List<SwatchDetail>,
+        val chosenRgb: Int,
+        val chosenHsv: FloatArray,
+        val finalBg: Int,
+        val foundationRgb: Int = 0,
+        val foundationHsv: FloatArray = floatArrayOf(0f, 0f, 0f),
+        val accentRgb: Int = 0,
+        val accentHsv: FloatArray = floatArrayOf(0f, 0f, 0f),
+        val hasAccent: Boolean = false,
+    )
+    data class SwatchDetail(
+        val rgb: Int,
+        val population: Int,
+        val populationShare: Float,
+        val score: Float,
+        val isChosen: Boolean,
+    )
+
     private const val MIN_CONTRAST = 4.5f
-
-    /** Dark fallback (dark-bg, light-text mode) when nothing resolves. */
     private const val FALLBACK_BG_DARK = 0xFF2A2A2E.toInt()
-    /** Light fallback (light-bg, dark-text mode) — unused currently but reserved. */
     private const val FALLBACK_BG_LIGHT = 0xFFEFEFEF.toInt()
-
     private const val BLACK_TEXT = 0xFF1A1A1E.toInt()
     private const val WHITE_TEXT = 0xFFFFFFFF.toInt()
 
-    /** Scoring weights — dominance leads harder; chroma demoted so vivid
-     *  accents can't steal the pick. Pre-merge makes dominance meaningful. */
-    private const val W_DOMINANCE = 4.0f
-    private const val W_CHROMA = 1.5f
-    private const val W_DARKNESS = 0.5f
+    // ── Plan C constants ──
+    /** preMerge: squared-RGB distance under which two swatches merge. */
+    private const val MERGE_SQ_DISTANCE = 1500f
 
-    /** Min HSV value floor. A chosen bg darker than this is lifted toward
-     *  the floor (hue + saturation preserved) before contrast resolution. */
-    private const val MIN_VALUE_FLOOR = 0.30f
+    /** Brightness floor: final bg V lifted to this if below (hue preserved). */
+    private const val MIN_VALUE_FLOOR = 0.45f
 
-    /** Squared-RGB distance under which two swatches are treated as the same
-     *  colour split across palette quantisation and pre-merged. */
-    private const val MERGE_SQ_DISTANCE = 400f
+    /** Accent score threshold: score must exceed this for accent to be selected. */
+    private const val ACCENT_SCORE_THRESHOLD = 0.05f
 
-    /**
-     * Extract a contrast-safe (bg, fg) pair. [fgArgb] is guaranteed to clear
-     * ≥ [MIN_CONTRAST] against [bgArgb]. Returns null only when [bitmap] is
-     * null; palette failures degrade to the dark fallback.
-     */
+    /** Foundation chroma at/above which the accent population threshold is raised. */
+    private const val STRONG_FOUNDATION_CHROMA = 80f
+
+    /** Population threshold for accent when foundation is weak/neutral. */
+    private const val WEAK_FOUNDATION_POP_THRESHOLD = 0.05f
+
+    /** Population threshold for accent when foundation is strong (vivid). */
+    private const val STRONG_FOUNDATION_POP_THRESHOLD = 0.10f
+
+    /** Minimum chroma for accent candidates — prevents white/grey from stealing accent. */
+    private const val COLOR_CANDIDATE_CHROMA = 40f
+
+    /** Visual Accent Score weights. */
+    private const val W_SHARE = 0.40f
+    private const val W_CHROMA = 0.35f
+    private const val W_BRIGHTNESS_CONTRAST = 0.25f
+
+    /** bg saturation cap (accent sat × 0.6, capped). */
+    private const val BG_SAT_RATIO = 0.6f
+    private const val BG_SAT_MAX = 0.85f
+
+    /** bg value from foundation (foundation V × 0.7, min 0.35). */
+    private const val BG_V_RATIO = 0.7f
+    private const val BG_V_MIN = 0.35f
+
     fun extract(
         bitmap: Bitmap?,
         @Suppress("UNUSED_PARAMETER") defaultFgArgb: Int = WHITE_TEXT,
     ): ColorPair? {
         if (bitmap == null) return null
         val palette = Palette.from(bitmap).generate()
-
         val swatches = palette.swatches
             .filter { it.population > 0 }
             .map { SwatchData(it.rgb, it.population) }
         if (swatches.isEmpty()) return ColorPair(FALLBACK_BG_DARK, WHITE_TEXT)
-
         val chosen = scoreSwatches(swatches)
         return resolvePair(chosen)
     }
 
-    /**
-     * Pure testable core — no Android dependencies. Pre-merge near-duplicate
-     * swatches, score, pick the winner, apply the min-brightness floor. Feeds
-     * straight RGB ints so JVM unit tests can assert behaviour directly.
-     */
     internal fun scoreSwatches(swatches: List<SwatchData>): Int {
-        if (swatches.isEmpty()) return FALLBACK_BG_DARK
+        return scoreSwatchesWithDiag(swatches).finalBg
+    }
+
+    internal fun scoreSwatchesWithDiag(swatches: List<SwatchData>): ExtractionDiagnostic {
+        if (swatches.isEmpty()) {
+            return ExtractionDiagnostic(emptyList(), FALLBACK_BG_DARK, floatArrayOf(0f, 0f, 0f), FALLBACK_BG_DARK)
+        }
         val merged = preMerge(swatches)
         val totalPop = merged.sumOf { it.population.toLong() }.coerceAtLeast(1).toFloat()
 
-        val best = merged.maxByOrNull { sw ->
-            val (r, g, b) = unpack(sw.rgb)
-            val rg = r - g
-            val yb = (r + g) / 2f - b
-            val chroma = sqrt(rg * rg + yb * yb)
-            val lum = sqrt(0.299f * r * r + 0.587f * g * g + 0.114f * b * b)
-            val darkness = 1f - lum
-            val dominance = sw.population / totalPop
-            W_DOMINANCE * dominance + W_CHROMA * chroma + W_DARKNESS * darkness
-        } ?: return FALLBACK_BG_DARK
+        // ── Step 1: foundation = population largest cluster ──
+        val foundation = merged.maxByOrNull { it.population } ?: return ExtractionDiagnostic(emptyList(), FALLBACK_BG_DARK, floatArrayOf(0f, 0f, 0f), FALLBACK_BG_DARK)
+        val foundationRgb = foundation.rgb
+        val foundationLum = luminance(foundationRgb)
+        val foundationChroma = chromaOf(foundationRgb)
+        val foundationHsv = rgbToHsv(foundationRgb)
 
-        return applyBrightnessFloor(best.rgb)
+        // ── Step 2: dynamic population threshold based on foundation chroma ──
+        val popThreshold = if (foundationChroma >= STRONG_FOUNDATION_CHROMA)
+            STRONG_FOUNDATION_POP_THRESHOLD else WEAK_FOUNDATION_POP_THRESHOLD
+
+        // ── Step 3: score each non-foundation cluster for Visual Accent ──
+        val details = ArrayList<SwatchDetail>()
+        var bestAccent: SwatchData? = null
+        var bestAccentScore = 0f
+
+        for (sw in merged) {
+            if (sw.rgb == foundationRgb) {
+                details.add(SwatchDetail(sw.rgb, sw.population, sw.population / totalPop, 0f, false))
+                continue
+            }
+            val share = (sw.population / totalPop).coerceIn(0f, 1f)
+            val cn = (chromaOf(sw.rgb) / 255f).coerceIn(0f, 1f)
+            val bc = abs(luminance(sw.rgb) - foundationLum).coerceIn(0f, 1f)
+            val hsv = rgbToHsv(sw.rgb)
+            val v = hsv[2]; val s = hsv[1]
+            // Extreme penalty: near-black or near-white → 0
+            val ep = if (v < 0.08f || (v > 0.95f && s < 0.05f)) 0f else 1f
+            // Chroma gate: prevent white/grey from being selected as accent
+            val cg = if (chromaOf(sw.rgb) >= COLOR_CANDIDATE_CHROMA) 1f else 0f
+            // Hard area gate
+            val ag = if (share >= popThreshold) 1f else 0f
+            val rawScore = W_SHARE * share + W_CHROMA * cn + W_BRIGHTNESS_CONTRAST * bc
+            val score = rawScore * ep * cg * ag
+            details.add(SwatchDetail(sw.rgb, sw.population, share, score, false))
+            if (score > bestAccentScore) {
+                bestAccentScore = score
+                bestAccent = sw
+            }
+        }
+
+        val hasAccent = bestAccent != null && bestAccentScore > ACCENT_SCORE_THRESHOLD
+        val accentRgb = bestAccent?.rgb ?: foundationRgb
+        val accentHsv = rgbToHsv(accentRgb)
+
+        // ── Step 4: generate final bg ──
+        val chosenRgb: Int
+        if (hasAccent) {
+            // bg hue = accent hue, sat reduced, V from foundation (darker for readability)
+            chosenRgb = generateBg(foundationRgb, accentRgb)
+        } else {
+            chosenRgb = foundationRgb
+        }
+
+        // Mark chosen in details
+        for (i in details.indices) {
+            if (details[i].rgb == chosenRgb || (!hasAccent && details[i].rgb == foundationRgb)) {
+                details[i] = details[i].copy(isChosen = true); break
+            }
+        }
+
+        val lifted = applyBrightnessFloor(chosenRgb)
+        val hsv = rgbToHsv(lifted)
+        return ExtractionDiagnostic(
+            mergedSwatches = details,
+            chosenRgb = chosenRgb,
+            chosenHsv = hsv,
+            finalBg = lifted,
+            foundationRgb = foundationRgb,
+            foundationHsv = foundationHsv,
+            accentRgb = accentRgb,
+            accentHsv = accentHsv,
+            hasAccent = hasAccent,
+        )
     }
 
-    /**
-     * Greedy population-weighted clustering: each swatch (heaviest first) joins
-     * the nearest existing cluster whose representative colour is within
-     * [MERGE_SQ_DISTANCE] (squared RGB); otherwise seeds a new cluster. Members
-     * are averaged weighted by population so the merged colour tracks the true
-     * majority. Defeats palette quantisation splitting one colour across swatches.
-     */
+    /** Generate bg from foundation (value) + accent (hue/sat). */
+    private fun generateBg(foundationRgb: Int, accentRgb: Int): Int {
+        val fHsv = rgbToHsv(foundationRgb)
+        val aHsv = rgbToHsv(accentRgb)
+        val bgH = aHsv[0]
+        val bgS = (aHsv[1] * BG_SAT_RATIO).coerceAtMost(BG_SAT_MAX)
+        val bgV = (fHsv[2] * BG_V_RATIO).coerceAtLeast(BG_V_MIN)
+        return hsvToRgb(floatArrayOf(bgH, bgS, bgV))
+    }
+
+    // ── preMerge (fixed seed) — unchanged from v4 ──
+
     private fun preMerge(swatches: List<SwatchData>): List<SwatchData> {
         val clusters = ArrayList<MutableCluster>()
         for (sw in swatches.sortedByDescending { it.population }) {
             val (r, g, b) = unpack(sw.rgb)
-            val host = clusters.firstOrNull { sqDist(it.repRgb, r, g, b) < MERGE_SQ_DISTANCE }
+            val host = clusters.firstOrNull { sqDist(it.seedRgb, r, g, b) < MERGE_SQ_DISTANCE }
             if (host != null) host.add(sw.rgb, sw.population)
             else clusters += MutableCluster(sw.rgb, sw.population)
         }
         return clusters.map { it.toSwatch() }
     }
 
-    /** Population-weighted running cluster of near-duplicate colours. */
-    private class MutableCluster(rgb: Int, population: Int) {
+    private class MutableCluster(seedRgb: Int, population: Int) {
+        val seedRgb: Int = seedRgb
         private var popSum = population
-        private var rAcc = channel(rgb, 16) * population
-        private var gAcc = channel(rgb, 8) * population
-        private var bAcc = channel(rgb, 0) * population
-        /** Representative colour for distance checks (current weighted avg). */
-        val repRgb: Int
-            get() = pack(rAcc / popSum, gAcc / popSum, bAcc / popSum)
+        private var rAcc = channel(seedRgb, 16) * population
+        private var gAcc = channel(seedRgb, 8) * population
+        private var bAcc = channel(seedRgb, 0) * population
         fun add(rgb: Int, population: Int) {
             popSum += population
             rAcc += channel(rgb, 16) * population
             gAcc += channel(rgb, 8) * population
             bAcc += channel(rgb, 0) * population
         }
-        fun toSwatch() = SwatchData(repRgb, popSum)
+        fun toSwatch() = SwatchData(pack(rAcc / popSum, gAcc / popSum, bAcc / popSum), popSum)
     }
 
-    /** Lift HSV value up to [MIN_VALUE_FLOOR] when the chosen bg is darker;
-     *  hue and saturation preserved. No-op when already bright enough. */
+    // ── Color helpers ──
+
     private fun applyBrightnessFloor(rgb: Int): Int {
         val hsv = rgbToHsv(rgb)
         if (hsv[2] >= MIN_VALUE_FLOOR) return rgb
@@ -183,50 +254,31 @@ object PaletteExtractor {
         return hsvToRgb(hsv)
     }
 
-    /**
-     * Given a chosen bg, return a (bg, fg) pair that clears [MIN_CONTRAST].
-     * - If white text passes on the raw bg → keep bg, fg = white (dark-cover mode).
-     * - Else if black text passes on the raw bg → keep bg, fg = black (light-cover mode).
-     * - Else (mid-tone) nudge bg toward whichever end lets opposite text pass,
-     *   using the *minimum* HSV value move (×0.94/step toward black, ÷0.94 toward white).
-     */
+    private fun chromaOf(rgb: Int): Float {
+        val (r, g, b) = unpack(rgb)
+        val rg = r - g
+        val yb = (r + g) / 2f - b
+        return sqrt(rg * rg + yb * yb) * 255f
+    }
+
     private fun resolvePair(rawBg: Int): ColorPair {
         val contrastVsWhite = contrastRatioVs(rawBg, WHITE_TEXT)
         val contrastVsBlack = contrastRatioVs(rawBg, BLACK_TEXT)
-
         if (contrastVsWhite >= MIN_CONTRAST) return ColorPair(rawBg, WHITE_TEXT)
         if (contrastVsBlack >= MIN_CONTRAST) return ColorPair(rawBg, BLACK_TEXT)
-
-        // Mid-tone: neither end passes on the raw colour. Try darkening first
-        // (keeps coloured mood slightly richer than lightening to pastel); if
-        // no amount of darkening lets white text pass, try lightening so black
-        // text passes. Pick whichever resolves with the smaller value move.
         val darkened = nudgeToward(rawBg, towardBlack = true)
-        if (darkened != null) {
-            val cm = contrastRatioVs(darkened, WHITE_TEXT)
-            if (cm >= MIN_CONTRAST) return ColorPair(darkened, WHITE_TEXT)
-        }
+        if (darkened != null && contrastRatioVs(darkened, WHITE_TEXT) >= MIN_CONTRAST)
+            return ColorPair(darkened, WHITE_TEXT)
         val lightened = nudgeToward(rawBg, towardBlack = false)
-        if (lightened != null) {
-            val cm = contrastRatioVs(lightened, BLACK_TEXT)
-            if (cm >= MIN_CONTRAST) return ColorPair(lightened, BLACK_TEXT)
-        }
-        // Should be mathematically unreachable; dark fallback.
+        if (lightened != null && contrastRatioVs(lightened, BLACK_TEXT) >= MIN_CONTRAST)
+            return ColorPair(lightened, BLACK_TEXT)
         return ColorPair(FALLBACK_BG_DARK, WHITE_TEXT)
     }
 
-    /**
-     * Nudge [rgb]'s HSV value in steps (×/÷0.94, ≤ 24 steps) until the opposite-
-     * end text clears 4.5:1. Returns the minimal-move colour, or null if it
-     * can't resolve. Hue and saturation are preserved.
-     */
     private fun nudgeToward(rgb: Int, towardBlack: Boolean): Int? {
         val hsv = FloatArray(3)
         android.graphics.Color.RGBToHSV(
-            (rgb shr 16) and 0xFF,
-            (rgb shr 8) and 0xFF,
-            rgb and 0xFF,
-            hsv,
+            (rgb shr 16) and 0xFF, (rgb shr 8) and 0xFF, rgb and 0xFF, hsv,
         )
         var value = hsv[2]
         val targetText = if (towardBlack) WHITE_TEXT else BLACK_TEXT
@@ -243,7 +295,6 @@ object PaletteExtractor {
     private fun contrastRatioVs(rgb: Int, otherArgb: Int): Float =
         contrastRatio(luminance(rgb), luminance(otherArgb))
 
-    /** Relative luminance per WCAG 2.1 — sRGB linearization. */
     private fun luminance(rgb: Int): Float {
         val r = linearize(((rgb shr 16) and 0xFF) / 255f)
         val g = linearize(((rgb shr 8) and 0xFF) / 255f)
@@ -255,19 +306,16 @@ object PaletteExtractor {
         if (c <= 0.03928f) c / 12.92f
         else java.lang.Math.pow(((c + 0.055f) / 1.055f).toDouble(), 2.4).toFloat()
 
-    /** WCAG contrast ratio: (L1+0.05) / (L2+0.05). Both values in [0,1]. */
     private fun contrastRatio(l1: Float, l2: Float): Float {
         val lighter = maxOf(l1, l2)
         val darker = minOf(l1, l2)
         return (lighter + 0.05f) / (darker + 0.05f)
     }
 
-    // ---- pure-Kotlin colour helpers (no Android) for the testable core ----
+    // ── pure-Kotlin color helpers ──
 
     private fun unpack(rgb: Int): Triple<Float, Float, Float> = Triple(
-        ((rgb shr 16) and 0xFF) / 255f,
-        ((rgb shr 8) and 0xFF) / 255f,
-        (rgb and 0xFF) / 255f,
+        ((rgb shr 16) and 0xFF) / 255f, ((rgb shr 8) and 0xFF) / 255f, (rgb and 0xFF) / 255f,
     )
 
     private fun channel(rgb: Int, shift: Int): Int = (rgb shr shift) and 0xFF
@@ -282,7 +330,6 @@ object PaletteExtractor {
         return dr * dr + dg * dg + db * db
     }
 
-    /** RGB→HSV (h 0..360, s/v 0..1). Pure Kotlin, no android.graphics.Color. */
     private fun rgbToHsv(rgb: Int): FloatArray {
         val r = channel(rgb, 16) / 255f
         val g = channel(rgb, 8) / 255f
@@ -301,7 +348,6 @@ object PaletteExtractor {
         return floatArrayOf(h * 60f, s, v)
     }
 
-    /** HSV→ARGB. Pure Kotlin, no android.graphics.Color. */
     private fun hsvToRgb(hsv: FloatArray): Int {
         val h = (hsv[0] / 60f).let { if (it >= 6f) 0f else it }
         val s = hsv[1]
