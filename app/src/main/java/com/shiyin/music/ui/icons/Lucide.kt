@@ -85,6 +85,10 @@ object Lucide {
     val ListMusic by lazy {
         stroke("listMusic", "M21 15V6", "M18.5 18a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5Z", "M12 12H3", "M16 6H3", "M12 18H3")
     }
+    /** 字幕/歌词框：圆角框内两行文字，用于「打开歌词」。 */
+    val Captions by lazy {
+        stroke("captions", "M4 6h16a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2Z", "M7 11h5", "M7 14h8")
+    }
     val EyeOff by lazy {
         stroke(
             "eyeOff",
@@ -174,7 +178,7 @@ object Lucide {
         stroke("disc", "M12 12m-10 0a10 10 0 1 0 20 0a10 10 0 1 0 -20 0", "M12 12m-3 0a3 3 0 1 0 6 0a3 3 0 1 0 -6 0")
     }
     val Gauge by lazy {
-        stroke("gauge", "M12 14a4 4 0 1 0 0-8 4 4 0 0 0 0 8ZM9.14 9.14 4.5 4.5M12 14l4-4", width = 1.5f)
+        stroke("gauge", "M12 14a4 4 0 1 0 0-8 4 4 0 0 0 0 8ZM9.14 9.14 4.5 4.5M12 14l4-4")
     }
     val User by lazy { stroke("user", "M12 8m-5 0a5 5 0 1 0 10 0a5 5 0 1 0 -10 0", "M20 21a8 8 0 0 0-16 0") }
     val Users by lazy {

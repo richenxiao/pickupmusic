@@ -118,8 +118,6 @@ import com.shiyin.music.ui.screens.SearchScreen
 import com.shiyin.music.ui.screens.SettingsHost
 import com.shiyin.music.ui.theme.LocalOrganic
 import kotlin.math.roundToInt
-import androidx.compose.ui.input.key.onKeyEvent
-import androidx.compose.ui.input.key.key
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.input.KeyboardType
 
@@ -863,7 +861,7 @@ private fun BoxScope.PlayerMenuSheet(vm: MainViewModel) {
                 }
                 SheetActionRow(Lucide.User, "查看歌手") { vm.goArtistOf(track.id) }
                 // v3.0: lyrics entries in player menu
-                SheetActionRow(Lucide.ListMusic, "打开歌词") {
+                SheetActionRow(Lucide.Captions, "打开歌词") {
                     vm.pMenuView = null
                     vm.lyricsOn = true
                     vm.lySheet = false
@@ -905,7 +903,7 @@ private fun BoxScope.PlayerMenuSheet(vm: MainViewModel) {
                 SheetActionRow(
                     Lucide.Gauge, "播放速度",
                     trailing = {
-                        val spd = if (vm.playbackSpeed == 1.0f) "正常" else "%.1f×".format(vm.playbackSpeed)
+                        val spd = if (vm.playbackSpeed == 1.0f) "正常" else "%.2f×".format(vm.playbackSpeed)
                         Text(spd, style = body(12.5f, FontWeight.SemiBold, c.n500))
                         OIcon(Lucide.ChevronRight, 16.dp, c.n500)
                     },
@@ -1079,7 +1077,7 @@ private fun BoxScope.PlayerMenuSheet(vm: MainViewModel) {
                         Spacer(Modifier.weight(1f))
                     }
                     // 当前速度大字显示（格式化避免浮点误差）
-                    val speedDisplay = "%.2f".format(vm.playbackSpeed).trimEnd('0').trimEnd('.').plus("×")
+                    val speedDisplay = "%.2f×".format(vm.playbackSpeed)
                     Text(
                         speedDisplay,
                         style = heading(36, c.text),
@@ -1092,18 +1090,16 @@ private fun BoxScope.PlayerMenuSheet(vm: MainViewModel) {
                         modifier = Modifier.fillMaxWidth().padding(bottom = 18.dp),
                         textAlign = TextAlign.Center,
                     )
-                    // 0.05 步进滑块：0.5~2.0，(2.0-0.5)/0.05-1 = 29 steps
+                    // 连续滑块，无 steps → 无刻度点；onValueChange 内 0.05 量化
                     var sliderVal by remember { mutableFloatStateOf(vm.playbackSpeed) }
                     androidx.compose.material3.Slider(
                         value = sliderVal,
                         onValueChange = {
-                            // 量化到 0.05 步进
-                            val stepped = (it / 0.05f).roundToInt() * 0.05f
+                            val stepped = com.shiyin.music.playback.quantizeSpeed(it)
                             sliderVal = stepped
                             vm.setSpeed(stepped)
                         },
                         valueRange = 0.5f..2.0f,
-                        steps = 29, // (2.0-0.5)/0.05 - 1
                         modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
                     )
                     // 快捷按钮 + 自定义输入
@@ -1125,9 +1121,20 @@ private fun BoxScope.PlayerMenuSheet(vm: MainViewModel) {
                                     .padding(horizontal = 10.dp, vertical = 6.dp),
                             )
                         }
-                        // 自定义输入框
+                        // 自定义输入框——软键盘「完成」(onDone) 或点「应用」均立即生效
                         var inputText by remember { mutableStateOf("") }
                         var inputError by remember { mutableStateOf(false) }
+                        val applyInput = {
+                            val stepped = com.shiyin.music.playback.parseSpeedInput(inputText)
+                            if (stepped != null) {
+                                sliderVal = stepped
+                                vm.setSpeed(stepped)
+                                inputText = ""
+                                inputError = false
+                            } else {
+                                inputError = true
+                            }
+                        }
                         androidx.compose.material3.OutlinedTextField(
                             value = inputText,
                             onValueChange = { raw ->
@@ -1138,27 +1145,24 @@ private fun BoxScope.PlayerMenuSheet(vm: MainViewModel) {
                             singleLine = true,
                             isError = inputError,
                             textStyle = body(12.5f, FontWeight.Normal, if (inputError) c.a700 else c.text),
-                            modifier = Modifier
-                                .width(72.dp)
-                                .height(36.dp)
-                                .onKeyEvent { keyEvent ->
-                                    if (keyEvent.key == androidx.compose.ui.input.key.Key.Enter && inputText.isNotBlank()) {
-                                        val parsed = inputText.toFloatOrNull()
-                                        if (parsed != null && parsed in 0.5f..2.0f) {
-                                            val stepped = (parsed / 0.05f).roundToInt() * 0.05f
-                                            sliderVal = stepped
-                                            vm.setSpeed(stepped)
-                                            inputText = ""
-                                            inputError = false
-                                        } else {
-                                            inputError = true
-                                        }
-                                        true
-                                    } else false
-                                },
                             keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
                                 keyboardType = androidx.compose.ui.text.input.KeyboardType.Decimal,
+                                imeAction = androidx.compose.ui.text.input.ImeAction.Done,
                             ),
+                            keyboardActions = androidx.compose.foundation.text.KeyboardActions(
+                                onDone = { applyInput() },
+                            ),
+                            modifier = Modifier
+                                .width(64.dp)
+                                .height(36.dp),
+                        )
+                        Text(
+                            "应用",
+                            style = body(12.5f, FontWeight.Bold, c.accent),
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable { applyInput() }
+                                .padding(horizontal = 8.dp, vertical = 8.dp),
                         )
                     }
                     Row(
