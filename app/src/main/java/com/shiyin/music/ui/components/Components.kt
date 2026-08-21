@@ -97,7 +97,7 @@ object ArtCache {
     // primeColors only loads DB rows whose source ends with this version tag;
     // rows from older algorithms are skipped (not deleted), forcing ensureColors
     // to re-extract with the new algorithm and overwrite the DB row.
-    internal const val PALETTE_VERSION = "v5"
+    internal const val PALETTE_VERSION = "v9"
     private val colorCache = HashMap<Long, Pair<Int, Int>>()
     private val colorPending = HashSet<Long>()
 
@@ -234,12 +234,16 @@ object ArtCache {
         val albumId = track.albumId
         if (albumId <= 0) return // no stable key for cover-free tracks
         synchronized(this@ArtCache) {
-            if (albumId in colorCache || albumId in colorPending) return
+            if (albumId in colorCache || albumId in colorPending) {
+                android.util.Log.d("PaletteTrace", "ensureColors albumId=$albumId SKIP inCache=${albumId in colorCache} inPending=${albumId in colorPending}")
+                return
+            }
             colorPending.add(albumId)
         }
         val pair = withContext(Dispatchers.IO) {
             com.shiyin.music.data.colors.PaletteExtractor.extract(bmp)
         }
+        android.util.Log.d("PaletteTrace", "ensureColors albumId=$albumId extracted bg=${pair?.let { Integer.toHexString(it.bgArgb) } ?: "null"} fg=${pair?.let { Integer.toHexString(it.fgArgb) } ?: "null"}")
         synchronized(this@ArtCache) {
             colorPending.remove(albumId)
             if (pair != null) colorCache[albumId] = pair.bgArgb to pair.fgArgb
@@ -258,7 +262,10 @@ object ArtCache {
                     db.upsertColorsPreservingMeta(
                         albumId, pair.bgArgb, pair.fgArgb, "local:$PALETTE_VERSION",
                     )
-                } catch (_: Exception) { }
+                    android.util.Log.d("PaletteTrace", "ensureColors albumId=$albumId WROTE source=local:$PALETTE_VERSION bg=${Integer.toHexString(pair.bgArgb)} fg=${Integer.toHexString(pair.fgArgb)}")
+                } catch (e: Exception) {
+                    android.util.Log.e("PaletteTrace", "ensureColors albumId=$albumId DB WRITE FAILED", e)
+                }
             }
         }
     }
@@ -286,15 +293,21 @@ object ArtCache {
      *  v4: only loads rows whose source matches PALETTE_VERSION; older rows are
      *  skipped (not deleted) so ensureColors re-extracts with the new algorithm. */
     suspend fun primeColors(context: Context, rows: List<com.shiyin.music.data.db.AlbumArtCacheEntity>) {
+        var loaded = 0
+        val skippedSources = mutableMapOf<String, Int>()
         synchronized(colorCache) {
             for (r in rows) {
                 // Only accept colors from the current palette algorithm version.
                 // Old-version rows have source like "local" (no :vN suffix) → skip.
                 if (r.bgArgb != 0 && r.fgArgb != 0 && r.source.endsWith(":$PALETTE_VERSION")) {
                     colorCache[r.albumId] = r.bgArgb to r.fgArgb
+                    loaded++
+                } else {
+                    skippedSources.merge(r.source, 1) { a, b -> a + b }
                 }
             }
         }
+        android.util.Log.d("PaletteTrace", "primeColors rows=${rows.size} loaded=$loaded (source=:$PALETTE_VERSION) skipped=${rows.size - loaded} bySource=$skippedSources")
     }
 
     /** v1.1+: 清空全部内存封面/颜色缓存（清理识别缓存后调用，强制下次重新取色/加载）。 */
@@ -414,8 +427,8 @@ object ArtCache {
      *  Bug3 fix: also pulls song-entity results so same-name Single covers
      *  appear alongside albums in the picker (iTunes' `entity=album` filter
      *  otherwise drops them). */
-    suspend fun loadCandidates(track: Track): List<Candidate> {
-        return fetchITunesCandidates(track, limit = 12, includeSongs = true)
+    suspend fun loadCandidates(track: Track, offset: Int = 0, limit: Int = 8): List<Candidate> {
+        return fetchITunesCandidates(track, limit = limit, includeSongs = true, offset = offset)
             .distinctBy { it.artUrl }
     }
 
@@ -437,6 +450,7 @@ object ArtCache {
         track: Track,
         limit: Int = 5,
         includeSongs: Boolean = false,
+        offset: Int = 0,
     ): List<Candidate> {
         if (track.album == com.shiyin.music.data.NO_ALBUM || track.albumId <= 0) return emptyList()
         return withContext(Dispatchers.IO) {
@@ -449,7 +463,7 @@ object ArtCache {
             for (entity in queries) {
                 try {
                     val term = java.net.URLEncoder.encode("${track.album} ${track.artist} music", "UTF-8")
-                    val url = "https://itunes.apple.com/search?term=$term&media=music&limit=$limit&entity=$entity"
+                    val url = "https://itunes.apple.com/search?term=$term&media=music&limit=$limit&entity=$entity&offset=$offset"
                     val req = okhttp3.Request.Builder().url(url).build()
                     val body = client.newCall(req).execute().body?.string() ?: continue
                     val json = com.google.gson.JsonParser.parseString(body).asJsonObject
@@ -562,11 +576,13 @@ fun rememberCoverPalette(track: Track?): Pair<Color, Color> {
             val pair = ArtCache.colorFor(track.albumId)
             if (pair != null) {
                 value = Color(pair.first) to Color(pair.second)
+                android.util.Log.d("PaletteTrace", "rememberCoverPalette track=${track.id} albumId=${track.albumId} RESOLVED bg=${Integer.toHexString(pair.first)} fg=${Integer.toHexString(pair.second)}")
                 return@produceState
             }
             kotlinx.coroutines.delay(50)
             tries++
         }
+        android.util.Log.d("PaletteTrace", "rememberCoverPalette track=${track.id} albumId=${track.albumId} UNRESOLVED after 30 tries → fallback")
     }
     return state.value
 }

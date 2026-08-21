@@ -121,8 +121,8 @@ class PaletteExtractorV4Test {
         )
         val d = diag(swatches)
         printDiag("深色封面", d)
-        // 深色封面应提亮到 floor=0.45
-        assertTrue("应提亮到 >= V=0.45，实际 V=${d.chosenHsv[2]}", d.chosenHsv[2] >= 0.40f)
+        // 深色封面应提亮到 v7 floor=0.30（暗底允许偏暗）
+        assertTrue("应提亮到 >= V=0.28，实际 V=${d.chosenHsv[2]}", d.chosenHsv[2] >= 0.28f)
     }
 
     // ── 6. 大面积浅色 + 少量黑色文字/人物 ──

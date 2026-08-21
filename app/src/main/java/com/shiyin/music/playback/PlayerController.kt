@@ -320,6 +320,21 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
         queueVersion++
     }
 
+    /** v1.1: 按 track id 移除队列项（右滑移除用）。重新解析当前 index，避免队列
+     *  漂移导致 entry.index 过期删错项；跳过当前正在播放项。 */
+    fun removeQueueEntryById(id: Long) {
+        val c = controller ?: return
+        val cur = c.currentMediaItemIndex
+        var idx = -1
+        for (i in 0 until c.mediaItemCount) {
+            if (c.getMediaItemAt(i).mediaId.toLongOrNull() == id) { idx = i; break }
+        }
+        if (idx < 0 || idx == cur) return
+        c.removeMediaItem(idx)
+        manualQueue.removeAll { it.id == id }
+        queueVersion++
+    }
+
     /**
      * v5.2 Bug7: move an upcoming queue entry from one position to another.
      * Drives `MediaController.moveMediaItem` so the underlying

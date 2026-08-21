@@ -88,6 +88,9 @@ dependencies {
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-graphics")
     implementation("androidx.compose.material3:material3")
+    // Material Icons Extended（完整图标集，R8 裁剪只保留实际引用的）：
+    // 用于 Eye/EyeOff/Speed 等 Lucide 子集缺失的语义图标。
+    implementation("androidx.compose.material:material-icons-extended")
 
     implementation("androidx.media3:media3-exoplayer:1.7.1")
     implementation("androidx.media3:media3-session:1.7.1")

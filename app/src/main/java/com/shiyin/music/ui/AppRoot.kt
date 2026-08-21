@@ -21,6 +21,11 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -51,6 +56,10 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Speed
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -822,12 +831,12 @@ private fun BoxScope.TrackMenuSheet(vm: MainViewModel, onEditTrack: (Long) -> Un
             // v5.2 隐藏曲:整张播放时跳过、列表里变灰,但单曲点击仍能播。
             // 在 track 菜单里给一个开关让用户把不想听的曲灰掉。
             if (vm.isHidden(track.id)) {
-                SheetActionRow(Lucide.RotateCcw, "恢复播放", tint = c.a700) {
+                SheetActionRow(Icons.Filled.Visibility, "恢复播放", tint = c.a700) {
                     vm.toggleTrackHidden(track.id)
                     vm.trackMenuFor = null
                 }
             } else {
-                SheetActionRow(Lucide.EyeOff, "隐藏此曲") {
+                SheetActionRow(Icons.Filled.VisibilityOff, "隐藏此曲") {
                     vm.toggleTrackHidden(track.id)
                     vm.trackMenuFor = null
                 }
@@ -883,12 +892,12 @@ private fun BoxScope.PlayerMenuSheet(vm: MainViewModel) {
                 }
                 // v5.2 隐藏曲:播放页菜单也提供同样开关,方便在听的时候即时跳过。
                 if (vm.isHidden(track.id)) {
-                    SheetActionRow(Lucide.RotateCcw, "恢复播放", tint = c.a700) {
+                    SheetActionRow(Icons.Filled.Visibility, "恢复播放", tint = c.a700) {
                         vm.pMenuView = null
                         vm.toggleTrackHidden(track.id)
                     }
                 } else {
-                    SheetActionRow(Lucide.EyeOff, "隐藏此曲") {
+                    SheetActionRow(Icons.Filled.VisibilityOff, "隐藏此曲") {
                         vm.pMenuView = null
                         vm.toggleTrackHidden(track.id)
                     }
@@ -901,7 +910,7 @@ private fun BoxScope.PlayerMenuSheet(vm: MainViewModel) {
                     },
                 ) { vm.pMenuView = "timer" }
                 SheetActionRow(
-                    Lucide.Gauge, "播放速度",
+                    Icons.Filled.Speed, "播放速度",
                     trailing = {
                         val spd = if (vm.playbackSpeed == 1.0f) "正常" else "%.2f×".format(vm.playbackSpeed)
                         Text(spd, style = body(12.5f, FontWeight.SemiBold, c.n500))
@@ -1314,6 +1323,7 @@ private fun BoxScope.QueueSheet(vm: MainViewModel) {
                             QueueRow(
                                 vm = vm, track = t, isCurrent = false, entry = entry,
                                 dragHandle = true,
+                                onSwipeRemove = { vm.player.removeQueueEntryById(t.id) },
                                 onDrag = { dy ->
                                     qDragDelta += dy
                                     qDragVel = dy   // v5.2 #61: 瞬时拖速，喂给 auto-scroll 油门
@@ -1374,11 +1384,33 @@ private fun QueueRow(
     onDrag: ((Float) -> Unit)? = null,
     onDragStart: (() -> Unit)? = null,
     onDragEnd: (() -> Unit)? = null,
+    onSwipeRemove: (() -> Unit)? = null,
 ) {
     val c = LocalOrganic.current
+    // v1.1: 右滑移除（仅 upcoming 行，onSwipeRemove != null）。与 grip handle 上的
+    // 长按拖拽排序分轴共存：本手势只吃水平 drag，垂直滚动/长按拖拽不受影响。
+    // 过阈值 → onSwipeRemove（列表移除项后由 animateItem 退场）；不过 → animateTo(0) 回弹。
+    val thresholdPx = with(LocalDensity.current) { 96.dp.toPx() }
+    val offsetX = remember(track.id) { Animatable(0f) }
+    val scope = rememberCoroutineScope()
     Row(
         Modifier
             .fillMaxWidth()
+            .graphicsLayer { translationX = offsetX.value }
+            .then(if (onSwipeRemove != null) Modifier.pointerInput(track.id) {
+                detectHorizontalDragGestures(
+                    onDragEnd = {
+                        scope.launch {
+                            if (offsetX.value >= thresholdPx) onSwipeRemove?.invoke()
+                            else offsetX.animateTo(0f, tween(160))
+                        }
+                    },
+                    onHorizontalDrag = { change, dragAmount ->
+                        change.consume()
+                        scope.launch { offsetX.snapTo((offsetX.value + dragAmount).coerceAtLeast(0f)) }
+                    },
+                )
+            } else Modifier)
             .clip(RoundedCornerShape(10.dp))
             .clickable(enabled = !isCurrent && !vm.qEdit) {
                 entry?.let { vm.player.seekToQueueIndex(it.index) }
@@ -1894,9 +1926,17 @@ private fun AlbumEditDialogs(vm: MainViewModel, trackEditFor: Long?, onTrackEdit
             // first track id — stable across recompositions while dialog is open).
             var candidates by remember(first?.id) { mutableStateOf<List<ArtCache.Candidate>>(emptyList()) }
             var candidatesLoading by remember(first?.id) { mutableStateOf(true) }
+            var candBatch by remember(first?.id) { mutableStateOf(0) }
+            var candHasMore by remember(first?.id) { mutableStateOf(true) }
+            var candLoadingMore by remember(first?.id) { mutableStateOf(false) }
+            val candScope = rememberCoroutineScope()
             LaunchedEffect(first?.id) {
                 candidatesLoading = true
-                candidates = first?.let { ArtCache.loadCandidates(it) } ?: emptyList()
+                candBatch = 0
+                candHasMore = true
+                val r = first?.let { ArtCache.loadCandidates(it, offset = 0, limit = 8) } ?: emptyList()
+                candidates = r
+                candHasMore = r.size >= 8
                 candidatesLoading = false
             }
             androidx.compose.material3.AlertDialog(
@@ -1914,7 +1954,8 @@ private fun AlbumEditDialogs(vm: MainViewModel, trackEditFor: Long?, onTrackEdit
                             Box(
                                 Modifier
                                     .fillMaxWidth()
-                                    .heightIn(max = 260.dp)
+                                    .heightIn(max = 280.dp)
+                                    .verticalScroll(rememberScrollState())
                             ) {
                                 if (candidatesLoading) {
                                     Text("正在搜索候选封面…", style = body(12f, FontWeight.Normal, c.n500))
@@ -1932,8 +1973,31 @@ private fun AlbumEditDialogs(vm: MainViewModel, trackEditFor: Long?, onTrackEdit
                                                 vm.albumCoverEdit = false
                                             }
                                         }
+                                        if (candLoadingMore) {
+                                            Text("加载中…", style = body(11f, FontWeight.Normal, c.n500), modifier = Modifier.padding(8.dp))
+                                        }
                                     }
                                 }
+                            }
+                            if (!candidatesLoading && candidates.isNotEmpty() && candHasMore) {
+                                androidx.compose.material3.TextButton(
+                                    onClick = {
+                                        candScope.launch {
+                                            candLoadingMore = true
+                                            val nb = candBatch + 1
+                                            val r = first?.let { ArtCache.loadCandidates(it, offset = nb * 8, limit = 8) } ?: emptyList()
+                                            val newOnes = r.filter { nc -> candidates.none { it.artUrl == nc.artUrl } }
+                                            if (newOnes.isNotEmpty()) {
+                                                candidates = candidates + newOnes
+                                                candBatch = nb
+                                            }
+                                            candHasMore = r.size >= 8 && newOnes.isNotEmpty()
+                                            candLoadingMore = false
+                                        }
+                                    },
+                                    enabled = !candLoadingMore,
+                                    modifier = Modifier.padding(top = 2.dp),
+                                ) { Text(if (candLoadingMore) "加载中…" else "下一批", style = body(13f, FontWeight.SemiBold, c.a700)) }
                             }
                         }
                         Spacer(Modifier.height(0.dp))

@@ -32,11 +32,19 @@ import kotlin.math.sqrt
  *   - pop_threshold = 0.10 if foundation chroma >= 80 (strong color)
  *   - pop_threshold = 0.05 otherwise (weak/neutral foundation)
  *
+ * ## v6 Neon accent boost (weak foundation only)
+ *
+ * 弱/中性 foundation（奶白/深灰）下，封面里小面积但极鲜亮的"霓虹"簇
+ * （封面的视觉主角，常仅 ~4% 面积）会卡在 5% areaGate 被杀，让面积更大
+ * 但低饱和的"普通色调"（衣服、棕褐）抢走 accent。v7 在弱+暗 foundation 下对
+ * 饱和度 ≥ 0.55 的霓虹簇：放宽 area 门槛到 3%、chroma 项 ×1.3，使其能竞争。
+ * 仅弱+暗 foundation 触发（亮底不压暗）；v4"强彩色封面上的小贴纸"修复（10% 门槛）保持不动。
+ *
  * ## 最终 bg 生成
  *
  * - 有 accent: bgH = accent hue, bgS = min(accent sat × 0.6, 0.85),
- *   bgV = max(foundation V × 0.7, 0.35) → brightness floor → resolvePair
- * - 无 accent: bg = foundation → brightness floor → resolvePair
+ *   bgV = foundation V (v7 mood-preserving, clamped [0.30, 0.93]) → resolvePair
+ * - 无 accent: bg = foundation 原色（vivid 底保持其色，不被低 chroma accent 搅灰）→ resolvePair
  *
  * resolvePair 保证 fg 对比度 ≥ 4.5:1，只调 V 不调 hue/saturation。
  */
@@ -57,12 +65,28 @@ object PaletteExtractor {
         val accentHsv: FloatArray = floatArrayOf(0f, 0f, 0f),
         val hasAccent: Boolean = false,
     )
+    /**
+     * 单簇诊断明细。除最终 [score] 外，携带三维度中间值与各 gate，
+     * 供图像诊断 harness 打印"为什么这个簇赢/输"。不参与评分公式本身。
+     */
     data class SwatchDetail(
         val rgb: Int,
         val population: Int,
         val populationShare: Float,
         val score: Float,
         val isChosen: Boolean,
+        val isFoundation: Boolean = false,
+        // 三维度（与顶部公式对应）：dominance / chroma / darkness(=亮度对比)
+        val chromaNorm: Float = 0f,
+        val brightnessContrast: Float = 0f,
+        val rawScore: Float = 0f,
+        // 各 gate（1=放行, 0=杀死）
+        val extremePenalty: Float = 1f,
+        val chromaGate: Float = 1f,
+        val areaGate: Float = 1f,
+        // 霓虹诊断：HSV 饱和度与是否命中 v6 霓虹加权
+        val saturation: Float = 0f,
+        val neonBoostApplied: Boolean = false,
     )
 
     private const val MIN_CONTRAST = 4.5f
@@ -75,14 +99,21 @@ object PaletteExtractor {
     /** preMerge: squared-RGB distance under which two swatches merge. */
     private const val MERGE_SQ_DISTANCE = 1500f
 
-    /** Brightness floor: final bg V lifted to this if below (hue preserved). */
-    private const val MIN_VALUE_FLOOR = 0.45f
+    /** Brightness floor: final bg V lifted to this if below (hue preserved).
+     *  v7: lowered 0.45→0.30 so dark/moody covers stay dark ("该暗可偏暗"). */
+    private const val MIN_VALUE_FLOOR = 0.30f
 
     /** Accent score threshold: score must exceed this for accent to be selected. */
     private const val ACCENT_SCORE_THRESHOLD = 0.05f
 
     /** Foundation chroma at/above which the accent population threshold is raised. */
     private const val STRONG_FOUNDATION_CHROMA = 80f
+
+    /** v9: a foundation at/above this chroma is a "real color" (blue/gold/red…)
+     *  and wins — an accent never overrides it (no small-accent hijacking: a 60%
+     *  blue cover with a 15% yellow sticker stays blue). Below this the foundation
+     *  is a neutral/colorless backdrop and a vivid accent provides the color. */
+    private const val FOUNDATION_COLOR_THRESHOLD = 40f
 
     /** Population threshold for accent when foundation is weak/neutral. */
     private const val WEAK_FOUNDATION_POP_THRESHOLD = 0.05f
@@ -98,13 +129,40 @@ object PaletteExtractor {
     private const val W_CHROMA = 0.35f
     private const val W_BRIGHTNESS_CONTRAST = 0.25f
 
-    /** bg saturation cap (accent sat × 0.6, capped). */
-    private const val BG_SAT_RATIO = 0.6f
+    // ── v6 Neon accent boost (parameter-level patch, not an architecture change) ──
+    // Problem: on weak/neutral foundations (cream, dark grey), a small but very
+    // vivid "neon" cluster (the cover's visual star, often ~4% area) falls under
+    // the 5% area gate and is killed, letting a larger but desaturated "ordinary"
+    // color (clothes, tan) steal the accent. Symmetrically, the v4 fix for
+    // "small yellow sticker on a strong blue cover" must still hold — so the
+    // boost is gated to WEAK foundations only. There the yellow-sticker case
+    // (strong blue foundation) is untouched (its 10% gate still kills the sticker).
+    /** HSV saturation at/above which a cluster counts as "neon" (vivid). */
+    private const val NEON_SAT_THRESHOLD = 0.55f
+    /** Relaxed area floor for neon clusters when the foundation is weak (vs 5%). */
+    private const val NEON_POP_THRESHOLD = 0.03f
+    /** chroma term multiplier for neon clusters when the foundation is weak. */
+    private const val NEON_CHROMA_BOOST = 1.3f
+    /** v7: neon boost fires only on weak + DARK foundations (foundation V <= this).
+     *  Light/pastel foundations keep their own color — the accent path darkens
+     *  (foundationV * 0.7), which muddies a pretty light bg. */
+    private const val NEON_DARK_FOUNDATION_V = 0.45f
+    /** v7: on strong (vivid) foundations, an accent must clear this chroma bar
+     *  (not the lenient 40) so a low-chroma cream/off-white can't steal the hue
+     *  and muddy a vivid red/blue foundation to grey. */
+    private const val STRONG_ACCENT_CHROMA = 80f
+
+    /** bg saturation = accent sat × 0.7 (v8: slightly more vivid toward "neon"),
+     *  capped. Accent path only — no-accent path keeps the foundation verbatim. */
+    private const val BG_SAT_RATIO = 0.7f
     private const val BG_SAT_MAX = 0.85f
 
-    /** bg value from foundation (foundation V × 0.7, min 0.35). */
-    private const val BG_V_RATIO = 0.7f
-    private const val BG_V_MIN = 0.35f
+    /** v8: a bright accent (neon) lifts the bg V by this fraction of its own V,
+     *  so a neon on a dark foundation glows instead of muddying to dark. */
+    private const val NEON_GLOW_V_RATIO = 0.6f
+
+    /** bg V clamped to [MIN_VALUE_FLOOR, BG_V_MAX]. */
+    private const val BG_V_MAX = 0.93f
 
     fun extract(
         bitmap: Bitmap?,
@@ -115,9 +173,19 @@ object PaletteExtractor {
         val swatches = palette.swatches
             .filter { it.population > 0 }
             .map { SwatchData(it.rgb, it.population) }
-        if (swatches.isEmpty()) return ColorPair(FALLBACK_BG_DARK, WHITE_TEXT)
-        val chosen = scoreSwatches(swatches)
-        return resolvePair(chosen)
+        if (swatches.isEmpty()) {
+            android.util.Log.d("PaletteTrace", "extract: no swatches → fallback")
+            return ColorPair(FALLBACK_BG_DARK, WHITE_TEXT)
+        }
+        val diag = scoreSwatchesWithDiag(swatches)
+        android.util.Log.d(
+            "PaletteTrace",
+            "extract swatches=${swatches.size} " +
+                "foundation=${Integer.toHexString(diag.foundationRgb)}(${diag.foundationHsv.contentToString()}) " +
+                "accent=${if (diag.hasAccent) Integer.toHexString(diag.accentRgb) else "NONE"}(${diag.accentHsv.contentToString()}) " +
+                "chosen=${Integer.toHexString(diag.chosenRgb)} finalBg=${Integer.toHexString(diag.finalBg)}",
+        )
+        return resolvePair(diag.finalBg)
     }
 
     internal fun scoreSwatches(swatches: List<SwatchData>): Int {
@@ -141,6 +209,9 @@ object PaletteExtractor {
         // ── Step 2: dynamic population threshold based on foundation chroma ──
         val popThreshold = if (foundationChroma >= STRONG_FOUNDATION_CHROMA)
             STRONG_FOUNDATION_POP_THRESHOLD else WEAK_FOUNDATION_POP_THRESHOLD
+        // v6/v7: neon boost applies only on weak + DARK foundations.
+        val weakFoundation = foundationChroma < STRONG_FOUNDATION_CHROMA
+        val darkFoundation = foundationHsv[2] < NEON_DARK_FOUNDATION_V
 
         // ── Step 3: score each non-foundation cluster for Visual Accent ──
         val details = ArrayList<SwatchDetail>()
@@ -149,7 +220,15 @@ object PaletteExtractor {
 
         for (sw in merged) {
             if (sw.rgb == foundationRgb) {
-                details.add(SwatchDetail(sw.rgb, sw.population, sw.population / totalPop, 0f, false))
+                details.add(SwatchDetail(
+                    rgb = sw.rgb, population = sw.population,
+                    populationShare = sw.population / totalPop,
+                    score = 0f, isChosen = false,
+                    isFoundation = true,
+                    chromaNorm = (chromaOf(sw.rgb) / 255f).coerceIn(0f, 1f),
+                    brightnessContrast = 0f,
+                    saturation = rgbToHsv(sw.rgb)[1],
+                ))
                 continue
             }
             val share = (sw.population / totalPop).coerceIn(0f, 1f)
@@ -159,13 +238,30 @@ object PaletteExtractor {
             val v = hsv[2]; val s = hsv[1]
             // Extreme penalty: near-black or near-white → 0
             val ep = if (v < 0.08f || (v > 0.95f && s < 0.05f)) 0f else 1f
-            // Chroma gate: prevent white/grey from being selected as accent
-            val cg = if (chromaOf(sw.rgb) >= COLOR_CANDIDATE_CHROMA) 1f else 0f
-            // Hard area gate
-            val ag = if (share >= popThreshold) 1f else 0f
-            val rawScore = W_SHARE * share + W_CHROMA * cn + W_BRIGHTNESS_CONTRAST * bc
+            // Chroma gate: weak foundations use the lenient 40; strong (vivid)
+            // foundations raise to STRONG_ACCENT_CHROMA so a low-chroma cream can't
+            // steal the hue and muddy a vivid red/blue foundation to grey.
+            val accentChromaGate = if (weakFoundation) COLOR_CANDIDATE_CHROMA else STRONG_ACCENT_CHROMA
+            val cg = if (chromaOf(sw.rgb) >= accentChromaGate) 1f else 0f
+            // v6 neon boost (weak foundation only): a vivid "neon" cluster that
+            // is the cover's visual star but small in area would otherwise fall
+            // under the area gate and lose to a larger desaturated "ordinary"
+            // color. Relax its area floor and boost its chroma term so it can
+            // compete. Gated to weak foundations so the v4 fix for "small vivid
+            // sticker on a strong-colored cover" (10% gate) is left untouched.
+            val isNeon = weakFoundation && darkFoundation && ep == 1f && s >= NEON_SAT_THRESHOLD
+            val areaThreshold = if (isNeon) NEON_POP_THRESHOLD else popThreshold
+            val ag = if (share >= areaThreshold) 1f else 0f
+            val chromaTerm = cn * (if (isNeon) NEON_CHROMA_BOOST else 1f)
+            val rawScore = W_SHARE * share + W_CHROMA * chromaTerm + W_BRIGHTNESS_CONTRAST * bc
             val score = rawScore * ep * cg * ag
-            details.add(SwatchDetail(sw.rgb, sw.population, share, score, false))
+            details.add(SwatchDetail(
+                rgb = sw.rgb, population = sw.population,
+                populationShare = share, score = score, isChosen = false,
+                chromaNorm = cn, brightnessContrast = bc, rawScore = rawScore,
+                extremePenalty = ep, chromaGate = cg, areaGate = ag,
+                saturation = s, neonBoostApplied = isNeon,
+            ))
             if (score > bestAccentScore) {
                 bestAccentScore = score
                 bestAccent = sw
@@ -177,18 +273,21 @@ object PaletteExtractor {
         val accentHsv = rgbToHsv(accentRgb)
 
         // ── Step 4: generate final bg ──
-        val chosenRgb: Int
-        if (hasAccent) {
-            // bg hue = accent hue, sat reduced, V from foundation (darker for readability)
-            chosenRgb = generateBg(foundationRgb, accentRgb)
-        } else {
-            chosenRgb = foundationRgb
-        }
+        // v9: "dominant real color wins". The accent overrides the foundation's
+        // hue ONLY when the foundation is a neutral/colorless backdrop (chroma <
+        // FOUNDATION_COLOR_THRESHOLD). A colored foundation — blue, gold, red —
+        // IS the cover's tone and wins regardless of a smaller accent (no more
+        // small-accent hijacking: 60% blue + 15% yellow → blue). A neutral/dark
+        // backdrop lets a vivid accent (neon) provide the color.
+        val useAccent = hasAccent && foundationChroma < FOUNDATION_COLOR_THRESHOLD
+        val chosenRgb = if (useAccent) generateBg(foundationRgb, accentRgb) else foundationRgb
 
-        // Mark chosen in details
+        // Mark chosen in details (foundation when no override, else the accent)
         for (i in details.indices) {
-            if (details[i].rgb == chosenRgb || (!hasAccent && details[i].rgb == foundationRgb)) {
-                details[i] = details[i].copy(isChosen = true); break
+            val sw = details[i]
+            if ((!useAccent && sw.rgb == foundationRgb) ||
+                (useAccent && bestAccent?.rgb == sw.rgb)) {
+                details[i] = sw.copy(isChosen = true); break
             }
         }
 
@@ -208,12 +307,16 @@ object PaletteExtractor {
     }
 
     /** Generate bg from foundation (value) + accent (hue/sat). */
-    private fun generateBg(foundationRgb: Int, accentRgb: Int): Int {
+    /** Generate bg: hue/sat from [hueRgb] (accent if present, else foundation).
+     *  v8: bgV = max(foundationV, hueRgbV × NEON_GLOW_V_RATIO) — a bright accent
+     *  (neon) lifts the bg into a glow instead of dragging it to the dark
+     *  foundation's mood. A dark/moody accent or light foundation keeps mood. */
+    private fun generateBg(foundationRgb: Int, hueRgb: Int): Int {
         val fHsv = rgbToHsv(foundationRgb)
-        val aHsv = rgbToHsv(accentRgb)
-        val bgH = aHsv[0]
-        val bgS = (aHsv[1] * BG_SAT_RATIO).coerceAtMost(BG_SAT_MAX)
-        val bgV = (fHsv[2] * BG_V_RATIO).coerceAtLeast(BG_V_MIN)
+        val hHsv = rgbToHsv(hueRgb)
+        val bgH = hHsv[0]
+        val bgS = (hHsv[1] * BG_SAT_RATIO).coerceAtMost(BG_SAT_MAX)
+        val bgV = maxOf(fHsv[2], hHsv[2] * NEON_GLOW_V_RATIO).coerceIn(MIN_VALUE_FLOOR, BG_V_MAX)
         return hsvToRgb(floatArrayOf(bgH, bgS, bgV))
     }
 

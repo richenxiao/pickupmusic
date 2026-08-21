@@ -11,11 +11,12 @@ private const val SPEED_STEP = 0.05f
 private const val SPEED_MIN = 0.5f
 private const val SPEED_MAX = 2.0f
 
-/** 把用户输入文本解析为 [0.5, 2.0] 内、0.05 量化的速度；非法或越界返回 null。 */
+/** 输入框用：解析任意合法浮点速度，只做范围/合法性校验，**不量化**。
+ *  1.27→1.27、1.333→1.333、1.01→1.01。越界/非数字返回 null。 */
 fun parseSpeedInput(input: String): Float? {
     val v = input.trim().toFloatOrNull() ?: return null
     if (!v.isFinite() || v < SPEED_MIN || v > SPEED_MAX) return null
-    return quantizeSpeed(v)
+    return v
 }
 
 /** 把任意浮点速度量化到 0.05 网格并夹回 [0.5, 2.0]（用于滑块拖动）。 */

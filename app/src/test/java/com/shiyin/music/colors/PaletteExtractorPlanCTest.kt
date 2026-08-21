@@ -54,15 +54,15 @@ class PaletteExtractorPlanCTest {
         assertTrue("不应被提亮成灰白 V=$v", v < 0.85f)
     }
 
-    // ── 2. 深蓝 + 黄12% → 偏暗黄色 ──
-    @Test fun darkBlue_yellow12_darkYellow() {
+    // ── 2. 深蓝 + 黄12% → v9 蓝主色赢，黄不抢 ──
+    @Test fun darkBlue_yellow12_staysBlue() {
         val sw = listOf(
             SwatchData(0x1A2A4E.toInt(), 4000), SwatchData(0x1E3258.toInt(), 2000),
             SwatchData(0x162548.toInt(), 1000), SwatchData(0xFADC28.toInt(), 1000),
         )
         val bg = PaletteExtractor.scoreSwatches(sw)
         val h = hueOf(bg)
-        assertTrue("应偏黄/暖 H=$h bg=${Integer.toHexString(bg)}", h < 75f)
+        assertTrue("蓝主色应保持蓝（hue 195-270），黄不抢，实际 H=$h bg=${Integer.toHexString(bg)}", isBlue(h))
     }
 
     // ── 3. 奶油 + 暖橙 → 暖色 ──
@@ -149,16 +149,15 @@ class PaletteExtractorPlanCTest {
             isRed(hueOf(bg)) || isPurple(hueOf(bg)))
     }
 
-    // ── 11. 蓝85% + 黄12% → 黄 accent 的 hue 在最终 bg 中 ──
-    @Test fun blue85_yellow12_accentHueInBg() {
+    // ── 11. 蓝85% + 黄12% → v9 蓝主色赢，黄不 override ──
+    @Test fun blue85_yellow12_staysBlue() {
         val sw = listOf(
             SwatchData(0x1A2A4E.toInt(), 4000), SwatchData(0x1E3258.toInt(), 2000),
             SwatchData(0x162548.toInt(), 1000), SwatchData(0xFADC28.toInt(), 1000),
         )
         val diag = PaletteExtractor.scoreSwatchesWithDiag(sw)
         val bgH = hueOf(diag.finalBg)
-        assertTrue("最终 bg 应有黄色 accent H=$bgH", bgH < 90f)
-        assertTrue("accent 应被选中", diag.hasAccent)
+        assertTrue("蓝主色应保持蓝（hue 195-270），黄不抢，实际 H=$bgH", isBlue(bgH))
     }
 
     // ── 12. resolvePair 不改变 hue ──

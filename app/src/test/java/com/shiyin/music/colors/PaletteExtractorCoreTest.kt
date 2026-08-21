@@ -65,27 +65,26 @@ class PaletteExtractorCoreTest {
         )
     }
 
-    /** Same shape but without pre-merge protection would let yellow win —
-     *  guards against a future regression that drops the clustering step. */
+    /** v9: 蓝 foundation（合并后 chroma~144，主色）赢，33% 黄不 override
+     *  （旧 v4 行为是"大块黄抢蓝"，现按"主色赢/整体"原则改为蓝）。 */
     @Test
-    fun splitBlueVersusConcentratedYellow_clusterSumBeatsAccent() {
-        // Two blue swatches only just within merge distance, one yellow accent
-        // whose single-swatch dominance ties each blue individually.
+    fun splitBlueVersusConcentratedYellow_dominantBlueWins() {
         val swatches = listOf(
             SwatchData(0x285AC8.toInt(), 1500),
             SwatchData(0x2C5ECC.toInt(), 1500), // merges with above (sq < 400)
             SwatchData(0xFADC28.toInt(), 1500), // equal pop, far higher chroma
         )
         val chosen = PaletteExtractor.scoreSwatches(swatches)
-        assertTrue("Plan C: 33%% yellow > 10%% strong threshold → yellow accent, got ${Integer.toHexString(chosen)}", hueOf(chosen) < 75f)
+        assertTrue("蓝主色应赢，33%%黄不抢，got ${Integer.toHexString(chosen)}", isBluish(chosen))
     }
 
     /** Dark-purple cover previously produced a muddy grey-purple bg. The
-     *  min-brightness floor must lift it so the bg reads brighter.
-     *  v4: floor raised from 0.30 to 0.45, so expected max channel ~115. */
+     *  min-brightness floor lifts it off pure-black so the bg reads.
+     *  v7: floor lowered 0.45→0.30 (dark/moody covers stay dark), so expected
+     *  max channel ~76, not ~115. */
     @Test
     fun darkPurple_liftedToFloor() {
-        val darkPurple = 0x2D1438.toInt() // HSV value ≈ 0.235, below 0.45 floor
+        val darkPurple = 0x2D1438.toInt() // HSV value ≈ 0.235, below 0.30 floor
         val before = maxChannel(darkPurple)
 
         val chosen = PaletteExtractor.scoreSwatches(listOf(SwatchData(darkPurple, 1000)))
@@ -95,8 +94,8 @@ class PaletteExtractorCoreTest {
             maxChannel(chosen) > before,
         )
         assertTrue(
-            "expected the lifted bg to reach at least the value floor (~115), got ${maxChannel(chosen)}",
-            maxChannel(chosen) >= 100,
+            "expected the lifted bg to reach the v7 floor (~76), got ${maxChannel(chosen)}",
+            maxChannel(chosen) >= 70,
         )
         // Hue preserved: purple is b-max, r next, g-min — channel ordering holds.
         val b = chosen and 0xFF

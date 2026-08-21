@@ -83,6 +83,9 @@ fun LyricsScreen(vm: MainViewModel) {
     val isResolved = raw != fallbackPair
     val artBg = if (isResolved) raw.first else Color(0xFF2A2A2E)
     val LyricText = if (isResolved) raw.second else Color.White
+    androidx.compose.runtime.LaunchedEffect(track.id, isResolved) {
+        android.util.Log.d("PaletteTrace", "LyricsScreen track=${track.id} albumId=${track.albumId} resolved=$isResolved artBg=$artBg fg=$LyricText")
+    }
     val dimC = LyricText.copy(alpha = 0.55f)
     val artFg = LyricText // fg end (white on dark / dark-grey on light) — paint everywhere
     val btnBg = LyricText.copy(alpha = 0.14f)
