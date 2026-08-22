@@ -15,8 +15,8 @@ android {
         applicationId = "com.shiyin.music"
         minSdk = 31
         targetSdk = 36
-        versionCode = 10100
-        versionName = "1.1.0"
+        versionCode = 10200
+        versionName = "1.2.0"
     }
 
     signingConfigs {
@@ -41,7 +41,16 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            // v1.2.0 阶段一：开启 R8 裁剪，剔除 material-icons-extended ~24MB 未引用图标与死代码。
+            // 配合 app/proguard-rules.pro 保护 Kuromoji/Gson/Room/Media3 等反射依赖。
+            // proguard-android.txt 自带 -dontoptimize（不开优化 pass，最稳）；混淆开，
+            // mapping.txt 输出用于反混淆崩溃栈。Kuromoji 33MB 词表为 JAR 资源，不受影响。
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android.txt"),
+                "proguard-rules.pro"
+            )
             signingConfig = signingConfigs.getByName("release")
         }
     }
