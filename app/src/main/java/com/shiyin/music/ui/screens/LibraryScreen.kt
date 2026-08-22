@@ -8,6 +8,7 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -16,6 +17,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -34,11 +36,13 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -54,6 +58,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.shiyin.music.MainViewModel
@@ -77,6 +82,8 @@ import com.shiyin.music.ui.components.trackSubtitle
 import com.shiyin.music.ui.icons.Lucide
 import com.shiyin.music.ui.theme.Caprasimo
 import com.shiyin.music.ui.theme.LocalOrganic
+import kotlin.math.roundToInt
+import kotlinx.coroutines.launch
 
 /** v1.7 unified per-row ⋮ button. */
 @Composable
@@ -152,6 +159,105 @@ fun BackButton(onClick: () -> Unit) {
 
 private val screenPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 22.dp, bottom = 130.dp)
 
+/**
+ * v1.2.0 #7: 音乐库 fast-scroll 滑动条。
+ *
+ * 大库（上千首）拖列表内容太慢——这里改成 drag-to-index：拖 thumb 到哪，
+ * 列表直接 [androidx.compose.foundation.lazy.LazyListState.scrollToItem] 到对应
+ * index，一拖到底即跳末尾。
+ *
+ * 轨放在 LazyColumn 的 20dp 右内边距槽（[screenPadding] end=20）里：行尾的
+ * ⋮/chevron 在那 20dp 内缩区，故轨不压到任何可点按钮。内容不超过视口
+ * （无需滚动）时整条不渲染，零点击区占用。
+ *
+ * thumb 显示位置用「(首可见 index + 该 item 已滚比例) / 总数」近似——等高列表
+ * 精准，非等高足以快速定位；拖动期间改由 thumb 自身位置驱动 scrollToItem，跟手。
+ */
+@Composable
+private fun FastScrollRail(
+    listState: androidx.compose.foundation.lazy.LazyListState,
+    modifier: Modifier = Modifier,
+) {
+    val c = LocalOrganic.current
+    val density = LocalDensity.current
+    val scope = rememberCoroutineScope()
+    val layoutInfo = listState.layoutInfo
+    val total = layoutInfo.totalItemsCount
+    // 内容不超过视口 → 无需 fast scroll，不渲染（避免零余点击区压到下层）。
+    if (!(listState.canScrollForward || listState.canScrollBackward) || total <= 1) return
+
+    val viewportPx = (layoutInfo.viewportEndOffset - layoutInfo.viewportStartOffset).coerceAtLeast(0)
+    val thumbHDp = 30.dp
+    val railWDp = 3.dp
+    val thumbWDp = 14.dp
+    val touchWDp = 16.dp
+    val thumbPx = with(density) { thumbHDp.toPx() }
+    val movablePx = (viewportPx - thumbPx).coerceAtLeast(0f)
+
+    // 读 live total（layoutInfo 是 state-backed），避免 capture 旧值。
+    val viewProgress by remember {
+        derivedStateOf {
+            val t = listState.layoutInfo.totalItemsCount
+            if (t <= 1) 0f else {
+                val fi = listState.firstVisibleItemIndex
+                val fo = listState.firstVisibleItemScrollOffset
+                val first = listState.layoutInfo.visibleItemsInfo.firstOrNull()
+                val fine = if (first != null && first.size > 0) fo.toFloat() / first.size else 0f
+                ((fi + fine) / t).coerceIn(0f, 1f)
+            }
+        }
+    }
+
+    var isDragging by remember { mutableStateOf(false) }
+    var dragPos by remember { mutableFloatStateOf(0f) } // drag 期间 thumb 顶 px
+    val thumbTopPx = if (isDragging) dragPos else viewProgress * movablePx
+
+    Box(
+        modifier
+            .fillMaxHeight()
+            .width(touchWDp)
+            .pointerInput(total) {
+                val railPx = size.height.toFloat()
+                val mv = (railPx - thumbPx).coerceAtLeast(0f)
+                detectDragGestures(
+                    onDragStart = { offset ->
+                        isDragging = true
+                        dragPos = (offset.y - thumbPx / 2f).coerceIn(0f, mv)
+                        val idx = ((dragPos / mv) * total).toInt().coerceIn(0, total - 1)
+                        scope.launch { listState.scrollToItem(idx) }
+                    },
+                    onDrag = { change, dragAmount ->
+                        change.consume()
+                        dragPos = (dragPos + dragAmount.y).coerceIn(0f, mv)
+                        val idx = ((dragPos / mv) * total).toInt().coerceIn(0, total - 1)
+                        scope.launch { listState.scrollToItem(idx) }
+                    },
+                    onDragEnd = { isDragging = false },
+                    onDragCancel = { isDragging = false },
+                )
+            },
+    ) {
+        // 视觉轨（细竖线）
+        Box(
+            Modifier
+                .align(Alignment.Center)
+                .fillMaxHeight()
+                .width(railWDp)
+                .clip(CircleShape)
+                .background(if (isDragging) c.n400 else c.n200),
+        )
+        // thumb（圆角条，跟手移动）
+        Box(
+            Modifier
+                .align(Alignment.TopCenter)
+                .offset { IntOffset(0, thumbTopPx.roundToInt()) }
+                .size(width = thumbWDp, height = thumbHDp)
+                .clip(CircleShape)
+                .background(if (isDragging) c.n500 else c.n400),
+        )
+    }
+}
+
 @Composable
 fun LibraryScreen(vm: MainViewModel) {
     // 7-B: hoist the root LazyListState so AnimatedContent can tear down/rebuild
@@ -173,7 +279,12 @@ fun LibraryScreen(vm: MainViewModel) {
             key.startsWith("pl:") -> PlaylistDetail(vm, key.removePrefix("pl:"))
             key.startsWith("alb:") -> AlbumDetail(vm, key.removePrefix("alb:"))
             key.startsWith("art:") -> ArtistDetail(vm, key.removePrefix("art:"))
-            else -> LibraryRoot(vm, rootListState)
+            else -> {
+                Box(Modifier.fillMaxSize()) {
+                    LibraryRoot(vm, rootListState)
+                    FastScrollRail(rootListState, Modifier.align(Alignment.CenterEnd))
+                }
+            }
         }
     }
 }
