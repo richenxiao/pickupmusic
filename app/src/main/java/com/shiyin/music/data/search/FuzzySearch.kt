@@ -122,24 +122,69 @@ object FuzzySearch {
         val folderRanges: List<IntRange> = emptyList(),
     )
 
-    /** 在曲库上执行模糊搜索：标题 > 歌手 > 专辑 > 文件夹 加权，按相关度排序。 */
+    /**
+     * v1.2.0 #8: 分词搜索。查询按非字母数字字符（空白、- – — · / 等含全角）
+     * 切成 token，每个 token 独立匹配「标题/歌手/专辑/文件夹」任一字段即算该
+     * token 命中——这样「周杰伦-黑色幽默」能由「周杰伦」(歌手) × 「黑色幽默」
+     * (标题) 命中本作，不再因整串当一 token 而漏掉。所有 token 都须至少命中一
+     * 字段才算该曲目命中。单字段内多 token 顺序匹配仍由 [match] 保留供他用。
+     */
+    private fun tokenize(query: String): List<String> =
+        query.split(Regex("[^\\p{L}\\p{N}]+")).map { norm(it).text }.filter { it.isNotEmpty() }
+
+    /** 单 token 对单字段的命中（null = 不命中）。 */
+    private fun matchTokenInField(token: String, nf: Norm): Match? {
+        if (token.isEmpty() || nf.text.isEmpty()) return null
+        if (token == nf.text) return Match(1000, listOf(nf.rawIndex[0]..nf.rawIndex[nf.text.length - 1]))
+        val at = nf.text.indexOf(token)
+        if (at >= 0) {
+            val prefixBonus = if (at == 0) 100 else 0
+            return Match(800 + prefixBonus, listOf(nf.rawIndex[at]..nf.rawIndex[at + token.length - 1]))
+        }
+        val win = bestWindow(nf.text, token, 0)
+            ?: return null
+        return Match(600, listOf(nf.rawIndex[win.first]..nf.rawIndex[win.second - 1]))
+    }
+
+    /**
+     * 在曲库上执行模糊搜索：每个 token 须命中至少一个字段，标题(×4) > 歌手(×3)
+     * > 专辑(×2) > 文件夹(×1) 加权求和，按相关度排序。
+     */
     fun search(tracks: List<Track>, query: String): List<SearchHit> {
         if (query.isBlank() || tracks.isEmpty()) return emptyList()
+        val tokens = tokenize(query)
+        if (tokens.isEmpty()) return emptyList()
         val hits = ArrayList<SearchHit>(tracks.size / 4)
         for (t in tracks) {
-            val mt = match(query, t.title)
-            val ma = match(query, t.artist)
-            val mal = match(query, t.album)
-            val mf = match(query, t.folder)
-            if (mt == null && ma == null && mal == null && mf == null) continue
-            val score = (mt?.score ?: 0) * 4 + (ma?.score ?: 0) * 3 + (mal?.score ?: 0) * 2 + (mf?.score ?: 0)
-            hits += SearchHit(
-                track = t, score = score,
-                titleRanges = mt?.ranges ?: emptyList(),
-                artistRanges = ma?.ranges ?: emptyList(),
-                albumRanges = mal?.ranges ?: emptyList(),
-                folderRanges = mf?.ranges ?: emptyList(),
-            )
+            val nfTitle = norm(t.title)
+            val nfArtist = norm(t.artist)
+            val nfAlbum = norm(t.album)
+            val nfFolder = norm(t.folder)
+            var score = 0
+            val titleRanges = ArrayList<IntRange>()
+            val artistRanges = ArrayList<IntRange>()
+            val albumRanges = ArrayList<IntRange>()
+            val folderRanges = ArrayList<IntRange>()
+            var ok = true
+            for (token in tokens) {
+                val mt = matchTokenInField(token, nfTitle)
+                val ma = matchTokenInField(token, nfArtist)
+                val mal = matchTokenInField(token, nfAlbum)
+                val mf = matchTokenInField(token, nfFolder)
+                if (mt == null && ma == null && mal == null && mf == null) { ok = false; break }
+                score += (mt?.score ?: 0) * 4 + (ma?.score ?: 0) * 3 + (mal?.score ?: 0) * 2 + (mf?.score ?: 0)
+                mt?.let { titleRanges += it.ranges }
+                ma?.let { artistRanges += it.ranges }
+                mal?.let { albumRanges += it.ranges }
+                mf?.let { folderRanges += it.ranges }
+            }
+            if (ok) {
+                hits += SearchHit(
+                    track = t, score = score,
+                    titleRanges = titleRanges, artistRanges = artistRanges,
+                    albumRanges = albumRanges, folderRanges = folderRanges,
+                )
+            }
         }
         hits.sortByDescending { it.score }
         return hits
