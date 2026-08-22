@@ -6,27 +6,23 @@ import java.security.MessageDigest
 /**
  * v1.2.0 阶段二：iTunes 下载封面字节的磁盘缓存（filesDir/cover_cache/）。
  *
- * 设计：
- * - 键 = artUrl 的 SHA-1 hex（稳定，不受 px 变化影响）；值 = 原始下载字节
- *   （iTunes hqUrl 上采样后的高清字节，不同 px 请求同一 artUrl 共享一份，
- *    调用方解码后按需 scale，命中率高）。
- * - 不维护 albumId↔artUrl 映射（重启会丢）。[ArtCache.invalidateAlbum]
- *   失效内存/颜色缓存时不动磁盘——旧 artUrl 文件成孤儿，由大小上限 + LRU
- *   自然淘汰，保持简单、不耦合 albumId。
- * - 上限 ~50MB，超限时按 lastModified（访问时间）淘汰最旧文件。磁盘缓存本就是
- *   “尽力而为”的加速层，淘汰不影响正确性（未命中则联网下）。
+ * v1.2.0 修正：key 必须含分辨率 bucket（1024/384/160），不同分辨率分开存文件。
+ * 之前 key 不分 bucket → 首次小图(160)下载的低分辨率字节被大图(1024)请求当
+ * 命中读回 → 大图用了 160 低分辨率（封面糊）。现在各分辨率独立，大图永远高清，
+ * 小图单独存（多占点空间无所谓，质量优先）。
  *
- * 线程安全：所有方法内部 synchronized。ArtCache 在 IO 调度器调用，传 Context。
+ * 无 albumId↔artUrl 映射——invalidateAlbum 后旧 artUrl 文件成孤儿，由大小上限
+ * + LRU 淘汰。上限 100MB（容量优先，质量不下调）。
  */
 internal class CoverDiskCache {
 
-    private val maxBytes = 50L * 1024 * 1024
+    private val maxBytes = 100L * 1024 * 1024
 
     private fun dirOf(ctx: android.content.Context): File =
         File(ctx.filesDir, "cover_cache").apply { if (!exists()) mkdirs() }
 
-    private fun keyFile(d: File, artUrl: String): File =
-        File(d, sha1(artUrl) + ".bin")
+    private fun keyFile(d: File, artUrl: String, bucket: Int): File =
+        File(d, sha1("$artUrl@$bucket") + ".bin")
 
     private fun sha1(s: String): String {
         val md = MessageDigest.getInstance("SHA-1")
@@ -36,10 +32,9 @@ internal class CoverDiskCache {
         return sb.toString()
     }
 
-    /** 命中返回字节，未命中或读失败返回 null。命中会 touch lastModified 作为
-     *  LRU 访问时间，供淘汰参考。 */
-    fun read(ctx: android.content.Context, artUrl: String): ByteArray? = synchronized(LOCK) {
-        val f = keyFile(dirOf(ctx), artUrl)
+    /** 命中返回字节，未命中或读失败返回 null。touch lastModified 作 LRU 访问时间。 */
+    fun read(ctx: android.content.Context, artUrl: String, bucket: Int): ByteArray? = synchronized(LOCK) {
+        val f = keyFile(dirOf(ctx), artUrl, bucket)
         if (!f.exists()) return null
         try {
             f.setLastModified(System.currentTimeMillis())
@@ -47,16 +42,15 @@ internal class CoverDiskCache {
         } catch (_: Exception) { null }
     }
 
-    /** 写入字节并触发可能的大小清理。失败静默（磁盘缓存是尽力而为）。 */
-    fun write(ctx: android.content.Context, artUrl: String, bytes: ByteArray) = synchronized(LOCK) {
+    /** 写入字节并触发可能的大小清理。失败静默。 */
+    fun write(ctx: android.content.Context, artUrl: String, bucket: Int, bytes: ByteArray) = synchronized(LOCK) {
         try {
-            val f = keyFile(dirOf(ctx), artUrl)
-            f.writeBytes(bytes)
+            keyFile(dirOf(ctx), artUrl, bucket).writeBytes(bytes)
             trimIfNeeded(ctx)
         } catch (_: Exception) { }
     }
 
-    /** 全清（设置页“清理识别缓存”可调用，与 ArtCache.clearAll 配合）。 */
+    /** 全清（清理识别缓存时与 ArtCache.clearAll 配合）。 */
     fun clear(ctx: android.content.Context) = synchronized(LOCK) {
         dirOf(ctx).listFiles()?.forEach { it.delete() }
     }

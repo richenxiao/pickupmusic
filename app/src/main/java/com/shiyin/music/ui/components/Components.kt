@@ -84,9 +84,10 @@ fun coverPalette(index: Int): Pair<Color, Color> {
 
 // ── embedded album-art loading with an in-memory cache ─────────────────────
 object ArtCache {
-    // Byte-limited (24 MB) and keyed by (art identity, size bucket) so the
+    // Byte-limited and keyed by (art identity, size bucket) so the
     // fullscreen player never reuses a small list thumbnail.
-    private val cache = object : LruCache<String, Bitmap>(24 * 1024 * 1024) {
+    // v1.2.0：24MB→64MB，大库封面多，小了滚动时反复淘汰→反复加载闪烁。容量优先。
+    private val cache = object : LruCache<String, Bitmap>(64 * 1024 * 1024) {
         override fun sizeOf(key: String, value: Bitmap): Int = value.byteCount
     }
     private val misses = HashSet<String>()
@@ -105,6 +106,15 @@ object ArtCache {
         px <= 160 -> 160
         px <= 384 -> 384
         else -> 1024
+    }
+
+    /** v1.2.0：同步查内存 LruCache（不 load、不触磁盘/网络）。供 Composable 初始值
+     *  用——列表滚动 item 回收重组时，produceState 初始值用它命中即显示，避免
+     *  null→bitmap 一帧闪烁 + 反复加载。未命中返回 null，produceState 异步 load 补。 */
+    fun getCached(track: Track, px: Int): Bitmap? {
+        val artId = if (track.albumId > 0) track.albumId else -track.id
+        val key = "$artId@${bucket(px)}"
+        return synchronized(this) { cache.get(key) }
     }
 
     suspend fun load(context: Context, track: Track, px: Int): Bitmap? {
@@ -228,7 +238,7 @@ object ArtCache {
             }
             colorPending.add(albumId)
         }
-        val pair = withContext(Dispatchers.IO) {
+        val pair = withContext(extractDispatcher) {
             com.shiyin.music.data.colors.PaletteExtractor.extract(bmp)
         }
         android.util.Log.d("PaletteTrace", "ensureColors albumId=$albumId extracted bg=${pair?.let { Integer.toHexString(it.bgArgb) } ?: "null"} fg=${pair?.let { Integer.toHexString(it.fgArgb) } ?: "null"}")
@@ -497,6 +507,10 @@ object ArtCache {
      *  由大小上限（~50MB）+ LRU 淘汰，不阻塞取色/内存/颜色缓存失效逻辑。 */
     private val diskCache by lazy { CoverDiskCache() }
 
+    /** v1.2.0 阶段二修正：取色 extract 限 4 并发，避免冷启动大量封面同时 decode+取色
+     *  占满 64 个 IO 线程导致某首歌取色排队数十秒（歌词本背景灰色迟迟不变色）。 */
+    private val extractDispatcher = Dispatchers.IO.limitedParallelism(4)
+
     /** Download [artUrl] at ~[px] (iTunes' 100x100 is upscaled by string-replacing
      *  the size token). Returns null on any network/decode failure.
      *  v1.2.0：先查磁盘缓存命中→直接解码；未命中联网下→落盘→解码。 */
@@ -505,10 +519,11 @@ object ArtCache {
             try {
                 val hqUrl = artUrl.replace("100x100bb", "${px}x${px}bb")
                     .replace("100x100", "${px}x${px}")
-                // 1) 磁盘命中：读字节解码（不同 px 请求同一 artUrl 共享一份高清字节）
-                diskCache.read(context, artUrl)?.let { bytes ->
+                // 1) 磁盘命中：读字节解码。key 含 bucket(px)，不同分辨率分开存——
+                //    大图(1024)永远读 1024 高清，小图(160)单独存，不互相污染分辨率。
+                diskCache.read(context, artUrl, bucket(px))?.let { bytes ->
                     android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.also {
-                        android.util.Log.d("ArtCache", "disk hit artUrl=${artUrl.takeLast(40)} px=$px")
+                        android.util.Log.d("ArtCache", "disk hit artUrl=${artUrl.takeLast(40)} px=$px bucket=${bucket(px)}")
                     }
                 } ?: run {
                     // 2) 未命中：联网下载，落盘，解码
@@ -519,7 +534,7 @@ object ArtCache {
                         .build()
                     val resp = client.newCall(req).execute()
                     val bytes = resp.body?.bytes() ?: return@run null
-                    diskCache.write(context, artUrl, bytes) // 落盘供下次冷启动命中
+                    diskCache.write(context, artUrl, bucket(px), bytes) // 落盘供下次冷启动命中
                     android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
                 }
             } catch (_: Exception) { null }
@@ -531,7 +546,10 @@ object ArtCache {
 fun rememberAlbumArt(track: Track?, sizeDp: Dp): ImageBitmap? {
     val context = LocalContext.current
     val px = with(LocalDensity.current) { sizeDp.roundToPx() }.coerceAtLeast(32)
-    val state = produceState<ImageBitmap?>(null, track?.id) {
+    // v1.2.0：初始值同步查内存缓存命中即显示，避免列表滚动 item 回收重组时
+    // null→bitmap 一帧闪烁 + 反复加载。未命中 produceState 异步 load 补。
+    val initial = track?.let { ArtCache.getCached(it, px)?.asImageBitmap() }
+    val state = produceState<ImageBitmap?>(initial, track?.id) {
         value = track?.let { ArtCache.load(context, it, px)?.asImageBitmap() }
     }
     return state.value
@@ -929,4 +947,4 @@ fun TrackRow(
     }
 }
 
-fun trackSubtitle(track: Track): String = "${track.artist} · ${formatDuration(track.durationSec)}"
+fun trackSubtitle(track: Track): String = track.artist

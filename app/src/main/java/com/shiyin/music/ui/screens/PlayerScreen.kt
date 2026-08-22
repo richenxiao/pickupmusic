@@ -279,7 +279,7 @@ fun PlayerScreen(vm: MainViewModel) {
                         .clip(CircleShape)
                         .clickable { vm.toggleFav(track.id) },
                     contentAlignment = Alignment.Center,
-                ) { com.shiyin.music.ui.components.FavIcon(vm.isFav(track.id), 21.dp, c.n500) }
+                ) { com.shiyin.music.ui.components.FavIcon(vm.isFav(track.id), 26.dp, c.n500) }
             }
 
             // progress
