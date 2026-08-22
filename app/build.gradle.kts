@@ -17,6 +17,10 @@ android {
         targetSdk = 36
         versionCode = 10200
         versionName = "1.2.0"
+        // v1.2.0 阶段一：instrumented test runner 显式用 androidx（不显式设时，
+        // androidTest APK 经 R8 后 AGP 可能回退到系统框架 android.test.InstrumentationTestRunner
+        // 致使 instrumentation 进程启动即崩）。
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     signingConfigs {
@@ -54,6 +58,10 @@ android {
             signingConfig = signingConfigs.getByName("release")
         }
     }
+
+    // v1.2.0 阶段一：instrumented test 走 release 变体（经 R8）以验证 R8 未破坏 Kuromoji。
+    // 仅影响 androidTest 的目标 buildType，不改变 release 产品 APK 本身。
+    testBuildType = "release"
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -133,4 +141,10 @@ dependencies {
     // 无 .so / JNI / 网络，词表内置（APK 增大约 14MB）。Token.getReading() 返回
     // 片假名读音，渲染层据此生成振假名注音。仅用于「歌词本」全屏页。
     implementation("com.atilika.kuromoji:kuromoji-ipadic:0.9.0")
+
+    // v1.2.0 阶段一：instrumented test 在模拟器/真机上验证 release(R8) 变体下
+    // Kuromoji 振假名未受 R8 裁剪影响（依赖反射/字符串加载词表，最高风险点）。
+    // androidTest 不进产品 APK，不影响现有功能。
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
+    androidTestImplementation("androidx.test:runner:1.6.2")
 }

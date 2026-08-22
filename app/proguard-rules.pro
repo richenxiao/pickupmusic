@@ -52,3 +52,18 @@
 
 # 注：本工程已核查无 Class.forName / getDeclared* / Parcelable / Serializable 反射点，
 #     无按名加载的 res/ 资源。如未来引入上述任一，须在此补 keep。
+
+# ── Instrumented test 基础设施（androidTest APK 经 R8 时，勿裁 manifest 声明的
+#    runner 与 junit/hammock 类；R8 静态分析看不到 manifest 引用会误删）──
+-keep class androidx.test.** { *; }
+-keep class androidx.test.ext.** { *; }
+-keep class org.junit.** { *; }
+-keep class org.hamcrest.** { *; }
+-keep class kotlin.test.** { *; }
+
+# ── 被测入口（让 instrumented test 能通过原始符号调用；R8 混淆会把这些类
+#    重命名，而 androidTest 按原名编译 → 运行时 NoSuchMethodError。仅保留命名，
+#    不改变产品内部行为——产品内部调用与被调方一同混淆、运行一致）──
+-keep class com.shiyin.music.data.lyrics.FuriganaTokenizer { *; }
+-keep class com.shiyin.music.ui.components.RubySegment { *; }
+-keep class com.shiyin.music.ui.components.RubySegment$* { *; }
