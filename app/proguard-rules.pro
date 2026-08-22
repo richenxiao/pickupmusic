@@ -67,3 +67,14 @@
 -keep class com.shiyin.music.data.lyrics.FuriganaTokenizer { *; }
 -keep class com.shiyin.music.ui.components.RubySegment { *; }
 -keep class com.shiyin.music.ui.components.RubySegment$* { *; }
+
+# ── androidx.datastore（关键修复）：DataStore 用 protobuf 序列化 Preferences，
+#    MessageSchema 反射按原字段名（如 value_）访问 PreferencesProto$Value 等生成类。
+#    R8 混淆这些字段名 → App 启动读 DataStore 时 "Field value_ not found" 崩。
+#    实测崩溃栈：androidx.datastore.preferences.protobuf.MessageSchema.d0 反射
+#    访问 androidx.datastore.preferences.PreferencesProto$Value 的字段。整包保留字段名。
+-keep class androidx.datastore.** { *; }
+-keepclassmembers class androidx.datastore.preferences.** { *; }
+-keepclassmembers class androidx.datastore.preferences.protobuf.** { *; }
+-keep class androidx.datastore.preferences.PreferencesProto$* { *; }
+-keepclassmembers class androidx.datastore.preferences.PreferencesProto$* { *; }
