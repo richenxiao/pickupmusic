@@ -89,6 +89,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
     val settingsStore = SettingsStore(app)
     val player: PlayerController = (app as ShiyinApp).player
+    /** v1.2.0 阶段二：tracksRaw 磁盘缓存，配合 MediaScanner.signature 实现冷启动增量扫描。 */
+    private val trackCache = com.shiyin.music.data.TrackCache(app)
 
     // ── data state ──────────────────────────────────────────────────────────
     var tracksRaw by mutableStateOf<List<Track>>(emptyList()); private set
@@ -810,6 +812,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             }
             tracksRaw = result
             knownFolders = result.map { it.folder }.toSet()
+            // v1.2.0 阶段二：全量 scan 后落盘 tracksRaw + 签名，供下次冷启动增量复用
+            runCatching {
+                trackCache.write(result)
+                trackCache.writeSignature(com.shiyin.music.data.MediaScanner.signature(getApplication()))
+            }
             ensureArtistEntities(result)
             // v4: detect brand-new albums for 你的更新
             detectNewAlbums(result)
@@ -833,16 +840,27 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun rescanSilently() {
         viewModelScope.launch {
-            // v4.3 perf: silent cold-start rescan skips forceReindexKnownFolders() — the
-            // 60s-await MediaScannerConnection walk of every known file. That re-index pass
-            // only exists to fix "new files don't appear after first scan"; the system
-            // MediaStore is already current for an established library, so re-feeding every
-            // file every cold start is pure waste (the 5–6s "songs won't load" delay). The
-            // pass still runs on the explicit startScan() path (onboarding + manual rescan),
-            // where its cost is expected and where new files are most likely to need indexing.
-            // Background re-index can lag a new file by one cold start; the next rescan (or
-            // any manual rescan) picks it up.
-            val result = MediaScanner.scan(getApplication(), paced = false)
+            // v1.2.0 阶段二：增量扫描。先查 MediaStore 轻量签名（count + max date_added），
+            // 与上次相同 → 库无增删 → 复用持久化的 tracksRaw，跳过全量 scan 的逐行 Track 构造。
+            // 不同 → 全量 scan + 落盘新缓存 + 更新签名。签名查询只取 2 列不构造 Track，远快于全量。
+            val newSig = try { com.shiyin.music.data.MediaScanner.signature(getApplication()) } catch (_: Exception) { "0|0" }
+            val cachedSig = trackCache.readSignature()
+            val result: List<Track> = if (cachedSig != null && cachedSig == newSig) {
+                // 签名一致 → 复用缓存（读盘失败再 fallback 全量）
+                val cached = trackCache.read()
+                if (cached != null) {
+                    android.util.Log.d("ScanTrace", "incremental HIT sig=$newSig tracks=${cached.size} (skipped full scan)")
+                    cached
+                } else {
+                    android.util.Log.d("ScanTrace", "incremental sig-match but cache-miss → full scan sig=$newSig")
+                    val r = com.shiyin.music.data.MediaScanner.scan(getApplication(), paced = false)
+                    trackCache.write(r); trackCache.writeSignature(newSig); r
+                }
+            } else {
+                // 签名变了或无缓存 → 全量
+                val r = com.shiyin.music.data.MediaScanner.scan(getApplication(), paced = false)
+                trackCache.write(r); trackCache.writeSignature(newSig); r
+            }
             tracksRaw = result
             knownFolders = result.map { it.folder }.toSet()
             ensureArtistEntities(result)
@@ -1769,6 +1787,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 dao.clearAlbumArtCache()
                 // 清色缓存内存态，下次按新算法重取
                 com.shiyin.music.ui.components.ArtCache.clearAll(getApplication())
+                // v1.2.0 阶段二：清 tracksRaw 磁盘缓存 + 签名，下次冷启动强制全量重扫
+                trackCache.clear()
             } catch (_: Exception) { }
             refreshRecognitionCacheSize()
         }

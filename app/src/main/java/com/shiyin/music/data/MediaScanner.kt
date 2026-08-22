@@ -133,6 +133,27 @@ object MediaScanner {
         latch.await(60, TimeUnit.SECONDS)
     }
 
+    /**
+     * v1.2.0 阶段二：轻量签名——MediaStore 音频总条数 + 最新一条的 date_added。
+     * 用作增量扫描的变更检测：签名未变 → 库无增删 → 可复用上次持久化的
+     * tracksRaw，跳过全量 [scan] 的逐行 Track 构造。只取 _ID/DATE_ADDED 两列、
+     * 不构造 Track，比全量 scan 快得多（大库尤其明显）。
+     *
+     * 返回 "count|maxDateAdded"；查不到返回 "0|0"。
+     */
+    suspend fun signature(context: Context): String = withContext(Dispatchers.IO) {
+        val resolver = context.contentResolver
+        val uri = MediaStore.Audio.Media.EXTERNAL_CONTENT_URI
+        val proj = arrayOf(MediaStore.Audio.Media._ID, MediaStore.Audio.Media.DATE_ADDED)
+        var maxDate = 0L
+        var count = 0
+        resolver.query(uri, proj, null, null, "${MediaStore.Audio.Media.DATE_ADDED} DESC")?.use { c ->
+            count = c.count
+            if (c.moveToFirst()) maxDate = c.getLong(c.getColumnIndexOrThrow(MediaStore.Audio.Media.DATE_ADDED))
+        }
+        "$count|$maxDate"
+    }
+
     suspend fun scan(
         context: Context,
         paced: Boolean = true,

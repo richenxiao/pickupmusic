@@ -172,11 +172,10 @@ object ArtCache {
     }
 
     /** v9: load one iTunes candidate cover at ~[px] for the candidate picker.
-     *  Public so the 更换专辑封面 dialog can render thumbnails async. Small and
-     *  uncached — the picker is a transient surface so a fresh fetch per open is
-     *  acceptable; the user's chosen cover is persisted via saveAlbumCover(url)
-     *  and then flows through the normal load() path with full caching. */
-    suspend fun loadCandidateBitmap(artUrl: String, px: Int): Bitmap? = downloadBitmap(artUrl, px)
+     *  Public so the 更换专辑封面 dialog can render thumbnails async. v1.2.0 起
+     *  走磁盘缓存——picker 翻过的候选下次打开秒出；用户选定的封面仍经
+     *  saveAlbumCover(url) 持久化后走正常 load() 全缓存路径。 */
+    suspend fun loadCandidateBitmap(context: Context, artUrl: String, px: Int): Bitmap? = downloadBitmap(context, artUrl, px)
 
     /** v4.3: return the user's pinned custom cover Uri for [track]'s album, or
      *  null if none has been set. Read from album_info_override.coverUri. Runs
@@ -202,19 +201,8 @@ object ArtCache {
     private suspend fun decodeUri(context: Context, uri: android.net.Uri, px: Int): Bitmap? {
         val scheme = uri.scheme?.lowercase()
         if (scheme == "http" || scheme == "https") {
-            return withContext(Dispatchers.IO) {
-                try {
-                    val hqUrl = uri.toString().replace("100x100bb", "${px}x${px}bb")
-                        .replace("100x100", "${px}x${px}")
-                    val req = okhttp3.Request.Builder().url(hqUrl).build()
-                    val client = okhttp3.OkHttpClient.Builder()
-                        .connectTimeout(8, java.util.concurrent.TimeUnit.SECONDS)
-                        .readTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
-                        .build()
-                    val body = client.newCall(req).execute().body?.byteStream() ?: return@withContext null
-                    android.graphics.BitmapFactory.decodeStream(body)
-                } catch (_: Exception) { null }
-            }
+            // v1.2.0：用户 pin 的 http 封面走磁盘缓存（复用 downloadBitmap 的盘查+落盘）
+            return downloadBitmap(context, uri.toString(), px)
         }
         return try {
             context.contentResolver.loadThumbnail(uri, Size(px, px), null)
@@ -310,7 +298,8 @@ object ArtCache {
         android.util.Log.d("PaletteTrace", "primeColors rows=${rows.size} loaded=$loaded (source=:$PALETTE_VERSION) skipped=${rows.size - loaded} bySource=$skippedSources")
     }
 
-    /** v1.1+: 清空全部内存封面/颜色缓存（清理识别缓存后调用，强制下次重新取色/加载）。 */
+    /** v1.1+: 清空全部内存封面/颜色缓存（清理识别缓存后调用，强制下次重新取色/加载）。
+     *  v1.2.0：一并清磁盘封面缓存。 */
     fun clearAll(context: Context) {
         synchronized(this) {
             cache.evictAll()
@@ -318,6 +307,7 @@ object ArtCache {
             colorCache.clear()
             colorPending.clear()
         }
+        diskCache.clear(context)
     }
 
     /**
@@ -341,12 +331,12 @@ object ArtCache {
         // the whole reason the user marked it 单曲 in the first place.
         val overrideType = albumTypeOverride(context, track.albumId)
         if (overrideType.equals("Single", ignoreCase = true)) {
-            return loadPerTrackCover(track, px)
+            return loadPerTrackCover(context, track, px)
         }
         val candidates = fetchITunesCandidates(track)
         if (candidates.isEmpty()) return null
         val best = pickBestCoverCandidate(track.album, candidates)
-        val bmp = downloadBitmap(best.artUrl, px) ?: return null
+        val bmp = downloadBitmap(context, best.artUrl, px) ?: return null
         return bmp to best.releaseDate
     }
 
@@ -369,7 +359,7 @@ object ArtCache {
      *  cover (wrong — the user wanted the single's own cover). Returns the
      *  first result that carries artwork; null if iTunes has nothing or the
      *  request fails. Falls back to album-level lookup if no song result. */
-    private suspend fun loadPerTrackCover(track: Track, px: Int): Pair<Bitmap?, String>? {
+    private suspend fun loadPerTrackCover(context: Context, track: Track, px: Int): Pair<Bitmap?, String>? {
         return withContext(Dispatchers.IO) {
             try {
                 val term = java.net.URLEncoder.encode("${track.title} ${track.artist} music", "UTF-8")
@@ -398,7 +388,7 @@ object ArtCache {
                         o.get("artworkUrl100")?.asString?.let { CoverSongMatch(it, "", "") }
                     }.firstOrNull()
                 pick?.let {
-                    val bmp = downloadBitmap(it.artUrl, px) ?: return@withContext null
+                    val bmp = downloadBitmap(context, it.artUrl, px) ?: return@withContext null
                     bmp to it.releaseDate
                 }
             } catch (_: Exception) { null }
@@ -501,20 +491,37 @@ object ArtCache {
         return realAlbum ?: pool.firstOrNull() ?: candidates.first()
     }
 
+    /** v1.2.0 阶段二：iTunes 下载封面字节的磁盘缓存。冷启动不再每次重下网络。
+     *  键 = artUrl 的稳定 hash（不受 px 变化影响，存的是高清 hq 字节）；
+     *  无 albumId↔artUrl 映射——invalidateAlbum 后旧 artUrl 文件成孤儿，
+     *  由大小上限（~50MB）+ LRU 淘汰，不阻塞取色/内存/颜色缓存失效逻辑。 */
+    private val diskCache by lazy { CoverDiskCache() }
+
     /** Download [artUrl] at ~[px] (iTunes' 100x100 is upscaled by string-replacing
-     *  the size token). Returns null on any network/decode failure. */
-    private suspend fun downloadBitmap(artUrl: String, px: Int): Bitmap? {
+     *  the size token). Returns null on any network/decode failure.
+     *  v1.2.0：先查磁盘缓存命中→直接解码；未命中联网下→落盘→解码。 */
+    private suspend fun downloadBitmap(context: Context, artUrl: String, px: Int): Bitmap? {
         return withContext(Dispatchers.IO) {
             try {
                 val hqUrl = artUrl.replace("100x100bb", "${px}x${px}bb")
                     .replace("100x100", "${px}x${px}")
-                val req = okhttp3.Request.Builder().url(hqUrl).build()
-                val client = okhttp3.OkHttpClient.Builder()
-                    .connectTimeout(8, java.util.concurrent.TimeUnit.SECONDS)
-                    .readTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
-                    .build()
-                val body = client.newCall(req).execute().body?.byteStream() ?: return@withContext null
-                android.graphics.BitmapFactory.decodeStream(body)
+                // 1) 磁盘命中：读字节解码（不同 px 请求同一 artUrl 共享一份高清字节）
+                diskCache.read(context, artUrl)?.let { bytes ->
+                    android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.also {
+                        android.util.Log.d("ArtCache", "disk hit artUrl=${artUrl.takeLast(40)} px=$px")
+                    }
+                } ?: run {
+                    // 2) 未命中：联网下载，落盘，解码
+                    val req = okhttp3.Request.Builder().url(hqUrl).build()
+                    val client = okhttp3.OkHttpClient.Builder()
+                        .connectTimeout(8, java.util.concurrent.TimeUnit.SECONDS)
+                        .readTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
+                        .build()
+                    val resp = client.newCall(req).execute()
+                    val bytes = resp.body?.bytes() ?: return@run null
+                    diskCache.write(context, artUrl, bytes) // 落盘供下次冷启动命中
+                    android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                }
             } catch (_: Exception) { null }
         }
     }
@@ -531,13 +538,14 @@ fun rememberAlbumArt(track: Track?, sizeDp: Dp): ImageBitmap? {
 }
 
 /** v9: load an iTunes candidate thumbnail by its remote artUrl for the cover
- *  picker grid. Uncached + throws nothing — null until the fetch resolves. */
+ *  picker grid. v1.2.0 起磁盘缓存，翻过的候选下次秒出；throws nothing —
+ *  null until the fetch resolves. */
 @Composable
 fun rememberCandidateArt(artUrl: String?, sizeDp: Dp): ImageBitmap? {
     val context = LocalContext.current
     val px = with(LocalDensity.current) { sizeDp.roundToPx() }.coerceAtLeast(32)
     val state = produceState<ImageBitmap?>(null, artUrl) {
-        value = artUrl?.let { ArtCache.loadCandidateBitmap(it, px)?.asImageBitmap() }
+        value = artUrl?.let { ArtCache.loadCandidateBitmap(context, it, px)?.asImageBitmap() }
     }
     return state.value
 }
