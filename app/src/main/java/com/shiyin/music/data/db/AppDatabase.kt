@@ -322,6 +322,10 @@ interface ShiyinDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertArtist(e: ArtistEntity)
 
+    /** v1.2.0 阶段三：插入新艺术家并返回自增 id（导入用，需 id 映射回 song_artist）。 */
+    @Insert
+    suspend fun insertArtistGetId(e: ArtistEntity): Long
+
     @Query("UPDATE artist SET avatarUrl = :url, avatarSource = :source, updatedAt = :now WHERE name = :name")
     suspend fun updateArtistAvatar(name: String, url: String, source: String, now: Long)
 
@@ -546,6 +550,43 @@ interface ShiyinDao {
 
     @Query("DELETE FROM album_art_cache")
     suspend fun clearAlbumArtCache()
+
+    // ── v1.2.0 阶段三：数据导出/导入（不改表结构，只加全表读 + 批量 upsert）──
+    // 导出：一次性读全表（suspend，非 Flow）。
+    @Query("SELECT * FROM album_override")
+    suspend fun allAlbumOverride(): List<AlbumOverrideEntity>
+    @Query("SELECT * FROM album_info_override")
+    suspend fun allAlbumInfoOverride(): List<AlbumInfoOverrideEntity>
+    @Query("SELECT * FROM track_info_override")
+    suspend fun allTrackInfoOverride(): List<TrackInfoOverrideEntity>
+    @Query("SELECT * FROM track_album_move")
+    suspend fun allTrackAlbumMove(): List<TrackAlbumMoveEntity>
+    @Query("SELECT * FROM artist")
+    suspend fun allArtists(): List<ArtistEntity>
+    @Query("SELECT * FROM song_artist")
+    suspend fun allSongArtist(): List<SongArtistEntity>
+    @Query("SELECT * FROM reading_override")
+    suspend fun allReadingOverride(): List<ReadingOverrideEntity>
+    @Query("SELECT * FROM external_reading_evidence")
+    suspend fun allExternalReadingEvidence(): List<ExternalReadingEvidenceEntity>
+
+    // 导入：批量 upsert（REPLACE，覆盖同主键）。.artist 的 id 是 autGenerate，
+    // 跨设备导入会撞自增 id——导入时按 name 去重走 upsertArtist（已有则合并 aliases），
+    // 故 artist 不在此批量 upsert，由 BackupImporter 单独处理。
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertAllAlbumOverride(list: List<AlbumOverrideEntity>)
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertAllAlbumInfoOverride(list: List<AlbumInfoOverrideEntity>)
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertAllTrackInfoOverride(list: List<TrackInfoOverrideEntity>)
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertAllTrackAlbumMove(list: List<TrackAlbumMoveEntity>)
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertAllSongArtist(list: List<SongArtistEntity>)
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertAllReadingOverride(list: List<ReadingOverrideEntity>)
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertAllExternalReadingEvidence(list: List<ExternalReadingEvidenceEntity>)
 }
 
 @Database(

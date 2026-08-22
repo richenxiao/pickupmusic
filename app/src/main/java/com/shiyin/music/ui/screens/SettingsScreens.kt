@@ -1,5 +1,9 @@
 package com.shiyin.music.ui.screens
 
+import android.content.Intent
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -26,13 +30,16 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import kotlinx.coroutines.launch
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
@@ -123,8 +130,37 @@ private fun CardEntryRow(
 @Composable
 private fun SettingsRoot(vm: MainViewModel) {
     val c = LocalOrganic.current
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     // v1.1+: 进入设置页时统计识别缓存占用
     androidx.compose.runtime.LaunchedEffect(Unit) { vm.refreshRecognitionCacheSize() }
+    // v1.2.0 阶段三：备份/恢复的提示文本（导出成功/导入统计/失败）
+    var backupMsg by remember { mutableStateOf<String?>(null) }
+    val exportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/json")
+    ) { uri: Uri? ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            try {
+                val json = vm.exportBackup()
+                context.contentResolver.openOutputStream(uri)?.use { it.write(json.toByteArray()) }
+                backupMsg = "已备份全部修正数据"
+            } catch (e: Exception) { backupMsg = "备份失败：${e.message}" }
+        }
+    }
+    val importLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            try {
+                val json = context.contentResolver.openInputStream(uri)?.use { it.readBytes().toString(Charsets.UTF_8) }
+                    ?: error("无法读取备份文件")
+                val stats = vm.importBackup(json)
+                backupMsg = "恢复完成：$stats"
+            } catch (e: Exception) { backupMsg = "恢复失败：${e.message}" }
+        }
+    }
     Column(
         Modifier
             .fillMaxSize()
@@ -223,6 +259,43 @@ private fun SettingsRoot(vm: MainViewModel) {
                         .clickable { vm.clearRecognitionCache() }
                         .padding(horizontal = 12.dp, vertical = 7.dp),
                 ) { Text("清理缓存", style = body(12.5f, FontWeight.Bold, c.text)) }
+            }
+            // v1.2.0 阶段三：修正数据备份/恢复。导出含专辑/曲目/歌手/振假名等
+            // 全部人工修正，导入覆盖同主键。换机/重装前备份，避免重新扫描后丢失修正。
+            Row(
+                Modifier.fillMaxWidth().padding(vertical = 13.dp),
+                horizontalArrangement = Arrangement.spacedBy(13.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                OIcon(Lucide.Shield, 19.dp, c.n700)
+                Column(Modifier.weight(1f)) {
+                    Text("备份我的修正数据", style = body(15f, FontWeight.SemiBold, c.text))
+                    Text(
+                        "专辑名·艺术家·封面·隐藏·迁专辑·歌手合并·振假名注音",
+                        style = body(11.5f, FontWeight.Normal, c.n600),
+                    )
+                    if (backupMsg != null) {
+                        Text(backupMsg!!, style = body(11f, FontWeight.Normal, c.a700))
+                    }
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Box(
+                        Modifier.clip(RoundedCornerShape(999.dp)).background(c.n100)
+                            .clickable {
+                                backupMsg = null
+                                exportLauncher.launch("pickupmusic-backup.json")
+                            }
+                            .padding(horizontal = 12.dp, vertical = 7.dp),
+                    ) { Text("备份", style = body(12.5f, FontWeight.Bold, c.text)) }
+                    Box(
+                        Modifier.clip(RoundedCornerShape(999.dp)).background(c.n100)
+                            .clickable {
+                                backupMsg = null
+                                importLauncher.launch(arrayOf("application/json"))
+                            }
+                            .padding(horizontal = 12.dp, vertical = 7.dp),
+                    ) { Text("恢复", style = body(12.5f, FontWeight.Bold, c.text)) }
+                }
             }
             Row(
                 Modifier

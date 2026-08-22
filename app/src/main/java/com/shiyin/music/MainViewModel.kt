@@ -77,6 +77,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private val db = AppDatabase.get(app)
     private val dao = db.dao()
+    /** v1.2.0 阶段三：用户修正数据导出/导入。 */
+    private val backupManager = com.shiyin.music.data.db.BackupManager(dao)
     // 共享 OkHttpClient，避免每次切歌新建连接池/线程池泄漏
     private val sharedHttpClient = okhttp3.OkHttpClient.Builder()
         .connectTimeout(8, java.util.concurrent.TimeUnit.SECONDS)
@@ -1793,6 +1795,19 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             } catch (_: Exception) { }
             refreshRecognitionCacheSize()
         }
+    }
+
+    // ── v1.2.0 阶段三：修正数据导出/导入 ───────────────────────────────────
+    /** 导出全部修正数据为 JSON 字符串。UI 用 SAF 拿到 OutputStream 后调用。 */
+    suspend fun exportBackup(): String = withContext(Dispatchers.IO) { backupManager.export() }
+
+    /** 从 JSON 导入修正数据。返回导入统计；失败抛异常由 UI 捕获提示。 */
+    suspend fun importBackup(json: String): String = withContext(Dispatchers.IO) {
+        val stats = backupManager.import(json)
+        // 导入后刷新内存态，让 UI 立即反映新修正
+        if (!firstScanDone) { /* 未扫完不重载 */ }
+        else { rescanSilently() }
+        stats.toString()
     }
 
     fun deleteLyrics() {
