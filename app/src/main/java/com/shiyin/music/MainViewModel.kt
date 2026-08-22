@@ -859,6 +859,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             } else {
                 // 签名变了或无缓存 → 全量
                 val r = com.shiyin.music.data.MediaScanner.scan(getApplication(), paced = false)
+                android.util.Log.d("ScanTrace", "incremental MISS full scan sig=$newSig cached=$cachedSig tracks=${r.size}")
                 trackCache.write(r); trackCache.writeSignature(newSig); r
             }
             tracksRaw = result
