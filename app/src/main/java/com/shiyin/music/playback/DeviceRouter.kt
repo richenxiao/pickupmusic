@@ -108,6 +108,19 @@ class DeviceRouter(private val context: Context) {
         activeDeviceId = chosen?.let { idOf(it) }
     }
 
+    /**
+     * v1.2.0 #9: 延迟再刷一次活跃设备。系统 Output Switcher 返回后（ON_RESUME）
+     * 音频路由可能尚未就绪——即时 [refreshActiveDevice] 会拿到切换前的旧值，
+     * 表现为「切回本机后播放页仍显示蓝牙」。这里延迟重读，让音频栈落定后再取
+     * 真实路由。与 [deviceChanges] 里 350ms defer 同源（均为路由滞后补偿）。
+     * 切回本机不触发 BT 断连、deviceChanges 不 fire，故 ON_RESUME 是唯一触发点。
+     */
+    private val mainHandler = Handler(Looper.getMainLooper())
+    fun refreshActiveDeviceSoon(delayMs: Long = 500L) {
+        mainHandler.removeCallbacksAndMessages(null)
+        mainHandler.postDelayed({ refreshActiveDevice() }, delayMs)
+    }
+
     /** Enumerate every real output device in the system. */
     fun refreshDeviceList() {
         val out = ArrayList<DeviceInfo>()

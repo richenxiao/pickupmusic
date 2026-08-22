@@ -168,6 +168,10 @@ fun AppRoot(vm: MainViewModel) {
                 if (e == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
                     vm.deviceRouter.refreshDeviceList()
                     vm.deviceRouter.refreshActiveDevice()
+                    // v1.2.0 #9: 延迟再读一次——系统 Output Switcher 返回后路由可能
+                    // 尚未就绪，即时读拿到旧值（仍显示蓝牙）；切回本机不触发 BT 断连、
+                    // deviceChanges 不 fire，ON_RESUME 是唯一触发点，故在此补一发延迟重读。
+                    vm.deviceRouter.refreshActiveDeviceSoon()
                 }
             }
             lifecycleOwner.lifecycle.addObserver(obs)
