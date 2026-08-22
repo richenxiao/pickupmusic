@@ -185,6 +185,10 @@ fun AppRoot(vm: MainViewModel) {
             )
         }
 
+        // v1.2.0 #4: 左侧边缘右滑拉出侧边栏——阈值触发，交给上面的 LaunchedEffect
+        // 接管展开动画。手势由下方 Box(weight(1f)) 内的独立 overlay 捕获。
+        val openThresholdPx = with(LocalDensity.current) { 48.dp.toPx() }
+
         // A track change can land on a song without lyrics while the
         // fullscreen lyric sheet is open — close it instead of a blank page.
         LaunchedEffect(vm.lyricsOn, vm.currentLyrics) {
@@ -231,6 +235,32 @@ fun AppRoot(vm: MainViewModel) {
                         key == "tab:${Tab.Search}" -> SearchScreen(vm)
                         else -> LibraryScreen(vm)
                     }
+                }
+                // v1.2.0 #4: 左缘右滑拉侧边栏——独立 overlay（sibling on top），仅在抽屉收起时
+                // 渲染。home 屏卡片是全宽 clickable 会先吃 down，祖先级 pointerInput 实测收不到
+                // 事件（onDragStart 不触发），故改用 overlay 在左 16dp 槽里直接捕水平拖拽、累计
+                // 右滑过 48dp 阈值即 vm.sidebarOpen=true。抽屉展开后 overlay 随 sidebarProgress>0
+                // 移除，不与 scrim/drawer 的关闭冲突。
+                if (sidebarProgress.value < 0.001f) {
+                    Box(
+                        Modifier
+                            .fillMaxHeight()
+                            .width(16.dp)
+                            .align(Alignment.CenterStart)
+                            .pointerInput(Unit) {
+                                var accum = 0f
+                                detectHorizontalDragGestures(
+                                    onDragStart = { accum = 0f },
+                                    onHorizontalDrag = { change, dragAmount ->
+                                        change.consume()
+                                        accum += dragAmount
+                                        if (accum >= openThresholdPx) vm.sidebarOpen = true
+                                    },
+                                    onDragEnd = { accum = 0f },
+                                    onDragCancel = { accum = 0f },
+                                )
+                            },
+                    )
                 }
             }
             val cur = vm.trackById(vm.player.currentId)
