@@ -8,8 +8,11 @@ import com.shiyin.music.data.db.AlbumArtCacheEntity
  * Single: 1-3 tracks
  * EP: 4-6 tracks, total duration ≤ 30 minutes
  * Album: 7+ tracks, or total duration > 30 minutes
+ * Compilation (合集): 多歌手杂烩——同文件夹/同专辑名的多首不同歌手单曲被
+ *   MediaStore 归到一张「专辑」，实为合集而非真正专辑。v1.2.0 #3 新增，且不在
+ *   歌手页展示（不属于任一歌手）。
  */
-enum class AlbumCategory { Single, EP, Album }
+enum class AlbumCategory { Single, EP, Album, Compilation }
 
 /**
  * A classified album with its metadata.
@@ -36,12 +39,25 @@ fun classifyAlbum(tracks: List<Track>, overrideType: String? = null): AlbumCateg
     overrideType?.takeIf { it.isNotBlank() }?.let { return parseCategory(it) }
     val count = tracks.size
     val totalMin = (tracks.sumOf { it.durationSec } / 60).toInt()
+    // v1.2.0 #3: 合集优先判——多歌手杂烩单曲文件夹（distinct 歌手≥3 且过半、且≥4 首）
+    // 判为 Compilation，不被曲目数误判为 Album。判在 Single/EP/Album 之前。
+    if (isCompilationAlbum(tracks.map { it.artist }.distinct().size, count)) {
+        return AlbumCategory.Compilation
+    }
     return when {
         count in 1..3 -> AlbumCategory.Single
         count in 4..6 && totalMin <= 30 -> AlbumCategory.EP
         else -> AlbumCategory.Album
     }
 }
+
+/**
+ * v1.2.0 #3: 合集启发式——多歌手杂烩单曲文件夹判为 Compilation。
+ * distinctArtists = 不同歌手串数；trackCount = 曲目数。满足「≥4 首 + ≥3 个不同歌手
+ * + 不同歌手过半」判合集。避免误伤：真正专辑即便有 feat. 合作，distinct 也远不过半。
+ */
+internal fun isCompilationAlbum(distinctArtists: Int, trackCount: Int): Boolean =
+    trackCount >= 4 && distinctArtists >= 3 && distinctArtists.toFloat() / trackCount >= 0.5f
 
 /** Map a stored type string to its AlbumCategory, tolerant of case/variants.
  *  Unknown values fall back to the track-count heuristic by returning whatever
@@ -51,6 +67,7 @@ private fun parseCategory(type: String): AlbumCategory = when (type.trim().lower
     "album", "专辑" -> AlbumCategory.Album
     "ep" -> AlbumCategory.EP
     "single", "单曲" -> AlbumCategory.Single
+    "compilation", "合集" -> AlbumCategory.Compilation
     else -> AlbumCategory.Album
 }
 
@@ -109,6 +126,7 @@ fun categoryLabel(category: AlbumCategory): String = when (category) {
     AlbumCategory.Single -> "单曲"
     AlbumCategory.EP -> "EP"
     AlbumCategory.Album -> "专辑"
+    AlbumCategory.Compilation -> "合集"
 }
 
 /**

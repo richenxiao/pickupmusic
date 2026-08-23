@@ -1184,6 +1184,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             com.shiyin.music.ui.screens.AlbumCategory.Album -> "Album"
             com.shiyin.music.ui.screens.AlbumCategory.EP -> "EP"
             com.shiyin.music.ui.screens.AlbumCategory.Single -> "Single"
+            com.shiyin.music.ui.screens.AlbumCategory.Compilation -> "Compilation"
         }
     }
 

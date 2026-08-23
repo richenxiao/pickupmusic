@@ -429,6 +429,7 @@ private fun typeLabelFor(vm: MainViewModel, albumId: Long, tracks: List<Track>):
         "Single" -> "单曲"
         "EP" -> "EP"
         "Album" -> "专辑"
+        "Compilation" -> "合集"
         else -> {
             // albumTypeFor returned "" (albumId <= 0 or unknown) — fall back
             // to the trajectory of the tracks themselves so we never render
@@ -1203,7 +1204,10 @@ private fun ArtistDetail(vm: MainViewModel, name: String) {
         // v5.2 #79d: 跟 artistsMap()/BatchMoveSheet 对齐——专辑里任一曲目 split 后
         // 含该歌手即算该歌手的专辑。原来用 first().artist==name 精确匹配,多歌手合作
         // 曲(归一化后 "A, B")所在的专辑会被过滤掉,新建专辑尤其容易因此不显示。
-        entry.value.any { t -> name in com.shiyin.music.data.MediaScanner.splitArtists(t.artist) }
+        entry.value.any { t -> name in com.shiyin.music.data.MediaScanner.splitArtists(t.artist) } &&
+            // v1.2.0 #3: 合集（多歌手杂烩单曲文件夹误判为专辑）不在歌手页展示——
+            // 它不属于任一歌手，留在音乐库「合集」分类即可。
+            classifyAlbum(entry.value) != AlbumCategory.Compilation
     }
     var showAllAlbums by remember { mutableStateOf(false) }
     // v4.3: song list grows 5 at a time when the user taps 展开 — no longer a
