@@ -172,7 +172,9 @@ object FuzzySearch {
                 val mal = matchTokenInField(token, nfAlbum)
                 val mf = matchTokenInField(token, nfFolder)
                 if (mt == null && ma == null && mal == null && mf == null) { ok = false; break }
-                score += (mt?.score ?: 0) * 4 + (ma?.score ?: 0) * 3 + (mal?.score ?: 0) * 2 + (mf?.score ?: 0)
+                // v1.2.0: 专辑名字段命中权重提到 5（高于标题 4）——专辑名即含查询词时
+                // （如「伤心」命中「伤心早餐店」专辑名）应排在只标题含查询词的曲目前面。
+                score += (mt?.score ?: 0) * 4 + (ma?.score ?: 0) * 3 + (mal?.score ?: 0) * 5 + (mf?.score ?: 0)
                 mt?.let { titleRanges += it.ranges }
                 ma?.let { artistRanges += it.ranges }
                 mal?.let { albumRanges += it.ranges }

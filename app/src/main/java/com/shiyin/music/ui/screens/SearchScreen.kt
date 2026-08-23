@@ -66,7 +66,10 @@ fun SearchScreen(vm: MainViewModel) {
         for (hit in results) {
             val t = hit.track
             val type = vm.albumTypeFor(t.albumId)
-            if (t.albumId > 0 && (type == "Album" || type == "EP" || type == "Compilation")) {
+            // v1.2.0: 只有专辑名字段命中才折叠成专辑卡；标题/歌手命中按单曲行
+            // 显示（露歌名，让人看出为何命中），不再「专辑名无查询词却排在前」。
+            val albumNameHit = hit.albumRanges.isNotEmpty()
+            if (albumNameHit && t.albumId > 0 && (type == "Album" || type == "EP" || type == "Compilation")) {
                 grouped.putIfAbsent("aid:${t.albumId}", hit)
             } else {
                 singles.add(hit)
