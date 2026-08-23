@@ -356,6 +356,27 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun resolveArtist(name: String): String = aliases[name] ?: name
 
+    /** v1.2.0 #6: 拉取并持久化歌手头像（MusicBrainz→Wikidata→iTunes）。仅在缺失时
+     *  发起一次网络请求，写回 artist.avatarUrl；dao 的 artistFlow() 随即重发，
+     *  artistEntities 刷新 → 歌手页自动重组显示写真。 */
+    private val avatarFetching = java.util.Collections.synchronizedSet(mutableSetOf<String>())
+    fun fetchArtistAvatar(name: String) {
+        if (!avatarFetching.add(name)) return
+        viewModelScope.launch {
+            try {
+                val existing = artistEntities[name]
+                if (existing == null || existing.avatarUrl.isBlank()) {
+                    com.shiyin.music.data.recognition.ArtistAvatarFetcher
+                        .fetch(name)?.let { res ->
+                            dao.updateArtistAvatar(name, res.url, res.source, System.currentTimeMillis())
+                        }
+                }
+            } finally {
+                avatarFetching.remove(name)
+            }
+        }
+    }
+
     /**
      * Cached derivation of the visible library. The list was previously rebuilt
      * on every call (every recomposition), which made the player screen, every

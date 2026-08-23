@@ -11,6 +11,11 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import com.shiyin.music.ui.components.rememberCandidateArt
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -159,6 +164,10 @@ fun BackButton(onClick: () -> Unit) {
 }
 
 private val screenPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 22.dp, bottom = 130.dp)
+
+/** v1.2.0 #6: 歌手页折叠头尺寸——hero 写真背景层高 / 定格顶栏高。 */
+private val artistHeroH = 300.dp
+private val artistBarH = 52.dp
 
 /**
  * v1.2.0 #7: 音乐库 fast-scroll 滑动条。
@@ -1231,49 +1240,29 @@ private fun ArtistDetail(vm: MainViewModel, name: String) {
         return
     }
 
+    // v1.2.0 #6: 折叠视差头——写真头像背景层随滚动上移+淡出，歌名定格进顶栏。
+    androidx.compose.runtime.LaunchedEffect(name) { vm.fetchArtistAvatar(name) }
+    val avatarUrl = vm.artistEntities[name]?.avatarUrl ?: ""
+    val avatarBmp = rememberCandidateArt(avatarUrl.ifBlank { null }, 240.dp)
+    val heroHpx = with(LocalDensity.current) { artistHeroH.toPx() }
+    val listState = rememberLazyListState()
+    val collapse by remember {
+        derivedStateOf {
+            if (listState.firstVisibleItemIndex > 0) 1f
+            else (listState.firstVisibleItemScrollOffset / heroHpx).coerceIn(0f, 1f)
+        }
+    }
+    val heroAlpha = (1f - collapse).coerceIn(0f, 1f)
+    val barAlpha = collapse.coerceIn(0f, 1f)
+
+    Box(Modifier.fillMaxSize()) {
     LazyColumn(
+        state = listState,
         modifier = Modifier.fillMaxSize(),
-        contentPadding = screenPadding,
+        contentPadding = PaddingValues(bottom = 130.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        item {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                BackButton { vm.artistKey = null; vm.artistMerge = false }
-                Text("歌手", style = heading(24))
-            }
-        }
-        item {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                Box(
-                    Modifier
-                        .size(104.dp)
-                        .shadowMd(CircleShape)
-                        .clip(CircleShape)
-                        .background(bg),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text(
-                        name.first().uppercase(),
-                        fontFamily = Caprasimo,
-                        style = body(44f, FontWeight.Normal, fg).copy(fontFamily = Caprasimo),
-                    )
-                }
-                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
-                    Text(name, style = heading(24), maxLines = 2, overflow = TextOverflow.Ellipsis)
-                    Text("${artistTracks.size} 首歌曲 · ${albums.size} 张专辑", style = body(13f, FontWeight.Normal, c.n600))
-                }
-            }
-        }
-        item {
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                PillButton("播放", onClick = { artistTracks.firstOrNull()?.let { vm.play(it.id) } }, icon = Lucide.Play)
-                PillButton(
-                    "管理归属",
-                    onClick = { vm.artistMerge = !vm.artistMerge },
-                    bg = null, textColor = c.text, borderColor = c.divider,
-                )
-            }
-        }
+        item { Spacer(Modifier.height(artistHeroH)) }
         if (vm.artistMerge) {
             item {
                 val candidates = vm.artistsMap().keys.filter { it != name }
@@ -1411,6 +1400,98 @@ private fun ArtistDetail(vm: MainViewModel, name: String) {
                     }
                 }
             }
+        }
+    }
+    // ── hero 视差层（仅可见时组合，折叠后不挡点击）
+    if (collapse < 0.85f) {
+        ArtistHero(
+            name = name, songCount = artistTracks.size, albumCount = albums.size,
+            bg = bg, fg = fg, avatarBmp = avatarBmp,
+            alpha = heroAlpha, parallax = collapse * heroHpx * 0.5f,
+            onPlay = { artistTracks.firstOrNull()?.let { vm.play(it.id) } },
+            onMerge = { vm.artistMerge = !vm.artistMerge },
+        )
+    }
+    // ── 定格顶栏：返回常驻，歌名随折叠淡入
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .height(artistBarH)
+            .background(
+                Brush.verticalGradient(
+                    0f to c.bg.copy(alpha = 0.7f + 0.3f * barAlpha),
+                    1f to c.bg.copy(alpha = 0f),
+                )
+            ),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        BackButton { vm.artistKey = null; vm.artistMerge = false }
+        Text(
+            name,
+            style = heading(20),
+            color = c.text,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.graphicsLayer { alpha = barAlpha },
+        )
+    }
+    }
+}
+
+// ── artist hero (parallax 写真层) ───────────────────────────────────────────
+@Composable
+private fun ArtistHero(
+    name: String,
+    songCount: Int,
+    albumCount: Int,
+    bg: Color,
+    fg: Color,
+    avatarBmp: ImageBitmap?,
+    alpha: Float,
+    parallax: Float,
+    onPlay: () -> Unit,
+    onMerge: () -> Unit,
+) {
+    val c = LocalOrganic.current
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .height(artistHeroH)
+            .graphicsLayer { this.alpha = alpha; translationY = -parallax }
+            .background(Brush.verticalGradient(listOf(bg, bg.copy(alpha = 0f))))
+            .padding(top = 56.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        Box(
+            Modifier
+                .size(104.dp)
+                .shadowMd(CircleShape)
+                .clip(CircleShape)
+                .background(bg),
+            contentAlignment = Alignment.Center,
+        ) {
+            if (avatarBmp != null) {
+                Image(
+                    bitmap = avatarBmp,
+                    contentDescription = name,
+                    modifier = Modifier.fillMaxSize().clip(CircleShape),
+                    contentScale = ContentScale.Crop,
+                )
+            } else {
+                Text(
+                    name.first().uppercase(),
+                    fontFamily = Caprasimo,
+                    style = body(46f, FontWeight.Normal, fg).copy(fontFamily = Caprasimo),
+                )
+            }
+        }
+        Text(name, style = heading(24), color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Text("$songCount 首歌曲 · $albumCount 张专辑", style = body(13f, FontWeight.Normal, c.n600))
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            PillButton("播放", onClick = onPlay, icon = Lucide.Play)
+            PillButton("管理归属", onClick = onMerge, bg = null, textColor = c.text, borderColor = c.divider)
         }
     }
 }
