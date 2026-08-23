@@ -59,6 +59,10 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -166,7 +170,7 @@ fun BackButton(onClick: () -> Unit) {
 private val screenPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 22.dp, bottom = 130.dp)
 
 /** v1.2.0 #6: 歌手页折叠头尺寸——hero 写真背景层高 / 定格顶栏高。 */
-private val artistHeroH = 300.dp
+private val artistHeroH = 320.dp
 private val artistBarH = 52.dp
 
 /**
@@ -1240,29 +1244,71 @@ private fun ArtistDetail(vm: MainViewModel, name: String) {
         return
     }
 
-    // v1.2.0 #6: 折叠视差头——写真头像背景层随滚动上移+淡出，歌名定格进顶栏。
+    // v1.2.0 #6: 写真大图背景层 + 标准 nestedScroll 折叠头。向下滚动时上层内容随
+    // 不透明 sheet 上移整片盖住写真图（视差：写真滞后半速）；返回折叠恢复，歌名定格
+    // 进顶栏正中。写真 URL 持久化于 artist.avatar_url（复用专辑封面那套 URL→DB +
+    // ArtCache 磁盘/内存两层），重启/重扫不丢。
+    // 性能：折叠量走 mutableFloatState，仅在 graphicsLayer lambda 里读（deferred），
+    // 滚动时 ArtistDetail 主体不重组，故不卡。
     androidx.compose.runtime.LaunchedEffect(name) { vm.fetchArtistAvatar(name) }
     val avatarUrl = vm.artistEntities[name]?.avatarUrl ?: ""
-    val avatarBmp = rememberCandidateArt(avatarUrl.ifBlank { null }, 240.dp)
-    val heroHpx = with(LocalDensity.current) { artistHeroH.toPx() }
+    val avatarBmp = rememberCandidateArt(avatarUrl.ifBlank { null }, 360.dp)
+    val density = LocalDensity.current
+    val heroMaxPx = with(density) { artistHeroH.toPx() }
+    val barPx = with(density) { artistBarH.toPx() }
+    val collapseRangePx = (heroMaxPx - barPx).coerceAtLeast(0f)
+    val offsetPxState = remember { mutableFloatStateOf(0f) }
     val listState = rememberLazyListState()
-    val collapse by remember {
-        derivedStateOf {
-            if (listState.firstVisibleItemIndex > 0) 1f
-            else (listState.firstVisibleItemScrollOffset / heroHpx).coerceIn(0f, 1f)
+    val nestedScrollConnection = remember {
+        object : NestedScrollConnection {
+            override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
+                val dy = available.y
+                val off = offsetPxState.floatValue
+                if (dy < 0f && off < collapseRangePx) { // 向上滚 → 先折叠头
+                    val target = (off - dy).coerceIn(0f, collapseRangePx)
+                    offsetPxState.floatValue = target
+                    return Offset(0f, -(target - off))
+                }
+                return Offset.Zero
+            }
+            override fun onPostScroll(consumed: Offset, available: Offset, source: NestedScrollSource): Offset {
+                val dy = available.y
+                val off = offsetPxState.floatValue
+                if (dy > 0f && off > 0f) { // 顶上向下滚 → 展开头
+                    val target = (off - dy).coerceIn(0f, collapseRangePx)
+                    offsetPxState.floatValue = target
+                    return Offset(0f, off - target)
+                }
+                return Offset.Zero
+            }
         }
     }
-    val heroAlpha = (1f - collapse).coerceIn(0f, 1f)
-    val barAlpha = collapse.coerceIn(0f, 1f)
 
-    Box(Modifier.fillMaxSize()) {
+    Box(
+        Modifier
+            .fillMaxSize()
+            .nestedScroll(nestedScrollConnection)
+            .clipToBounds(),
+    ) {
+    ArtistHeader(
+        name = name, bg = bg, fg = fg, avatarBmp = avatarBmp,
+        offsetPxState = offsetPxState, collapseRangePx = collapseRangePx,
+        songCount = artistTracks.size, albumCount = albums.size,
+    )
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .fillMaxHeight()
+            .graphicsLayer { translationY = heroMaxPx - offsetPxState.floatValue }
+            .background(c.bg),
+    )
     LazyColumn(
         state = listState,
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(bottom = 130.dp),
+        modifier = Modifier.fillMaxSize().graphicsLayer { translationY = -offsetPxState.floatValue },
+        contentPadding = PaddingValues(top = artistHeroH, bottom = 130.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        item { Spacer(Modifier.height(artistHeroH)) }
+        item { ArtistActionBar(vm = vm, name = name, tracks = artistTracks) }
         if (vm.artistMerge) {
             item {
                 val candidates = vm.artistsMap().keys.filter { it != name }
@@ -1328,7 +1374,7 @@ private fun ArtistDetail(vm: MainViewModel, name: String) {
                 vm = vm,
                 track = t,
                 idx = i + 1,
-                sub = "${t.album} · ${formatDuration(t.durationSec)}",
+                sub = t.album,
                 onClick = { vm.play(t.id) },
                 showMenu = true,
             )
@@ -1402,96 +1448,168 @@ private fun ArtistDetail(vm: MainViewModel, name: String) {
             }
         }
     }
-    // ── hero 视差层（仅可见时组合，折叠后不挡点击）
-    if (collapse < 0.85f) {
-        ArtistHero(
-            name = name, songCount = artistTracks.size, albumCount = albums.size,
-            bg = bg, fg = fg, avatarBmp = avatarBmp,
-            alpha = heroAlpha, parallax = collapse * heroHpx * 0.5f,
-            onPlay = { artistTracks.firstOrNull()?.let { vm.play(it.id) } },
-            onMerge = { vm.artistMerge = !vm.artistMerge },
-        )
-    }
-    // ── 定格顶栏：返回常驻，歌名随折叠淡入
-    Row(
+    // ── 定格顶栏：返回常驻，歌名随折叠居中淡入
+    Box(
         Modifier
             .fillMaxWidth()
-            .height(artistBarH)
-            .background(
-                Brush.verticalGradient(
-                    0f to c.bg.copy(alpha = 0.7f + 0.3f * barAlpha),
-                    1f to c.bg.copy(alpha = 0f),
-                )
-            ),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
+            .height(artistBarH),
     ) {
-        BackButton { vm.artistKey = null; vm.artistMerge = false }
+        Box(
+            Modifier
+                .fillMaxSize()
+                .background(c.bg)
+                .graphicsLayer { alpha = (offsetPxState.floatValue / collapseRangePx.coerceAtLeast(1f)).coerceIn(0f, 1f) },
+        ) {}
+        Box(Modifier.align(Alignment.CenterStart).padding(start = 8.dp)) {
+            BackButton { vm.artistKey = null; vm.artistMerge = false }
+        }
         Text(
             name,
             style = heading(20),
             color = c.text,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.graphicsLayer { alpha = barAlpha },
+            modifier = Modifier
+                .align(Alignment.Center)
+                .padding(horizontal = 52.dp)
+                .graphicsLayer { alpha = (offsetPxState.floatValue / collapseRangePx.coerceAtLeast(1f)).coerceIn(0f, 1f) },
         )
     }
     }
 }
 
-// ── artist hero (parallax 写真层) ───────────────────────────────────────────
+// ── artist header (写真背景层 + 大歌名) ───────────────────────────────────────
 @Composable
-private fun ArtistHero(
+private fun ArtistHeader(
     name: String,
-    songCount: Int,
-    albumCount: Int,
     bg: Color,
     fg: Color,
     avatarBmp: ImageBitmap?,
-    alpha: Float,
-    parallax: Float,
-    onPlay: () -> Unit,
-    onMerge: () -> Unit,
+    offsetPxState: androidx.compose.runtime.MutableFloatState,
+    collapseRangePx: Float,
+    songCount: Int,
+    albumCount: Int,
 ) {
-    val c = LocalOrganic.current
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .height(artistHeroH)
-            .graphicsLayer { this.alpha = alpha; translationY = -parallax }
-            .background(Brush.verticalGradient(listOf(bg, bg.copy(alpha = 0f))))
-            .padding(top = 56.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center,
-    ) {
-        Box(
-            Modifier
-                .size(104.dp)
-                .shadowMd(CircleShape)
-                .clip(CircleShape)
-                .background(bg),
-            contentAlignment = Alignment.Center,
-        ) {
-            if (avatarBmp != null) {
-                Image(
-                    bitmap = avatarBmp,
-                    contentDescription = name,
-                    modifier = Modifier.fillMaxSize().clip(CircleShape),
-                    contentScale = ContentScale.Crop,
-                )
-            } else {
+    Box(Modifier.fillMaxWidth().height(artistHeroH)) {
+        // 写真（或占位），随折叠半速上移 = 视差（写真滞后于内容/歌名，形成层次）
+        if (avatarBmp != null) {
+            Image(
+                bitmap = avatarBmp,
+                contentDescription = name,
+                modifier = Modifier.fillMaxSize().graphicsLayer { translationY = -0.5f * offsetPxState.floatValue },
+                contentScale = ContentScale.Crop,
+            )
+        } else {
+            Box(
+                Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(bg, bg.copy(alpha = 0.6f)))),
+                contentAlignment = Alignment.Center,
+            ) {
                 Text(
                     name.first().uppercase(),
                     fontFamily = Caprasimo,
-                    style = body(46f, FontWeight.Normal, fg).copy(fontFamily = Caprasimo),
+                    style = body(96f, FontWeight.Normal, fg.copy(alpha = 0.45f)).copy(fontFamily = Caprasimo),
                 )
             }
         }
-        Text(name, style = heading(24), color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        Text("$songCount 首歌曲 · $albumCount 张专辑", style = body(13f, FontWeight.Normal, c.n600))
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            PillButton("播放", onClick = onPlay, icon = Lucide.Play)
-            PillButton("管理归属", onClick = onMerge, bg = null, textColor = c.text, borderColor = c.divider)
+        // 底部 scrim + 大歌名 + 统计，随折叠淡出
+        Box(
+            Modifier
+                .fillMaxSize()
+                .background(
+                    Brush.verticalGradient(
+                        0f to Color.Transparent,
+                        0.5f to Color.Black.copy(alpha = 0.15f),
+                        1f to Color.Black.copy(alpha = 0.55f),
+                    )
+                )
+                .graphicsLayer { alpha = (1f - offsetPxState.floatValue / collapseRangePx.coerceAtLeast(1f)).coerceIn(0f, 1f) },
+        ) {
+            Column(
+                Modifier.align(Alignment.BottomStart).fillMaxWidth().padding(horizontal = 20.dp, vertical = 14.dp),
+            ) {
+                Text(name, style = heading(28), color = Color.White, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                Text("$songCount 首歌曲 · $albumCount 张专辑", style = body(13f, FontWeight.Normal, Color.White.copy(alpha = 0.85f)))
+            }
         }
+    }
+}
+
+// ── artist action bar (圆形播放 + 随机播放 + 管理归属) ──────────────────────────
+@Composable
+private fun ArtistActionBar(vm: MainViewModel, name: String, tracks: List<Track>) {
+    val c = LocalOrganic.current
+    Row(
+        Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(16.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            Modifier.size(48.dp).clip(CircleShape).background(c.accent)
+                .clickable { tracks.firstOrNull()?.let { vm.play(it.id) } },
+            contentAlignment = Alignment.Center,
+        ) { OIcon(Lucide.Play, 22.dp, c.bg) }
+        Box(
+            Modifier.size(48.dp).clip(CircleShape).background(c.accent)
+                .clickable { vm.playRandom(tracks.map { it.id }) },
+            contentAlignment = Alignment.Center,
+        ) { OIcon(Lucide.Shuffle, 20.dp, c.bg) }
+        PillButton("管理归属", onClick = { vm.artistMerge = !vm.artistMerge }, bg = null, textColor = c.text, borderColor = c.divider)
+    }
+}
+
+// ── artist merge sheet ──────────────────────────────────────────────────────
+@Composable
+private fun ArtistMergeSheet(vm: MainViewModel, name: String) {
+    val c = LocalOrganic.current
+    val candidates = vm.artistsMap().keys.filter { it != name }
+    var selected by remember { mutableStateOf(setOf<String>()) }
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .shadowSm(RoundedCornerShape(28.dp))
+            .clip(RoundedCornerShape(28.dp))
+            .background(c.surface)
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            Text("合并以下歌手：", style = body(13.5f, FontWeight.ExtraBold, c.text))
+            if (selected.isNotEmpty()) {
+                PillButton(
+                    "完成（${selected.size}）",
+                    onClick = {
+                        selected.forEach { vm.mergeArtist(it, name) }
+                        selected = emptySet()
+                        vm.artistMerge = false
+                    },
+                    bg = null, textColor = c.a700, borderColor = c.a700, fontSize = 13f, padH = 14.dp,
+                )
+            }
+        }
+        if (candidates.isNotEmpty()) {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                candidates.chunked(2).forEach { row ->
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        row.forEach { cand ->
+                            val isSelected = cand in selected
+                            Box(
+                                Modifier
+                                    .clip(RoundedCornerShape(999.dp))
+                                    .background(if (isSelected) c.a100 else c.s200)
+                                    .border(if (isSelected) 1.5.dp else 0.dp, if (isSelected) c.a700 else Color.Transparent, RoundedCornerShape(999.dp))
+                                    .clickable { selected = if (isSelected) selected - cand else selected + cand }
+                                    .padding(horizontal = 15.dp, vertical = 9.dp),
+                            ) {
+                                Text(cand, style = body(13f, FontWeight.Bold, if (isSelected) c.a700 else c.s900), maxLines = 1)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Text(
+            "在这里勾选下方歌手（单选或多选均可），他们名下的歌曲与专辑会全部归入「$name」，用于同一歌手被识别成多个名字的情况（如 fujiikaze / 藤井风）。合并后可在「设置 · 歌手合并记录」中撤销。",
+            style = body(12f, FontWeight.Normal, c.n600).copy(lineHeight = 18.sp),
+        )
     }
 }
