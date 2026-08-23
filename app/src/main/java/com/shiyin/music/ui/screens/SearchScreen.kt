@@ -29,6 +29,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -133,6 +135,17 @@ fun SearchScreen(vm: MainViewModel) {
                     val typeStr = vm.albumTypeFor(t.albumId)
                     val typeCn = when (typeStr) { "EP" -> "EP"; "Compilation" -> "合集"; else -> "专辑" }
                     val artistDisplay = if (typeStr == "Compilation") "多位歌手" else t.artist
+                    // v1.2.0: 专辑名命中区间高亮（如「伤心早餐店」里的「伤心」）
+                    val albumAnnotated = remember(t.album, hit.albumRanges, c) {
+                        buildAnnotatedString {
+                            append(t.album)
+                            for (r in hit.albumRanges) {
+                                if (r.first >= 0 && r.last < t.album.length) {
+                                    addStyle(SpanStyle(color = c.a600, fontWeight = FontWeight.ExtraBold), r.first, r.last + 1)
+                                }
+                            }
+                        }
+                    }
                     Row(
                         Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
                             .clickable {
@@ -145,7 +158,7 @@ fun SearchScreen(vm: MainViewModel) {
                     ) {
                         CoverArt(t, 56.dp, RoundedCornerShape(8.dp), fontSize = 22, modifier = Modifier.shadowSm(RoundedCornerShape(8.dp)))
                         Column(Modifier.weight(1f)) {
-                            Text(t.album, style = body(15f, FontWeight.Bold, c.text), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(albumAnnotated, style = body(15f, FontWeight.Bold, c.text), maxLines = 1, overflow = TextOverflow.Ellipsis)
                             Text("$typeCn · $artistDisplay", style = body(12.5f, FontWeight.Normal, c.n600), modifier = Modifier.padding(top = 2.dp), maxLines = 1, overflow = TextOverflow.Ellipsis)
                         }
                         OIcon(Lucide.ChevronRight, 17.dp, c.n400)

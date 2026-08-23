@@ -104,4 +104,17 @@ class FuzzySearchTest {
         assertEquals("藤井风", FuzzySearch.normalize("藤井 風"))
         assertEquals("zhoujielun", FuzzySearch.normalize("Zhou Jie Lun"))
     }
+
+    // v1.2.0 #8 fix: 短 token 不靠单字共享误配
+    @Test
+    fun shortCjkTokenDoesNotMatchSingleSharedChar() {
+        assertNull(FuzzySearch.match("伤心", "心雨"))
+        assertNull(FuzzySearch.match("伤心", "月亮代表我的心"))
+        assertNull(FuzzySearch.match("伤心", "悲伤"))
+    }
+
+    @Test
+    fun shortCjkTokenStillMatchesSubstring() {
+        assertNotNull(FuzzySearch.match("伤心", "伤心早餐店"))
+    }
 }
