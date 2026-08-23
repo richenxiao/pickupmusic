@@ -1941,6 +1941,34 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * v1.2.0: 批量保存某 surface 在本曲全部出现位置的读法（振假名批量修正）。
+     * [occurrences] = 该 surface 在本曲的 (lineIndex, charStart) 列表（由 UI 从
+     * 分词段收集）。空 reading 清除全部（回退自动读法）。一次 IO 协程 + 一次
+     * furiganaRevision bump，避免 N 次单独保存触发 N 次重算。
+     */
+    fun saveReadingOverrideBatch(occurrences: List<Pair<Int, Int>>, surface: String, reading: String) {
+        val cur = currentLyrics ?: return
+        val hash = com.shiyin.music.data.furigana.LyricsHash.of(cur.raw)
+        val clean = reading.trim()
+        viewModelScope.launch(Dispatchers.IO) {
+            for ((lineIndex, charStart) in occurrences) {
+                if (clean.isEmpty()) {
+                    dao.deleteReadingOverride(cur.mediaId, hash, lineIndex, charStart)
+                } else {
+                    dao.upsertReadingOverride(
+                        com.shiyin.music.data.db.ReadingOverrideEntity(
+                            scope = "SONG", mediaId = cur.mediaId, lyricsHash = hash,
+                            lineIndex = lineIndex, charStart = charStart,
+                            surface = surface, reading = clean, updatedAt = System.currentTimeMillis(),
+                        ),
+                    )
+                }
+            }
+            bumpFuriganaRevision()
+        }
+    }
+
     /** 清除当前曲当前版本某出现位置的 Song Override（回退到 JMdict/Kuromoji）。 */
     fun deleteReadingOverrideAt(lineIndex: Int, charStart: Int) {
         val cur = currentLyrics ?: return

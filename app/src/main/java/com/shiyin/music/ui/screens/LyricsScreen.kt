@@ -11,6 +11,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -448,6 +449,22 @@ fun LyricsScreen(vm: MainViewModel) {
         val surface = seg.surface
         val charStart = seg.startOffset
         var input by remember(surface, current) { mutableStateOf(current) }
+        // v1.2.0: 收集本曲该 surface 全部出现位置 + 当前出现的不同读法（含别处刚改好的，
+        // bump 后 segmentsByLine 已重算进来），供「同字速选」chip 与「批量应用」开关用。
+        val (occurrences, quickReadings) = remember(surface, segmentsByLine) {
+            val occs = ArrayList<Pair<Int, Int>>()
+            val reads = LinkedHashSet<String>()
+            segmentsByLine?.forEachIndexed { li, segs ->
+                segs.forEach { s ->
+                    if (s.surface == surface) {
+                        occs.add(li to s.startOffset)
+                        s.reading?.let { r -> if (r.isNotEmpty()) reads.add(r) }
+                    }
+                }
+            }
+            occs to reads.toList()
+        }
+        var batch by remember(surface) { mutableStateOf(false) }
         androidx.compose.material3.MaterialTheme(colorScheme = dialogScheme) {
             androidx.compose.material3.AlertDialog(
                 onDismissRequest = { editing = null },
@@ -462,15 +479,60 @@ fun LyricsScreen(vm: MainViewModel) {
                             singleLine = true,
                             textStyle = body(15f, FontWeight.Normal, artFg),
                         )
+                        // v1.2.0: 同字速选——本曲该字当前出现的不同读法，点一下填入输入框，
+                        // 免得每次手输；含别处刚改好的读法（bump 后已重算进来）。
+                        if (quickReadings.isNotEmpty()) {
+                            Text("同字读法速选：", style = body(11f, FontWeight.Bold, dimC))
+                            Row(
+                                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            ) {
+                                for (r in quickReadings) {
+                                    Box(
+                                        Modifier.clip(RoundedCornerShape(999.dp))
+                                            .background(btnBg)
+                                            .clickable { input = r }
+                                            .padding(horizontal = 12.dp, vertical = 6.dp),
+                                    ) { Text(r, style = body(13f, FontWeight.Normal, artFg)) }
+                                }
+                            }
+                        }
+                        // v1.2.0: 批量——同时把本曲该 surface 全部出现位置改成输入读法。
+                        if (occurrences.size > 1) {
+                            Row(
+                                Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp))
+                                    .clickable { batch = !batch }
+                                    .padding(vertical = 2.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                androidx.compose.material3.Checkbox(
+                                    checked = batch,
+                                    onCheckedChange = { batch = it },
+                                )
+                                Text(
+                                    "同时应用本曲全部「$surface」（共 ${occurrences.size} 处）",
+                                    style = body(12f, FontWeight.Normal, artFg),
+                                )
+                            }
+                        }
                         Text(
-                            "仅对当前这首歌的此处生效（第${lineIdx + 1}行），换歌词源/改文本自动失效。",
+                            if (batch && occurrences.size > 1)
+                                "批量：本曲该字全部 ${occurrences.size} 处改为输入读法（换歌词源/改文本自动失效）。"
+                            else
+                                "仅对当前这首歌的此处生效（第${lineIdx + 1}行），换歌词源/改文本自动失效。",
                             style = body(10.5f, FontWeight.Normal, dimC).copy(lineHeight = 14.sp),
                         )
                     }
                 },
                 confirmButton = {
                     androidx.compose.material3.TextButton(onClick = {
-                        vm.saveReadingOverrideAt(lineIdx, charStart, surface, input); editing = null
+                        if (batch && occurrences.size > 1) {
+                            vm.saveReadingOverrideBatch(occurrences, surface, input)
+                        } else {
+                            vm.saveReadingOverrideAt(lineIdx, charStart, surface, input)
+                        }
+                        editing = null
                     }) { Text("保存") }
                 },
                 dismissButton = {
