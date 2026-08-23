@@ -222,7 +222,12 @@ fun LyricsScreen(vm: MainViewModel) {
                         .padding(vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    val lineColor = if (i <= activeI) artFg else inactiveC
+                    // v1.2.0 #1a: 句间过渡用 animateColorAsState 渐变，不再硬切。
+                    val lineColor by androidx.compose.animation.animateColorAsState(
+                        if (i <= activeI) artFg else inactiveC,
+                        animationSpec = tween(220),
+                        label = "lineColor",
+                    )
                     val rubySegs = segmentsByLine?.getOrElse(i) { null }
                     if (furiganaOn && hasKana && rubySegs != null) {
                         RubyText(
@@ -345,7 +350,15 @@ fun LyricsScreen(vm: MainViewModel) {
                     ) {
                         Text(
                             "あ",
-                            style = body(18f, FontWeight.ExtraBold, if (furiganaOn) safeBg else artFg),
+                            // v1.2.0 #1b: Trim.Both 剥掉 CJK 字体 ascent/descent 额外量，使「あ」在圆里居中
+                            // （includeFontPadding API 在 Compose 1.6+ 已移除，lineHeightStyle.Trim 等效）。
+                            style = body(18f, FontWeight.ExtraBold, if (furiganaOn) safeBg else artFg).copy(
+                                lineHeight = 18.sp,
+                                lineHeightStyle = androidx.compose.ui.text.style.LineHeightStyle(
+                                    alignment = androidx.compose.ui.text.style.LineHeightStyle.Alignment.Center,
+                                    trim = androidx.compose.ui.text.style.LineHeightStyle.Trim.Both,
+                                ),
+                            ),
                         )
                     }
                 }
