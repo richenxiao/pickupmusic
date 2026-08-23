@@ -413,36 +413,20 @@ fun PlayerScreen(vm: MainViewModel) {
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                val activeKind = vm.activeDeviceKind()
-                val onRemote = activeKind != "phone"
+                // v1.2.0 #9: 不再显示当前设备状态——切换后状态刷新不可靠
+                // （getAudioDevicesForAttributes 在部分 ROM 返回候选而非活跃设备，
+                // prefer-非手机 会一直指 BT；延迟重读也救不回来）。改为恒显 Speaker
+                // 图标 + 调起系统 Output Switcher（与 MiniPlayer 一致），设备状态由
+                // 系统弹框自身展示。
                 Row(
                     Modifier
                         .clip(RoundedCornerShape(999.dp))
-                        // v5.2 Bug1: 主路径——直接调起 Android 系统媒体输出选择器
-                        // (SystemOutputSwitcherDialogController)。系统弹框列出全部真实
-                        // 输出设备并由系统执行真实音频路由，兼容 ColorOS 等 OEM；
-                        // 不再走 app 层 setPreferredDevice（在定制 ROM 上不生效），
-                        // 也不再套我们自己的设备 Sheet。状态展示（图标/设备名）仍由
-                        // DeviceRouter 提供。
                         .clickable { SystemOutputSwitcherDialogController.showDialog(ctx) }
                         .padding(8.dp),
                     horizontalArrangement = Arrangement.spacedBy(7.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    // Icon tracks the actual active output: phone / wired headset /
-                    // headphone / bluetooth device / TV.
-                    OIcon(
-                        when (activeKind) {
-                            "headphone" -> Lucide.Headphones
-                            "bluetooth" -> Lucide.Bluetooth
-                            "tv" -> Lucide.Tv
-                            else -> Lucide.Speaker
-                        },
-                        18.dp, if (onRemote) c.s700 else c.n600,
-                    )
-                    if (onRemote) {
-                        Text(vm.curDeviceName(), style = body(12f, FontWeight.Bold, c.s700), maxLines = 1)
-                    }
+                    OIcon(Lucide.Speaker, 18.dp, c.n600)
                 }
                 Box(
                     Modifier
