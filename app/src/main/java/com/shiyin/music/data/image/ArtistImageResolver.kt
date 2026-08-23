@@ -44,34 +44,51 @@ class ArtistImageResolver(private val dao: ShiyinDao) {
 
     suspend fun resolve(name: String, personOnly: Boolean = false): ArtistImage? {
         // 1. 用户手选（最高优先级）
-        override.get(name)?.let { return ArtistImage(it, "override") }
+        override.get(name)?.let {
+            android.util.Log.d("AIM", "override hit")
+            return ArtistImage(it, "override")
+        }
 
         val now = System.currentTimeMillis()
         val cached = cache.get(name)
         // 2. 缓存有效 URL → 直接返回（带缓存的元数据）
         if (cached != null && cached.isValid(now)) {
+            android.util.Log.d("AIM", "cache valid: ${cached.source} ${cached.url.take(60)}")
             return ArtistImage(cached.url, cached.source, cached.imageType, cached.width, cached.height)
         }
         //    仍在失败 TTL 内 → 不重试，返回 null
-        if (cached != null && cached.isFailureFresh(now)) return null
+        if (cached != null && cached.isFailureFresh(now)) {
+            android.util.Log.d("AIM", "cache failure-fresh (skip until ${cached.failUntilTs - now}ms)")
+            return null
+        }
 
         // 3. 自动源（重入保护：同歌手并发只跑一次）
-        if (!resolving.add(name)) return null
+        if (!resolving.add(name)) {
+            android.util.Log.d("AIM", "already resolving $name")
+            return null
+        }
         return try {
-            val result = ArtistImageSources.fetch(name, personOnly)
-            if (result != null) {
+            var lastSource = ""
+            for (source in ArtistImageSources.sources) {
+                val result = source.fetch(name, personOnly)
+                lastSource = source.key
+                if (result == null) continue
                 val (w, h) = probeDimensions(result.url) ?: (0 to 0)
-                cache.putSuccess(
-                    name, result.url, result.source, now,
-                    width = w, height = h,
-                    aspectRatio = if (h > 0) w.toFloat() / h else 0f,
-                    imageType = result.imageType,
-                )
-                result.copy(width = w, height = h)
-            } else {
-                cache.putFailure(name, now, FAILURE_TTL_MS)
-                null
+                if (w > 0 && h > 0) {
+                    android.util.Log.d("AIM", "resolved: ${result.source} dims=${w}x${h}")
+                    cache.putSuccess(
+                        name, result.url, result.source, now,
+                        width = w, height = h,
+                        aspectRatio = if (h > 0) w.toFloat() / h else 0f,
+                        imageType = result.imageType,
+                    )
+                    return result.copy(width = w, height = h)
+                }
+                android.util.Log.d("AIM", "src ${result.source} img unreachable(dims=0)→next")
             }
+            android.util.Log.d("AIM", "all sources img unreachable(last=$lastSource)→cache failure 6h")
+            cache.putFailure(name, now, FAILURE_TTL_MS)
+            null
         } finally {
             resolving.remove(name)
         }
@@ -87,13 +104,15 @@ class ArtistImageResolver(private val dao: ShiyinDao) {
     /** 探测图片真实宽高（只读头部，不解码像素）。失败返回 null（不影响 URL 缓存）。 */
     private suspend fun probeDimensions(url: String): Pair<Int, Int>? = withContext(Dispatchers.IO) {
         try {
-            ImageHttp.client.newCall(Request.Builder().url(url).header("User-Agent", ImageHttp.UA).build())
-                .execute().body?.byteStream()?.use { input ->
-                    val opts = android.graphics.BitmapFactory.Options()
-                    opts.inJustDecodeBounds = true
-                    android.graphics.BitmapFactory.decodeStream(input, null, opts)
-                    if (opts.outWidth > 0 && opts.outHeight > 0) opts.outWidth to opts.outHeight else null
-                }
+            val req = Request.Builder().url(url).header("User-Agent", ImageHttp.UA)
+            // Discogs 图片 CDN 可能检查 Referer，加一个匹配 discogs.com 的 Referer 绕过
+            if (url.contains("discogs.com")) req.header("Referer", "https://www.discogs.com/")
+            ImageHttp.client.newCall(req.build()).execute().body?.byteStream()?.use { input ->
+                val opts = android.graphics.BitmapFactory.Options()
+                opts.inJustDecodeBounds = true
+                android.graphics.BitmapFactory.decodeStream(input, null, opts)
+                if (opts.outWidth > 0 && opts.outHeight > 0) opts.outWidth to opts.outHeight else null
+            }
         } catch (_: Exception) { null }
     }
 

@@ -191,6 +191,29 @@ internal object DeezerSource : ArtistImageSource {
     }
 }
 
+// AudioDB: free API（demo key "2"，无需注册），搜索→人物照/宽背景。
+// 实测 API + 图片 CDN(r2.theaudiodb.com) 均可达。CJK 英文名可搜，中文名部分不命中。
+internal object AudioDBSource : ArtistImageSource {
+    override val key = "audiodb"
+    override suspend fun fetch(name: String, personOnly: Boolean): ArtistImage? = withContext(Dispatchers.IO) {
+        try {
+            val q = ImageHttp.urlEncode(name)
+            val body = ImageHttp.client.newCall(Request.Builder()
+                .url("https://www.theaudiodb.com/api/v1/json/2/search.php?s=$q")
+                .header("User-Agent", ImageHttp.UA).build()).execute().body?.string() ?: return@withContext null
+            val artist = JsonParser.parseString(body).asJsonObject.getAsJsonArray("artists")?.firstOrNull()?.asJsonObject
+                ?: return@withContext null
+            val thumb = artist.get("strArtistThumb")?.asString
+            val fanart = artist.get("strArtistFanart")?.asString
+            when {
+                !thumb.isNullOrBlank() -> ArtistImage(thumb, "audiodb", imageType = "photo")
+                !fanart.isNullOrBlank() -> ArtistImage(fanart, "audiodb", imageType = "background")
+                else -> null
+            }
+        } catch (_: Exception) { null }
+    }
+}
+
 // iTunes: search(entity=album) → artworkUrl100 → 400x400。专辑封面(非人物)，仅 !personOnly 兜底。
 internal object ItunesSource : ArtistImageSource {
     override val key = "itunes"
@@ -209,20 +232,22 @@ internal object ItunesSource : ArtistImageSource {
     }
 }
 
-/** 按优先级依次尝试各源，首个命中即停。 */
+/** 按优先级依次尝试各源，首个图片可下载的命（API 返回 URL + 图片头部可下载）。 */
 internal object ArtistImageSources {
-    // 可达性优先：Discogs(无key人物照) → Fanart(有key宽背景) → Last.fm(有key) →
-    // MB→Wikidata(被墙快失败) → Deezer(被墙快失败) → iTunes(专辑封面兜底)。
+    // 可达性优先：Discogs → AudioDB(无key人物照) → Fanart(有key宽背景) →
+    // Last.fm(有key) → MB→Wikidata(被墙快失败) → Deezer(被墙快失败) → iTunes(专辑封面兜底)。
     val sources: List<ArtistImageSource> = listOf(
-        DiscogsSource, FanartSource, LastfmSource,
+        DiscogsSource, AudioDBSource, FanartSource, LastfmSource,
         MusicBrainzWikidataSource, DeezerSource, ItunesSource,
     )
 
     suspend fun fetch(name: String, personOnly: Boolean): ArtistImage? {
         for (s in sources) {
             val r = s.fetch(name, personOnly)
+            android.util.Log.d("AIM", "src ${s.key}: ${r?.url?.take(70) ?: "null"}")
             if (r != null) return r
         }
+        android.util.Log.d("AIM", "all sources null (personOnly=$personOnly)")
         return null
     }
 }

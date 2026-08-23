@@ -527,7 +527,11 @@ object ArtCache {
                     }
                 } ?: run {
                     // 2) 未命中：联网下载，落盘，解码
-                    val req = okhttp3.Request.Builder().url(hqUrl).build()
+                    val req = okhttp3.Request.Builder().url(hqUrl)
+                        .header("User-Agent", "ShiyinMusic/2.0 (music-player; android)")
+                        // Discogs CDN 可能检查 Referer，加匹配 discogs.com 的 Referer 绕过
+                        .also { if (artUrl.contains("discogs.com")) it.header("Referer", "https://www.discogs.com/") }
+                        .build()
                     val client = okhttp3.OkHttpClient.Builder()
                         .connectTimeout(8, java.util.concurrent.TimeUnit.SECONDS)
                         .readTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
