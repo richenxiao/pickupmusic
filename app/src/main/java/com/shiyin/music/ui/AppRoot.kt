@@ -821,8 +821,17 @@ private fun BottomNav(vm: MainViewModel) {
                     .weight(1f)
                     .clip(RoundedCornerShape(14.dp))
                     .clickable {
+                        // v1.2.0 #6 修复：从歌手/专辑等下钻页点底部导航应回该 tab 根，
+                        // 不能只切 tab（artistKey/albumKey 仍在 → 歌手页不退 → "没反应"）。
                         vm.tab = tab
                         vm.settingsOpen = false
+                        vm.artistKey = null
+                        vm.albumKey = null
+                        vm.plId = null
+                        vm.folderKey = null
+                        vm.artistMerge = false
+                        vm.albumEdit = false
+                        vm.albumEditText = false
                     }
                     .padding(vertical = 5.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,

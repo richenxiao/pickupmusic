@@ -533,11 +533,20 @@ object ArtCache {
                         .readTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
                         .build()
                     val resp = client.newCall(req).execute()
-                    val bytes = resp.body?.bytes() ?: return@run null
+                    val bytes = resp.body?.bytes()
+                    if (bytes == null) {
+                        android.util.Log.d("AIM", "img download null body code=${resp.code} ${artUrl.take(50)}")
+                        return@run null
+                    }
+                    // 只对歌手写真(discogs)记成功日志，专辑封面不打扰
+                    if (artUrl.contains("discogs")) android.util.Log.d("AIM", "img ok bytes=${bytes.size} code=${resp.code} ${artUrl.take(50)}")
                     diskCache.write(context, artUrl, bucket(px), bytes) // 落盘供下次冷启动命中
                     android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
                 }
-            } catch (_: Exception) { null }
+            } catch (e: Exception) {
+                android.util.Log.d("AIM", "img download FAIL ${artUrl.take(50)}: ${e.javaClass.simpleName} ${e.message?.take(80)}")
+                null
+            }
         }
     }
 }

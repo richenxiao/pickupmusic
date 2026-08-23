@@ -11,6 +11,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.ui.graphics.ImageBitmap
@@ -27,6 +28,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -1308,64 +1310,6 @@ private fun ArtistDetail(vm: MainViewModel, name: String) {
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             item { ArtistActionBar(vm = vm, name = name, tracks = artistTracks) }
-        if (vm.artistMerge) {
-            item {
-                val candidates = vm.artistsMap().keys.filter { it != name }
-                var selected by remember { mutableStateOf(setOf<String>()) }
-                Column(
-                    Modifier
-                        .fillMaxWidth()
-                        .shadowSm(RoundedCornerShape(28.dp))
-                        .clip(RoundedCornerShape(28.dp))
-                        .background(c.surface)
-                        .padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
-                ) {
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                        Text("合并以下歌手：", style = body(13.5f, FontWeight.ExtraBold, c.text))
-                        if (selected.isNotEmpty()) {
-                            PillButton(
-                                "完成（${selected.size}）",
-                                onClick = {
-                                    selected.forEach { vm.mergeArtist(it, name) }
-                                    selected = emptySet()
-                                    vm.artistMerge = false
-                                },
-                                bg = null, textColor = c.a700, borderColor = c.a700, fontSize = 13f, padH = 14.dp,
-                            )
-                        }
-                    }
-                    if (candidates.isNotEmpty()) {
-                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            candidates.chunked(2).forEach { row ->
-                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    row.forEach { cand ->
-                                        val isSelected = cand in selected
-                                        Box(
-                                            Modifier
-                                                .clip(RoundedCornerShape(999.dp))
-                                                .background(if (isSelected) c.a100 else c.s200)
-                                                .border(if (isSelected) 1.5.dp else 0.dp, if (isSelected) c.a700 else Color.Transparent, RoundedCornerShape(999.dp))
-                                                .clickable { selected = if (isSelected) selected - cand else selected + cand }
-                                                .padding(horizontal = 15.dp, vertical = 9.dp),
-                                        ) {
-                                            Text(cand, style = body(13f, FontWeight.Bold, if (isSelected) c.a700 else c.s900), maxLines = 1)
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    // v4.3: 说明更新 — the flow is: pick other artists (single or
-                    // multi) on THIS artist's page, then their songs/albums are
-                    // folded into the current artist.
-                    Text(
-                        "在这里勾选下方歌手（单选或多选均可），他们名下的歌曲与专辑会全部归入「$name」，用于同一歌手被识别成多个名字的情况（如 fujiikaze / 藤井风）。合并后可在「设置 · 歌手合并记录」中撤销。",
-                        style = body(12f, FontWeight.Normal, c.n600).copy(lineHeight = 18.sp),
-                    )
-                }
-            }
-        }
         item { Text("歌曲", style = body(14f, FontWeight.Bold, c.n700)) }
         val displayTracks = if (artistTracks.size > songCap) artistTracks.take(songCap) else artistTracks
         itemsIndexed(displayTracks, key = { _, t -> t.id }) { i, t ->
@@ -1478,12 +1422,16 @@ private fun ArtistDetail(vm: MainViewModel, name: String) {
             BackButton { vm.artistKey = null; vm.artistMerge = false }
         }
     }
+    // v1.2.0 #6: 管理归属改 AlertDialog（参考专辑编辑样式，完成键恒显）
+    if (vm.artistMerge) ArtistMergeDialog(vm = vm, name = name)
 }
 
-// ── artist action bar (圆形播放 + 随机播放 + 管理归属) ──────────────────────────
+// ── artist action bar (圆形播放 + 随机播放 + ⋯ 菜单) ───────────────────────────
+// 管理归属/选择写真等收进 ⋯ 菜单，避免操作栏杂乱。
 @Composable
 private fun ArtistActionBar(vm: MainViewModel, name: String, tracks: List<Track>) {
     val c = LocalOrganic.current
+    var menuOpen by remember { mutableStateOf(false) }
     Row(
         Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(16.dp),
@@ -1499,63 +1447,84 @@ private fun ArtistActionBar(vm: MainViewModel, name: String, tracks: List<Track>
                 .clickable { vm.playRandom(tracks.map { it.id }) },
             contentAlignment = Alignment.Center,
         ) { OIcon(Lucide.Shuffle, 20.dp, c.bg) }
-        PillButton("管理归属", onClick = { vm.artistMerge = !vm.artistMerge }, bg = null, textColor = c.text, borderColor = c.divider)
-    }
-}
-
-// ── artist merge sheet ──────────────────────────────────────────────────────
-@Composable
-private fun ArtistMergeSheet(vm: MainViewModel, name: String) {
-    val c = LocalOrganic.current
-    val candidates = vm.artistsMap().keys.filter { it != name }
-    var selected by remember { mutableStateOf(setOf<String>()) }
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .shadowSm(RoundedCornerShape(28.dp))
-            .clip(RoundedCornerShape(28.dp))
-            .background(c.surface)
-            .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-            Text("合并以下歌手：", style = body(13.5f, FontWeight.ExtraBold, c.text))
-            if (selected.isNotEmpty()) {
-                PillButton(
-                    "完成（${selected.size}）",
-                    onClick = {
-                        selected.forEach { vm.mergeArtist(it, name) }
-                        selected = emptySet()
-                        vm.artistMerge = false
-                    },
-                    bg = null, textColor = c.a700, borderColor = c.a700, fontSize = 13f, padH = 14.dp,
+        Box(contentAlignment = Alignment.Center) {
+            Box(
+                Modifier.size(44.dp).clip(CircleShape).clickable { menuOpen = true },
+                contentAlignment = Alignment.Center,
+            ) { OIcon(Lucide.MoreVertical, 22.dp, c.text) }
+            androidx.compose.material3.DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                androidx.compose.material3.DropdownMenuItem(
+                    text = { Text("管理归属", style = body(15f, FontWeight.Normal, c.text)) },
+                    onClick = { menuOpen = false; vm.artistMerge = !vm.artistMerge },
                 )
             }
         }
-        if (candidates.isNotEmpty()) {
+    }
+}
+
+// ── artist merge dialog（参考专辑编辑 AlertDialog 样式；完成键恒显，无选择时置灰）─
+@Composable
+private fun ArtistMergeDialog(vm: MainViewModel, name: String) {
+    val c = LocalOrganic.current
+    val candidates = vm.artistsMap().keys.filter { it != name }
+    var selected by remember { mutableStateOf(setOf<String>()) }
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = { vm.artistMerge = false },
+        containerColor = c.surface,
+        title = { Text("合并歌手到「$name」", style = body(15f, FontWeight.ExtraBold, c.text)) },
+        text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                candidates.chunked(2).forEach { row ->
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        row.forEach { cand ->
-                            val isSelected = cand in selected
-                            Box(
-                                Modifier
-                                    .clip(RoundedCornerShape(999.dp))
-                                    .background(if (isSelected) c.a100 else c.s200)
-                                    .border(if (isSelected) 1.5.dp else 0.dp, if (isSelected) c.a700 else Color.Transparent, RoundedCornerShape(999.dp))
-                                    .clickable { selected = if (isSelected) selected - cand else selected + cand }
-                                    .padding(horizontal = 15.dp, vertical = 9.dp),
-                            ) {
-                                Text(cand, style = body(13f, FontWeight.Bold, if (isSelected) c.a700 else c.s900), maxLines = 1)
+                Text(
+                    "勾选其他歌手（可多选），他们名下的歌曲与专辑会全部归入「$name」。同一歌手被识别成多个名字时用（如 fujiikaze / 藤井风）。可在「设置 · 歌手合并记录」撤销。",
+                    style = body(12f, FontWeight.Normal, c.n600).copy(lineHeight = 18.sp),
+                )
+                if (candidates.isEmpty()) {
+                    Text("（暂无其他歌手可合并）", style = body(13f, FontWeight.Normal, c.n500))
+                } else {
+                    Column(
+                        Modifier.fillMaxWidth().heightIn(max = 320.dp).verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        candidates.chunked(2).forEach { row ->
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                row.forEach { cand ->
+                                    val isSelected = cand in selected
+                                    Box(
+                                        Modifier
+                                            .clip(RoundedCornerShape(999.dp))
+                                            .background(if (isSelected) c.a100 else c.s200)
+                                            .border(if (isSelected) 1.5.dp else 0.dp, if (isSelected) c.a700 else Color.Transparent, RoundedCornerShape(999.dp))
+                                            .clickable { selected = if (isSelected) selected - cand else selected + cand }
+                                            .padding(horizontal = 15.dp, vertical = 9.dp),
+                                    ) {
+                                        Text(cand, style = body(13f, FontWeight.Bold, if (isSelected) c.a700 else c.s900), maxLines = 1)
+                                    }
+                                }
                             }
                         }
                     }
                 }
             }
-        }
-        Text(
-            "在这里勾选下方歌手（单选或多选均可），他们名下的歌曲与专辑会全部归入「$name」，用于同一歌手被识别成多个名字的情况（如 fujiikaze / 藤井风）。合并后可在「设置 · 歌手合并记录」中撤销。",
-            style = body(12f, FontWeight.Normal, c.n600).copy(lineHeight = 18.sp),
-        )
-    }
+        },
+        confirmButton = {
+            androidx.compose.material3.TextButton(
+                onClick = {
+                    selected.forEach { vm.mergeArtist(it, name) }
+                    selected = emptySet()
+                    vm.artistMerge = false
+                },
+                enabled = selected.isNotEmpty(),
+            ) {
+                Text(
+                    if (selected.isNotEmpty()) "完成（${selected.size}）" else "完成",
+                    style = body(14f, FontWeight.Bold, if (selected.isNotEmpty()) c.accent else c.n400),
+                )
+            }
+        },
+        dismissButton = {
+            androidx.compose.material3.TextButton(onClick = { vm.artistMerge = false }) {
+                Text("取消", style = body(14f, FontWeight.Normal, c.n600))
+            }
+        },
+    )
 }
