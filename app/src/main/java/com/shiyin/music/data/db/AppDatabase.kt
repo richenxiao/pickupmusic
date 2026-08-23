@@ -151,6 +151,12 @@ data class ArtistImageCacheEntity(
     val fetchedAt: Long = 0,
     /** >0 且 >now 视为"近期自动源全失败"，TTL 内不重试，避免开页干等。url 非空时忽略。 */
     val failUntilTs: Long = 0,
+    // v1.2.0 #6: 图片元数据，供 UI 按比例决定裁剪方式（宽背景/方形肖像/logo），
+    // 避免 banner/logo 类图破坏歌手主页头图。width/height=0 表示未探测。
+    val width: Int = 0,
+    val height: Int = 0,
+    val aspectRatio: Float = 0f, // w/h; 0=未知
+    val imageType: String = "", // portrait/background/banner/logo/thumb
 )
 
 @Entity(tableName = "artist_image_override")
@@ -370,6 +376,20 @@ interface ShiyinDao {
 
     @Query("DELETE FROM artist_image_override WHERE name = :name")
     suspend fun deleteArtistImageOverride(name: String)
+
+    // ── v1.2.0 #6 backup：写真 cache + override 导出/导入 ──────────────────────
+    /** 导出成功的 cache 行（跳过失败 TTL 行，避免把旧网络的失败态毒到新设备）。 */
+    @Query("SELECT * FROM artist_image_cache WHERE url != ''")
+    suspend fun allArtistImageCacheSuccess(): List<ArtistImageCacheEntity>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertAllArtistImageCache(list: List<ArtistImageCacheEntity>)
+
+    @Query("SELECT * FROM artist_image_override")
+    suspend fun allArtistImageOverride(): List<ArtistImageOverrideEntity>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertAllArtistImageOverride(list: List<ArtistImageOverrideEntity>)
 
     // song_artist
     @Query("SELECT * FROM song_artist WHERE mediaId = :mediaId")
@@ -650,7 +670,7 @@ interface ShiyinDao {
         // v1.2.0 #6: 歌手写真 cache + 用户手选 override（独立于 album_art_cache）
         ArtistImageCacheEntity::class, ArtistImageOverrideEntity::class,
     ],
-    version = 15,
+    version = 16,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -938,9 +958,20 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        // v1.2.0 #6: artist_image_cache 加图片元数据列（width/height/aspectRatio/imageType），
+        // 供 UI 按比例决定裁剪方式，避免宽 banner/logo 类图破坏歌手主页头图。
+        private val MIGRATION_15_16 = object : Migration(15, 16) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE artist_image_cache ADD COLUMN width INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE artist_image_cache ADD COLUMN height INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE artist_image_cache ADD COLUMN aspectRatio REAL NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE artist_image_cache ADD COLUMN imageType TEXT NOT NULL DEFAULT ''")
+            }
+        }
+
         fun get(context: Context): AppDatabase = instance ?: synchronized(this) {
             instance ?: Room.databaseBuilder(context.applicationContext, AppDatabase::class.java, "shiyin.db")
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16)
                 // 不使用 fallbackToDestructiveMigration：迁移失败时宁可崩溃也不要删全库。
                 // 之前该选项导致迁移异常时删除所有用户数据（排序、专辑名、播放历史等）。
                 .addCallback(object : Callback() {

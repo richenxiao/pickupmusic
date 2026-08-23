@@ -1,10 +1,25 @@
 package com.shiyin.music.data.image
 
 import com.shiyin.music.data.db.ShiyinDao
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import okhttp3.Request
 import java.util.Collections
 
-/** 解析结果：图片 URL + 来源标签（discogs/lastfm/wikidata/deezer/itunes/override）。 */
-data class ArtistImage(val url: String, val source: String)
+/**
+ * 解析结果：图片 URL + 来源标签 + 元数据。
+ * - [imageType] 粗类目：photo/background/thumb/album/banner/logo（源给出，UI 据此 + 比例决定裁剪）。
+ * - [width]/[height] 由 [ArtistImageResolver] 命中后探测（0=未探测/失败）。
+ */
+data class ArtistImage(
+    val url: String,
+    val source: String,
+    val imageType: String = "",
+    val width: Int = 0,
+    val height: Int = 0,
+) {
+    val aspectRatio: Float get() = if (height > 0) width.toFloat() / height else 0f
+}
 
 /**
  * v1.2.0 #6: 歌手写真解析器。独立数据层，与 album_art_cache 分离。
@@ -13,14 +28,12 @@ data class ArtistImage(val url: String, val source: String)
  *  1. [ArtistImageOverride] 用户手选 → 永久最高，自动源永不覆盖。
  *  2. [ArtistImageCache] 本地缓存（有效 URL 直接返回；近期失败 TTL 内跳过重试）。
  *  3. 自动源（[ArtistImageSources]，按可达性排序，首个命中即停）：
- *     - Discogs   ✅ 可达 / 无需 key / 人物照        （主源）
- *     - Last.fm   ✅ 可达(需 API key) / 人物照        （BuildConfig.LASTFM_API_KEY 缺省则跳过）
- *     - MB→Wikidata ❌ 本机被墙(快失败) / 便携        （换网络可恢复）
- *     - Deezer    ❌ 本机被墙(快失败) / 便携           （换网络可恢复）
- *     - iTunes    ✅ 可达 / 专辑封面(非人物) / 仅 !personOnly 兜底
+ *     Discogs → Fanart → Last.fm → MB→Wikidata → Deezer → iTunes(仅 !personOnly)。
  *  4. 都没有 → null（UI 走占位渐变）。
  *
- * 命中 Discogs 后不触达被墙源；缓存 + 6h 失败 TTL 保证每个歌手至多触网一次。
+ * 命中后用 BitmapFactory(inJustDecodeBounds) 探测真实宽高，连同 imageType 一起写入
+ * cache，供 UI 按比例决定裁剪方式（宽背景全屏铺、方形肖像居中裁、避免 logo/banner）。
+ *
  * 持久化在 Room（artist_image_cache / artist_image_override），扫描/更新不丢、自动源不覆盖手选。
  */
 class ArtistImageResolver(private val dao: ShiyinDao) {
@@ -35,8 +48,10 @@ class ArtistImageResolver(private val dao: ShiyinDao) {
 
         val now = System.currentTimeMillis()
         val cached = cache.get(name)
-        // 2. 缓存有效 URL → 直接返回
-        if (cached != null && cached.isValid(now)) return ArtistImage(cached.url, cached.source)
+        // 2. 缓存有效 URL → 直接返回（带缓存的元数据）
+        if (cached != null && cached.isValid(now)) {
+            return ArtistImage(cached.url, cached.source, cached.imageType, cached.width, cached.height)
+        }
         //    仍在失败 TTL 内 → 不重试，返回 null
         if (cached != null && cached.isFailureFresh(now)) return null
 
@@ -44,9 +59,19 @@ class ArtistImageResolver(private val dao: ShiyinDao) {
         if (!resolving.add(name)) return null
         return try {
             val result = ArtistImageSources.fetch(name, personOnly)
-            if (result != null) cache.putSuccess(name, result.url, result.source, now)
-            else cache.putFailure(name, now, FAILURE_TTL_MS)
-            result
+            if (result != null) {
+                val (w, h) = probeDimensions(result.url) ?: (0 to 0)
+                cache.putSuccess(
+                    name, result.url, result.source, now,
+                    width = w, height = h,
+                    aspectRatio = if (h > 0) w.toFloat() / h else 0f,
+                    imageType = result.imageType,
+                )
+                result.copy(width = w, height = h)
+            } else {
+                cache.putFailure(name, now, FAILURE_TTL_MS)
+                null
+            }
         } finally {
             resolving.remove(name)
         }
@@ -58,6 +83,19 @@ class ArtistImageResolver(private val dao: ShiyinDao) {
 
     /** 清除手选，回退到自动源。 */
     suspend fun clearOverride(name: String) = override.clear(name)
+
+    /** 探测图片真实宽高（只读头部，不解码像素）。失败返回 null（不影响 URL 缓存）。 */
+    private suspend fun probeDimensions(url: String): Pair<Int, Int>? = withContext(Dispatchers.IO) {
+        try {
+            ImageHttp.client.newCall(Request.Builder().url(url).header("User-Agent", ImageHttp.UA).build())
+                .execute().body?.byteStream()?.use { input ->
+                    val opts = android.graphics.BitmapFactory.Options()
+                    opts.inJustDecodeBounds = true
+                    android.graphics.BitmapFactory.decodeStream(input, null, opts)
+                    if (opts.outWidth > 0 && opts.outHeight > 0) opts.outWidth to opts.outHeight else null
+                }
+        } catch (_: Exception) { null }
+    }
 
     companion object {
         /** 死源失败后短期不重试，避免每次开歌手页干等。 */

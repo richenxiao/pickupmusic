@@ -9,6 +9,8 @@ import com.shiyin.music.data.db.ArtistEntity as ART
 import com.shiyin.music.data.db.SongArtistEntity as SA
 import com.shiyin.music.data.db.ReadingOverrideEntity as RO
 import com.shiyin.music.data.db.ExternalReadingEvidenceEntity as ERE
+import com.shiyin.music.data.db.ArtistImageCacheEntity as AIC
+import com.shiyin.music.data.db.ArtistImageOverrideEntity as AIOV
 
 /**
  * v1.2.0 阶段三：用户修正数据的导出/导入。
@@ -18,6 +20,8 @@ import com.shiyin.music.data.db.ExternalReadingEvidenceEntity as ERE
  *    （专辑名·艺术家·封面·type 修正、单曲 title/artist/note/隐藏、单曲迁专辑）
  *  - artist（歌手合并 aliases + 头像）/ song_artist（曲目-歌手关联）
  *  - reading_override（振假名当て字）/ external_reading_evidence（外部假名 evidence）
+ *  - artist_image_override（歌手手选写真，永久用户资产）/ artist_image_cache（自动源命中缓存，
+ *    仅导出成功行，避免重抓；跨设备不导出失败 TTL 态以免毒到新网络）
  *
  * 不导出：saved_lyrics（歌词本体，量大且可重新识别）、album_art_cache（取色缓存，
  * 可重算）、play_count/play_event（播放统计，非修正）、playlist*（歌单，非修正）、
@@ -40,6 +44,9 @@ internal class BackupManager(private val dao: ShiyinDao) {
         val songArtist: List<SA>,
         val readingOverride: List<RO>,
         val externalReadingEvidence: List<ERE>,
+        // v1.2.0 #6: 歌手写真——用户手选 override 是永久资产；cache 成功行随附避免重抓。
+        val artistImageCache: List<AIC>,
+        val artistImageOverride: List<AIOV>,
     )
 
     /** 导出全部修正数据为 JSON 字符串。调用方负责写入 SAF/文件。 */
@@ -54,6 +61,8 @@ internal class BackupManager(private val dao: ShiyinDao) {
             songArtist = dao.allSongArtist(),
             readingOverride = dao.allReadingOverride(),
             externalReadingEvidence = dao.allExternalReadingEvidence(),
+            artistImageCache = dao.allArtistImageCacheSuccess(),
+            artistImageOverride = dao.allArtistImageOverride(),
         )
         return Gson().toJson(data)
     }
@@ -96,6 +105,12 @@ internal class BackupManager(private val dao: ShiyinDao) {
         val remapped = data.songArtist.map { it.copy(artistId = idMap[it.artistId] ?: it.artistId) }
             .filter { idMap[it.artistId] != null } // 仅导入成功映射的
         if (remapped.isNotEmpty()) dao.upsertAllSongArtist(remapped)
+        // 歌手写真：override(用户手选) + cache 成功行。PK=name，无自增 id，直接 upsert。
+        // orEmpty 兼容旧备份（无这两个字段→null→空，跳过）。
+        val imgCache = data.artistImageCache.orEmpty()
+        val imgOverride = data.artistImageOverride.orEmpty()
+        if (imgCache.isNotEmpty()) dao.upsertAllArtistImageCache(imgCache)
+        if (imgOverride.isNotEmpty()) dao.upsertAllArtistImageOverride(imgOverride)
         return ImportStats(
             albumOverride = data.albumOverride.size,
             albumInfoOverride = data.albumInfoOverride.size,
@@ -105,6 +120,8 @@ internal class BackupManager(private val dao: ShiyinDao) {
             songArtist = remapped.size,
             readingOverride = data.readingOverride.size,
             externalReadingEvidence = data.externalReadingEvidence.size,
+            artistImageCache = imgCache.size,
+            artistImageOverride = imgOverride.size,
         )
     }
 
@@ -124,10 +141,13 @@ internal class BackupManager(private val dao: ShiyinDao) {
         val songArtist: Int,
         val readingOverride: Int,
         val externalReadingEvidence: Int,
+        val artistImageCache: Int,
+        val artistImageOverride: Int,
     ) {
         override fun toString() =
             "专辑迁移$albumOverride / 专辑修正$albumInfoOverride / 曲目修正$trackInfoOverride / " +
             "曲目迁专辑$trackAlbumMove / 歌手$artists / 曲目-歌手$songArtist / " +
-            "振假名注音$readingOverride / 外部假名$externalReadingEvidence"
+            "振假名注音$readingOverride / 外部假名$externalReadingEvidence / " +
+            "歌手写真缓存$artistImageCache / 歌手写真手选$artistImageOverride"
     }
 }

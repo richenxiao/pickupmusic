@@ -22,15 +22,13 @@ android {
         // 致使 instrumentation 进程启动即崩）。
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
-        // v1.2.0 #6: Last.fm artist image 源的 API key（可选）。Discogs 无需 key 即可
-        // 取人物照；Last.fm 需有效 key 才返回图。缺省空串→Last.fm 源跳过。
+        // v1.2.0 #6: 歌手写真自动源的 API key（可选）。Discogs 无需 key 即可取人物照；
+        // Last.fm / Fanart.tv 需有效 key 才返回图。缺省空串→对应源跳过，Discogs 仍可独立工作。
+        // key 写在 gitignored 的 local.properties（LASTFM_API_KEY= / FANART_API_KEY=）。
         val lp = rootProject.file("local.properties")
-        val lastfmKey = if (lp.exists()) {
-            val props = Properties()
-            props.load(lp.inputStream())
-            props.getProperty("LASTFM_API_KEY", "")
-        } else ""
-        buildConfigField("String", "LASTFM_API_KEY", "\"$lastfmKey\"")
+        val props = Properties().apply { if (lp.exists()) load(lp.inputStream()) }
+        buildConfigField("String", "LASTFM_API_KEY", "\"${props.getProperty("LASTFM_API_KEY", "")}\"")
+        buildConfigField("String", "FANART_API_KEY", "\"${props.getProperty("FANART_API_KEY", "")}\"")
     }
 
     signingConfigs {
@@ -82,8 +80,8 @@ android {
     }
     buildFeatures {
         compose = true
-        // v1.2.0 #6: 歌手写真 Last.fm 源需要 API key。key 从 gitignored 的
-        // local.properties 读取（LASTFM_API_KEY=xxx），缺省空串→该源自动跳过，
+        // v1.2.0 #6: 歌手写真 Last.fm / Fanart.tv 源需要 API key。key 从 gitignored 的
+        // local.properties 读取（LASTFM_API_KEY= / FANART_API_KEY=），缺省空串→对应源跳过，
         // Discogs（无需 key）仍可独立工作。BuildConfig 字段被 R8 内联，无运行时 IO。
         buildConfig = true
     }

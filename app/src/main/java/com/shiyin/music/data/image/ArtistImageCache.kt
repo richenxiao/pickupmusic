@@ -18,8 +18,14 @@ class ArtistImageCache(private val dao: ShiyinDao) {
 
     suspend fun get(name: String): ArtistImageCacheEntity? = dao.artistImageCache(name)
 
-    suspend fun putSuccess(name: String, url: String, source: String, now: Long) {
-        dao.upsertArtistImageCache(ArtistImageCacheEntity(name, url, source, now, 0L))
+    suspend fun putSuccess(
+        name: String, url: String, source: String, now: Long,
+        width: Int = 0, height: Int = 0, aspectRatio: Float = 0f, imageType: String = "",
+    ) {
+        dao.upsertArtistImageCache(ArtistImageCacheEntity(
+            name = name, url = url, source = source, fetchedAt = now, failUntilTs = 0L,
+            width = width, height = height, aspectRatio = aspectRatio, imageType = imageType,
+        ))
     }
 
     suspend fun putFailure(name: String, now: Long, ttlMs: Long) {
