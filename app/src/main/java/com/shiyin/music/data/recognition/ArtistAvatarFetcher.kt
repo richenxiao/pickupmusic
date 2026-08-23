@@ -26,6 +26,15 @@ object ArtistAvatarFetcher {
         .followRedirects(true)
         .build()
 
+    // v1.2.0 #6: wikidata.org 实测读超时（且其图片在 commons.wikimedia.org 同样不稳）。
+    // 给 wikidata 调用单独一个短读超时（4s），慢网/被墙时快速失败落到 iTunes 兜底，
+    // 不让歌手页开页干等 10s。快网能在 4s 内拿到 P18 正面照。
+    private val wikiClient = OkHttpClient.Builder()
+        .connectTimeout(5, TimeUnit.SECONDS)
+        .readTimeout(4, TimeUnit.SECONDS)
+        .followRedirects(true)
+        .build()
+
     private const val USER_AGENT = "ShiyinMusic/2.0 (music-player; android)"
 
     /**
@@ -99,12 +108,14 @@ object ArtistAvatarFetcher {
             val qid = wikidataUrl.substringAfterLast("/").substringBefore("#")
             if (!qid.startsWith("Q")) return null
 
-            // Query Wikidata for P18 (image)
-            val wdUrl = "https://www.wikidata.org/wiki/Special:EntityData/$qid.json"
+            // Query Wikidata for P18 (image) — 用标准 wbgetentities API（比 Special:EntityData
+            // 稳：后者在本机诊断里抛异常，wbgetentities props=claims 返回紧凑 JSON，结构同）。
+            val wdUrl = "https://www.wikidata.org/w/api.php?action=wbgetentities&ids=$qid&format=json&props=claims"
             val wdReq = Request.Builder().url(wdUrl)
                 .header("User-Agent", USER_AGENT)
+                .header("Accept", "application/json")
                 .build()
-            val wdBody = client.newCall(wdReq).execute().body?.string() ?: return null
+            val wdBody = wikiClient.newCall(wdReq).execute().body?.string() ?: return null
             val wdJson = JsonParser.parseString(wdBody).asJsonObject
             val entities = wdJson.getAsJsonObject("entities") ?: return null
             val entity = entities.getAsJsonObject(qid) ?: return null
@@ -129,8 +140,11 @@ object ArtistAvatarFetcher {
 
     private fun tryItunes(artistName: String): AvatarResult? {
         try {
-            val term = urlEncode("$artistName music")
-            val url = "https://itunes.apple.com/search?term=$term&media=music&limit=1&entity=musicArtist"
+            // v1.2.0 #6 修复：原 entity=musicArtist 不带 artwork 字段（诊断实测 artworkUrl100=null），
+            // 故始终取不到图。改 entity=album——专辑结果带 artworkUrl100，取该歌手首张专辑封面
+            // 当写真兜底（非正面照但总比占位强；正面照优先走 MusicBrainz→Wikidata P18）。
+            val term = urlEncode(artistName)
+            val url = "https://itunes.apple.com/search?term=$term&media=music&limit=1&entity=album"
             val req = Request.Builder().url(url).build()
             val body = client.newCall(req).execute().body?.string() ?: return null
             val json = JsonParser.parseString(body).asJsonObject

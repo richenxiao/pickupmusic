@@ -1291,9 +1291,8 @@ private fun ArtistDetail(vm: MainViewModel, name: String) {
             .clipToBounds(),
     ) {
     ArtistHeader(
-        name = name, bg = bg, fg = fg, avatarBmp = avatarBmp,
+        name = name, bg = bg, avatarBmp = avatarBmp,
         offsetPxState = offsetPxState, collapseRangePx = collapseRangePx,
-        songCount = artistTracks.size, albumCount = albums.size,
     )
     Box(
         Modifier
@@ -1483,12 +1482,9 @@ private fun ArtistDetail(vm: MainViewModel, name: String) {
 private fun ArtistHeader(
     name: String,
     bg: Color,
-    fg: Color,
     avatarBmp: ImageBitmap?,
     offsetPxState: androidx.compose.runtime.MutableFloatState,
     collapseRangePx: Float,
-    songCount: Int,
-    albumCount: Int,
 ) {
     Box(Modifier.fillMaxWidth().height(artistHeroH)) {
         // 写真（或占位），随折叠半速上移 = 视差（写真滞后于内容/歌名，形成层次）
@@ -1500,18 +1496,10 @@ private fun ArtistHeader(
                 contentScale = ContentScale.Crop,
             )
         } else {
-            Box(
-                Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(bg, bg.copy(alpha = 0.6f)))),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(
-                    name.first().uppercase(),
-                    fontFamily = Caprasimo,
-                    style = body(96f, FontWeight.Normal, fg.copy(alpha = 0.45f)).copy(fontFamily = Caprasimo),
-                )
-            }
+            // 草图：第1层只有图、不含文字。无写真时用调色板渐变占位（不加首字母文字）。
+            Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(bg, bg.copy(alpha = 0.6f))))) {}
         }
-        // 底部 scrim + 大歌名 + 统计，随折叠淡出
+        // 第2层：仅歌手名（草图——第2层只有歌名文字，无统计/听众数）。随折叠淡出
         Box(
             Modifier
                 .fillMaxSize()
@@ -1524,12 +1512,14 @@ private fun ArtistHeader(
                 )
                 .graphicsLayer { alpha = (1f - offsetPxState.floatValue / collapseRangePx.coerceAtLeast(1f)).coerceIn(0f, 1f) },
         ) {
-            Column(
-                Modifier.align(Alignment.BottomStart).fillMaxWidth().padding(horizontal = 20.dp, vertical = 14.dp),
-            ) {
-                Text(name, style = heading(28), color = Color.White, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                Text("$songCount 首歌曲 · $albumCount 张专辑", style = body(13f, FontWeight.Normal, Color.White.copy(alpha = 0.85f)))
-            }
+            Text(
+                name,
+                style = heading(28),
+                color = Color.White,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.align(Alignment.BottomStart).padding(horizontal = 20.dp, vertical = 16.dp),
+            )
         }
     }
 }
