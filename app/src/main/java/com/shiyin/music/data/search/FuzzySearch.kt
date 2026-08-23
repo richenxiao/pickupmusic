@@ -147,17 +147,44 @@ object FuzzySearch {
     }
 
     /**
+     * v1.2.0 #8: 标题归一用于搜索——若标题含分隔符（- – —）且其左边（归一后）等于该
+     * 曲目歌手，则只取右边歌名部分匹配（如 "揽佬skaiisyourgod-YADEA" → "YADEA"），
+     * rawIndex 仍映射回原始标题坐标供高亮；否则返回完整归一标题。仅当左边等于歌手才剥，
+     * 不误伤正常带 - 的歌名（如 "Born - Dead" 不会被剥，除非歌手恰好叫 Born）。
+     */
+    private fun titleNormForSearch(title: String, artistNormText: String): Norm {
+        val full = norm(title)
+        if (artistNormText.isEmpty()) return full
+        val sep = full.text.indexOfFirst { it == '-' || it == '–' || it == '—' }
+        if (sep <= 0) return full
+        if (full.text.substring(0, sep) != artistNormText) return full
+        val rightStart = sep + 1
+        if (rightStart >= full.text.length) return full
+        val right = full.text.substring(rightStart)
+        if (right.isEmpty()) return full
+        val ri = IntArray(right.length) { full.rawIndex[rightStart + it] }
+        return Norm(right, ri)
+    }
+
+    /** v1.2.0 #5: 完整查询子串命中的置顶奖励（远大于字段加权，形成明确分层）。 */
+    private const val FULL_QUERY_BONUS = 1_000_000
+
+    /**
      * 在曲库上执行模糊搜索：每个 token 须命中至少一个字段，标题(×4) > 歌手(×3)
-     * > 专辑(×2) > 文件夹(×1) 加权求和，按相关度排序。
+     * > 专辑(×5) > 文件夹(×1) 加权求和，按相关度排序。任一字段含完整查询（连写）子串
+     * 的曲目额外加 [FULL_QUERY_BONUS] 整体置顶——精确子串命中 > 共享单字模糊命中。
      */
     fun search(tracks: List<Track>, query: String): List<SearchHit> {
         if (query.isBlank() || tracks.isEmpty()) return emptyList()
         val tokens = tokenize(query)
         if (tokens.isEmpty()) return emptyList()
+        val qJoined = tokens.joinToString("")
         val hits = ArrayList<SearchHit>(tracks.size / 4)
         for (t in tracks) {
-            val nfTitle = norm(t.title)
             val nfArtist = norm(t.artist)
+            // v1.2.0 #8: 标题里被烤进歌手名的（文件名 artist-song 当了 title）只匹配 -
+            // 右边的歌名部分，见 titleNormForSearch。
+            val nfTitle = titleNormForSearch(t.title, nfArtist.text)
             val nfAlbum = norm(t.album)
             val nfFolder = norm(t.folder)
             var score = 0
@@ -172,8 +199,6 @@ object FuzzySearch {
                 val mal = matchTokenInField(token, nfAlbum)
                 val mf = matchTokenInField(token, nfFolder)
                 if (mt == null && ma == null && mal == null && mf == null) { ok = false; break }
-                // v1.2.0: 专辑名字段命中权重提到 5（高于标题 4）——专辑名即含查询词时
-                // （如「伤心」命中「伤心早餐店」专辑名）应排在只标题含查询词的曲目前面。
                 score += (mt?.score ?: 0) * 4 + (ma?.score ?: 0) * 3 + (mal?.score ?: 0) * 5 + (mf?.score ?: 0)
                 mt?.let { titleRanges += it.ranges }
                 ma?.let { artistRanges += it.ranges }
@@ -181,6 +206,11 @@ object FuzzySearch {
                 mf?.let { folderRanges += it.ranges }
             }
             if (ok) {
+                // v1.2.0 #5: 任一字段含完整查询子串的曲目整体置顶——如「伤心」命中
+                // 「伤心早餐店」专辑名，必排在仅靠共享单字模糊命中的「心雨/伤跡」之上。
+                val fullHit = nfTitle.text.contains(qJoined) || nfArtist.text.contains(qJoined) ||
+                    nfAlbum.text.contains(qJoined) || nfFolder.text.contains(qJoined)
+                if (fullHit) score += FULL_QUERY_BONUS
                 hits += SearchHit(
                     track = t, score = score,
                     titleRanges = titleRanges, artistRanges = artistRanges,
