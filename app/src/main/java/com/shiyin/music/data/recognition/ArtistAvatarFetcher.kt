@@ -40,13 +40,19 @@ object ArtistAvatarFetcher {
     /**
      * Try to fetch an avatar URL for [artistName].
      * Returns null if all sources fail.
+     *
+     * [personOnly]=true（歌手页大图头图用）：只要 MusicBrainz→Wikidata 的人物肖像照，
+     * 查不到就返回 null（让 UI 走占位图），**不**降级用 iTunes 专辑封面——专辑封面当
+     * 大图头图观感违和。iTunes 兜底留给不那么强调"必须是人物"的场景（如歌手列表小图标）。
      */
-    suspend fun fetch(artistName: String): AvatarResult? = withContext(Dispatchers.IO) {
-        // Step 1: MusicBrainz → Wikidata
+    suspend fun fetch(artistName: String, personOnly: Boolean = false): AvatarResult? = withContext(Dispatchers.IO) {
+        // Step 1: MusicBrainz → Wikidata P18（人物肖像）
         val mbResult = tryMusicBrainz(artistName)
         if (mbResult != null) return@withContext mbResult
 
-        // Step 2: iTunes fallback
+        if (personOnly) return@withContext null
+
+        // Step 2: iTunes fallback（专辑封面——非人物，仅 personOnly=false 时用）
         val itResult = tryItunes(artistName)
         if (itResult != null) return@withContext itResult
 

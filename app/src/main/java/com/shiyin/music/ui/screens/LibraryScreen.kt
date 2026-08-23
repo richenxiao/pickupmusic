@@ -58,6 +58,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.asComposeRenderEffect
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
@@ -1257,57 +1258,57 @@ private fun ArtistDetail(vm: MainViewModel, name: String) {
     val heroMaxPx = with(density) { artistHeroH.toPx() }
     val barPx = with(density) { artistBarH.toPx() }
     val collapseRangePx = (heroMaxPx - barPx).coerceAtLeast(0f)
-    val offsetPxState = remember { mutableFloatStateOf(0f) }
     val listState = rememberLazyListState()
-    val nestedScrollConnection = remember {
-        object : NestedScrollConnection {
-            override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
-                val dy = available.y
-                val off = offsetPxState.floatValue
-                if (dy < 0f && off < collapseRangePx) { // 向上滚 → 先折叠头
-                    val target = (off - dy).coerceIn(0f, collapseRangePx)
-                    offsetPxState.floatValue = target
-                    return Offset(0f, -(target - off))
-                }
-                return Offset.Zero
+    val nameStartPx = with(density) { (artistHeroH - 70.dp).toPx() } // 大歌名起点:写真底
+    val nameEndPx = with(density) { (artistBarH / 2 - 14.dp).toPx() } // 终点:Toolbar 行中
+    val nameShiftPx = with(density) { 28.dp.toPx() } // 折叠时歌名右移避开返回键
+    val maxBlurPx = with(density) { 22.dp.toPx() }
+    Box(Modifier.fillMaxSize().clipToBounds()) {
+        // ── 1. 写真背景层(最底): parallax 上移 + 轻缩放 + alpha 降 + blur 增, 全由 scrollPx 驱动
+        Box(
+            Modifier.fillMaxWidth().height(artistHeroH).graphicsLayer {
+                val sp = if (listState.firstVisibleItemIndex > 0) heroMaxPx
+                    else minOf(listState.firstVisibleItemScrollOffset.toFloat(), heroMaxPx)
+                val f = (sp / collapseRangePx).coerceIn(0f, 1f)
+                translationY = -sp * 0.5f
+                scaleX = 1f - f * 0.06f
+                scaleY = 1f - f * 0.06f
+                alpha = 1f - f * 0.4f
+                if (f > 0.01f) renderEffect = android.graphics.RenderEffect
+                    .createBlurEffect(maxBlurPx * f, maxBlurPx * f, android.graphics.Shader.TileMode.DECAL)
+                    .asComposeRenderEffect()
+                else renderEffect = null
+            },
+        ) {
+            if (avatarBmp != null) {
+                Image(bitmap = avatarBmp, contentDescription = name, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+            } else {
+                Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(bg, bg.copy(alpha = 0.6f))))) {}
             }
-            override fun onPostScroll(consumed: Offset, available: Offset, source: NestedScrollSource): Offset {
-                val dy = available.y
-                val off = offsetPxState.floatValue
-                if (dy > 0f && off > 0f) { // 顶上向下滚 → 展开头
-                    val target = (off - dy).coerceIn(0f, collapseRangePx)
-                    offsetPxState.floatValue = target
-                    return Offset(0f, off - target)
-                }
-                return Offset.Zero
-            }
+            Box(
+                Modifier.fillMaxSize().background(
+                    Brush.verticalGradient(0f to Color.Transparent, 0.55f to Color.Black.copy(alpha = 0.12f), 1f to Color.Black.copy(alpha = 0.5f))
+                )
+            ) {}
         }
-    }
 
-    Box(
-        Modifier
-            .fillMaxSize()
-            .nestedScroll(nestedScrollConnection)
-            .clipToBounds(),
-    ) {
-    ArtistHeader(
-        name = name, bg = bg, avatarBmp = avatarBmp,
-        offsetPxState = offsetPxState, collapseRangePx = collapseRangePx,
-    )
-    Box(
-        Modifier
-            .fillMaxWidth()
-            .fillMaxHeight()
-            .graphicsLayer { translationY = heroMaxPx - offsetPxState.floatValue }
-            .background(c.bg),
-    )
-    LazyColumn(
-        state = listState,
-        modifier = Modifier.fillMaxSize().graphicsLayer { translationY = -offsetPxState.floatValue },
-        contentPadding = PaddingValues(top = artistHeroH, bottom = 130.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
-    ) {
-        item { ArtistActionBar(vm = vm, name = name, tracks = artistTracks) }
+        // ── 2. 不透明 sheet: 起点写真下(heroMax),随内容上移盖住写真(歌曲行透明 gap 不透出)
+        Box(
+            Modifier.fillMaxWidth().fillMaxHeight().background(c.bg).graphicsLayer {
+                val sp = if (listState.firstVisibleItemIndex > 0) heroMaxPx
+                    else minOf(listState.firstVisibleItemScrollOffset.toFloat(), heroMaxPx)
+                translationY = (heroMaxPx - sp).coerceAtLeast(barPx)
+            },
+        ) {}
+
+        // ── 3. 内容层 LazyColumn: 自然滚(不平移→不裁底). top=heroMax 让位写真。
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(top = artistHeroH, bottom = 130.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            item { ArtistActionBar(vm = vm, name = name, tracks = artistTracks) }
         if (vm.artistMerge) {
             item {
                 val candidates = vm.artistsMap().keys.filter { it != name }
@@ -1447,79 +1448,35 @@ private fun ArtistDetail(vm: MainViewModel, name: String) {
             }
         }
     }
-    // ── 定格顶栏：返回常驻，歌名随折叠居中淡入
-    Box(
-        Modifier
-            .fillMaxWidth()
-            .height(artistBarH),
-    ) {
+        // ── 折叠 Toolbar 实心 bg(随折叠淡入;在返回键/歌名之下)
         Box(
-            Modifier
-                .fillMaxSize()
-                .background(c.bg)
-                .graphicsLayer { alpha = (offsetPxState.floatValue / collapseRangePx.coerceAtLeast(1f)).coerceIn(0f, 1f) },
+            Modifier.fillMaxWidth().height(artistBarH).background(c.bg).graphicsLayer {
+                val sp = if (listState.firstVisibleItemIndex > 0) heroMaxPx
+                    else minOf(listState.firstVisibleItemScrollOffset.toFloat(), heroMaxPx)
+                alpha = (sp / collapseRangePx).coerceIn(0f, 1f)
+            },
         ) {}
-        Box(Modifier.align(Alignment.CenterStart).padding(start = 8.dp)) {
-            BackButton { vm.artistKey = null; vm.artistMerge = false }
-        }
+        // ── 大歌名(单元素): 从写真底连续位移到 Toolbar 正中 + 缩放, 全程不消失重现
         Text(
             name,
-            style = heading(20),
-            color = c.text,
+            style = body(28f, FontWeight.ExtraBold, Color.White),
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier
-                .align(Alignment.Center)
-                .padding(horizontal = 52.dp)
-                .graphicsLayer { alpha = (offsetPxState.floatValue / collapseRangePx.coerceAtLeast(1f)).coerceIn(0f, 1f) },
+                .padding(start = 20.dp, end = 20.dp)
+                .graphicsLayer {
+                    val sp = if (listState.firstVisibleItemIndex > 0) heroMaxPx
+                        else minOf(listState.firstVisibleItemScrollOffset.toFloat(), heroMaxPx)
+                    val f = (sp / collapseRangePx).coerceIn(0f, 1f)
+                    translationY = nameStartPx + (nameEndPx - nameStartPx) * f
+                    translationX = nameShiftPx * f
+                    scaleX = 1f - f * 0.45f
+                    scaleY = 1f - f * 0.45f
+                },
         )
-    }
-    }
-}
-
-// ── artist header (写真背景层 + 大歌名) ───────────────────────────────────────
-@Composable
-private fun ArtistHeader(
-    name: String,
-    bg: Color,
-    avatarBmp: ImageBitmap?,
-    offsetPxState: androidx.compose.runtime.MutableFloatState,
-    collapseRangePx: Float,
-) {
-    Box(Modifier.fillMaxWidth().height(artistHeroH)) {
-        // 写真（或占位），随折叠半速上移 = 视差（写真滞后于内容/歌名，形成层次）
-        if (avatarBmp != null) {
-            Image(
-                bitmap = avatarBmp,
-                contentDescription = name,
-                modifier = Modifier.fillMaxSize().graphicsLayer { translationY = -0.5f * offsetPxState.floatValue },
-                contentScale = ContentScale.Crop,
-            )
-        } else {
-            // 草图：第1层只有图、不含文字。无写真时用调色板渐变占位（不加首字母文字）。
-            Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(bg, bg.copy(alpha = 0.6f))))) {}
-        }
-        // 第2层：仅歌手名（草图——第2层只有歌名文字，无统计/听众数）。随折叠淡出
-        Box(
-            Modifier
-                .fillMaxSize()
-                .background(
-                    Brush.verticalGradient(
-                        0f to Color.Transparent,
-                        0.5f to Color.Black.copy(alpha = 0.15f),
-                        1f to Color.Black.copy(alpha = 0.55f),
-                    )
-                )
-                .graphicsLayer { alpha = (1f - offsetPxState.floatValue / collapseRangePx.coerceAtLeast(1f)).coerceIn(0f, 1f) },
-        ) {
-            Text(
-                name,
-                style = heading(28),
-                color = Color.White,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.align(Alignment.BottomStart).padding(horizontal = 20.dp, vertical = 16.dp),
-            )
+        // ── 返回键: 恒透明悬浮顶左(起步不在固定 Toolbar;折叠后 Toolbar bg 在其下显出)
+        Box(Modifier.align(Alignment.TopStart).padding(start = 8.dp, top = 7.dp)) {
+            BackButton { vm.artistKey = null; vm.artistMerge = false }
         }
     }
 }

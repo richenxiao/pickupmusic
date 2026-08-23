@@ -366,8 +366,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 val existing = artistEntities[name]
                 if (existing == null || existing.avatarUrl.isBlank()) {
+                    // personOnly=true：歌手页大图头图只要人物肖像（MB→Wikidata），查不到走占位图，
+                    // 不降级用 iTunes 专辑封面（当大图头图观感违和）。
                     com.shiyin.music.data.recognition.ArtistAvatarFetcher
-                        .fetch(name)?.let { res ->
+                        .fetch(name, personOnly = true)?.let { res ->
                             dao.updateArtistAvatar(name, res.url, res.source, System.currentTimeMillis())
                         }
                 }
