@@ -30,14 +30,17 @@ import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.shiyin.music.MainViewModel
 import com.shiyin.music.data.search.FuzzySearch
+import com.shiyin.music.ui.components.CoverArt
 import com.shiyin.music.ui.components.OIcon
 import com.shiyin.music.ui.components.TrackRow
 import com.shiyin.music.ui.components.body
 import com.shiyin.music.ui.components.coverPalette
 import com.shiyin.music.ui.components.heading
+import com.shiyin.music.ui.components.shadowSm
 import com.shiyin.music.ui.icons.Lucide
 import com.shiyin.music.ui.theme.Caprasimo
 import com.shiyin.music.ui.theme.Figtree
@@ -52,6 +55,25 @@ fun SearchScreen(vm: MainViewModel) {
     val lib = vm.lib()
     val results = remember(query, lib) {
         if (query.isBlank()) emptyList() else FuzzySearch.search(lib, query)
+    }
+    // v1.2.0 #5: 搜专辑/EP/合集命中折叠成一张专辑卡（不显示专辑歌曲），单曲按曲目行
+    // （歌名+歌手）。按 albumId 分组取最高分代表作；单曲与专辑卡按相关度混排。
+    val displayItems = remember(results) {
+        val grouped = LinkedHashMap<String, FuzzySearch.SearchHit>()
+        val singles = ArrayList<FuzzySearch.SearchHit>()
+        for (hit in results) {
+            val t = hit.track
+            val type = vm.albumTypeFor(t.albumId)
+            if (t.albumId > 0 && (type == "Album" || type == "EP" || type == "Compilation")) {
+                grouped.putIfAbsent("aid:${t.albumId}", hit)
+            } else {
+                singles.add(hit)
+            }
+        }
+        val items = ArrayList<Pair<FuzzySearch.SearchHit, Boolean>>()
+        singles.forEach { items.add(it to false) }
+        grouped.values.forEach { items.add(it to true) }
+        items.sortedByDescending { it.first.score }
     }
 
     LazyColumn(
@@ -103,26 +125,48 @@ fun SearchScreen(vm: MainViewModel) {
         }
 
         if (query.isNotBlank()) {
-            item { Text("${results.size} 个结果", style = body(13f, FontWeight.Normal, c.n600)) }
-            items(results, key = { it.track.id }) { hit ->
+            item { Text("${displayItems.size} 个结果", style = body(13f, FontWeight.Normal, c.n600)) }
+            items(displayItems, key = { it.first.track.id }) { (hit, isAlbum) ->
                 val t = hit.track
-                val subtitle = "${t.artist} · ${t.folder}"
-                val artistLen = t.artist.length + 3 // " · " 分隔符
-                TrackRow(
-                    track = t,
-                    isCurrent = t.id == vm.player.currentId,
-                    isPlaying = vm.player.isPlaying,
-                    subtitle = subtitle,
-                    onClick = { vm.commitSearch(); vm.play(t.id) },
-                    onLongClick = { vm.trackMenuFor = t.id },
-                    coverSize = 42.dp,
-                    coverRadius = 13.dp,
-                    titleHighlights = hit.titleRanges,
-                    subtitleHighlights = hit.artistRanges +
-                        hit.folderRanges.map { (it.first + artistLen)..(it.last + artistLen) },
-                    trailing = { com.shiyin.music.ui.screens.TrackMenuButton(vm, t) },
-                    isHiddenTrack = vm.isHidden(t.id),
-                )
+                if (isAlbum) {
+                    // v1.2.0 #5: 专辑卡——专辑名 + 分类·歌手，点击进专辑（不播单曲、不列曲目）
+                    val typeStr = vm.albumTypeFor(t.albumId)
+                    val typeCn = when (typeStr) { "EP" -> "EP"; "Compilation" -> "合集"; else -> "专辑" }
+                    val artistDisplay = if (typeStr == "Compilation") "多位歌手" else t.artist
+                    Row(
+                        Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
+                            .clickable {
+                                vm.commitSearch()
+                                vm.openAlbum(com.shiyin.music.data.albumKeyOf(t.album, t.artist, t.albumId))
+                            }
+                            .padding(horizontal = 4.dp, vertical = 8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(13.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        CoverArt(t, 56.dp, RoundedCornerShape(8.dp), fontSize = 22, modifier = Modifier.shadowSm(RoundedCornerShape(8.dp)))
+                        Column(Modifier.weight(1f)) {
+                            Text(t.album, style = body(15f, FontWeight.Bold, c.text), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text("$typeCn · $artistDisplay", style = body(12.5f, FontWeight.Normal, c.n600), modifier = Modifier.padding(top = 2.dp), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+                        OIcon(Lucide.ChevronRight, 17.dp, c.n400)
+                    }
+                } else {
+                    // v1.2.0 #5: 单曲行只显歌手名（去 folder）
+                    TrackRow(
+                        track = t,
+                        isCurrent = t.id == vm.player.currentId,
+                        isPlaying = vm.player.isPlaying,
+                        subtitle = t.artist,
+                        onClick = { vm.commitSearch(); vm.play(t.id) },
+                        onLongClick = { vm.trackMenuFor = t.id },
+                        coverSize = 42.dp,
+                        coverRadius = 13.dp,
+                        titleHighlights = hit.titleRanges,
+                        subtitleHighlights = hit.artistRanges,
+                        trailing = { com.shiyin.music.ui.screens.TrackMenuButton(vm, t) },
+                        isHiddenTrack = vm.isHidden(t.id),
+                    )
+                }
             }
         } else {
             if (vm.searchHistory.isNotEmpty()) {
