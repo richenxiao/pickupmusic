@@ -1,6 +1,7 @@
 package com.shiyin.music.ui.screens
 
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -211,11 +212,17 @@ private fun FastScrollRail(
     var isDragging by remember { mutableStateOf(false) }
     var dragPos by remember { mutableFloatStateOf(0f) } // drag 期间 thumb 顶 px
     val thumbTopPx = if (isDragging) dragPos else viewProgress * movablePx
+    // v1.2.0 #7: 空闲淡出、滚动/拖动时淡入（Spotify 式）。isScrollInProgress 在滚动
+    // 起停时翻转，驱动 alpha 220ms 渐变；detectHorizontalDragGestures 只认水平拖拽，竖向
+    // 列表滚动不被 hijack，故触摸区常驻也无妨——从 gutter 起拖即淡入跟手。
+    val visible = isDragging || listState.isScrollInProgress
+    val railAlpha by animateFloatAsState(if (visible) 1f else 0f, tween(220), label = "railAlpha")
 
     Box(
         modifier
             .fillMaxHeight()
             .width(touchWDp)
+            .graphicsLayer { alpha = railAlpha }
             .pointerInput(total) {
                 val railPx = size.height.toFloat()
                 val mv = (railPx - thumbPx).coerceAtLeast(0f)
