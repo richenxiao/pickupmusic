@@ -148,10 +148,15 @@ fun RubyText(
                 }
                 measureText.append(WJ)
                 val segLen = segments[idx].surface.length
+                // v1.2.0: 带注音段字间也插 WJ，防 CJK 字间断行把多字 surface（如「二人」）
+                // 拆到两行致注音脱离（原 v1.1 只在段边界插 WJ，挡不住段内字间断行）。
+                // 无注音段不加，保留长送假名/标点串的内部断行能力免得整段溢出。
+                val atomic = segments[idx].reading != null
                 for (c in 0 until segLen) {
                     offMap[oOrig] = measureText.length
                     measureText.append(text[oOrig])
                     oOrig++
+                    if (atomic && c < segLen - 1) measureText.append(WJ)
                 }
                 measureText.append(WJ)
             }
