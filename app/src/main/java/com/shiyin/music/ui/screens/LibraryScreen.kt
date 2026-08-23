@@ -1245,14 +1245,13 @@ private fun ArtistDetail(vm: MainViewModel, name: String) {
         return
     }
 
-    // v1.2.0 #6: 写真大图背景层 + 标准 nestedScroll 折叠头。向下滚动时上层内容随
-    // 不透明 sheet 上移整片盖住写真图（视差：写真滞后半速）；返回折叠恢复，歌名定格
-    // 进顶栏正中。写真 URL 持久化于 artist.avatar_url（复用专辑封面那套 URL→DB +
-    // ArtCache 磁盘/内存两层），重启/重扫不丢。
-    // 性能：折叠量走 mutableFloatState，仅在 graphicsLayer lambda 里读（deferred），
-    // 滚动时 ArtistDetail 主体不重组，故不卡。
+    // v1.2.0 #6: 写真大图背景层 + scrollOffset 驱动折叠头。向下滚动时上层 sheet 上移
+    // 整片盖住写真图（视差：写真滞后半速）；返回折叠恢复，歌名定格进顶栏。写真经
+    // ArtistImageResolver 解析（override→cache→Discogs 等自动源），URL 存独立
+    // artist_image_cache/override 表，重启/重扫/更新不丢，自动源不覆盖手选。
+    // 性能：折叠量走 graphicsLayer 内 deferred 读 listState，滚动时主体不重组，故不卡。
     androidx.compose.runtime.LaunchedEffect(name) { vm.fetchArtistAvatar(name) }
-    val avatarUrl = vm.artistEntities[name]?.avatarUrl ?: ""
+    val avatarUrl = vm.artistImage(name)
     val avatarBmp = rememberCandidateArt(avatarUrl.ifBlank { null }, 360.dp)
     val density = LocalDensity.current
     val heroMaxPx = with(density) { artistHeroH.toPx() }

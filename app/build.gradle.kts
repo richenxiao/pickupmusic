@@ -21,6 +21,16 @@ android {
         // androidTest APK 经 R8 后 AGP 可能回退到系统框架 android.test.InstrumentationTestRunner
         // 致使 instrumentation 进程启动即崩）。
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        // v1.2.0 #6: Last.fm artist image 源的 API key（可选）。Discogs 无需 key 即可
+        // 取人物照；Last.fm 需有效 key 才返回图。缺省空串→Last.fm 源跳过。
+        val lp = rootProject.file("local.properties")
+        val lastfmKey = if (lp.exists()) {
+            val props = Properties()
+            props.load(lp.inputStream())
+            props.getProperty("LASTFM_API_KEY", "")
+        } else ""
+        buildConfigField("String", "LASTFM_API_KEY", "\"$lastfmKey\"")
     }
 
     signingConfigs {
@@ -72,6 +82,10 @@ android {
     }
     buildFeatures {
         compose = true
+        // v1.2.0 #6: 歌手写真 Last.fm 源需要 API key。key 从 gitignored 的
+        // local.properties 读取（LASTFM_API_KEY=xxx），缺省空串→该源自动跳过，
+        // Discogs（无需 key）仍可独立工作。BuildConfig 字段被 R8 内联，无运行时 IO。
+        buildConfig = true
     }
     // Kuromoji IPADIC 自带词表 jar 与其它依赖在 META-INF 下存在重复资源，
     // 打包阶段会报 DuplicateFileException。排除这些路径即可，不影响运行时词表加载。

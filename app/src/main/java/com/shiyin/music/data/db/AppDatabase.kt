@@ -140,6 +140,26 @@ data class ArtistEntity(
     val updatedAt: Long = 0,
 )
 
+// v1.2.0 #6: 歌手写真独立持久层（与 album_art_cache 分离）。
+// cache 存自动源结果；override 存用户手选写真（最高优先级，自动源永不覆盖）。
+// 旧 artist.avatarUrl 不再作为头图来源（那是专辑封面，非人物照），头图改走本 cache。
+@Entity(tableName = "artist_image_cache")
+data class ArtistImageCacheEntity(
+    @PrimaryKey val name: String,
+    val url: String = "",
+    val source: String = "",
+    val fetchedAt: Long = 0,
+    /** >0 且 >now 视为"近期自动源全失败"，TTL 内不重试，避免开页干等。url 非空时忽略。 */
+    val failUntilTs: Long = 0,
+)
+
+@Entity(tableName = "artist_image_override")
+data class ArtistImageOverrideEntity(
+    @PrimaryKey val name: String,
+    val url: String,
+    val chosenAt: Long = 0,
+)
+
 @Entity(tableName = "song_artist", primaryKeys = ["mediaId", "artistId"])
 data class SongArtistEntity(
     val mediaId: Long,
@@ -331,6 +351,25 @@ interface ShiyinDao {
 
     @Query("SELECT * FROM artist WHERE name = :name")
     suspend fun artistByName(name: String): ArtistEntity?
+
+    // ── v1.2.0 #6 artist image（cache + override，独立于 album_art_cache）──────────
+    @Query("SELECT * FROM artist_image_cache WHERE name = :name")
+    suspend fun artistImageCache(name: String): ArtistImageCacheEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertArtistImageCache(e: ArtistImageCacheEntity)
+
+    @Query("DELETE FROM artist_image_cache WHERE name = :name")
+    suspend fun deleteArtistImageCache(name: String)
+
+    @Query("SELECT * FROM artist_image_override WHERE name = :name")
+    suspend fun artistImageOverride(name: String): ArtistImageOverrideEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertArtistImageOverride(e: ArtistImageOverrideEntity)
+
+    @Query("DELETE FROM artist_image_override WHERE name = :name")
+    suspend fun deleteArtistImageOverride(name: String)
 
     // song_artist
     @Query("SELECT * FROM song_artist WHERE mediaId = :mediaId")
@@ -608,8 +647,10 @@ interface ShiyinDao {
         ReadingOverrideEntity::class,
         // v1.1+: 外部歌词假名 evidence 缓存（UtaTen 等对齐后的 occurrence 读法）
         ExternalReadingEvidenceEntity::class,
+        // v1.2.0 #6: 歌手写真 cache + 用户手选 override（独立于 album_art_cache）
+        ArtistImageCacheEntity::class, ArtistImageOverrideEntity::class,
     ],
-    version = 14,
+    version = 15,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -872,9 +913,34 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        // v1.2.0 #6: 歌手写真独立持久层（与 album_art_cache 分离）。cache 存自动源结果
+        // （含失败 TTL，避免对死源反复重试），override 存用户手选写真（最高优先级，自动源
+        // 永不覆盖）。旧 artist.avatarUrl 不迁移——那是专辑封面（非人物照），头图改走新
+        // cache 重新向 Discogs 等人物源取正面照。见 ArtistImageResolver。
+        private val MIGRATION_14_15 = object : Migration(14, 15) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS artist_image_cache (
+                        name TEXT NOT NULL PRIMARY KEY,
+                        url TEXT NOT NULL,
+                        source TEXT NOT NULL,
+                        fetchedAt INTEGER NOT NULL,
+                        failUntilTs INTEGER NOT NULL
+                    )
+                """)
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS artist_image_override (
+                        name TEXT NOT NULL PRIMARY KEY,
+                        url TEXT NOT NULL,
+                        chosenAt INTEGER NOT NULL
+                    )
+                """)
+            }
+        }
+
         fun get(context: Context): AppDatabase = instance ?: synchronized(this) {
             instance ?: Room.databaseBuilder(context.applicationContext, AppDatabase::class.java, "shiyin.db")
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15)
                 // 不使用 fallbackToDestructiveMigration：迁移失败时宁可崩溃也不要删全库。
                 // 之前该选项导致迁移异常时删除所有用户数据（排序、专辑名、播放历史等）。
                 .addCallback(object : Callback() {

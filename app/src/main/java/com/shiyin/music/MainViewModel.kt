@@ -104,6 +104,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     var playlistTracks by mutableStateOf<Map<String, List<Long>>>(emptyMap()); private set
     var savedLyricsMap by mutableStateOf<Map<Long, SavedLyricEntity>>(emptyMap()); private set
     var artistEntities by mutableStateOf<Map<String, ArtistEntity>>(emptyMap()); private set
+    // v1.2.0 #6: 歌手写真 URL（经 ArtistImageResolver 解析：override→cache→Discogs 等自动源）。
+    // 与 artist.avatarUrl 解耦——头图改走本独立层，album cover cache 不混。
+    var artistImages by mutableStateOf<Map<String, String>>(emptyMap()); private set
+    fun artistImage(name: String): String = artistImages[name] ?: ""
     var playCounts by mutableStateOf<Map<Long, Int>>(emptyMap()); private set
     var albumOverrides by mutableStateOf<Map<Long, AlbumOverrideEntity>>(emptyMap()); private set
     // v4.3: album-level manual edits (name/artist/cover) + single-track edits
@@ -356,26 +360,33 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun resolveArtist(name: String): String = aliases[name] ?: name
 
-    /** v1.2.0 #6: 拉取并持久化歌手头像（MusicBrainz→Wikidata→iTunes）。仅在缺失时
-     *  发起一次网络请求，写回 artist.avatarUrl；dao 的 artistFlow() 随即重发，
-     *  artistEntities 刷新 → 歌手页自动重组显示写真。 */
-    private val avatarFetching = java.util.Collections.synchronizedSet(mutableSetOf<String>())
+    /** v1.2.0 #6: 解析歌手写真并刷新 artistImages（override→cache→Discogs 等自动源）。
+     *  重入由 ArtistImageResolver 内部保护；cache 命中即返回不触网。写真持久化在独立
+     *  artist_image_cache / artist_image_override 表，扫描/更新不丢、自动源不覆盖手选。 */
+    private val artistImageResolver = com.shiyin.music.data.image.ArtistImageResolver(dao)
+
     fun fetchArtistAvatar(name: String) {
-        if (!avatarFetching.add(name)) return
         viewModelScope.launch {
-            try {
-                val existing = artistEntities[name]
-                if (existing == null || existing.avatarUrl.isBlank()) {
-                    // personOnly=true：歌手页大图头图只要人物肖像（MB→Wikidata），查不到走占位图，
-                    // 不降级用 iTunes 专辑封面（当大图头图观感违和）。
-                    com.shiyin.music.data.recognition.ArtistAvatarFetcher
-                        .fetch(name, personOnly = true)?.let { res ->
-                            dao.updateArtistAvatar(name, res.url, res.source, System.currentTimeMillis())
-                        }
-                }
-            } finally {
-                avatarFetching.remove(name)
-            }
+            val img = artistImageResolver.resolve(name, personOnly = true)
+            artistImages = artistImages + (name to (img?.url ?: ""))
+        }
+    }
+
+    /** 用户手动选写真（写 override，永久最高优先级，自动源永不覆盖）。 */
+    fun setArtistImageOverride(name: String, url: String) {
+        viewModelScope.launch {
+            artistImageResolver.setOverride(name, url)
+            val img = artistImageResolver.resolve(name, personOnly = true)
+            artistImages = artistImages + (name to (img?.url ?: ""))
+        }
+    }
+
+    /** 清除手选写真，回退到自动源。 */
+    fun clearArtistImageOverride(name: String) {
+        viewModelScope.launch {
+            artistImageResolver.clearOverride(name)
+            val img = artistImageResolver.resolve(name, personOnly = true)
+            artistImages = artistImages + (name to (img?.url ?: ""))
         }
     }
 
