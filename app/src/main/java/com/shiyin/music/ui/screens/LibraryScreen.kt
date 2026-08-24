@@ -1188,7 +1188,7 @@ private fun NumberedTrackRow(
             Text(
                 "$idx",
                 style = body(14f, FontWeight.Bold, if (isCur) c.a700 else c.text),
-                textAlign = TextAlign.Center,
+                textAlign = TextAlign.Start,
                 modifier = Modifier.width(26.dp),
             )
             Column(Modifier.weight(1f)) {
@@ -1261,129 +1261,102 @@ private fun ArtistDetail(vm: MainViewModel, name: String) {
     val avatarUrl = vm.artistImage(name)
     val avatarBmp = rememberCandidateArt(avatarUrl.ifBlank { null }, 360.dp)
     val density = LocalDensity.current
-    // 沉浸式状态栏: 写真上移盖住状态栏区域(写真铺到屏幕顶 y=0)
+    // 沉浸式: 外层已去掉 statusBarsPadding, 内容画到屏幕顶 y=0; 状态栏高度用于 overlay 定位
     val sbTopPx = WindowInsets.statusBars.asPaddingValues().calculateTopPadding().let { with(density) { it.toPx() } }
     val heroMaxPx = with(density) { artistHeroH.toPx() }
     val barPx = with(density) { artistBarH.toPx() }
     val collapseRangePx = (heroMaxPx - barPx).coerceAtLeast(0f)
     val listState = rememberLazyListState()
-    val nameStartPx = with(density) { (artistHeroH - 80.dp).toPx() } // 大歌名起点:写真底
-    val nameEndPx = with(density) { (artistBarH / 2 - 14.dp).toPx() } // 终点:Toolbar 行中
-    val namePadPx = with(density) { 20.dp.toPx() } // 歌名左 padding(与操作栏/分区标题一致)
+    // 歌名起点:写真底偏上 40dp(名字与按钮间距 40dp)
+    val nameStartPx = with(density) { (artistHeroH - 40.dp).toPx() }
+    // 歌名折叠终点:状态栏下 + barH/2(Toolbar 行中)
+    val nameEndPx = sbTopPx + with(density) { (artistBarH / 2 - 14.dp).toPx() }
+    val namePadPx = with(density) { 20.dp.toPx() }
     val maxBlurPx = with(density) { 22.dp.toPx() }
-    // 测量歌名宽度 + 屏幕宽度,折叠时按整个 Toolbar 宽度居中(独立于返回键)
+    // 歌名字号: 短名大,长名按比例缩小
+    val nameFontSize = when {
+        name.length <= 6 -> 36f
+        name.length <= 12 -> 30f
+        else -> 24f
+    }
     var nameWidthPx by remember { mutableStateOf(0f) }
     var screenWidthPx by remember { mutableStateOf(0f) }
     Box(Modifier.fillMaxSize().clipToBounds()) {
-        // ════════ 方案 B 修正版：写真是 LazyColumn header item, 随滚动自然消失 ════════
-        // 无独立遮挡 sheet → 没有"盖写真"bug。歌曲区是 LazyColumn 的 c.bg 实色,写真不渗透。
-        // progress = 写真 item 的滚动量 / heroMaxPx, [0,1] 连续。
         LazyColumn(
             state = listState,
             modifier = Modifier.fillMaxSize().background(c.bg),
-            // bottom 给底部播放栏/导航栏留位; top 无需让位(写真是首个 item)
             contentPadding = PaddingValues(top = 0.dp, bottom = 130.dp),
             verticalArrangement = Arrangement.spacedBy(0.dp),
         ) {
-            // ── header item: 写真 (height=heroH, 随滚动上移+parallax+blur+alpha) ──
-            // offset 上移盖住状态栏区域(沉浸式: 写真铺到屏幕顶 y=0)
+            // ── header item: 写真 + 操作栏(右侧, 不受 photo graphicsLayer 影响) ──
             item {
-                Box(
-                    Modifier.fillMaxWidth().height(artistHeroH)
-                        .offset(y = -with(density) { sbTopPx.toDp() })
-                        .graphicsLayer {
-                        // 写真 item 滚出量(<=heroMaxPx); 滚出 hero 后 item 被回收,parallax 失效无影响
-                        val sp = if (listState.firstVisibleItemIndex > 0) heroMaxPx
-                            else minOf(listState.firstVisibleItemScrollOffset.toFloat(), heroMaxPx)
-                        val p = (sp / collapseRangePx).coerceIn(0f, 1f)
-                        // parallax: 滞后半速上移
-                        translationY = -sp * 0.5f
-                        scaleX = 1f - p * 0.06f
-                        scaleY = 1f - p * 0.06f
-                        alpha = (1f - p * 0.6f).coerceIn(0.4f, 1f)
-                        // 连续 blur: progress 0→1, blur 0→maxBlurPx(无离散跳变)
-                        if (p > 0f) {
-                            val r = maxBlurPx * p
-                            renderEffect = android.graphics.RenderEffect
-                                .createBlurEffect(r, r, android.graphics.Shader.TileMode.DECAL)
-                                .asComposeRenderEffect()
-                        } else {
-                            renderEffect = null
-                        }
-                    },
-                ) {
-                    if (avatarBmp != null) {
-                        Image(bitmap = avatarBmp, contentDescription = name, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
-                    } else {
-                        Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(bg, bg.copy(alpha = 0.6f))))) {}
-                    }
-                    // 底部渐变压暗(让叠在写真上的歌名可读)
+                Box(Modifier.fillMaxWidth().height(artistHeroH)) {
+                    // 写真层(graphicsLayer 只影响图片,不影响操作栏)
                     Box(
-                        Modifier.fillMaxSize().background(
+                        Modifier.fillMaxSize().graphicsLayer {
+                            val sp = if (listState.firstVisibleItemIndex > 0) heroMaxPx
+                                else minOf(listState.firstVisibleItemScrollOffset.toFloat(), heroMaxPx)
+                            val p = (sp / collapseRangePx).coerceIn(0f, 1f)
+                            translationY = -sp * 0.5f
+                            scaleX = 1f - p * 0.06f
+                            scaleY = 1f - p * 0.06f
+                            alpha = (1f - p * 0.6f).coerceIn(0.4f, 1f)
+                            if (p > 0f) {
+                                val r = maxBlurPx * p
+                                renderEffect = android.graphics.RenderEffect
+                                    .createBlurEffect(r, r, android.graphics.Shader.TileMode.DECAL)
+                                    .asComposeRenderEffect()
+                            } else renderEffect = null
+                        },
+                    ) {
+                        if (avatarBmp != null) {
+                            Image(bitmap = avatarBmp, contentDescription = name, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+                        } else {
+                            Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(bg, bg.copy(alpha = 0.6f))))) {}
+                        }
+                        Box(Modifier.fillMaxSize().background(
                             Brush.verticalGradient(0f to Color.Transparent, 0.45f to Color.Black.copy(alpha = 0.10f), 1f to Color.Black.copy(alpha = 0.55f))
-                        )
-                    ) {}
+                        )) {}
+                    }
+                    // 操作栏: 右侧居中(独立于 photo graphicsLayer, 不被 blur)
+                    ArtistActionBar(vm = vm, name = name, tracks = artistTracks,
+                        modifier = Modifier.align(Alignment.CenterEnd).padding(end = 20.dp))
                 }
             }
 
-            // ── 操作栏 + 歌曲 + 专辑(原内容,放在 LazyColumn,背景透出 c.bg) ──
-            item { ArtistActionBar(vm = vm, name = name, tracks = artistTracks) }
-            item { Text("歌曲", style = body(14f, FontWeight.Bold, c.n700), modifier = Modifier.padding(start = 20.dp)) }
+            // ── "歌曲" + 歌曲 + 专辑(无操作栏,已移入 header) ──
+            item { Text("歌曲", style = body(14f, FontWeight.Bold, c.n700), modifier = Modifier.padding(start = 20.dp, top = 4.dp)) }
             val displayTracks = if (artistTracks.size > songCap) artistTracks.take(songCap) else artistTracks
             itemsIndexed(displayTracks, key = { _, t -> t.id }) { i, t ->
-                NumberedTrackRow(
-                    vm = vm,
-                    track = t,
-                    idx = i + 1,
-                    sub = t.album,
-                    onClick = { vm.play(t.id) },
-                    showMenu = true,
-                )
+                Box(Modifier.padding(horizontal = 16.dp)) {
+                    NumberedTrackRow(
+                        vm = vm, track = t, idx = i + 1, sub = t.album,
+                        onClick = { vm.play(t.id) }, showMenu = true,
+                    )
+                }
             }
             if (artistTracks.size > songCap) {
                 item {
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
-                        PillButton(
-                            "展开",
-                            onClick = { songCap = (songCap + 5).coerceAtMost(artistTracks.size) },
-                            bg = null, textColor = c.text, borderColor = c.divider,
-                        )
+                        PillButton("展开", onClick = { songCap = (songCap + 5).coerceAtMost(artistTracks.size) },
+                            bg = null, textColor = c.text, borderColor = c.divider)
                     }
                 }
             }
             if (albums.isNotEmpty()) {
                 item {
-                    Row(
-                        Modifier.fillMaxWidth().padding(horizontal = 20.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
+                    Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                         Text("专辑", style = body(14f, FontWeight.Bold, c.n700))
-                        Box(
-                            Modifier
-                                .clip(RoundedCornerShape(999.dp))
-                                .clickable { showAllAlbums = true }
-                                .padding(horizontal = 14.dp, vertical = 6.dp),
-                        ) {
+                        Box(Modifier.clip(RoundedCornerShape(999.dp)).clickable { showAllAlbums = true }.padding(horizontal = 14.dp, vertical = 6.dp)) {
                             Text("展开全部（${albums.size}）", style = body(12f, FontWeight.Bold, c.a700))
                         }
                     }
                 }
                 item {
-                    Row(
-                        Modifier.horizontalScroll(rememberScrollState()),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(14.dp),
-                    ) {
+                    Row(Modifier.horizontalScroll(rememberScrollState()).padding(start = 20.dp, end = 20.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                         for ((albKey, ts) in albums) {
                             val firstT = ts.first()
-                            Column(
-                                Modifier
-                                    .width(106.dp)
-                                    .clip(RoundedCornerShape(10.dp))
-                                    .clickable { vm.openAlbum(albKey) },
-                                verticalArrangement = Arrangement.spacedBy(7.dp),
-                            ) {
+                            Column(Modifier.width(106.dp).clip(RoundedCornerShape(10.dp)).clickable { vm.openAlbum(albKey) }, verticalArrangement = Arrangement.spacedBy(7.dp)) {
                                 CoverArt(firstT, 106.dp, RoundedCornerShape(8.dp), fontSize = 38, modifier = Modifier.shadowSm(RoundedCornerShape(8.dp)))
                                 Text(firstT.album, style = body(12.5f, FontWeight.Bold, c.text), maxLines = 1, overflow = TextOverflow.Ellipsis)
                                 Text("${ts.size} 首", style = body(11f, FontWeight.Normal, c.n600), modifier = Modifier.offset(y = (-4).dp))
@@ -1394,48 +1367,27 @@ private fun ArtistDetail(vm: MainViewModel, name: String) {
             }
         }
 
-        // ════════ 叠加层(在 LazyColumn 之外, 不被 item 回收, 读 listState progress) ════════
-
-        // ── 折叠 Toolbar 实色栏: alpha=progress(展开透明, 折叠实色) ──
-        Box(
-            Modifier.fillMaxWidth().height(artistBarH).background(c.bg).graphicsLayer {
-                val sp = if (listState.firstVisibleItemIndex > 0) heroMaxPx
-                    else minOf(listState.firstVisibleItemScrollOffset.toFloat(), heroMaxPx)
-                alpha = (sp / collapseRangePx).coerceIn(0f, 1f)
-            },
-        ) {}
-
-        // ── 大歌名(单元素, 不复制): translationY/scale 由 progress 连续驱动 ──
-        // 展开时左对齐(namePadPx);折叠时以整个 Toolbar 宽度居中(独立于返回键,不偏左)。
-        Text(
-            name,
-            style = body(34f, FontWeight.ExtraBold, Color.White),
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier
-                .padding(start = 20.dp, end = 20.dp)
-                .onGloballyPositioned { coords ->
-                    nameWidthPx = coords.size.width.toFloat()
-                    screenWidthPx = coords.parentLayoutCoordinates?.size?.width?.toFloat() ?: screenWidthPx
-                }
+        // ══ 叠加层 ══
+        // 折叠 Toolbar(状态栏下方, alpha=progress)
+        Box(Modifier.fillMaxWidth().height(artistBarH).offset(y = with(density) { sbTopPx.toDp() }).background(c.bg).graphicsLayer {
+            val sp = if (listState.firstVisibleItemIndex > 0) heroMaxPx
+                else minOf(listState.firstVisibleItemScrollOffset.toFloat(), heroMaxPx)
+            alpha = (sp / collapseRangePx).coerceIn(0f, 1f)
+        }) {}
+        // 大歌名(单元素)
+        Text(name, style = body(nameFontSize, FontWeight.ExtraBold, Color.White), maxLines = 2, overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.fillMaxWidth(0.8f).padding(start = 20.dp)
+                .onGloballyPositioned { coords -> nameWidthPx = coords.size.width.toFloat(); screenWidthPx = coords.parentLayoutCoordinates?.size?.width?.toFloat() ?: screenWidthPx }
                 .graphicsLayer {
-                    val sp = if (listState.firstVisibleItemIndex > 0) heroMaxPx
-                        else minOf(listState.firstVisibleItemScrollOffset.toFloat(), heroMaxPx)
+                    val sp = if (listState.firstVisibleItemIndex > 0) heroMaxPx else minOf(listState.firstVisibleItemScrollOffset.toFloat(), heroMaxPx)
                     val f = (sp / collapseRangePx).coerceIn(0f, 1f)
                     translationY = nameStartPx + (nameEndPx - nameStartPx) * f
-                    // 折叠时水平居中: 从左对齐(namePadPx)插值到屏幕中心
-                    // 中心位置 = (screenWidth - nameWidth)/2; 左对齐起点 = namePadPx
-                    val centerTx = if (nameWidthPx > 0 && screenWidthPx > 0)
-                        (screenWidthPx - nameWidthPx) / 2f - namePadPx else 0f
+                    val centerTx = if (nameWidthPx > 0 && screenWidthPx > 0) (screenWidthPx - nameWidthPx) / 2f - namePadPx else 0f
                     translationX = centerTx * f
-                    scaleX = 1f - f * 0.45f
-                    scaleY = 1f - f * 0.45f
-                    alpha = 1f
-                },
-        )
-
-        // ── 返回键: 恒透明悬浮顶左(起步不在固定 Toolbar; 折叠后 Toolbar bg 在其下显出) ──
-        Box(Modifier.align(Alignment.TopStart).padding(start = 8.dp, top = 7.dp)) {
+                    scaleX = 1f - f * 0.45f; scaleY = 1f - f * 0.45f; alpha = 1f
+                })
+        // 返回键(状态栏下方)
+        Box(Modifier.align(Alignment.TopStart).padding(start = 8.dp, top = with(density) { (sbTopPx + 28f).toDp() })) {
             BackButton { vm.artistKey = null; vm.artistMerge = false }
         }
     }
@@ -1446,12 +1398,11 @@ private fun ArtistDetail(vm: MainViewModel, name: String) {
 // ── artist action bar (圆形播放 + 随机播放 + ⋯ 菜单) ───────────────────────────
 // 管理归属/选择写真等收进 ⋯ 菜单，避免操作栏杂乱。
 @Composable
-private fun ArtistActionBar(vm: MainViewModel, name: String, tracks: List<Track>) {
+private fun ArtistActionBar(vm: MainViewModel, name: String, tracks: List<Track>, modifier: Modifier = Modifier) {
     val c = LocalOrganic.current
     var menuOpen by remember { mutableStateOf(false) }
     Row(
-        // 上下留白(避免太贴边)+ 左右 20dp 对齐歌名; 间距 8dp(紧凑不拥挤)
-        Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 10.dp),
+        modifier.padding(vertical = 10.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {

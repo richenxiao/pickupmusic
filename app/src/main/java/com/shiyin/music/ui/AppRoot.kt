@@ -206,8 +206,10 @@ fun AppRoot(vm: MainViewModel) {
         Column(
             Modifier
                 .fillMaxSize()
-                .statusBarsPadding()
-                .navigationBarsPadding()
+                // v1.2.0 #6: 歌手页沉浸式——写真铺到状态栏区域(屏幕顶 y=0),
+                // 故 artistKey 非空时不加 statusBarsPadding,让内容画到状态栏后。
+                // 其他页面照常加 statusBarsPadding。navigationBarsPadding 始终保留。
+                .then(if (vm.artistKey != null) Modifier.navigationBarsPadding() else Modifier.statusBarsPadding().navigationBarsPadding())
                 .imePadding()
                 .graphicsLayer {
                     val p = sidebarProgress.value
