@@ -36,8 +36,9 @@ class ArtistImageCache(private val dao: ShiyinDao) {
     suspend fun clear(name: String) = dao.deleteArtistImageCache(name)
 }
 
-/** 命中了有效 URL（非空）→ 可直接用，无需触网。 */
-fun ArtistImageCacheEntity.isValid(now: Long): Boolean = url.isNotBlank()
+/** 命中了已验证可用的 URL（非空 + 有尺寸）→ 可直接用，无需触网。
+ *  仅 url 非空但 w/h=0 视为"未验证/旧缓存"，不直接信任——走重新解析（新源 AudioDB 能接上）。 */
+fun ArtistImageCacheEntity.isValid(now: Long): Boolean = url.isNotBlank() && width > 0 && height > 0
 
 /** 自动源近期全失败且仍在 TTL 内 → 跳过重试（返回占位图），避免开页干等。 */
 fun ArtistImageCacheEntity.isFailureFresh(now: Long): Boolean = url.isBlank() && failUntilTs > now

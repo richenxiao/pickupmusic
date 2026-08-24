@@ -368,6 +368,11 @@ interface ShiyinDao {
     @Query("DELETE FROM artist_image_cache WHERE name = :name")
     suspend fun deleteArtistImageCache(name: String)
 
+    /** v1.2.0 #6: 清掉"失败态"行（url 为空）。resolver 启动时调一次，清掉旧版本
+     *  6h 失败 TTL 留下的过期失败态——网络变化后源已可恢复，但旧失败行仍挡着重试。 */
+    @Query("DELETE FROM artist_image_cache WHERE url = ''")
+    suspend fun clearArtistImageFailures()
+
     @Query("SELECT * FROM artist_image_override WHERE name = :name")
     suspend fun artistImageOverride(name: String): ArtistImageOverrideEntity?
 

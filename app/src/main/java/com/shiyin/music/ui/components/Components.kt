@@ -576,7 +576,11 @@ fun rememberCandidateArt(artUrl: String?, sizeDp: Dp): ImageBitmap? {
     val context = LocalContext.current
     val px = with(LocalDensity.current) { sizeDp.roundToPx() }.coerceAtLeast(32)
     val state = produceState<ImageBitmap?>(null, artUrl) {
-        value = artUrl?.let { ArtCache.loadCandidateBitmap(context, it, px)?.asImageBitmap() }
+        value = artUrl?.let {
+            val bmp = ArtCache.loadCandidateBitmap(context, it, px)
+            android.util.Log.d("AIM", "rememberCandidateArt url=${it.take(55)} px=$px bmp=${bmp != null}")
+            bmp?.asImageBitmap()
+        }
     }
     return state.value
 }

@@ -1,7 +1,10 @@
 package com.shiyin.music.data.image
 
 import com.shiyin.music.data.db.ShiyinDao
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.Request
 import java.util.Collections
@@ -41,6 +44,14 @@ class ArtistImageResolver(private val dao: ShiyinDao) {
     private val cache = ArtistImageCache(dao)
     private val override = ArtistImageOverride(dao)
     private val resolving = Collections.synchronizedSet(mutableSetOf<String>())
+
+    init {
+        // v1.2.0 #6: 清掉旧失败态（url='' 行）。旧版本 6h 失败 TTL 留下的失败行，
+        // 在网络变化(开 VPN/换网)后源已可恢复但仍挡重试。启动清一次，不丢有效写真。
+        CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
+            runCatching { dao.clearArtistImageFailures() }
+        }
+    }
 
     suspend fun resolve(name: String, personOnly: Boolean = false): ArtistImage? {
         // 1. 用户手选（最高优先级）
@@ -117,7 +128,9 @@ class ArtistImageResolver(private val dao: ShiyinDao) {
     }
 
     companion object {
-        /** 死源失败后短期不重试，避免每次开歌手页干等。 */
-        private const val FAILURE_TTL_MS = 6 * 3600_000L
+        /** 死源失败后短期不重试，避免每次开歌手页干等。
+         *  v1.2.0 #6 修复: 原 6h 太长春锁了网络变化前的失败态——VPN/切换网络后源可恢复，
+         *  但旧失败缓存挡住重试(实测)。改 5min: 短期防干等 + 网络变化后能较快重试。 */
+        private const val FAILURE_TTL_MS = 5 * 60_000L
     }
 }
