@@ -5,9 +5,11 @@
 不同来源下载的本地音乐，往往缺少对应封面、歌词或完整的专辑信息；普通播放器通常只能把文件播放出来，如想获得完整如同流媒体的体验，用户要付出高昂的时间成本。拾音便是为了解决这个痛点诞生的。
 
 <p align="center">
-  <img src="docs/screenshots/now-playing.jpg" width="400" alt="PickUpMusic 播放页：专辑封面随播放旋转，整页配色取自封面，歌词由 LRCLIB 自动匹配" />
+  <img src="docs/screenshots/now-playing.jpg" width="400" alt="PickUpMusic 播放页：歌词本配色取自专辑封面，歌词由 LRCLIB 自动匹配" />
 </p>
-
+<p align="center">
+  <img src="docs/screenshots/lrcbook.jpg" width="400" alt="PickUpMusic 振假名：当歌曲为日语歌时，可以开启振假名标注，经测试准确率已经相当可观，部分错误标注可长按进行修改" />
+</p>
 ## 核心能力
 
 ### 1. 音乐资源匹配 —— 自动补全缺失的歌词、封面与信息
