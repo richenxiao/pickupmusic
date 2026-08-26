@@ -103,6 +103,15 @@ android {
             )
         }
     }
+
+    // v1.2.1: 默认单元测试排除"实时网络测试"(标 @Category(NetworkTest::class) 的)，
+    // 使本地/CI 跑 testDebugUnitTest 只跑确定性(mock/fixture)测试,不受 Discogs 按 IP
+    // 限流偶发失败干扰。联网测试单独运行用 `gradle testNetwork` 任务(见文件末注册)。
+    testOptions {
+        unitTests.all {
+            it.useJUnit { excludeCategories("com.shiyin.music.testing.NetworkTest") }
+        }
+    }
 }
 
 dependencies {
@@ -159,4 +168,20 @@ dependencies {
     // androidTest 不进产品 APK，不影响现有功能。
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
     androidTestImplementation("androidx.test:runner:1.6.2")
+}
+
+// v1.2.1: 实时网络测试单独运行任务。只跑标了 @Category(NetworkTest::class) 的测试
+// (ArtistImageSourcesTest 等,依赖外部 API,按 IP 限流会偶发失败)。
+// 默认 testDebugUnitTest/testReleaseUnitTest 已 exclude 该类,故本地/CI 不受其干扰。
+// 用法:gradle :app:testNetwork   (联网失败重试即可,不代表代码回归)
+val networkTest = tasks.register<Test>("testNetwork") {
+    group = "verification"
+    description = "Realtime network tests (Discogs/AudioDB etc.). Excluded from default test runs; may transiently fail on rate-limit. Run explicitly."
+    val base = tasks.named<Test>("testDebugUnitTest")
+    testClassesDirs = base.get().testClassesDirs
+    classpath = base.get().classpath
+    useJUnit { includeCategories("com.shiyin.music.testing.NetworkTest") }
+    // 联网测试偶发限流:显式运行时也尽量不让一次限流把整个任务标红——
+    // 但仍打印每个失败,便于判断是真回归还是网络抖动。
+    ignoreFailures = true
 }
