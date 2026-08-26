@@ -197,17 +197,21 @@ data class AlbumArtCacheEntity(
 // ── v4: timestamped play events (for 最近播放 + 收听统计) ──────────────────
 // play_count is only a running total with no timestamp; it can't answer
 // "what did I play in the last 3 months" or "this week's top album/artist/track".
-// play_event logs every counted play with its wall-clock time + track duration
+// play_event logs every play attempt with its wall-clock time + track duration
 // so the recent-plays feed and weekly aggregates share one source of truth.
-// `completed` distinguishes fully-played songs (counted toward 收听统计) from
-// skipped/partial plays (still surfaced by 最近播放, but excluded from stats).
+// === completed 字段语义(v1.2.1 起,禁止再理解为"播到结尾") ===
+// completed=1 = 本次播放 Session 累计真实播放已达 ≥30 秒,已计入一次有效播放。
+// completed=0 = 尚未达有效播放门槛(误触/快速跳过/听不满 30s)。
+// 这是 热度排序 与 收听统计 的唯一计数口径。最近播放 feed 显示全部事件(含 completed=0)。
+// `playedSec` = 本次 Session 的实际累计有效秒数(暂停/继续累加、seek 剔除),供总时长求和。
 @Entity(tableName = "play_event")
 data class PlayEventEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val mediaId: Long,
     val playedAt: Long,    // epoch millis (System.currentTimeMillis)
-    val durationSec: Int,  // track's total duration at play time, for weekly-sum aggregation
-    val completed: Boolean = false,  // v5: true only when the track played to STATE_ENDED
+    val durationSec: Int,  // track total duration at play time (kept for 最近播放 时长显示)
+    val playedSec: Int = 0, // v1.2.1: actual accumulated effective play time (pause/resume sums, seeks excluded); feeds 收听统计 总时长
+    val completed: Boolean = false,  // v1.2.1: true when accumulated play time reached 30s (a counted play)
 )
 
 // ── v4: "你的更新" — one-shot unread reminder of newly-scanned albums ───────
@@ -410,12 +414,12 @@ interface ShiyinDao {
     suspend fun clearSongArtist(mediaId: Long)
 
     // play_count
-    // v1.2.0 #6: 按播放次数排序——从 play_event(每次播放一条) 算 count,历史数据可用;
-    // play_count 表旧逻辑只 UPDATE 不 INSERT→表空,改用 play_event 聚合更可靠
-    @Query("SELECT mediaId, COUNT(*) AS count FROM play_event GROUP BY mediaId")
+    // v1.2.1: 热度排序只数"有效播放"(累计听满 30 秒, completed=1)的次数;跳过/误触
+    // (completed=0)不计入,与 Spotify 30 秒规则一致。从 play_event 聚合,历史数据可用。
+    @Query("SELECT mediaId, COUNT(*) AS count FROM play_event WHERE completed = 1 GROUP BY mediaId")
     fun playCountFlow(): Flow<List<PlayCountEntity>>
 
-    @Query("SELECT COUNT(*) FROM play_event WHERE mediaId = :mediaId")
+    @Query("SELECT COUNT(*) FROM play_event WHERE mediaId = :mediaId AND completed = 1")
     suspend fun playCount(mediaId: Long): Int
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
@@ -509,7 +513,9 @@ interface ShiyinDao {
     @Query("INSERT INTO album_art_cache(albumId, url, source, fetchedAt, bgArgb, fgArgb, releaseDate) VALUES (:albumId, '', :source, 0, :bg, :fg, '') ON CONFLICT(albumId) DO UPDATE SET bgArgb = :bg, fgArgb = :fg, source = :source")
     suspend fun upsertColorsPreservingMeta(albumId: Long, bg: Int, fg: Int, source: String)
 
-    // ── v4: play events (最近播放 + 收听统计) ─────────────────────────────
+    // v1.2.1: 一条 play_event = 一次"开始播放"。completed=0 起步;累计有效播放满
+    // 30 秒后由 markPlayCounted 置 1(计为一次有效播放),切歌时由 finalizePlayEvent
+    // 回填 playedSec(实际累计秒数)。最近播放 feed 显示全部事件(含跳过)。
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertPlayEvent(e: PlayEventEntity)
 
@@ -522,16 +528,21 @@ interface ShiyinDao {
     @Query("SELECT * FROM play_event WHERE playedAt >= :from AND playedAt <= :to ORDER BY playedAt ASC")
     suspend fun playEventsBetween(from: Long, to: Long): List<PlayEventEntity>
 
-    /** v5: only fully-completed plays within [from..to] — 收听统计 sums these so
-     *  skipped/partial plays don't inflate weekly listening time or top-lists. */
+    /** v1.2.1: only counted plays (累计听满 30 秒, completed=1) within [from..to] —
+     *  收听统计 热度榜/总时长 只数这些,跳过/误触不计入。 */
     @Query("SELECT * FROM play_event WHERE playedAt >= :from AND playedAt <= :to AND completed = 1 ORDER BY playedAt ASC")
     suspend fun completedPlayEventsBetween(from: Long, to: Long): List<PlayEventEntity>
 
-    /** v5: mark the most recent un-completed play of [mediaId] as completed.
-     *  Called from onTrackCompleted when STATE_ENDED fires. Best-effort: if the
-     *  event row was already trimmed, this is a no-op. */
-    @Query("UPDATE play_event SET completed = 1 WHERE mediaId = :mediaId AND completed = 0 AND id = (SELECT id FROM play_event WHERE mediaId = :mediaId AND completed = 0 ORDER BY playedAt DESC LIMIT 1)")
-    suspend fun markLatestPlayCompleted(mediaId: Long)
+    /** v1.2.1: 累计有效播放满 30 秒时把该 mediaId 最近一条 completed=0 的事件置 1
+     *  (计为一次有效播放)。playedSec 先落 30 作下限,切歌时 finalizePlayEvent 再回填
+     *  实际值。若该行已被 trim 掉则 no-op。 */
+    @Query("UPDATE play_event SET completed = 1, playedSec = 30 WHERE mediaId = :mediaId AND completed = 0 AND id = (SELECT id FROM play_event WHERE mediaId = :mediaId AND completed = 0 ORDER BY playedAt DESC LIMIT 1)")
+    suspend fun markPlayCounted(mediaId: Long)
+
+    /** v1.2.1: 切歌/播完时回填该 mediaId 最近一条事件的 playedSec(实际累计有效播放
+     *  秒数,供 收听统计 总时长准确求和,而非用曲目总长冒充)。若行已被 trim 则 no-op。 */
+    @Query("UPDATE play_event SET playedSec = :playedSec WHERE mediaId = :mediaId AND id = (SELECT id FROM play_event WHERE mediaId = :mediaId ORDER BY playedAt DESC LIMIT 1)")
+    suspend fun finalizePlayEvent(mediaId: Long, playedSec: Int)
 
     /** Trim play events older than [cutoff] — the 最近播放 page only shows
      *  the last 3 months, so anything older is dead data and is physically
@@ -678,7 +689,7 @@ interface ShiyinDao {
         // v1.2.0 #6: 歌手写真 cache + 用户手选 override（独立于 album_art_cache）
         ArtistImageCacheEntity::class, ArtistImageOverrideEntity::class,
     ],
-    version = 17,
+    version = 18,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -773,11 +784,9 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
-        // v5: add `completed` column to play_event so 收听统计 can count only
-        // fully-played songs while 最近播放 still surfaces partial/skipped plays.
-        // Old rows default to completed = 0 (treated as incomplete); they remain
-        // visible in 最近播放 but don't inflate past weekly stats. Acceptable
-        // since v5 ships alongside the stats feature itself.
+        // v5→v1.2.1: 此迁移首次加 `completed` 列。v5 原语义=播到结尾;v1.2.1 起语义改为
+        // "累计真实播放≥30秒=已计入有效播放"(不再指播到结尾)。此处仅加列,不改 SQL;
+        // 旧存量行 completed=0(迁移时 DEFAULT 0),只在 最近播放 feed 显,不进统计。
         private val MIGRATION_4_5 = object : Migration(4, 5) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE play_event ADD COLUMN completed INTEGER NOT NULL DEFAULT 0")
@@ -987,9 +996,20 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        // v1.2.1: play_count 计数口径从"开始播放即+1"改为 Spotify 式"累计有效播放满 30
+        // 秒才算一次"。新增 playedSec 记录每次播放的实际累计有效秒数(暂停/继续累加、
+        // seek 剔除),供 收听统计 总时长准确求和——旧口径用 durationSec(曲目总长)在
+        // 新阈值下会把"听满30秒"误算成"听完整首"。completed 语义从"播到结尾"改为
+        // "累计≥30秒";历史 completed=1 行(旧=播到结尾)对 >30s 曲目仍成立,保留。
+        private val MIGRATION_17_18 = object : Migration(17, 18) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE play_event ADD COLUMN playedSec INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
         fun get(context: Context): AppDatabase = instance ?: synchronized(this) {
             instance ?: Room.databaseBuilder(context.applicationContext, AppDatabase::class.java, "shiyin.db")
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18)
                 // 不使用 fallbackToDestructiveMigration：迁移失败时宁可崩溃也不要删全库。
                 // 之前该选项导致迁移异常时删除所有用户数据（排序、专辑名、播放历史等）。
                 .addCallback(object : Callback() {

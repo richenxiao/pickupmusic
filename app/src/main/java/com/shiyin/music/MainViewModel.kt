@@ -338,7 +338,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 applyPendingRoutingFromDeviceRouter()
             }
         }
-        player.connect(app, { id -> onTrackStarted(id) }, { id -> onTrackCompleted(id) })
+        player.connect(app, { id -> onTrackStarted(id) }, { id -> onPlayCounted(id) }, { id, sec -> onPlayFinalized(id, sec) })
     }
 
     private var permGranted = false
@@ -1015,12 +1015,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         // v2: 恢复全局播放速度设置
         player.setPlaybackSpeed(playbackSpeed, retroSpeedMode)
         viewModelScope.launch { settingsStore.pushRecent(id) }
-        // v2.0: increment play count
-        viewModelScope.launch(Dispatchers.IO) {
-            try { dao.incrementPlayCount(id) } catch (_: Exception) { }
-        }
-        // v5: log a play event at start (incomplete) so 最近播放 surfaces every
-        // play including skips. 收听统计 only counts rows later marked completed.
+        // v1.2.1: 计数口径改为"累计有效播放满 30 秒"(Spotify 式)。开始播放只记一条
+        // completed=0 的事件(供 最近播放 显示);满 30 秒由 onPlayCounted 置 1(计为一次
+        // 有效播放),切歌由 onPlayFinalized 回填 playedSec。不再"开始即 +1",误触/跳过不计入。
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 val t = trackById(id) ?: return@launch
@@ -1082,12 +1079,22 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         } catch (_: Exception) { null }
     }
 
-    /** v5: fires when a track fully plays to completion (STATE_ENDED). Marks
-     *  the just-started play_event row as completed so 收听统计 counts it. */
-    private fun onTrackCompleted(id: Long) {
+    /** v1.2.1: 累计有效播放满 30 秒时由 PlayerController 触发——把该次 play_event
+     *  计为一次有效播放(completed=1)。这是热度排序/收听统计的唯一计数口径,
+     *  误触/跳过(<30s)永远到不了这里,不会污染数据。 */
+    private fun onPlayCounted(id: Long) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try { dao.markPlayCounted(id) } catch (_: Exception) { }
+        }
+    }
+
+    /** v1.2.1: 切歌/播完时由 PlayerController 触发,回传该次播放的累计有效秒数——
+     *  写入 play_event.playedSec,供 收听统计 总时长准确求和(而非用曲目总长冒充)。
+     *  顺带 trim 掉 90 天前的事件(最近播放只看近 3 个月)。 */
+    private fun onPlayFinalized(id: Long, playedSec: Int) {
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                dao.markLatestPlayCompleted(id)
+                dao.finalizePlayEvent(id, playedSec)
                 val cutoff = System.currentTimeMillis() - 90L * 24 * 60 * 60 * 1000
                 dao.trimPlayEventsBefore(cutoff)
             } catch (_: Exception) { }

@@ -61,12 +61,27 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
     /** v5.2 Bug9: fade-out coroutine for sleep-timer expiry. */
     private var fadeJob: Job? = null
     private var onTrackStarted: ((Long) -> Unit)? = null
-    /** v2.0: fires when a track fully plays to completion (STATE_ENDED). */
-    private var onTrackCompleted: ((Long) -> Unit)? = null
 
-    fun connect(context: Context, onStarted: (Long) -> Unit, onCompleted: ((Long) -> Unit)? = null) {
+    // v1.2.1: 纯逻辑的"有效播放"计数追踪器(Spotify 式 30 秒阈值)。Session 生命周期、
+    // seek 剔除、暂停/恢复累计都在 tracker 内部,可用纯 JVM 单测覆盖;本类每拍只喂数据。
+    private val playTracker = PlaySessionTracker().apply {
+        onCounted = { id -> onPlayCounted?.invoke(id) }
+        onFinalize = { id, sec -> onPlayFinalized?.invoke(id, sec) }
+    }
+    /** v1.2.1: 累计有效播放满 30 秒时触发(把该次播放计为一次有效播放)。 */
+    private var onPlayCounted: ((Long) -> Unit)? = null
+    /** v1.2.1: 切歌/播完时触发,回传该次播放的累计有效秒数(写 playedSec)。 */
+    private var onPlayFinalized: ((Long, Int) -> Unit)? = null
+
+    fun connect(
+        context: Context,
+        onStarted: (Long) -> Unit,
+        onPlayCounted: ((Long) -> Unit)? = null,
+        onPlayFinalized: ((Long, Int) -> Unit)? = null,
+    ) {
         onTrackStarted = onStarted
-        onTrackCompleted = onCompleted
+        this.onPlayCounted = onPlayCounted
+        this.onPlayFinalized = onPlayFinalized
         if (controllerFuture != null) return
         val token = SessionToken(context, ComponentName(context, PlaybackService::class.java))
         val future = MediaController.Builder(context, token).buildAsync()
@@ -97,13 +112,9 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
 
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
             val id = mediaItem?.mediaId?.toLongOrNull()
-            // v5: an AUTO transition means the previous track played to its end —
-            // this fires for REPEAT_MODE_ALL (advance) and REPEAT_MODE_ONE (loop),
-            // both of which never emit STATE_ENDED. Mark the previous track
-            // complete so 收听统计 counts it. Manual skips keep completed = 0.
-            if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO) {
-                currentId?.let { onTrackCompleted?.invoke(it) }
-            }
+            // v1.2.1: 任何切歌原因(手动跳过/AUTO 自动推进/单曲循环新一轮)都经 startTracking
+            // → tracker.start:先 finalize 上一首/上一轮 playedSec,再为新 session 重置累计与
+            // counted。单曲循环同 mediaId 的新一轮因此能独立计数(上一轮已 finalize)。
             // v5.2: end-of-track sleep mode (mode 2) bookkeeping.
             // AUTO = the previous track played to its end. The ticker's
             // fade normally pauses before this point, but if it missed
@@ -132,6 +143,7 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
             }
             if (id != null) {
                 manualQueue.removeAll { it.id == id }
+                startTracking(id)
                 onTrackStarted?.invoke(id)
             }
             queueVersion++
@@ -152,10 +164,9 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
 
         override fun onPlaybackStateChanged(state: Int) {
             if (state == Player.STATE_ENDED) {
-                // v2.0: fire completion callback for listening stats. This path
-                // covers REPEAT_MODE_OFF at end of queue; repeat modes are
-                // handled by the AUTO-transition branch above.
-                currentId?.let { onTrackCompleted?.invoke(it) }
+                // v1.2.1: 队列末尾(REPEAT_MODE_OFF)播完无自动推进,回填当前曲 playedSec。
+                // REPEAT_MODE_ALL/ONE 不发 STATE_ENDED,其 playedSec 由切歌时 startTracking 回填。
+                finalizeCurrent()
                 // End of queue with repeat off: stop at pos 0, stay on last track.
                 controller?.let {
                     it.pause()
@@ -173,6 +184,12 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
         val dur = c.duration
         if (dur > 0) durationMs = dur
         positionMs = c.currentPosition.coerceAtLeast(0)
+        // v1.2.1: 重连/进程恢复时若 tracker 尚无活跃 session(如服务仍在播但控制器是新建的),
+        // 以当前曲 start 一个新 session。重启前已播时长无法恢复(accumMs 从 0 起),但后续
+        // 播放会继续累计,满 30s 仍会计数——避免重连后这段播放永远不计。
+        if (playTracker.currentMediaId() == null && currentId != null) {
+            playTracker.start(currentId!!)
+        }
     }
 
     private var tickerStarted = false
@@ -185,6 +202,8 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
                     positionMs = c.currentPosition.coerceAtLeast(0)
                     val dur = c.duration
                     if (dur > 0) durationMs = dur
+                    // v1.2.1: 累计当前曲目有效播放时长,满 30 秒计一次有效播放。
+                    playTracker.sample(positionMs, c.playWhenReady, c.playbackState == Player.STATE_READY)
                     // v5.2: end-of-track sleep mode — kick the fade once we're
                     // inside the last ~20% (clamped 6..20s) of the track.
                     if (sleepMode == 2 && !endOfTrackFadeStarted && dur > 0) {
@@ -199,6 +218,18 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
                 delay(300)
             }
         }
+    }
+
+    /** v1.2.1: 新曲目开始播放时调用——tracker.start 会先 finalize 当前 session(回填
+     *  上一首/上一轮 playedSec),再为新曲开新 session。单曲循环"同 mediaId 新一轮"也
+     *  走这里:上一轮被 finalize、counted 重置,第二轮可独立计数。 */
+    private fun startTracking(id: Long) {
+        playTracker.start(id)
+    }
+
+    /** v1.2.1: 队列末尾播完(STATE_ENDED,无自动推进)时 finalize 当前 session 回填 playedSec。 */
+    private fun finalizeCurrent() {
+        playTracker.finalize()
     }
 
     private fun buildItem(t: Track): MediaItem = MediaItem.Builder()
@@ -264,6 +295,7 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
         c.play()
         currentId = startId
         queueVersion++
+        startTracking(tracks[index].id)
         onTrackStarted?.invoke(tracks[index].id)
     }
 
@@ -409,6 +441,8 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
     fun stopAndClear() {
         gapJob?.cancel()
         manualQueue.clear()
+        // v1.2.1: 清空前 finalize 当前 session 回填 playedSec(若有)。
+        finalizeCurrent()
         val c = controller ?: return
         c.stop()
         c.clearMediaItems()

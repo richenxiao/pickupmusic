@@ -67,12 +67,13 @@ fun ListeningStatsScreen(vm: MainViewModel) {
         cal.set(java.util.Calendar.MILLISECOND, 0)
         val weekStart = cal.timeInMillis
         val weekEnd = System.currentTimeMillis()
-        // v5: only fully-completed plays count toward stats (skipped songs are
-        // still recorded in play_event for 最近播放, but stay completed = 0).
+        // v1.2.1: 只数"有效播放"(累计听满 30 秒, completed=1)——跳过/误触(completed=0)
+        // 仍在 play_event 里供 最近播放 显示,但不计入统计。总时长用每条的 playedSec
+        // (实际累计秒数),不再用曲目总长 durationSec(新口径下会把"听满30秒"误算成"听完整首")。
         val events = dao.completedPlayEventsBetween(weekStart, weekEnd)
         if (events.isEmpty()) { stats = WeeklyStats(); return@LaunchedEffect }
 
-        val totalSec = events.sumOf { it.durationSec.toLong() }
+        val totalSec = events.sumOf { it.playedSec.toLong() }
         val lib = vm.lib().associateBy { it.id }
         // v5.2 #52: 专辑按"循环次数"计——累计原始完成播放数，最后 ÷ 该专辑曲目数（整除
         // 向下取整）。听完一整张 10 曲专辑 = 10 次播放 ÷ 10 = 1 次（而非 10 次）。
