@@ -20,6 +20,7 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.rememberScrollState
@@ -81,6 +82,8 @@ import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
@@ -203,13 +206,12 @@ fun AppRoot(vm: MainViewModel) {
         }
 
         // main content
+        // v1.2.0 #6: 各页面按页加 statusBarsPadding(首页/搜索/音乐库/设置等),歌手页(ArtistDetail)不加→
+        // 写真铺到 y=0。Column 不加 top padding,彻底解耦:歌手页不受其他页高度影响(原条件 if 不重组)。
         Column(
             Modifier
                 .fillMaxSize()
-                // v1.2.0 #6: 歌手页沉浸式——写真铺到状态栏区域(屏幕顶 y=0),
-                // 故 artistKey 非空时不加 statusBarsPadding,让内容画到状态栏后。
-                // 其他页面照常加 statusBarsPadding。navigationBarsPadding 始终保留。
-                .then(if (vm.artistKey != null) Modifier.navigationBarsPadding() else Modifier.statusBarsPadding().navigationBarsPadding())
+                .then(Modifier.navigationBarsPadding())
                 .imePadding()
                 .graphicsLayer {
                     val p = sidebarProgress.value
@@ -232,13 +234,16 @@ fun AppRoot(vm: MainViewModel) {
                     transitionSpec = { fadeIn(tween(250)) togetherWith fadeOut(tween(150)) },
                     label = "screen",
                 ) { key ->
+                    // v1.2.0 #6: 非歌手页加 statusBarsPadding(内容回到状态栏下);歌手页由 LibraryScreen 内部
+                    // 处理(ArtistDetail 不加→写真 y=0)。解耦:歌手页不受这些页高度影响。
+                    val pad = Modifier.fillMaxSize().statusBarsPadding()
                     when {
-                        key.startsWith("settings") -> SettingsHost(vm)
-                        key == "recent" -> com.shiyin.music.ui.screens.RecentPlaysScreen(vm)
-                        key == "stats" -> com.shiyin.music.ui.screens.ListeningStatsScreen(vm)
-                        key == "updates" -> com.shiyin.music.ui.screens.YourUpdatesScreen(vm)
-                        key == "tab:${Tab.Home}" -> HomeScreen(vm)
-                        key == "tab:${Tab.Search}" -> SearchScreen(vm)
+                        key.startsWith("settings") -> Box(pad) { SettingsHost(vm) }
+                        key == "recent" -> Box(pad) { com.shiyin.music.ui.screens.RecentPlaysScreen(vm) }
+                        key == "stats" -> Box(pad) { com.shiyin.music.ui.screens.ListeningStatsScreen(vm) }
+                        key == "updates" -> Box(pad) { com.shiyin.music.ui.screens.YourUpdatesScreen(vm) }
+                        key == "tab:${Tab.Home}" -> Box(pad) { HomeScreen(vm) }
+                        key == "tab:${Tab.Search}" -> Box(pad) { SearchScreen(vm) }
                         else -> LibraryScreen(vm)
                     }
                 }
@@ -309,7 +314,7 @@ fun AppRoot(vm: MainViewModel) {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Row(verticalAlignment = Alignment.Bottom, modifier = Modifier.padding(bottom = 12.dp)) {
                         Text("拾音", style = heading(24))
-                        Text("PickUpMusic", style = body(13f, FontWeight.Normal, c.n500), modifier = Modifier.padding(start = 8.dp, bottom = 3.dp))
+                        Text("PickUpMusic", style = body(13f, FontWeight.Normal, c.n500), modifier = Modifier.padding(start = 0.dp, bottom = 3.dp))
                     }
                     // v4: sidebar restructured — 5 items, no file-management here
                     SidebarItem(Lucide.History, "最近播放") { vm.sidebarOpen = false; vm.recentOpen = true; vm.settingsOpen = false }
@@ -765,7 +770,10 @@ private fun MiniPlayer(vm: MainViewModel, track: Track) {
                 Modifier
                     .size(36.dp)
                     .clip(CircleShape)
-                    .clickable { vm.toggleFav(track.id) },
+                    .combinedClickable(
+                        onClick = { vm.toggleFav(track.id) },
+                        onLongClick = { vm.saveSheetFor = track.id },
+                    ),
                 contentAlignment = Alignment.Center,
             ) { FavIcon(vm.isFav(track.id), 18.dp, c.n600) }
             Box(
@@ -2027,44 +2035,62 @@ private fun AlbumEditDialogs(vm: MainViewModel, trackEditFor: Long?, onTrackEdit
                                     }
                                 }
                             }
-                            if (!candidatesLoading && candidates.isNotEmpty() && candHasMore) {
-                                androidx.compose.material3.TextButton(
-                                    onClick = {
-                                        candScope.launch {
-                                            candLoadingMore = true
-                                            val nb = candBatch + 1
-                                            val r = first?.let { ArtCache.loadCandidates(it, offset = nb * 8, limit = 8) } ?: emptyList()
-                                            val newOnes = r.filter { nc -> candidates.none { it.artUrl == nc.artUrl } }
-                                            if (newOnes.isNotEmpty()) {
-                                                candidates = candidates + newOnes
-                                                candBatch = nb
-                                            }
-                                            candHasMore = r.size >= 8 && newOnes.isNotEmpty()
-                                            candLoadingMore = false
-                                        }
-                                    },
-                                    enabled = !candLoadingMore,
-                                    modifier = Modifier.padding(top = 2.dp),
-                                ) { Text(if (candLoadingMore) "加载中…" else "下一批", style = body(13f, FontWeight.SemiBold, c.a700)) }
+                            // v1.2.0: 粘贴链接获取封面(同写真选择器)
+                            var linkUrl by remember { mutableStateOf("") }
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                androidx.compose.material3.OutlinedTextField(
+                                    value = linkUrl,
+                                    onValueChange = { linkUrl = it },
+                                    label = { Text("图片链接", style = body(12f, FontWeight.Normal, c.n500)) },
+                                    singleLine = true,
+                                    modifier = Modifier.weight(1f),
+                                    textStyle = body(13f, FontWeight.Normal, c.text),
+                                    colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
+                                        focusedTextColor = c.text, unfocusedTextColor = c.text, cursorColor = c.accent,
+                                        focusedBorderColor = c.accent, unfocusedBorderColor = c.n400,
+                                        focusedLabelColor = c.accent, unfocusedLabelColor = c.n500,
+                                    ),
+                                )
+                                androidx.compose.material3.TextButton(onClick = {
+                                    if (linkUrl.isNotBlank()) { vm.saveAlbumCover(albumId, linkUrl.trim()); vm.albumCoverEdit = false }
+                                }) { Text("保存", style = body(14f, FontWeight.Bold, c.accent)) }
                             }
-                        }
-                        Spacer(Modifier.height(0.dp))
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            androidx.compose.material3.TextButton(onClick = {
-                                vm.albumCoverEdit = false
-                                picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-                            }) { Text("选相册", style = body(14f, FontWeight.SemiBold, c.a700)) }
-                            androidx.compose.material3.TextButton(onClick = {
-                                vm.albumCoverEdit = false
-                                vm.clearAlbumCover(albumId)
-                            }) { Text("恢复默认", style = body(14f, FontWeight.Normal, c.n600)) }
                         }
                     }
                 },
-                confirmButton = {},
+                // 「下一批」固定在 confirmButton(不随网格滚动),多图时不必下拉找。
+                confirmButton = {
+                    if (first != null && !candidatesLoading && candidates.isNotEmpty() && candHasMore) {
+                        androidx.compose.material3.TextButton(
+                            onClick = {
+                                candScope.launch {
+                                    candLoadingMore = true
+                                    val nb = candBatch + 1
+                                    val r = first?.let { ArtCache.loadCandidates(it, offset = nb * 8, limit = 8) } ?: emptyList()
+                                    val newOnes = r.filter { nc -> candidates.none { it.artUrl == nc.artUrl } }
+                                    if (newOnes.isNotEmpty()) {
+                                        candidates = candidates + newOnes
+                                        candBatch = nb
+                                    }
+                                    candHasMore = r.size >= 8 && newOnes.isNotEmpty()
+                                    candLoadingMore = false
+                                }
+                            },
+                            enabled = !candLoadingMore,
+                        ) { Text(if (candLoadingMore) "加载中…" else "下一批", style = body(13f, FontWeight.SemiBold, c.a700)) }
+                    }
+                },
                 dismissButton = {
-                    androidx.compose.material3.TextButton(onClick = { vm.albumCoverEdit = false }) {
-                        Text("取消", style = body(14f, FontWeight.Normal, c.n600))
+                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        androidx.compose.material3.TextButton(onClick = {
+                            vm.albumCoverEdit = false
+                            picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                        }) { Text("选相册", style = body(14f, FontWeight.SemiBold, c.a700)) }
+                        androidx.compose.material3.TextButton(onClick = {
+                            vm.albumCoverEdit = false
+                            vm.clearAlbumCover(albumId)
+                        }) { Text("恢复默认", style = body(14f, FontWeight.Normal, c.n600)) }
+                        androidx.compose.material3.TextButton(onClick = { vm.albumCoverEdit = false }) { Text("取消", style = body(14f, FontWeight.Normal, c.n600)) }
                     }
                 },
             )

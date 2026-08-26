@@ -128,7 +128,7 @@ fun HomeScreen(vm: MainViewModel) {
         val p0 = coverPalette(0); val p3 = coverPalette(3); val p4 = coverPalette(4)
         data class Cut(val icon: String, val label: String, val bg: Color, val fg: Color, val onClick: () -> Unit)
         val cuts = listOf(
-            Cut("♥", "我最喜爱", p0.first, p0.second) { vm.openPlaylist("p3") },
+            Cut("♥", "我的喜欢", p0.first, p0.second) { vm.openPlaylist("p3") },
             Cut("♪", "全部歌曲", p4.first, p4.second) {
                 vm.tab = Tab.Library; vm.libChip = "songs"; vm.plId = null; vm.albumKey = null; vm.artistKey = null; vm.settingsOpen = false
             },

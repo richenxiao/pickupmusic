@@ -43,9 +43,11 @@ class MainActivity : ComponentActivity() {
         setContent {
             ShiyinTheme(dark = vm.darkTheme) {
                 val view = LocalView.current
-                LaunchedEffect(vm.darkTheme) {
+                // v1.2.0 #6: 歌手页写真铺到状态栏区,顶部有黑色渐变遮罩——用白色图标清晰。
+                // 其余页面按主题(浅色主题=深色图标)。运行时覆盖 theme 的 windowLightStatusBar。
+                LaunchedEffect(vm.darkTheme, vm.artistKey) {
                     val controller = WindowCompat.getInsetsController(window, view)
-                    controller.isAppearanceLightStatusBars = !vm.darkTheme
+                    controller.isAppearanceLightStatusBars = if (vm.artistKey != null) false else !vm.darkTheme
                     controller.isAppearanceLightNavigationBars = !vm.darkTheme
                 }
                 AppRoot(vm)

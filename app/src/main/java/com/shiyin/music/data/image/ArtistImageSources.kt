@@ -65,31 +65,41 @@ internal object MusicBrainz {
 internal interface ArtistImageSource {
     val key: String
     suspend fun fetch(name: String, personOnly: Boolean): ArtistImage?
+    /** 该源所有可用图(供「选择写真」picker);默认仅 fetch() 那一张,多图源(Discogs/AudioDB/Fanart)覆写返回全部。 */
+    suspend fun fetchAll(name: String, personOnly: Boolean): List<ArtistImage> = listOfNotNull(fetch(name, personOnly))
 }
 
 internal object DiscogsSource : ArtistImageSource {
     override val key = "discogs"
-    override suspend fun fetch(name: String, personOnly: Boolean): ArtistImage? = withContext(Dispatchers.IO) {
+    override suspend fun fetch(name: String, personOnly: Boolean): ArtistImage? {
+        val all = fetchAll(name, personOnly)
+        return all.firstOrNull { it.imageType == "photo" } ?: all.firstOrNull()
+    }
+    // 返回该歌手在 Discogs 的全部图(primary=photo 排前,secondary=thumb 随后),供选择写真。
+    override suspend fun fetchAll(name: String, personOnly: Boolean): List<ArtistImage> = withContext(Dispatchers.IO) {
         try {
             val q = ImageHttp.urlEncode(name)
             val sBody = ImageHttp.client.newCall(Request.Builder()
                 .url("https://api.discogs.com/database/search?q=$q&type=artist&per_page=5")
-                .header("User-Agent", ImageHttp.UA).build()).execute().body?.string() ?: return@withContext null
-            val results = JsonParser.parseString(sBody).asJsonObject.getAsJsonArray("results") ?: return@withContext null
+                .header("User-Agent", ImageHttp.UA).build()).execute().body?.string() ?: return@withContext emptyList()
+            val results = JsonParser.parseString(sBody).asJsonObject.getAsJsonArray("results") ?: return@withContext emptyList()
             val id = results.firstOrNull { el ->
                 (el.asJsonObject.get("title")?.asString ?: "").equals(name, ignoreCase = true)
             }?.asJsonObject?.get("id")?.asString
                 ?: results.firstOrNull()?.asJsonObject?.get("id")?.asString
-                ?: return@withContext null
+                ?: return@withContext emptyList()
             val aBody = ImageHttp.client.newCall(Request.Builder()
                 .url("https://api.discogs.com/artists/$id")
-                .header("User-Agent", ImageHttp.UA).build()).execute().body?.string() ?: return@withContext null
-            val imgs = JsonParser.parseString(aBody).asJsonObject.getAsJsonArray("images") ?: return@withContext null
-            val pick = imgs.firstOrNull { (it.asJsonObject.get("type")?.asString ?: "") == "primary" }
-                ?: imgs.firstOrNull()
-            val url = pick?.asJsonObject?.get("resource_url")?.asString
-            if (url.isNullOrBlank()) null else ArtistImage(url, "discogs", imageType = "photo")
-        } catch (_: Exception) { null }
+                .header("User-Agent", ImageHttp.UA).build()).execute().body?.string() ?: return@withContext emptyList()
+            val imgs = JsonParser.parseString(aBody).asJsonObject.getAsJsonArray("images") ?: return@withContext emptyList()
+            val all = imgs.mapNotNull { el ->
+                val o = el.asJsonObject
+                val u = o.get("resource_url")?.asString
+                val t = o.get("type")?.asString ?: ""
+                if (!u.isNullOrBlank()) ArtistImage(u, "discogs", imageType = if (t == "primary") "photo" else "thumb") else null
+            }
+            all.sortedByDescending { if (it.imageType == "photo") 1 else 0 }
+        } catch (_: Exception) { emptyList() }
     }
 }
 
@@ -97,23 +107,21 @@ internal object DiscogsSource : ArtistImageSource {
 // 取 artistbackground(宽背景,适合全屏头图) → artistthumb(方形)。跳过 hdmusiclogo/musicbanner(文字 logo)。
 internal object FanartSource : ArtistImageSource {
     override val key = "fanart"
-    override suspend fun fetch(name: String, personOnly: Boolean): ArtistImage? = withContext(Dispatchers.IO) {
+    override suspend fun fetch(name: String, personOnly: Boolean): ArtistImage? = fetchAll(name, personOnly).firstOrNull()
+    // 返回 Fanart 全部 artistbackground(宽背景) + artistthumb(方形),供选择写真。
+    override suspend fun fetchAll(name: String, personOnly: Boolean): List<ArtistImage> = withContext(Dispatchers.IO) {
         val key = BuildConfig.FANART_API_KEY
-        if (key.isBlank()) return@withContext null
-        val mbid = MusicBrainz.lookupMbid(name) ?: return@withContext null
+        if (key.isBlank()) return@withContext emptyList()
+        val mbid = MusicBrainz.lookupMbid(name) ?: return@withContext emptyList()
         try {
             val body = ImageHttp.client.newCall(Request.Builder()
                 .url("https://webservice.fanart.tv/v3.1/music/$mbid?api_key=$key")
-                .header("User-Agent", ImageHttp.UA).build()).execute().body?.string() ?: return@withContext null
+                .header("User-Agent", ImageHttp.UA).build()).execute().body?.string() ?: return@withContext emptyList()
             val obj = JsonParser.parseString(body).asJsonObject
-            val bg = obj.getAsJsonArray("artistbackground")?.firstOrNull()?.asJsonObject?.get("url")?.asString
-            val thumb = obj.getAsJsonArray("artistthumb")?.firstOrNull()?.asJsonObject?.get("url")?.asString
-            when {
-                !bg.isNullOrBlank() -> ArtistImage(bg, "fanart", imageType = "background")
-                !thumb.isNullOrBlank() -> ArtistImage(thumb, "fanart", imageType = "thumb")
-                else -> null
-            }
-        } catch (_: Exception) { null }
+            val bgs = obj.getAsJsonArray("artistbackground")?.mapNotNull { it.asJsonObject.get("url")?.asString?.takeIf { u -> u.isNotBlank() } } ?: emptyList()
+            val thumbs = obj.getAsJsonArray("artistthumb")?.mapNotNull { it.asJsonObject.get("url")?.asString?.takeIf { u -> u.isNotBlank() } } ?: emptyList()
+            bgs.map { ArtistImage(it, "fanart", "background") } + thumbs.map { ArtistImage(it, "fanart", "thumb") }
+        } catch (_: Exception) { emptyList() }
     }
 }
 
@@ -195,22 +203,28 @@ internal object DeezerSource : ArtistImageSource {
 // 实测 API + 图片 CDN(r2.theaudiodb.com) 均可达。CJK 英文名可搜，中文名部分不命中。
 internal object AudioDBSource : ArtistImageSource {
     override val key = "audiodb"
-    override suspend fun fetch(name: String, personOnly: Boolean): ArtistImage? = withContext(Dispatchers.IO) {
+    override suspend fun fetch(name: String, personOnly: Boolean): ArtistImage? {
+        val all = fetchAll(name, personOnly)
+        return all.firstOrNull { it.imageType == "photo" } ?: all.firstOrNull()
+    }
+    // 返回 AudioDB 该歌手全部可用图(thumb/wideThumb 人物照排前,clearart/fanart 随后)。
+    override suspend fun fetchAll(name: String, personOnly: Boolean): List<ArtistImage> = withContext(Dispatchers.IO) {
         try {
             val q = ImageHttp.urlEncode(name)
             val body = ImageHttp.client.newCall(Request.Builder()
                 .url("https://www.theaudiodb.com/api/v1/json/2/search.php?s=$q")
-                .header("User-Agent", ImageHttp.UA).build()).execute().body?.string() ?: return@withContext null
+                .header("User-Agent", ImageHttp.UA).build()).execute().body?.string() ?: return@withContext emptyList()
             val artist = JsonParser.parseString(body).asJsonObject.getAsJsonArray("artists")?.firstOrNull()?.asJsonObject
-                ?: return@withContext null
-            val thumb = artist.get("strArtistThumb")?.asString
-            val fanart = artist.get("strArtistFanart")?.asString
-            when {
-                !thumb.isNullOrBlank() -> ArtistImage(thumb, "audiodb", imageType = "photo")
-                !fanart.isNullOrBlank() -> ArtistImage(fanart, "audiodb", imageType = "background")
-                else -> null
-            }
-        } catch (_: Exception) { null }
+                ?: return@withContext emptyList()
+            val fields = listOf(
+                "strArtistThumb" to "photo",
+                "strArtistWideThumb" to "photo",
+                "strArtistClearart" to "thumb",
+                "strArtistFanart" to "background",
+                "strArtistFanart2" to "background",
+            )
+            fields.mapNotNull { (f, t) -> artist.get(f)?.asString?.takeIf { it.isNotBlank() }?.let { ArtistImage(it, "audiodb", imageType = t) } }
+        } catch (_: Exception) { emptyList() }
     }
 }
 

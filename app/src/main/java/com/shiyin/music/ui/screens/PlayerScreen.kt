@@ -16,6 +16,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -277,7 +278,10 @@ fun PlayerScreen(vm: MainViewModel) {
                     Modifier
                         .size(28.dp)
                         .clip(CircleShape)
-                        .clickable { vm.toggleFav(track.id) },
+                        .combinedClickable(
+                            onClick = { vm.toggleFav(track.id) },
+                            onLongClick = { vm.saveSheetFor = track.id },
+                        ),
                     contentAlignment = Alignment.Center,
                 ) { com.shiyin.music.ui.components.FavIcon(vm.isFav(track.id), 26.dp, c.n500) }
             }

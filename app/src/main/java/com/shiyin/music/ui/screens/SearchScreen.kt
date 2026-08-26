@@ -80,6 +80,12 @@ fun SearchScreen(vm: MainViewModel) {
         grouped.values.forEach { items.add(it to true) }
         items.sortedByDescending { it.first.score }
     }
+    // v1.2.0 #6: 艺人匹配(置顶行)——搜歌手名时第一个结果是圆头像歌手行,下面再列歌曲
+    val artistMatch = remember(query) {
+        val keys = vm.artistsMap().keys.toList()
+        keys.firstOrNull { it.equals(query, ignoreCase = true) }
+            ?: keys.firstOrNull { it.contains(query, ignoreCase = true) || query.contains(it, ignoreCase = true) }
+    }
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -130,6 +136,27 @@ fun SearchScreen(vm: MainViewModel) {
         }
 
         if (query.isNotBlank()) {
+            if (artistMatch != null) {
+                item(key = "artist-top") {
+                    val (bg, fg) = coverPalette((artistMatch.hashCode() and 0x7fffffff) % 8 + 1)
+                    Row(
+                        Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
+                            .clickable { vm.commitSearch(); vm.openArtist(artistMatch) }
+                            .padding(horizontal = 4.dp, vertical = 8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(13.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Box(Modifier.size(56.dp).shadowSm(CircleShape).clip(CircleShape).background(bg), contentAlignment = Alignment.Center) {
+                            ArtistAvatarContent(vm, artistMatch, artistMatch.first().uppercase(), fg, 22f)
+                        }
+                        Column(Modifier.weight(1f)) {
+                            Text(artistMatch, style = body(15f, FontWeight.Bold, c.text), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text("歌手", style = body(12.5f, FontWeight.Normal, c.n600), modifier = Modifier.padding(top = 2.dp))
+                        }
+                        OIcon(Lucide.ChevronRight, 17.dp, c.n400)
+                    }
+                }
+            }
             item { Text("${displayItems.size} 个结果", style = body(13f, FontWeight.Normal, c.n600)) }
             items(displayItems, key = { it.first.track.id }) { (hit, isAlbum) ->
                 val t = hit.track

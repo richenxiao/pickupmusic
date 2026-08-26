@@ -185,7 +185,26 @@ object ArtCache {
      *  Public so the 更换专辑封面 dialog can render thumbnails async. v1.2.0 起
      *  走磁盘缓存——picker 翻过的候选下次打开秒出；用户选定的封面仍经
      *  saveAlbumCover(url) 持久化后走正常 load() 全缓存路径。 */
-    suspend fun loadCandidateBitmap(context: Context, artUrl: String, px: Int): Bitmap? = downloadBitmap(context, artUrl, px)
+    suspend fun loadCandidateBitmap(context: Context, artUrl: String, px: Int): Bitmap? {
+        // v1.2.0 #6: 本地写真(content:// 或 file://,用户选的本地文件)走 contentResolver,
+        // 不走 OkHttp(OkHttp 不认 content://);同时绕过磁盘缓存避免本地文件被冗余缓存。
+        if (artUrl.startsWith("content://") || artUrl.startsWith("file://")) {
+            return withContext(Dispatchers.IO) {
+                try {
+                    val uri = android.net.Uri.parse(artUrl)
+                    context.contentResolver.openInputStream(uri)?.use { input ->
+                        android.graphics.BitmapFactory.decodeStream(input)?.let { bmp ->
+                            if (bmp.width > px && bmp.height > px) {
+                                val ratio = minOf(px.toFloat() / bmp.width, px.toFloat() / bmp.height)
+                                android.graphics.Bitmap.createScaledBitmap(bmp, (bmp.width * ratio).toInt().coerceAtLeast(1), (bmp.height * ratio).toInt().coerceAtLeast(1), true)
+                            } else bmp
+                        }
+                    }
+                } catch (_: Exception) { null }
+            }
+        }
+        return downloadBitmap(context, artUrl, px)
+    }
 
     /** v4.3: return the user's pinned custom cover Uri for [track]'s album, or
      *  null if none has been set. Read from album_info_override.coverUri. Runs

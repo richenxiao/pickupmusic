@@ -410,16 +410,19 @@ interface ShiyinDao {
     suspend fun clearSongArtist(mediaId: Long)
 
     // play_count
-    @Query("SELECT * FROM play_count")
+    // v1.2.0 #6: 按播放次数排序——从 play_event(每次播放一条) 算 count,历史数据可用;
+    // play_count 表旧逻辑只 UPDATE 不 INSERT→表空,改用 play_event 聚合更可靠
+    @Query("SELECT mediaId, COUNT(*) AS count FROM play_event GROUP BY mediaId")
     fun playCountFlow(): Flow<List<PlayCountEntity>>
 
-    @Query("SELECT count FROM play_count WHERE mediaId = :mediaId")
+    @Query("SELECT COUNT(*) FROM play_event WHERE mediaId = :mediaId")
     suspend fun playCount(mediaId: Long): Int
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertPlayCount(e: PlayCountEntity)
 
-    @Query("UPDATE play_count SET count = count + 1 WHERE mediaId = :mediaId")
+    // v1.2.0 #6: UPSERT——首次播放 INSERT(count=1),后续 UPDATE(count+1);原 UPDATE 不 INSERT→表空
+    @Query("INSERT INTO play_count(mediaId, count) VALUES(:mediaId, 1) ON CONFLICT(mediaId) DO UPDATE SET count = count + 1")
     suspend fun incrementPlayCount(mediaId: Long)
 
     // album_override
@@ -675,7 +678,7 @@ interface ShiyinDao {
         // v1.2.0 #6: 歌手写真 cache + 用户手选 override（独立于 album_art_cache）
         ArtistImageCacheEntity::class, ArtistImageOverrideEntity::class,
     ],
-    version = 16,
+    version = 17,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -974,14 +977,24 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        // v1.2.0 #6: 保证内置「我的喜欢」(p3)在升级安装也存在(原仅 onCreate 新装 seed，
+        // 升级用户 DB 早于 seed 无 p3 行→歌单筛选看不到「我的喜欢」)；并把旧名「我最喜爱」
+        // 改「我的喜欢」(用户措辞)。AND name='我最喜爱' 保留用户自定义名不被覆盖。
+        private val MIGRATION_16_17 = object : Migration(16, 17) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("INSERT OR IGNORE INTO playlist (id, name, sortIdx) VALUES ('p3', '我的喜欢', 0)")
+                db.execSQL("UPDATE playlist SET name='我的喜欢' WHERE id='p3' AND name='我最喜爱'")
+            }
+        }
+
         fun get(context: Context): AppDatabase = instance ?: synchronized(this) {
             instance ?: Room.databaseBuilder(context.applicationContext, AppDatabase::class.java, "shiyin.db")
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17)
                 // 不使用 fallbackToDestructiveMigration：迁移失败时宁可崩溃也不要删全库。
                 // 之前该选项导致迁移异常时删除所有用户数据（排序、专辑名、播放历史等）。
                 .addCallback(object : Callback() {
                     override fun onCreate(db: SupportSQLiteDatabase) {
-                        db.execSQL("INSERT INTO playlist (id, name, sortIdx) VALUES ('p3', '我最喜爱', 0)")
+                        db.execSQL("INSERT INTO playlist (id, name, sortIdx) VALUES ('p3', '我的喜欢', 0)")
                     }
                 })
                 .build()

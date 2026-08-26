@@ -1,7 +1,10 @@
 package com.shiyin.music.ui.screens
 
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -19,6 +22,7 @@ import androidx.compose.ui.layout.ContentScale
 import com.shiyin.music.ui.components.rememberCandidateArt
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -26,6 +30,7 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -55,12 +60,15 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
@@ -304,11 +312,11 @@ fun LibraryScreen(vm: MainViewModel) {
         label = "libSub",
     ) { key ->
         when {
-            key.startsWith("pl:") -> PlaylistDetail(vm, key.removePrefix("pl:"))
-            key.startsWith("alb:") -> AlbumDetail(vm, key.removePrefix("alb:"))
-            key.startsWith("art:") -> ArtistDetail(vm, key.removePrefix("art:"))
+            key.startsWith("pl:") -> Box(Modifier.fillMaxSize().statusBarsPadding()) { PlaylistDetail(vm, key.removePrefix("pl:")) }
+            key.startsWith("alb:") -> Box(Modifier.fillMaxSize().statusBarsPadding()) { AlbumDetail(vm, key.removePrefix("alb:")) }
+            key.startsWith("art:") -> ArtistDetail(vm, key.removePrefix("art:"))  // 写真铺到 y=0,不加 statusBarsPadding
             else -> {
-                Box(Modifier.fillMaxSize()) {
+                Box(Modifier.fillMaxSize().statusBarsPadding()) {
                     LibraryRoot(vm, rootListState)
                     FastScrollRail(rootListState, Modifier.align(Alignment.CenterEnd))
                 }
@@ -331,6 +339,8 @@ private data class LibItem(
     // v3.0: when set, render this row's cover via [PlaylistCover] (mosaic or
     // chosen album) instead of the legacy generative block.
     val mosaicForPid: String? = null,
+    // v1.2.0 #6: 歌手行——有写真时圆形头像绑照片(无则回退首字母)。lazy fetch + 缓存。
+    val photoName: String? = null,
     val onOpen: () -> Unit,
 )
 
@@ -516,7 +526,7 @@ private fun buildLibItems(vm: MainViewModel): List<LibItem> {
             vm.artistsMap().entries.forEachIndexed { i, e ->
                 val (bg, fg) = coverPalette(i + 1)
                 add(
-                    LibItem(e.key, "${prefix("歌手")}${e.value.size} 首", bg, fg, e.key.first().uppercase(), CircleShape) {
+                    LibItem(e.key, "${prefix("歌手")}${e.value.size} 首", bg, fg, e.key.first().uppercase(), CircleShape, photoName = e.key) {
                         vm.openArtist(e.key)
                     }
                 )
@@ -537,6 +547,15 @@ private fun heartBrush(): Brush {
     return Brush.linearGradient(listOf(c.a400, c.s500))
 }
 
+/** v1.2.0 #6: 歌手头像内容——有写真(已获取/缓存)绑照片填满,无则首字母回退;进列表时 lazy fetch。 */
+@Composable
+internal fun ArtistAvatarContent(vm: MainViewModel, name: String, fallbackInitial: String, fallbackFg: Color, fontSize: Float, loadSize: Dp = 130.dp) {
+    androidx.compose.runtime.LaunchedEffect(name) { vm.fetchArtistAvatar(name) }
+    val bmp = rememberCandidateArt(vm.artistImage(name).ifBlank { null }, loadSize)
+    if (bmp != null) Image(bmp, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+    else Text(fallbackInitial, fontFamily = Caprasimo, style = body(fontSize, FontWeight.Normal, fallbackFg).copy(fontFamily = Caprasimo))
+}
+
 @Composable
 private fun MixedListRow(vm: MainViewModel, item: LibItem) {
     val c = LocalOrganic.current
@@ -554,6 +573,11 @@ private fun MixedListRow(vm: MainViewModel, item: LibItem) {
             PlaylistCover(vm, item.mosaicForPid, 56.dp, item.shape)
         } else if (item.cover != null && !item.isHeart) {
             CoverArt(item.cover, 56.dp, item.shape, fontSize = 22, modifier = Modifier.shadowSm(item.shape))
+        } else if (item.photoName != null) {
+            Box(
+                Modifier.size(56.dp).shadowSm(item.shape).clip(item.shape).background(item.bg),
+                contentAlignment = Alignment.Center,
+            ) { ArtistAvatarContent(vm, item.photoName, item.initial, item.fg, 22f) }
         } else {
             Box(
                 Modifier
@@ -610,6 +634,7 @@ private fun MixedGridCell(vm: MainViewModel, item: LibItem) {
                 when {
                     item.isHeart -> OIcon(Lucide.HeartFilled, 48.dp, Color.White)
                     item.initial == "♪" -> OIcon(Lucide.ListMusic, 48.dp, item.fg)
+                    item.photoName != null -> ArtistAvatarContent(vm, item.photoName, item.initial, item.fg, 48f)
                     else -> Text(item.initial, fontFamily = Caprasimo, style = body(48f, FontWeight.Normal, item.fg).copy(fontFamily = Caprasimo))
                 }
             }
@@ -627,44 +652,56 @@ private fun PlaylistDetail(vm: MainViewModel, pid: String) {
     val c = LocalOrganic.current
     val pl = vm.playlists.firstOrNull { it.id == pid } ?: return
     val tracks = vm.playlistTrackList(pid)
+    val (bg, fg) = coverPalette(((pid.hashCode() and 0x7fffffff) % 8) + 1)
+    val chosenCover = vm.playlistCoverTrack(pid)
+    // v1.2.0 #6: 歌单详情重建为专辑页样式(大封面+名+播放按钮+曲目行),但曲目行显各自专辑封面
+    // (showCover=true,歌单跨专辑);大封面为用户手选 or 4 拼 mosaic(跨专辑拼各自封面)。
     LazyColumn(
-        modifier = Modifier.fillMaxSize(),
+        modifier = Modifier.fillMaxSize().clipToBounds(),
         contentPadding = screenPadding,
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
+        // 顶栏:返回
         item {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                 BackButton { vm.plId = null }
-                Text(pl.name, style = heading(24), modifier = Modifier.weight(1f))
-                // v3.0: ⋮ menu for playlist management (rename / cover / delete)
+            }
+        }
+        // 大封面(75% 宽 1:1):手选封面 / 4 拼 mosaic / 空占位
+        item {
+            Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
                 Box(
-                    Modifier
-                        .size(38.dp)
-                        .clip(CircleShape)
-                        .background(c.surface)
-                        .clickable { vm.plMenuOpen = true },
+                    Modifier.fillMaxWidth(0.75f).aspectRatio(1f)
+                        .shadowLg(RoundedCornerShape(16.dp)).clip(RoundedCornerShape(16.dp)).background(bg),
                     contentAlignment = Alignment.Center,
-                ) { OIcon(Lucide.MoreVertical, 18.dp, c.text) }
+                ) {
+                    when {
+                        tracks.isEmpty() -> OIcon(Lucide.ListMusic, 64.dp, fg.copy(alpha = 0.5f))
+                        chosenCover != null -> CoverArt(chosenCover, 320.dp, RoundedCornerShape(0.dp), fillToParent = true)
+                        else -> CoverArtMosaic(tracks, 320.dp, RoundedCornerShape(0.dp), fillToParent = true)
+                    }
+                }
+            }
+        }
+        // 歌单名
+        item { Text(pl.name, style = heading(30).copy(lineHeight = 34.sp), maxLines = 2, overflow = TextOverflow.Ellipsis) }
+        // 副标题
+        item { Text("${tracks.size} 首", style = body(16f, FontWeight.SemiBold, c.a700)) }
+        // 操作栏:播放 + ⋮
+        item {
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                PillButton("播放", onClick = { vm.playPlaylist(pid) }, icon = Lucide.Play)
+                Box(Modifier.size(40.dp).clip(CircleShape).background(c.surface).clickable { vm.plMenuOpen = true }, contentAlignment = Alignment.Center) {
+                    OIcon(Lucide.MoreVertical, 18.dp, c.text)
+                }
             }
         }
         if (tracks.isEmpty()) {
-            item {
-                Text("歌单还是空的。长按任意歌曲即可加入歌单。", style = body(13f, FontWeight.Normal, c.n500))
-            }
+            item { Text("歌单还是空的。长按任意歌曲即可加入歌单。", style = body(13f, FontWeight.Normal, c.n500)) }
         }
-        items(tracks, key = { it.id }) { t ->
-            TrackRow(
-                track = t,
-                isCurrent = t.id == vm.player.currentId,
-                isPlaying = vm.player.isPlaying,
-                subtitle = trackSubtitle(t),
-                onClick = { vm.play(t.id) },
-                onLongClick = { vm.trackMenuFor = t.id },
-                coverSize = 42.dp,
-                coverRadius = 13.dp,
-                trailing = { TrackMenuButton(vm, t) },
-                isHiddenTrack = vm.isHidden(t.id),
-            )
+        // 曲目行:像专辑页 NumberedTrackRow,但 showCover=true(歌单跨专辑→显各自封面)
+        itemsIndexed(tracks, key = { _, t -> t.id }) { i, t ->
+            NumberedTrackRow(vm = vm, track = t, idx = i + 1, sub = t.artist, onClick = { vm.playPlaylist(pid, t.id) }, showMenu = true, showCover = true)
         }
     }
 
@@ -678,7 +715,10 @@ private fun PlaylistDetail(vm: MainViewModel, pid: String) {
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     MenuAction("重命名歌单", Lucide.ListMusic) { vm.plMenuOpen = false; vm.plRenameFor = pid }
                     MenuAction("更换封面", Lucide.Disc) { vm.plMenuOpen = false; vm.plCoverPickerFor = pid }
-                    MenuAction("删除歌单", Lucide.Trash, tint = c.a700) { vm.plMenuOpen = false; vm.plDeleteFor = pid }
+                    // v1.2.0 #6: 内置「我的喜欢」(p3)不可删
+                    if (pid != "p3") {
+                        MenuAction("删除歌单", Lucide.Trash, tint = c.a700) { vm.plMenuOpen = false; vm.plDeleteFor = pid }
+                    }
                 }
             },
             confirmButton = {},
@@ -983,7 +1023,7 @@ private fun AlbumDetail(vm: MainViewModel, key: String) {
                         bg = null, textColor = c.a700, fontSize = 13f, padH = 14.dp,
                     )
                 } else {
-                    PillButton("播放专辑", onClick = { vm.playAlbum(key) }, icon = Lucide.Play)
+                    PillButton("播放", onClick = { vm.playAlbum(key) }, icon = Lucide.Play)
                     Box(
                         Modifier
                             .size(40.dp)
@@ -1059,6 +1099,9 @@ private fun AlbumDetail(vm: MainViewModel, key: String) {
     // ── 7-D: 文本排序对话框 ────────────────────────────────────────────────
     if (vm.albumEditText) {
         var txt by androidx.compose.runtime.remember(key) { mutableStateOf("") }
+        // v1.2.0: 默认显示当前歌曲按序号排列(1.歌名 2.歌名…),作只读提示;复制键方便拷给 AI 排序后粘回。
+        val currentList = vm.albumOrder(key).mapIndexed { i, t -> "${i + 1}.${t.title}" }.joinToString("\n")
+        val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
         androidx.compose.material3.AlertDialog(
             onDismissRequest = { vm.albumEditText = false },
             containerColor = c.surface,
@@ -1072,7 +1115,11 @@ private fun AlbumDetail(vm: MainViewModel, key: String) {
                     androidx.compose.material3.OutlinedTextField(
                         value = txt,
                         onValueChange = { txt = it },
-                        modifier = Modifier.fillMaxWidth().height(220.dp),
+                        modifier = Modifier.fillMaxWidth().height(220.dp).verticalScroll(rememberScrollState()),
+                        placeholder = {
+                            Text(currentList, style = body(13f, FontWeight.Normal, c.n500), modifier = Modifier.fillMaxWidth())
+                        },
+                        textStyle = body(13f, FontWeight.Normal, c.text),
                         colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
                             focusedTextColor = c.text, unfocusedTextColor = c.text,
                             cursorColor = c.accent, focusedBorderColor = c.accent, unfocusedBorderColor = c.n400,
@@ -1089,8 +1136,14 @@ private fun AlbumDetail(vm: MainViewModel, key: String) {
                 }) { Text("应用", style = body(14f, FontWeight.Bold, c.accent)) }
             },
             dismissButton = {
-                androidx.compose.material3.TextButton(onClick = { vm.albumEditText = false }) {
-                    Text("取消", style = body(14f, FontWeight.Normal, c.n600))
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    androidx.compose.material3.TextButton(onClick = {
+                        clipboard.setText(androidx.compose.ui.text.AnnotatedString(currentList))
+                        vm.showToast("已复制当前列表，可粘贴给 AI 再返回排序", null)
+                    }) { Text("复制", style = body(14f, FontWeight.SemiBold, c.a700)) }
+                    androidx.compose.material3.TextButton(onClick = { vm.albumEditText = false }) {
+                        Text("取消", style = body(14f, FontWeight.Normal, c.n600))
+                    }
                 }
             },
         )
@@ -1147,6 +1200,7 @@ private fun NumberedTrackRow(
     onClick: () -> Unit,
     highlighted: Boolean = false,
     showMenu: Boolean = false,
+    showCover: Boolean = false,
     reorderScope: ReorderableCollectionItemScope? = null,
     editControls: (@Composable ReorderableCollectionItemScope.() -> Unit)? = null,
     checkboxSelected: Boolean? = null,
@@ -1173,7 +1227,7 @@ private fun NumberedTrackRow(
                 .background(rowBg)
                 .clickable(onClick = onClick)
                 .padding(horizontal = 4.dp, vertical = 11.dp),
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             if (checkboxSelected != null) {
@@ -1189,8 +1243,11 @@ private fun NumberedTrackRow(
                 "$idx",
                 style = body(14f, FontWeight.Bold, if (isCur) c.a700 else c.text),
                 textAlign = TextAlign.Start,
-                modifier = Modifier.width(26.dp),
+                modifier = Modifier.width(20.dp),
             )
+            if (showCover) {
+                CoverArt(track, 40.dp, RoundedCornerShape(6.dp), modifier = Modifier.size(40.dp).shadowSm(RoundedCornerShape(6.dp)))
+            }
             Column(Modifier.weight(1f)) {
                 val titleColor = when {
                     isCur -> c.a700
@@ -1217,6 +1274,45 @@ private fun NumberedTrackRow(
     }
 }
 
+/**
+ * v1.2.0 #6: 歌手名自适应字号——短名(卢广仲)大字、长名(揽佬 SKAI ISYOURGOD)自动缩小或换两行。
+ * onTextLayout 动态缩小:max 38sp → min 18sp, maxLines=2。展开时左下角白色 ExtraBold。
+ */
+@Composable
+private fun AutoSizeArtistName(
+    name: String,
+    modifier: Modifier = Modifier,
+    color: Color = Color.White,
+    fontWeight: FontWeight = FontWeight.ExtraBold,
+    maxLines: Int = 2,
+    overflow: TextOverflow = TextOverflow.Ellipsis,
+    minSp: Float = 22f,
+    maxSp: Float = 38f,
+    textAlign: TextAlign = TextAlign.Center,
+) {
+    var fontSize by remember(name) { mutableFloatStateOf(maxSp) }
+    var ready by remember(name) { mutableStateOf(false) }
+    Text(
+        text = name,
+        modifier = modifier.drawWithContent { if (ready) drawContent() },
+        color = color,
+        fontWeight = fontWeight,
+        fontSize = fontSize.sp,
+        lineHeight = (fontSize * 1.15f).sp,
+        maxLines = maxLines,
+        overflow = overflow,
+        textAlign = textAlign,
+        onTextLayout = { result ->
+            if (result.hasVisualOverflow && fontSize > minSp) {
+                fontSize -= 2f
+                ready = false
+            } else {
+                ready = true
+            }
+        },
+    )
+}
+
 // ── artist detail ──────────────────────────────────────────────────────────
 @Composable
 private fun ArtistDetail(vm: MainViewModel, name: String) {
@@ -1229,10 +1325,10 @@ private fun ArtistDetail(vm: MainViewModel, name: String) {
     val artistIdx = vm.artistsMap().keys.indexOf(name)
     val (bg, fg) = coverPalette(artistIdx + 1)
     val albums = vm.albumsMap().entries.filter { entry ->
-        // v5.2 #79d: 跟 artistsMap()/BatchMoveSheet 对齐——专辑里任一曲目 split 后
-        // 含该歌手即算该歌手的专辑。原来用 first().artist==name 精确匹配,多歌手合作
-        // 曲(归一化后 "A, B")所在的专辑会被过滤掉,新建专辑尤其容易因此不显示。
-        entry.value.any { t -> name in com.shiyin.music.data.MediaScanner.splitArtists(t.artist) } &&
+        // v1.2.0 #6: Spotify 式归属——专辑只算「专辑位歌手」(首曲 artist split)含该歌手的；
+        // 仅在某首 feat 曲出现、但专辑歌手位没他名字的,不算他的专辑(只是参与,不算作品)。
+        // 合作专辑首曲 "A, B" split 后两者都算;周杰伦专辑首曲=周杰伦,feat 曲不影响归属。
+        name in com.shiyin.music.data.MediaScanner.splitArtists(entry.value.first().artist) &&
             // v1.2.0 #3: 合集（多歌手杂烩单曲文件夹误判为专辑）不在歌手页展示——
             // 它不属于任一歌手，留在音乐库「合集」分类即可。
             classifyAlbum(entry.value) != AlbumCategory.Compilation
@@ -1264,96 +1360,115 @@ private fun ArtistDetail(vm: MainViewModel, name: String) {
     // 沉浸式: 外层已去掉 statusBarsPadding, 内容画到屏幕顶 y=0; 状态栏高度用于 overlay 定位
     val sbTopPx = WindowInsets.statusBars.asPaddingValues().calculateTopPadding().let { with(density) { it.toPx() } }
     val heroMaxPx = with(density) { artistHeroH.toPx() }
-    val barPx = with(density) { artistBarH.toPx() }
-    val collapseRangePx = (heroMaxPx - barPx).coerceAtLeast(0f)
     val listState = rememberLazyListState()
-    // 歌名起点:写真底偏上 40dp(名字与按钮间距 40dp)
-    val nameStartPx = with(density) { (artistHeroH - 40.dp).toPx() }
-    // 歌名折叠终点:状态栏下 + barH/2(Toolbar 行中)
-    val nameEndPx = sbTopPx + with(density) { (artistBarH / 2 - 14.dp).toPx() }
-    val namePadPx = with(density) { 20.dp.toPx() }
-    val maxBlurPx = with(density) { 22.dp.toPx() }
-    // 歌名字号: 短名大,长名按比例缩小
-    val nameFontSize = when {
-        name.length <= 6 -> 36f
-        name.length <= 12 -> 30f
-        else -> 24f
+    // collapseProgress: 0=展开,1=折叠; deferred 读 listState 无重组。
+    // v1.2.0 #6: 长内容(滚得到 2×heroH)丝滑到顶;短内容(滚不到)滚到尽头用 Animatable
+    // 平滑过渡 rawProgress→1(避免硬瞬移);无 spring 滞后(滚动期间直接用 rawProgress)。
+    val rawProgress by remember {
+        derivedStateOf {
+            val first = listState.layoutInfo.visibleItemsInfo.firstOrNull()
+            if (first != null && first.index == 0) {
+                val scrolled = (-first.offset.toFloat()).coerceAtLeast(0f)
+                (scrolled / heroMaxPx).coerceIn(0f, 1f)
+            } else if (listState.firstVisibleItemIndex > 0) 1f
+            else 0f
+        }
     }
-    var nameWidthPx by remember { mutableStateOf(0f) }
-    var screenWidthPx by remember { mutableStateOf(0f) }
-    Box(Modifier.fillMaxSize().clipToBounds()) {
+    val snapAnim = remember { Animatable(0f) }
+    androidx.compose.runtime.LaunchedEffect(listState.canScrollForward) {
+        if (!listState.canScrollForward && rawProgress > 0f && rawProgress < 1f) {
+            snapAnim.snapTo(rawProgress)
+            snapAnim.animateTo(1f, spring(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = Spring.StiffnessHigh))
+        } else {
+            snapAnim.snapTo(0f)
+        }
+    }
+    val collapseProgress by remember {
+        derivedStateOf { if (snapAnim.value > 0f) snapAnim.value else rawProgress }
+    }
+    // v1.2.0 #6: 单标题一镜到底动画——只保留一个歌手名 Text,不进 LazyColumn(脱离滚动约束),
+    // 用 graphicsLayer deferred 读 collapseProgress 驱动 translationX/Y + scale,从写真左下平滑位移
+    // +缩放到顶栏居中。颜色 lerp 白→c.text(仅触发 Text 重绘,文字布局不变故廉价不卡)。展开
+    // 中心 X 由 onGloballyPositioned 一次性测量:标题 overlay 布局位置固定,滚动中 graphicsLayer
+    // 的 translation 是绘制期变换、不改布局坐标→不触发重测→不每帧重组(满足"动画中禁用实时测量")。
+    val titleExpandedCenterY = heroMaxPx - with(density) { 44.dp.toPx() }
+    val titleCollapsedCenterY = sbTopPx + with(density) { 12.dp.toPx() }
+    var titleExpandedCenterX by remember(name) { mutableFloatStateOf(0f) }
+    // ══ 固定层级(自底向上) ══
+    // 1 Background(写真 y=0~heroH 固定, alpha 联动淡出)
+    // 2 Content(LazyColumn 透明; contentPadding top=heroH → 内容恒从交界 heroH 处开始,短/长名一致,
+    //   不再因歌手名占位高低导致短名按钮错位挡歌曲; c.bg 上滚覆盖写真)
+    // 3 Button(overlay 交界, 跟内容纸同步滚 translationY=-progress*heroH, 淡出)
+    // 4 Toolbar bg(渐变淡入) + Back button(黑圆淡出)
+    // 5 Single Title(overlay, graphicsLayer 一镜到底)
+    BoxWithConstraints(Modifier.fillMaxSize().background(c.bg).clipToBounds()) {
+        val screenW = with(density) { maxWidth.toPx() }
+        // v1.2.0 #6: 字号按名长+语种(CJK≈1em / latin≈0.52em)一次算到一行排完——不靠系统自动
+        // 换行(长名如 Tsutomu Mayuruna Kade Eino 会被丑陋地折两行)。0.92 安全系数保守防溢出,
+        // coerce[16,34]。纯算式无 onTextLayout 迭代→零闪烁;remember 只随 name/screenW 重算。
+        val expandedFontSize = remember(name, screenW) {
+            val availSp = with(density) { (screenW - 44.dp.toPx()).toSp() }.value
+            val cjk = name.count { it.code in 0x3000..0x9FFF || it.code in 0xFF00..0xFFEF }
+            val widthFactor = cjk * 1.0f + (name.length - cjk) * 0.52f
+            (availSp / widthFactor * 0.92f).coerceIn(16f, 34f)
+        }
+        val titleScale = 16f / expandedFontSize
+        // ── 1 Background: 写真(第1张纸, 固定; y=0 含状态栏; alpha 联动淡出避免内容覆盖时硬切) ──
+        Box(
+            Modifier.fillMaxWidth().height(artistHeroH).align(Alignment.TopCenter),
+        ) {
+            if (avatarBmp != null) {
+                Image(bitmap = avatarBmp, contentDescription = name, modifier = Modifier.fillMaxSize().graphicsLayer { alpha = 1f - collapseProgress * 0.3f }, contentScale = ContentScale.Crop)
+            } else {
+                Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(bg, bg.copy(alpha = 0.6f))))) {}
+            }
+            Box(Modifier.fillMaxSize().background(
+                Brush.verticalGradient(0f to Color.Transparent, 0.5f to Color.Transparent, 0.75f to Color.Black.copy(alpha = 0.35f), 1f to Color.Black.copy(alpha = 0.55f))
+            )) {}
+        }
+
+        // ── 2 Content: LazyColumn(透明; contentPadding top=heroH→内容恒从 heroH 交界处开始,
+        //    不再因歌手名高低导致短名按钮错位); 热门 c.bg 顶部留 52dp 给按钮下半(一半写真一半内容) ──
         LazyColumn(
             state = listState,
-            modifier = Modifier.fillMaxSize().background(c.bg),
-            contentPadding = PaddingValues(top = 0.dp, bottom = 130.dp),
-            verticalArrangement = Arrangement.spacedBy(0.dp),
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(top = artistHeroH, bottom = 130.dp),
         ) {
-            // ── header item: 写真 + 操作栏(右侧, 不受 photo graphicsLayer 影响) ──
             item {
-                Box(Modifier.fillMaxWidth().height(artistHeroH)) {
-                    // 写真层(graphicsLayer 只影响图片,不影响操作栏)
-                    Box(
-                        Modifier.fillMaxSize().graphicsLayer {
-                            val sp = if (listState.firstVisibleItemIndex > 0) heroMaxPx
-                                else minOf(listState.firstVisibleItemScrollOffset.toFloat(), heroMaxPx)
-                            val p = (sp / collapseRangePx).coerceIn(0f, 1f)
-                            translationY = -sp * 0.5f
-                            scaleX = 1f - p * 0.06f
-                            scaleY = 1f - p * 0.06f
-                            alpha = (1f - p * 0.6f).coerceIn(0.4f, 1f)
-                            if (p > 0f) {
-                                val r = maxBlurPx * p
-                                renderEffect = android.graphics.RenderEffect
-                                    .createBlurEffect(r, r, android.graphics.Shader.TileMode.DECAL)
-                                    .asComposeRenderEffect()
-                            } else renderEffect = null
-                        },
-                    ) {
-                        if (avatarBmp != null) {
-                            Image(bitmap = avatarBmp, contentDescription = name, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
-                        } else {
-                            Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(bg, bg.copy(alpha = 0.6f))))) {}
+                Column(Modifier.fillMaxWidth().background(c.bg).padding(top = 52.dp, bottom = 4.dp)) {
+                    Text("热门", style = body(14f, FontWeight.Bold, c.n700), modifier = Modifier.padding(start = 16.dp, bottom = 4.dp))
+                    // v1.2.0 #6: 歌曲按热度(播放次数)排序,不按识别早晚
+                    val sortedTracks = artistTracks.sortedByDescending { vm.playCountFor(it.id) }
+                    val displayTracks = if (sortedTracks.size > songCap) sortedTracks.take(songCap) else sortedTracks
+                    displayTracks.forEachIndexed { i, t ->
+                        Box(Modifier.padding(horizontal = 16.dp)) {
+                            NumberedTrackRow(vm = vm, track = t, idx = i + 1, sub = t.album, onClick = { vm.play(t.id) }, showMenu = true, showCover = true)
                         }
-                        Box(Modifier.fillMaxSize().background(
-                            Brush.verticalGradient(0f to Color.Transparent, 0.45f to Color.Black.copy(alpha = 0.10f), 1f to Color.Black.copy(alpha = 0.55f))
-                        )) {}
                     }
-                    // 操作栏: 右侧居中(独立于 photo graphicsLayer, 不被 blur)
-                    ArtistActionBar(vm = vm, name = name, tracks = artistTracks,
-                        modifier = Modifier.align(Alignment.CenterEnd).padding(end = 20.dp))
-                }
-            }
-
-            // ── "歌曲" + 歌曲 + 专辑(无操作栏,已移入 header) ──
-            item { Text("歌曲", style = body(14f, FontWeight.Bold, c.n700), modifier = Modifier.padding(start = 20.dp, top = 4.dp)) }
-            val displayTracks = if (artistTracks.size > songCap) artistTracks.take(songCap) else artistTracks
-            itemsIndexed(displayTracks, key = { _, t -> t.id }) { i, t ->
-                Box(Modifier.padding(horizontal = 16.dp)) {
-                    NumberedTrackRow(
-                        vm = vm, track = t, idx = i + 1, sub = t.album,
-                        onClick = { vm.play(t.id) }, showMenu = true,
-                    )
-                }
-            }
-            if (artistTracks.size > songCap) {
-                item {
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
-                        PillButton("展开", onClick = { songCap = (songCap + 5).coerceAtMost(artistTracks.size) },
-                            bg = null, textColor = c.text, borderColor = c.divider)
+                    if (sortedTracks.size > songCap) {
+                        Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalArrangement = Arrangement.Center) {
+                            PillButton("展开", onClick = { songCap = (songCap + 5).coerceAtMost(sortedTracks.size) }, bg = null, textColor = c.text, borderColor = c.divider)
+                        }
                     }
                 }
             }
             if (albums.isNotEmpty()) {
                 item {
-                    Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                        Text("专辑", style = body(14f, FontWeight.Bold, c.n700))
-                        Box(Modifier.clip(RoundedCornerShape(999.dp)).clickable { showAllAlbums = true }.padding(horizontal = 14.dp, vertical = 6.dp)) {
-                            Text("展开全部（${albums.size}）", style = body(12f, FontWeight.Bold, c.a700))
+                    Column(Modifier.fillMaxWidth().background(c.bg).padding(horizontal = 16.dp)) {
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                            Text("专辑", style = body(14f, FontWeight.Bold, c.n700))
+                            Box(Modifier.clip(RoundedCornerShape(999.dp)).clickable { showAllAlbums = true }.padding(horizontal = 14.dp, vertical = 6.dp)) {
+                                Text("展开全部（${albums.size}）", style = body(12f, FontWeight.Bold, c.a700))
+                            }
                         }
                     }
                 }
                 item {
-                    Row(Modifier.horizontalScroll(rememberScrollState()).padding(start = 20.dp, end = 20.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                    Row(
+                        Modifier.fillMaxWidth().background(c.bg).horizontalScroll(rememberScrollState()).padding(start = 16.dp, end = 16.dp, top = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(14.dp),
+                    ) {
                         for ((albKey, ts) in albums) {
                             val firstT = ts.first()
                             Column(Modifier.width(106.dp).clip(RoundedCornerShape(10.dp)).clickable { vm.openAlbum(albKey) }, verticalArrangement = Arrangement.spacedBy(7.dp)) {
@@ -1365,34 +1480,87 @@ private fun ArtistDetail(vm: MainViewModel, name: String) {
                     }
                 }
             }
+            item { Spacer(Modifier.height(80.dp)) }
         }
 
-        // ══ 叠加层 ══
-        // 折叠 Toolbar(状态栏下方, alpha=progress)
-        Box(Modifier.fillMaxWidth().height(artistBarH).offset(y = with(density) { sbTopPx.toDp() }).background(c.bg).graphicsLayer {
-            val sp = if (listState.firstVisibleItemIndex > 0) heroMaxPx
-                else minOf(listState.firstVisibleItemScrollOffset.toFloat(), heroMaxPx)
-            alpha = (sp / collapseRangePx).coerceIn(0f, 1f)
-        }) {}
-        // 大歌名(单元素)
-        Text(name, style = body(nameFontSize, FontWeight.ExtraBold, Color.White), maxLines = 2, overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.fillMaxWidth(0.8f).padding(start = 20.dp)
-                .onGloballyPositioned { coords -> nameWidthPx = coords.size.width.toFloat(); screenWidthPx = coords.parentLayoutCoordinates?.size?.width?.toFloat() ?: screenWidthPx }
+        // ── Button: overlay 交界(中心 heroH, 一半写真一半内容); translationY=-progress*heroH 跟内容纸同步滚; 淡出 ──
+        // (写真半的 scrim/过渡带已移除——用户不希望看到阴影线)
+        Box(
+            Modifier.align(Alignment.TopEnd)
+                .offset(y = with(density) { (heroMaxPx - 36.dp.toPx()).toDp() })
+                .padding(end = 10.dp)
                 .graphicsLayer {
-                    val sp = if (listState.firstVisibleItemIndex > 0) heroMaxPx else minOf(listState.firstVisibleItemScrollOffset.toFloat(), heroMaxPx)
-                    val f = (sp / collapseRangePx).coerceIn(0f, 1f)
-                    translationY = nameStartPx + (nameEndPx - nameStartPx) * f
-                    val centerTx = if (nameWidthPx > 0 && screenWidthPx > 0) (screenWidthPx - nameWidthPx) / 2f - namePadPx else 0f
-                    translationX = centerTx * f
-                    scaleX = 1f - f * 0.45f; scaleY = 1f - f * 0.45f; alpha = 1f
-                })
-        // 返回键(状态栏下方)
-        Box(Modifier.align(Alignment.TopStart).padding(start = 8.dp, top = with(density) { (sbTopPx + 28f).toDp() })) {
-            BackButton { vm.artistKey = null; vm.artistMerge = false }
+                    val f = collapseProgress
+                    alpha = (1f - f).coerceIn(0f, 1f)
+                    translationY = -f * heroMaxPx
+                },
+        ) { ArtistActionBar(vm = vm, name = name, tracks = artistTracks) }
+
+        // ── 4 Toolbar bg(状态栏+toolbar 同步变色淡入) ──
+        Box(
+            Modifier.fillMaxWidth().height(with(density) { (sbTopPx + 48.dp.toPx()).toDp() })
+                .graphicsLayer { alpha = collapseProgress }
+                .background(c.bg),
+        ) {}
+        // ── 4 Back button(左, 始终可见; 黑圆展开折叠淡出→米白背景只留箭头; 图标白→c.text) ──
+        Box(
+            Modifier.align(Alignment.TopCenter).fillMaxWidth().height(48.dp)
+                .offset(y = with(density) { (sbTopPx - 12.dp.toPx()).toDp() }),
+        ) {
+            Box(
+                Modifier.align(Alignment.CenterStart).padding(start = 12.dp)
+                    .size(40.dp)
+                    .clickable { vm.artistKey = null; vm.artistMerge = false },
+                contentAlignment = Alignment.Center,
+            ) {
+                Box(Modifier.fillMaxSize()
+                    .graphicsLayer { alpha = (1f - collapseProgress).coerceIn(0f, 1f) }
+                    .clip(CircleShape)
+                    .background(Color.Black.copy(alpha = 0.25f))
+                ) {}
+                OIcon(Lucide.ChevronLeft, 24.dp, androidx.compose.ui.graphics.lerp(Color.White, c.text, collapseProgress))
+            }
+        }
+
+        // ── 5 Single Title: 单 Text overlay, graphicsLayer 一镜到底 ──
+        // 布局位置=展开(写真左下, Box 中心 heroH-36); graphicsLayer deferred 读 collapseProgress:
+        // translationY→顶栏中心, translationX→屏幕水平中心, scale→折叠字号; 全程 alpha=1 无交叉淡入。
+        Box(
+            Modifier.fillMaxWidth().height(56.dp)
+                .offset(y = with(density) { (titleExpandedCenterY - 28.dp.toPx()).toDp() })
+                .padding(start = 16.dp, end = 12.dp),
+            contentAlignment = Alignment.CenterStart,
+        ) {
+            Text(
+                name,
+                color = androidx.compose.ui.graphics.lerp(Color.White, c.text, collapseProgress),
+                fontWeight = FontWeight.Bold,
+                fontSize = expandedFontSize.sp,
+                lineHeight = (expandedFontSize * 1.1f).sp,
+                maxLines = 1,
+                softWrap = false,
+                overflow = TextOverflow.Visible,
+                textAlign = TextAlign.Start,
+                modifier = Modifier
+                    .onGloballyPositioned { coords ->
+                        val cx = coords.positionInWindow().x + coords.size.width / 2f
+                        if (cx > 0f) titleExpandedCenterX = cx
+                    }
+                    .graphicsLayer {
+                        val p = collapseProgress
+                        translationY = (titleCollapsedCenterY - titleExpandedCenterY) * p
+                        translationX = (screenW / 2f - titleExpandedCenterX) * p
+                        // animation.core 的 Float lerp 是 internal 不可访问,手写等价插值: 1+(target-1)*p
+                        val s = 1f + (titleScale - 1f) * p
+                        scaleX = s
+                        scaleY = s
+                    },
+            )
         }
     }
     // v1.2.0 #6: 管理归属改 AlertDialog（参考专辑编辑样式，完成键恒显）
     if (vm.artistMerge) ArtistMergeDialog(vm = vm, name = name)
+    if (vm.artistPhotoPickerFor == name) ArtistPhotoPickerDialog(vm = vm, name = name)
 }
 
 // ── artist action bar (圆形播放 + 随机播放 + ⋯ 菜单) ───────────────────────────
@@ -1403,34 +1571,145 @@ private fun ArtistActionBar(vm: MainViewModel, name: String, tracks: List<Track>
     var menuOpen by remember { mutableStateOf(false) }
     Row(
         modifier.padding(vertical = 10.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        horizontalArrangement = Arrangement.spacedBy(5.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        // 主播放键: 实心圆形强调色(放大,视觉主按钮)
-        Box(
-            Modifier.size(52.dp).clip(CircleShape).background(c.accent)
-                .clickable { tracks.firstOrNull()?.let { vm.play(it.id) } },
-            contentAlignment = Alignment.Center,
-        ) { OIcon(Lucide.Play, 24.dp, c.bg) }
+        // 更多菜单: 纯图标(橙色);弹主题化 AlertDialog(非白底 DropdownMenu)——选择写真/管理归属。
+        Box(contentAlignment = Alignment.Center) {
+            Box(
+                Modifier.size(44.dp).clickable { menuOpen = true },
+                contentAlignment = Alignment.Center,
+            ) { OIcon(Lucide.MoreVertical, 22.dp, c.accent) }
+            if (menuOpen) {
+                androidx.compose.material3.AlertDialog(
+                    onDismissRequest = { menuOpen = false },
+                    containerColor = c.surface,
+                    title = { Text("更多操作", style = body(15f, FontWeight.ExtraBold, c.text)) },
+                    text = {
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            MenuAction("选择写真", Lucide.User) { menuOpen = false; vm.openArtistPhotoPicker(name) }
+                            MenuAction("管理归属", Lucide.Users) { menuOpen = false; vm.artistMerge = !vm.artistMerge }
+                        }
+                    },
+                    confirmButton = {},
+                )
+            }
+        }
         // 随机播放: 纯图标,橙色(统一风格)
         Box(
             Modifier.size(44.dp).clickable { vm.playRandom(tracks.map { it.id }) },
             contentAlignment = Alignment.Center,
         ) { OIcon(Lucide.Shuffle, 22.dp, c.accent) }
-        // 更多菜单: 纯图标
-        Box(contentAlignment = Alignment.Center) {
-            Box(
-                Modifier.size(44.dp).clickable { menuOpen = true },
-                contentAlignment = Alignment.Center,
-            ) { OIcon(Lucide.MoreVertical, 22.dp, c.text) }
-            androidx.compose.material3.DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                androidx.compose.material3.DropdownMenuItem(
-                    text = { Text("管理归属", style = body(15f, FontWeight.Normal, c.text)) },
-                    onClick = { menuOpen = false; vm.artistMerge = !vm.artistMerge },
-                )
-            }
-        }
+        // 主播放键: 实心圆形强调色(放大,视觉主按钮,最右); shadow 悬浮立体感(胶布贴)
+        Box(
+            Modifier.size(52.dp).shadow(8.dp, CircleShape).clip(CircleShape).background(c.accent)
+                .clickable { tracks.firstOrNull()?.let { vm.play(it.id) } },
+            contentAlignment = Alignment.Center,
+        ) { OIcon(Lucide.Play, 24.dp, c.bg) }
     }
+}
+
+// ── artist photo picker (选择写真) ─────────────────────────────────────────
+// 并行取所有源候选写真(各源 1 张),用户选一张→setArtistImageOverride 写覆盖(永久,
+// 旧覆盖被替换)→artistImages 自动刷新;「恢复自动」=清覆盖回退自动源。
+@Composable
+private fun ArtistPhotoPickerDialog(vm: MainViewModel, name: String) {
+    val c = LocalOrganic.current
+    val candidates = vm.artistImageCandidates
+    // v1.2.0 #6: 选本地文件作写真(拷到 app 内部存储持久化)
+    val localPicker = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia()
+    ) { uri -> if (uri != null) { vm.setArtistImageFromFile(name, uri); vm.artistPhotoPickerFor = null } }
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = { vm.artistPhotoPickerFor = null },
+        containerColor = c.surface,
+        title = { Text("选择写真", style = body(15f, FontWeight.ExtraBold, c.text)) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                // v1.2.0 #6: 该歌手旗下专辑封面(横向滚动,可选用作写真)
+                val albumCoverTracks = remember(name) {
+                    vm.albumsMap().entries.filter { e ->
+                        name in com.shiyin.music.data.MediaScanner.splitArtists(e.value.first().artist) &&
+                        classifyAlbum(e.value) != AlbumCategory.Compilation
+                    }.map { it.value.first() }.distinctBy { it.albumId }
+                }
+                if (albumCoverTracks.isNotEmpty()) {
+                    Row(
+                        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        albumCoverTracks.forEach { t ->
+                            CoverArt(t, 64.dp, RoundedCornerShape(8.dp), fontSize = 22, modifier = Modifier.shadowSm(RoundedCornerShape(8.dp)).clickable {
+                                vm.setArtistImageFromAlbumCover(name, t); vm.artistPhotoPickerFor = null
+                            })
+                        }
+                    }
+                }
+                // 候选写真(各源并行)
+                if (candidates.isEmpty()) {
+                    Text("正在搜索候选写真…", style = body(13f, FontWeight.Normal, c.n500), modifier = Modifier.padding(vertical = 8.dp))
+                } else {
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.heightIn(max = 260.dp).verticalScroll(rememberScrollState())) {
+                        candidates.forEach { img ->
+                            Row(
+                                Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).clickable {
+                                    vm.setArtistImageOverride(name, img.url); vm.artistPhotoPickerFor = null
+                                }.padding(4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            ) {
+                                val bmp = rememberCandidateArt(img.url, 72.dp)
+                                Box(Modifier.size(72.dp).clip(RoundedCornerShape(8.dp)).background(c.n200), contentAlignment = Alignment.Center) {
+                                    if (bmp != null) Image(bmp, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop) else OIcon(Lucide.User, 28.dp, c.n400)
+                                }
+                                Column(Modifier.weight(1f)) {
+                                    Text(img.source, style = body(13f, FontWeight.Bold, c.text), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                    if (img.imageType.isNotBlank()) Text(img.imageType, style = body(11f, FontWeight.Normal, c.n500), maxLines = 1)
+                                }
+                            }
+                        }
+                    }
+                }
+                // 链接行(底部):➕选本地 + 链接框(短)+ 保存
+                var linkUrl by remember { mutableStateOf("") }
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Box(
+                        Modifier.size(40.dp).clip(CircleShape).background(c.n200).clickable {
+                            localPicker.launch(androidx.activity.result.PickVisualMediaRequest(androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia.ImageOnly))
+                        },
+                        contentAlignment = Alignment.Center,
+                    ) { Text("➕", style = body(18f, FontWeight.Normal, c.text)) }
+                    androidx.compose.material3.OutlinedTextField(
+                        value = linkUrl,
+                        onValueChange = { linkUrl = it },
+                        label = { Text("图片链接", style = body(12f, FontWeight.Normal, c.n500)) },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f),
+                        textStyle = body(13f, FontWeight.Normal, c.text),
+                        colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = c.text, unfocusedTextColor = c.text, cursorColor = c.accent,
+                            focusedBorderColor = c.accent, unfocusedBorderColor = c.n400,
+                            focusedLabelColor = c.accent, unfocusedLabelColor = c.n500,
+                        ),
+                    )
+                    androidx.compose.material3.TextButton(onClick = {
+                        if (linkUrl.isNotBlank()) { vm.setArtistImageOverride(name, linkUrl.trim()); vm.artistPhotoPickerFor = null }
+                    }) { Text("保存", style = body(14f, FontWeight.Bold, c.accent)) }
+                }
+            }
+        },
+        confirmButton = {
+            androidx.compose.material3.TextButton(onClick = { vm.clearArtistImageOverride(name); vm.artistPhotoPickerFor = null }) {
+                Text("恢复自动", style = body(14f, FontWeight.Normal, c.n600))
+            }
+        },
+        dismissButton = {
+            androidx.compose.material3.TextButton(onClick = { vm.artistPhotoPickerFor = null }) {
+                Text("取消", style = body(14f, FontWeight.Normal, c.n600))
+            }
+        },
+    )
 }
 
 // ── artist merge dialog（参考专辑编辑 AlertDialog 样式；完成键恒显，无选择时置灰）─

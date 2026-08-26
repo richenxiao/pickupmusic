@@ -11,6 +11,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.ui.res.painterResource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -721,14 +722,16 @@ private fun MergesScreen(vm: MainViewModel) {
 @Composable
 private fun AboutScreen(vm: MainViewModel) {
     val c = LocalOrganic.current
-    Column(
-        Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(horizontal = 20.dp)
-            .padding(top = 22.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
-    ) {
+    var supportSheetOpen by remember { mutableStateOf(false) }
+    Box(Modifier.fillMaxSize()) {
+        Column(
+            Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 20.dp)
+                .padding(top = 22.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
         SubPageHeader("关于我们") { vm.filesView = FilesView.Root }
         Column(
             Modifier
@@ -762,7 +765,7 @@ private fun AboutScreen(vm: MainViewModel) {
                     .clip(RoundedCornerShape(999.dp))
                     .background(c.n100)
                     .padding(horizontal = 10.dp, vertical = 3.dp)
-            ) { Text("v1.1.0", style = body(12f, FontWeight.Normal, c.n800)) }
+            ) { Text("v1.2.0", style = body(12f, FontWeight.Normal, c.n800)) }
             Row(
                 Modifier.padding(top = 6.dp),
                 horizontalArrangement = Arrangement.spacedBy(7.dp),
@@ -782,15 +785,16 @@ private fun AboutScreen(vm: MainViewModel) {
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 Text("更新内容", style = body(13f, FontWeight.ExtraBold, c.text).copy(letterSpacing = 1.sp))
-                // 首个正式版本：只列 v1.1.0 本版变更，旧测试版（v3/v4/v5 内部迭代）
-                // 的历史变更不再展示。
+                // 只列当前正式版本变更，旧版本日志不再展示。
                 data class VerChange(val version: String, val items: List<String>)
                 val versions = listOf(
-                    VerChange("v1.1.0", listOf(
-                        "日文歌词振假名：歌词本展开页新增「あ」开关，开启后日文歌词汉字上方标注假名注音，其他语言不生效。",
-                        "进度条支持拖动：原进度条只能点按跳转，按住拖动无响应；现按下/拖动滑块实时跟手，抬手时提交跳转。",
-                        "歌词背景取色修复：重写取色算法（相近色聚类合并、暗色封面亮度兜底），并清除旧版缓存让所有专辑按新算法重新取色——解决大面积主色被小面积鲜艳贴纸抢选、暗紫等封面背景过暗的问题。",
-                        "合并歌手对话框标题过长导致「完成」按钮被挤出屏幕的问题修复。",
+                    VerChange("v1.2.0", listOf(
+                        "歌手主页全新重做：沉浸式写真背景，上下滑歌手名从写真左下平滑滑入顶栏，单标题一镜到底动画、无闪烁。",
+                        "歌手写真自动获取：Discogs、AudioDB 等多源并行匹配人物写真，可手选替换/粘贴链接，小众歌手回退专辑封面，缓存本地不重复抓。",
+                        "搜索优化：专辑名命中整张置顶、跨字段分词匹配，找歌更快更准。",
+                        "歌手页与首页/搜索/音乐库高度解耦：歌手页写真沉浸式铺满状态栏，其余页面各自留出状态栏间距，互不影响。",
+                        "喜欢按钮长按可选加入任意歌单（单击仍默认「我的喜欢」）。",
+                        "音乐库新增「合集」分类；左缘右滑拉侧边栏；滑动条空闲自动隐藏；专辑/EP/单曲统一「播放」文案。",
                     )),
                 )
                 for (ver in versions) {
@@ -800,12 +804,66 @@ private fun AboutScreen(vm: MainViewModel) {
                         modifier = Modifier.padding(top = 4.dp),
                     )
                     for (ch in ver.items) {
-                        Text("· $ch", style = body(12f, FontWeight.Normal, c.n700).copy(lineHeight = 17.sp))
+                        // 悬挂缩进:圆点单独一列,正文换行后与首字对齐(不再缩到圆点下方)
+                        Row(verticalAlignment = Alignment.Top, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Text("·", style = body(12f, FontWeight.Bold, c.n700))
+                            Text(ch, style = body(12f, FontWeight.Normal, c.n700).copy(lineHeight = 17.sp), modifier = Modifier.weight(1f))
+                        }
+                    }
+                }
+            }
+        }
+        // v1.2.0: 开发者小栏——头像+名字+「请开发者喝杯咖啡吧」,点开赞赏页
+        Box(
+            Modifier.fillMaxWidth()
+                .clip(RoundedCornerShape(16.dp))
+                .background(c.n100)
+                .clickable { supportSheetOpen = true }
+                .padding(horizontal = 16.dp, vertical = 14.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Image(
+                    painter = painterResource(com.shiyin.music.R.drawable.dev_avatar),
+                    contentDescription = "开发者头像",
+                    modifier = Modifier.size(52.dp).clip(CircleShape),
+                )
+                Column(Modifier.weight(1f)) {
+                    Text("御晨晓", style = body(15f, FontWeight.ExtraBold, c.text))
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        OIcon(Lucide.Heart, 14.dp, c.a700)
+                        Text("请开发者喝杯咖啡吧", style = body(12.5f, FontWeight.Bold, c.a700))
                     }
                 }
             }
         }
         Box(Modifier.height(114.dp))
+        }
+        // 赞赏页(整页):提示语 + 微信/支付宝赞赏码(各占整行,放大;点击保存到相册)
+        if (supportSheetOpen) {
+            Column(
+                Modifier.fillMaxSize().background(c.bg).verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(24.dp),
+            ) {
+                SubPageHeader("赞赏开发者") { supportSheetOpen = false }
+                Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Image(
+                        painter = painterResource(com.shiyin.music.R.drawable.support_wechat),
+                        contentDescription = "微信赞赏码（点击保存到相册）",
+                        modifier = Modifier.fillMaxWidth(0.8f).clip(RoundedCornerShape(16.dp)).background(c.n100).clickable { vm.saveSupportImage(com.shiyin.music.R.drawable.support_wechat, "拾音_微信赞赏码") },
+                    )
+                    Text("微信赞赏", style = body(14f, FontWeight.Bold, c.n700))
+                }
+                Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Image(
+                        painter = painterResource(com.shiyin.music.R.drawable.support_alipay),
+                        contentDescription = "支付宝赞赏码（点击保存到相册）",
+                        modifier = Modifier.fillMaxWidth(0.8f).clip(RoundedCornerShape(16.dp)).background(c.n100).clickable { vm.saveSupportImage(com.shiyin.music.R.drawable.support_alipay, "拾音_支付宝赞赏码") },
+                    )
+                    Text("支付宝赞赏", style = body(14f, FontWeight.Bold, c.n700))
+                }
+                Box(Modifier.height(40.dp))
+            }
+        }
     }
 }
 

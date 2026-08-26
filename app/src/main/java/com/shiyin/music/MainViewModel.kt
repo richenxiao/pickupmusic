@@ -35,6 +35,9 @@ import com.shiyin.music.playback.DeviceRouter
 import com.shiyin.music.playback.PlayerController
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -367,7 +370,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun fetchArtistAvatar(name: String) {
         viewModelScope.launch {
-            val img = artistImageResolver.resolve(name, personOnly = true)
+            val img = artistImageResolver.resolve(name, personOnly = false)
             artistImages = artistImages + (name to (img?.url ?: ""))
         }
     }
@@ -376,7 +379,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun setArtistImageOverride(name: String, url: String) {
         viewModelScope.launch {
             artistImageResolver.setOverride(name, url)
-            val img = artistImageResolver.resolve(name, personOnly = true)
+            val img = artistImageResolver.resolve(name, personOnly = false)
             artistImages = artistImages + (name to (img?.url ?: ""))
         }
     }
@@ -385,8 +388,73 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun clearArtistImageOverride(name: String) {
         viewModelScope.launch {
             artistImageResolver.clearOverride(name)
-            val img = artistImageResolver.resolve(name, personOnly = true)
+            val img = artistImageResolver.resolve(name, personOnly = false)
             artistImages = artistImages + (name to (img?.url ?: ""))
+        }
+    }
+
+    /** v1.2.0 #6: 从本地文件(content URI)选写真——拷到 app 内部存储(持久),存 file:// 路径为覆盖。 */
+    fun setArtistImageFromFile(name: String, contentUri: android.net.Uri) {
+        viewModelScope.launch {
+            val ok = withContext(Dispatchers.IO) {
+                runCatching {
+                    val ctx = getApplication<android.app.Application>()
+                    val safe = name.filter { it.isLetterOrDigit() || it == '_' }.ifBlank { "artist" }
+                    val dir = java.io.File(ctx.filesDir, "artist_image_override").apply { mkdirs() }
+                    dir.listFiles()?.filter { it.name.startsWith("${safe}_") }?.forEach { it.delete() }  // 清旧本地文件
+                    val file = java.io.File(dir, "${safe}_${System.currentTimeMillis()}.jpg")
+                    ctx.contentResolver.openInputStream(contentUri)?.use { input ->
+                        file.outputStream().use { output -> input.copyTo(output) }
+                    } ?: return@runCatching false
+                    artistImageResolver.setOverride(name, "file://${file.absolutePath}")
+                    val img = artistImageResolver.resolve(name, personOnly = false)
+                    artistImages = artistImages + (name to (img?.url ?: ""))
+                    true
+                }.getOrDefault(false)
+            }
+            if (!ok) showToast("本地写真保存失败", null)
+        }
+    }
+
+    /** v1.2.0 #6: 用该歌手某张专辑的封面作写真——提取封面 bitmaps 存内部文件,file:// 覆盖。 */
+    fun setArtistImageFromAlbumCover(name: String, track: com.shiyin.music.data.Track) {
+        viewModelScope.launch {
+            val ok = withContext(Dispatchers.IO) {
+                runCatching {
+                    val ctx = getApplication<android.app.Application>()
+                    val bmp = ctx.contentResolver.loadThumbnail(track.uri, android.util.Size(600, 600), null)
+                    val safe = name.filter { it.isLetterOrDigit() || it == '_' }.ifBlank { "artist" }
+                    val dir = java.io.File(ctx.filesDir, "artist_image_override").apply { mkdirs() }
+                    dir.listFiles()?.filter { it.name.startsWith("${safe}_") }?.forEach { it.delete() }
+                    val file = java.io.File(dir, "${safe}_${System.currentTimeMillis()}.jpg")
+                    file.outputStream().use { bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 92, it) }
+                    artistImageResolver.setOverride(name, "file://${file.absolutePath}")
+                    val img = artistImageResolver.resolve(name, personOnly = false)
+                    artistImages = artistImages + (name to (img?.url ?: ""))
+                    true
+                }.getOrDefault(false)
+            }
+            if (!ok) showToast("专辑封面保存失败", null)
+        }
+    }
+
+    // v1.2.0 #6: 写真选择器——并行取所有源候选(各源 1 张,Discogs/AudioDB/Fanart 等),
+    // 供用户挑换;选完调 setArtistImageOverride 写覆盖(永久,旧覆盖被替换),UI 自动刷新。
+    var artistPhotoPickerFor by mutableStateOf<String?>(null)
+    var artistImageCandidates by mutableStateOf<List<com.shiyin.music.data.image.ArtistImage>>(emptyList()); private set
+
+    fun openArtistPhotoPicker(name: String) {
+        artistPhotoPickerFor = name
+        artistImageCandidates = emptyList()
+        viewModelScope.launch {
+            // 各源 fetchAll 返回该源全部图(Discogs 多张/AudioDB thumb+fanart/Fanart bg+thumb),flatten 后去重。
+            // personOnly=true:跳过 iTunes(只回专辑封面,非人物照,且专辑封面已在「专辑封面」区可选)。
+            val list = coroutineScope {
+                com.shiyin.music.data.image.ArtistImageSources.sources
+                    .map { async { runCatching { it.fetchAll(name, personOnly = true) }.getOrNull().orEmpty() } }
+                    .awaitAll().flatten()
+            }
+            artistImageCandidates = list.distinctBy { it.url }
         }
     }
 
@@ -1099,6 +1167,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         player.playQueue(tracks, tracks.random().id, null)
     }
 
+    /** v1.2.0 #6: 顺序播放整个歌单（从 startId 起；null=从头播）。歌单详情页"播放"用。 */
+    fun playPlaylist(pid: String, startId: Long? = null) {
+        val all = playlistTrackList(pid)
+        val tappedHidden = startId != null && isHidden(startId)
+        val queue = if (tappedHidden) all.filter { it.id == startId || !isHidden(it.id) } else playbackFiltered(all)
+        if (queue.isEmpty()) return
+        val realStart = startId?.takeIf { id -> queue.any { it.id == id } } ?: queue.first().id
+        player.setShuffle(false)
+        player.playQueue(queue, realStart, "playlist:$pid")
+    }
+
     /** v5.2 隐藏曲 helper:把 [tracks] 中被用户在 track_info_override 标 hidden
      *  的曲过滤掉。Album 整张播、整库播放、随机播都要走这条路径。Single play (单
      * 曲点击播放)不过滤 —— 用户明确点了一首曲,即使它是 hidden 也应该响起来,
@@ -1528,6 +1607,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun deletePlaylist(id: String) {
+        // v1.2.0 #6: 内置「我的喜欢」(p3)默认存在不可删。
+        if (id == "p3") { showToast("此歌单不可删除", null); return }
         viewModelScope.launch(Dispatchers.IO) {
             dao.clearPlaylistTracks(id)
             dao.deletePlaylist(id)
@@ -2099,7 +2180,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun toggleFav(id: Long) {
         val adding = !isFav(id)
         togglePlaylistMembership("p3", id)
-        showToast(if (adding) "已收藏至「我最喜爱」" else "已取消收藏", id)
+        showToast(if (adding) "已收藏至「我的喜欢」" else "已取消收藏", id)
     }
 
     fun showToast(text: String, changeTargetId: Long? = null) {
@@ -2108,6 +2189,36 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         toastJob = viewModelScope.launch {
             kotlinx.coroutines.delay(1800)
             toast = null
+        }
+    }
+
+    /** v1.2.0: 保存赞赏码图到相册(Pictures/PickUpMusic),方便用另一台手机扫码。 */
+    fun saveSupportImage(resId: Int, displayName: String) {
+        viewModelScope.launch {
+            val ok = withContext(Dispatchers.IO) {
+                runCatching {
+                    val ctx = getApplication<android.app.Application>()
+                    val bmp = android.graphics.BitmapFactory.decodeResource(ctx.resources, resId) ?: return@runCatching false
+                    val resolver = ctx.contentResolver
+                    val values = android.content.ContentValues().apply {
+                        put(android.provider.MediaStore.Images.Media.DISPLAY_NAME, "$displayName.png")
+                        put(android.provider.MediaStore.Images.Media.MIME_TYPE, "image/png")
+                        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                            put(android.provider.MediaStore.Images.Media.RELATIVE_PATH, "Pictures/PickUpMusic")
+                            put(android.provider.MediaStore.Images.Media.IS_PENDING, 1)
+                        }
+                    }
+                    val uri = resolver.insert(android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values) ?: return@runCatching false
+                    resolver.openOutputStream(uri)?.use { bmp.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it) } ?: return@runCatching false
+                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                        values.clear()
+                        values.put(android.provider.MediaStore.Images.Media.IS_PENDING, 0)
+                        resolver.update(uri, values, null, null)
+                    }
+                    true
+                }.getOrDefault(false)
+            }
+            showToast(if (ok) "已保存到相册：Pictures/PickUpMusic" else "保存失败，请重试")
         }
     }
 

@@ -2,6 +2,11 @@
 <resources>
     <style name="Theme.Shiyin" parent="android:Theme.Material.Light.NoActionBar">
         <item name="android:windowBackground">#f5ead8</item>
+        <!-- v1.2.0 #6: 让 window 内容绘制延伸到系统栏底下(edge-to-edge 真正生效)。
+             父主题 Material.Light.NoActionBar 默认 windowDrawsSystemBarBackgrounds=false,
+             即使 statusBarColor=transparent 系统也不让内容画到状态栏区域(y=0~sbTop),
+             内容被强制裁到状态栏下方——歌手页写真因此无法盖住状态栏。显式开 true 修复。 -->
+        <item name="android:windowDrawsSystemBarBackgrounds">true</item>
         <item name="android:statusBarColor">@android:color/transparent</item>
         <item name="android:navigationBarColor">@android:color/transparent</item>
         <item name="android:windowLightStatusBar">true</item>
