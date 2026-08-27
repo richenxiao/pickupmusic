@@ -335,7 +335,7 @@ private fun SettingsRoot(vm: MainViewModel) {
         ) {
             OIcon(Lucide.CircleInfo, 19.dp, c.n700)
             Text("关于我们", style = body(15f, FontWeight.SemiBold, c.text), modifier = Modifier.weight(1f))
-            Text("拾音 v1.1.0", style = body(12.5f, FontWeight.Normal, c.n600))
+            Text("拾音 v1.2.1", style = body(12.5f, FontWeight.Normal, c.n600))
             OIcon(Lucide.ChevronRight, 18.dp, c.n500)
         }
 
@@ -765,7 +765,7 @@ private fun AboutScreen(vm: MainViewModel) {
                     .clip(RoundedCornerShape(999.dp))
                     .background(c.n100)
                     .padding(horizontal = 10.dp, vertical = 3.dp)
-            ) { Text("v1.2.0", style = body(12f, FontWeight.Normal, c.n800)) }
+            ) { Text("v1.2.1", style = body(12f, FontWeight.Normal, c.n800)) }
             Row(
                 Modifier.padding(top = 6.dp),
                 horizontalArrangement = Arrangement.spacedBy(7.dp),
@@ -786,8 +786,15 @@ private fun AboutScreen(vm: MainViewModel) {
             ) {
                 Text("更新内容", style = body(13f, FontWeight.ExtraBold, c.text).copy(letterSpacing = 1.sp))
                 // 只列当前正式版本变更，旧版本日志不再展示。
+                // 规则:同大版本(v1.2.x)各修订版日志都保留;进入下一大版本(v1.3.x)时
+                // 移除前一版本的日志。
                 data class VerChange(val version: String, val items: List<String>)
                 val versions = listOf(
+                    VerChange("v1.2.1", listOf(
+                        "播放计数优化：改为累计真实播放满 30 秒才算一次有效播放，误触和快速跳过不再污染播放次数与热度排序。",
+                        "收听统计时长更准：总时长按实际播放秒数统计，不再用曲目总长冒充，跳过和快进的时长不计入。",
+                        "歌手写真源稳定性提升与多项细节修复。",
+                    )),
                     VerChange("v1.2.0", listOf(
                         "歌手主页全新重做：沉浸式写真背景，上下滑歌手名从写真左下平滑滑入顶栏，单标题一镜到底动画、无闪烁。",
                         "歌手写真自动获取：Discogs、AudioDB 等多源并行匹配人物写真，可手选替换/粘贴链接，小众歌手回退专辑封面，缓存本地不重复抓。",
