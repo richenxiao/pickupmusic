@@ -2304,4 +2304,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             deviceRouter.refreshActiveDevice()
         }
     }
+
+    /** v1.2.1: 进程关停时(sliding-away 触发 onCleared)flush 当前播放 session——
+     *  把累计的真实播放秒数(playedSec)写回 play_event 行,避免"播满 30s 后暂停、
+     *  随后退出"导致 playedSec 停在初值、丢失 30s 之后的真实时长。硬杀(SIGKILL)
+     *  不可恢复,接受。 */
+    override fun onCleared() {
+        super.onCleared()
+        player.finalizeCurrent()
+    }
 }

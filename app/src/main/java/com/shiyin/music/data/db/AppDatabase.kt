@@ -534,9 +534,10 @@ interface ShiyinDao {
     suspend fun completedPlayEventsBetween(from: Long, to: Long): List<PlayEventEntity>
 
     /** v1.2.1: 累计有效播放满 30 秒时把该 mediaId 最近一条 completed=0 的事件置 1
-     *  (计为一次有效播放)。playedSec 先落 30 作下限,切歌时 finalizePlayEvent 再回填
-     *  实际值。若该行已被 trim 掉则 no-op。 */
-    @Query("UPDATE play_event SET completed = 1, playedSec = 30 WHERE mediaId = :mediaId AND completed = 0 AND id = (SELECT id FROM play_event WHERE mediaId = :mediaId AND completed = 0 ORDER BY playedAt DESC LIMIT 1)")
+     *  (计为一次有效播放)。只动 completed 列,不写 playedSec——与 finalizePlayEvent(写
+     *  playedSec)分列,两者并发 IO 也不互相覆盖(避免 30 覆盖真实累计值)。playedSec 由
+     *  finalizePlayEvent(切歌/关停)回填。若该行已被 trim 掉则 no-op。 */
+    @Query("UPDATE play_event SET completed = 1 WHERE mediaId = :mediaId AND completed = 0 AND id = (SELECT id FROM play_event WHERE mediaId = :mediaId AND completed = 0 ORDER BY playedAt DESC LIMIT 1)")
     suspend fun markPlayCounted(mediaId: Long)
 
     /** v1.2.1: 切歌/播完时回填该 mediaId 最近一条事件的 playedSec(实际累计有效播放

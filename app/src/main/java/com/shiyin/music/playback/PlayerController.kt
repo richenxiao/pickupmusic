@@ -185,10 +185,13 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
         if (dur > 0) durationMs = dur
         positionMs = c.currentPosition.coerceAtLeast(0)
         // v1.2.1: 重连/进程恢复时若 tracker 尚无活跃 session(如服务仍在播但控制器是新建的),
-        // 以当前曲 start 一个新 session。重启前已播时长无法恢复(accumMs 从 0 起),但后续
-        // 播放会继续累计,满 30s 仍会计数——避免重连后这段播放永远不计。
+        // 以当前曲 start 一个新 session 并补插一条 play_event 行(onTrackStarted)。补插行很关键:
+        // 否则该 session 在内存里有累计、DB 里却无对应行,后续 markPlayCounted/finalizePlayEvent
+        // 的子查询会命中该 mediaId 的历史旧行,污染历史数据并可能错记计数。重启前已播时长
+        // 无法恢复(accumMs 从 0 起),但后续播放会继续累计,满 30s 仍会计数。
         if (playTracker.currentMediaId() == null && currentId != null) {
             playTracker.start(currentId!!)
+            onTrackStarted?.invoke(currentId!!)
         }
     }
 
@@ -227,8 +230,9 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
         playTracker.start(id)
     }
 
-    /** v1.2.1: 队列末尾播完(STATE_ENDED,无自动推进)时 finalize 当前 session 回填 playedSec。 */
-    private fun finalizeCurrent() {
+    /** v1.2.1: 队列末尾播完(STATE_ENDED,无自动推进)时 finalize 当前 session 回填 playedSec。
+     *  也供 MainViewModel.onCleared 在进程关停(sliding-away)时 flush,避免暂停离开丢时长。 */
+    internal fun finalizeCurrent() {
         playTracker.finalize()
     }
 
