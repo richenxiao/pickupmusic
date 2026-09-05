@@ -166,10 +166,49 @@ data class ArtistImageOverrideEntity(
     val chosenAt: Long = 0,
 )
 
+// v1.2.2 Agent: LLM tokens 消耗日志。每次 LLM 调用记一行,供 Agent 页显示本次/累计消耗。
+// v1.3.6: 加 cacheTokens(缓存命中 token)——用量面板的"缓存命中"曲线。
+@Entity(tableName = "token_usage_log")
+data class TokenUsageLogEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val timestamp: Long = 0,
+    val provider: String = "",
+    val skill: String = "",
+    val promptTokens: Int = 0,
+    val completionTokens: Int = 0,
+    /** v1.3.6: 命中缓存的 prompt token 数(OpenAI 兼容 usage.prompt_tokens_details.cached_tokens,
+     *  兼容 DeepSeek 的 prompt_cache_hit_tokens;没有 = 0)。 */
+    val cacheTokens: Int = 0,
+)
+
+/** v1.2.2 Agent: token 累计查询的 POJO(Room 双列 SUM 不能直接映射数组)。 */
+data class TokenTotals(val promptTotal: Long = 0, val completionTotal: Long = 0)
+
+/** v1.3.5: 逐日 token 总量(用量曲线;day=timestamp/86400000 的天序号)。 */
+data class DailyTokens(val day: Long = 0, val tokens: Long = 0)
+
+/** v1.3.6: 用量面板逐日多指标(输入/输出/缓存命中)。 */
+data class DailyMetrics(
+    val day: Long = 0,
+    val inputTokens: Long = 0,
+    val outputTokens: Long = 0,
+    val cacheTokens: Long = 0,
+)
+
 @Entity(tableName = "song_artist", primaryKeys = ["mediaId", "artistId"])
 data class SongArtistEntity(
     val mediaId: Long,
     val artistId: Int,
+)
+
+// v1.3.3b: 歌手页专辑手动排序——key=歌手名,value=专辑 key 逗号串(按用户排的顺序)。
+// 有序生效:手动排序 > 发布日期 > 专辑名。AI 排时间本质也是把顺序写进这里(先取
+// 日期,再按日期生成顺序串落库,一次完成)。
+@Entity(tableName = "artist_album_order")
+data class ArtistAlbumOrderEntity(
+    @PrimaryKey val artistName: String,
+    val albumKeys: String = "",
+    val updatedAt: Long = 0,
 )
 
 @Entity(tableName = "play_count")
@@ -386,6 +425,22 @@ interface ShiyinDao {
     @Query("DELETE FROM artist_image_override WHERE name = :name")
     suspend fun deleteArtistImageOverride(name: String)
 
+    // ── v1.2.2 Agent: LLM tokens 消耗日志 ───────────────────────────────────
+    @Insert
+    suspend fun insertTokenUsage(e: TokenUsageLogEntity)
+
+    /** 累计 prompt/completion tokens。 */
+    @Query("SELECT COALESCE(SUM(promptTokens),0) AS promptTotal, COALESCE(SUM(completionTokens),0) AS completionTotal FROM token_usage_log")
+    suspend fun tokenUsageTotals(): TokenTotals
+
+    /** v1.3.5: 近 N 天逐日 token 总量(设置页用量曲线;day=epoch 天序号,本地零点)。 */
+    @Query("SELECT (timestamp / 86400000) AS day, SUM(promptTokens + completionTokens) AS tokens FROM token_usage_log WHERE timestamp >= :since GROUP BY day ORDER BY day")
+    suspend fun tokenUsageDaily(since: Long): List<DailyTokens>
+
+    /** v1.3.6: 近 N 天逐日多指标(用量面板:输入/输出/缓存命中)。 */
+    @Query("SELECT (timestamp / 86400000) AS day, SUM(promptTokens) AS inputTokens, SUM(completionTokens) AS outputTokens, SUM(cacheTokens) AS cacheTokens FROM token_usage_log WHERE timestamp >= :since GROUP BY day ORDER BY day")
+    suspend fun tokenUsageMetrics(since: Long): List<DailyMetrics>
+
     // ── v1.2.0 #6 backup：写真 cache + override 导出/导入 ──────────────────────
     /** 导出成功的 cache 行（跳过失败 TTL 行，避免把旧网络的失败态毒到新设备）。 */
     @Query("SELECT * FROM artist_image_cache WHERE url != ''")
@@ -421,13 +476,6 @@ interface ShiyinDao {
 
     @Query("SELECT COUNT(*) FROM play_event WHERE mediaId = :mediaId AND completed = 1")
     suspend fun playCount(mediaId: Long): Int
-
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun upsertPlayCount(e: PlayCountEntity)
-
-    // v1.2.0 #6: UPSERT——首次播放 INSERT(count=1),后续 UPDATE(count+1);原 UPDATE 不 INSERT→表空
-    @Query("INSERT INTO play_count(mediaId, count) VALUES(:mediaId, 1) ON CONFLICT(mediaId) DO UPDATE SET count = count + 1")
-    suspend fun incrementPlayCount(mediaId: Long)
 
     // album_override
     @Query("SELECT * FROM album_override")
@@ -475,6 +523,19 @@ interface ShiyinDao {
     @Query("DELETE FROM track_album_move WHERE mediaId = :mediaId")
     suspend fun deleteTrackAlbumMove(mediaId: Long)
 
+    // ── v1.3.3b: 歌手页专辑手动排序 ─────────────────────────────────────────
+    @Query("SELECT * FROM artist_album_order")
+    suspend fun allArtistAlbumOrders(): List<ArtistAlbumOrderEntity>
+
+    @Query("SELECT * FROM artist_album_order WHERE artistName = :artistName")
+    suspend fun artistAlbumOrder(artistName: String): ArtistAlbumOrderEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertArtistAlbumOrder(e: ArtistAlbumOrderEntity)
+
+    @Query("DELETE FROM artist_album_order WHERE artistName = :artistName")
+    suspend fun deleteArtistAlbumOrder(artistName: String)
+
     // ── v4.3: rematch support ──────────────────────────────────────────────
     // Drop persisted + in-memory art for an album so the next load re-fetches
     // with the edited album name/artist (iTunes match) or the pinned cover.
@@ -517,7 +578,7 @@ interface ShiyinDao {
     // 30 秒后由 markPlayCounted 置 1(计为一次有效播放),切歌时由 finalizePlayEvent
     // 回填 playedSec(实际累计秒数)。最近播放 feed 显示全部事件(含跳过)。
     @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun insertPlayEvent(e: PlayEventEntity)
+    suspend fun insertPlayEvent(e: PlayEventEntity): Long
 
     /** Recent play events, newest first, capped so the 最近播放 feed never
      *  grows unbounded — the UI only shows the last 3 months anyway. */
@@ -533,17 +594,15 @@ interface ShiyinDao {
     @Query("SELECT * FROM play_event WHERE playedAt >= :from AND playedAt <= :to AND completed = 1 ORDER BY playedAt ASC")
     suspend fun completedPlayEventsBetween(from: Long, to: Long): List<PlayEventEntity>
 
-    /** v1.2.1: 累计有效播放满 30 秒时把该 mediaId 最近一条 completed=0 的事件置 1
-     *  (计为一次有效播放)。只动 completed 列,不写 playedSec——与 finalizePlayEvent(写
-     *  playedSec)分列,两者并发 IO 也不互相覆盖(避免 30 覆盖真实累计值)。playedSec 由
-     *  finalizePlayEvent(切歌/关停)回填。若该行已被 trim 掉则 no-op。 */
-    @Query("UPDATE play_event SET completed = 1 WHERE mediaId = :mediaId AND completed = 0 AND id = (SELECT id FROM play_event WHERE mediaId = :mediaId AND completed = 0 ORDER BY playedAt DESC LIMIT 1)")
-    suspend fun markPlayCounted(mediaId: Long)
+    /** v1.2.1: 累计有效播放满 30 秒时把该次 play_event(按主键 [rowId] 精确定位)置 completed=1。
+     *  旧实现"按 mediaId 最新行"子查询会与并发 insertPlayEvent 竞态写错行(同 mediaId 切歌/单曲循环)。
+     *  rowId 由 onTrackStarted 插入时返回、回填到 session,全局唯一,无写错行风险。 */
+    @Query("UPDATE play_event SET completed = 1 WHERE id = :rowId AND completed = 0")
+    suspend fun markPlayCounted(rowId: Long)
 
-    /** v1.2.1: 切歌/播完时回填该 mediaId 最近一条事件的 playedSec(实际累计有效播放
-     *  秒数,供 收听统计 总时长准确求和,而非用曲目总长冒充)。若行已被 trim 则 no-op。 */
-    @Query("UPDATE play_event SET playedSec = :playedSec WHERE mediaId = :mediaId AND id = (SELECT id FROM play_event WHERE mediaId = :mediaId ORDER BY playedAt DESC LIMIT 1)")
-    suspend fun finalizePlayEvent(mediaId: Long, playedSec: Int)
+    /** v1.2.1: 切歌/播完时回填该次 play_event(按主键 [rowId])的 playedSec。按行 id 定位,无竞态写错行。 */
+    @Query("UPDATE play_event SET playedSec = :playedSec WHERE id = :rowId")
+    suspend fun finalizePlayEvent(rowId: Long, playedSec: Int)
 
     /** Trim play events older than [cutoff] — the 最近播放 page only shows
      *  the last 3 months, so anything older is dead data and is physically
@@ -689,8 +748,12 @@ interface ShiyinDao {
         ExternalReadingEvidenceEntity::class,
         // v1.2.0 #6: 歌手写真 cache + 用户手选 override（独立于 album_art_cache）
         ArtistImageCacheEntity::class, ArtistImageOverrideEntity::class,
+        // v1.2.2 Agent: LLM tokens 消耗日志
+        TokenUsageLogEntity::class,
+        // v1.3.3b: 歌手页专辑手动排序
+        ArtistAlbumOrderEntity::class,
     ],
-    version = 18,
+    version = 21,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -1008,9 +1071,45 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        // v1.2.2 Agent: token_usage_log 表
+        private val MIGRATION_18_19 = object : Migration(18, 19) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS token_usage_log (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        timestamp INTEGER NOT NULL,
+                        provider TEXT NOT NULL,
+                        skill TEXT NOT NULL,
+                        promptTokens INTEGER NOT NULL,
+                        completionTokens INTEGER NOT NULL
+                    )
+                """.trimIndent())
+            }
+        }
+
+        // v1.3.3b: 歌手页专辑手动排序表
+        private val MIGRATION_19_20 = object : Migration(19, 20) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS artist_album_order (
+                        artistName TEXT PRIMARY KEY NOT NULL,
+                        albumKeys TEXT NOT NULL,
+                        updatedAt INTEGER NOT NULL
+                    )
+                """.trimIndent())
+            }
+        }
+
+        // v1.3.6: token_usage_log 加 cacheTokens 列(缓存命中 token,用量面板曲线)
+        private val MIGRATION_20_21 = object : Migration(20, 21) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE token_usage_log ADD COLUMN cacheTokens INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
         fun get(context: Context): AppDatabase = instance ?: synchronized(this) {
             instance ?: Room.databaseBuilder(context.applicationContext, AppDatabase::class.java, "shiyin.db")
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21)
                 // 不使用 fallbackToDestructiveMigration：迁移失败时宁可崩溃也不要删全库。
                 // 之前该选项导致迁移异常时删除所有用户数据（排序、专辑名、播放历史等）。
                 .addCallback(object : Callback() {

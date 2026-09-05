@@ -18,6 +18,10 @@ internal class CoverDiskCache {
 
     private val maxBytes = 100L * 1024 * 1024
 
+    /** 所有分辨率 bucket(须与 ArtCache.bucket() 的取值一致)。文件名是 sha1("$key@$bucket"),
+     *  哈希不可逆,删除某 key 的全部 bucket 文件时只能枚举这些 bucket 逐个删。 */
+    private val BUCKETS = listOf(160, 384, 1024)
+
     private fun dirOf(ctx: android.content.Context): File =
         File(ctx.filesDir, "cover_cache").apply { if (!exists()) mkdirs() }
 
@@ -47,6 +51,54 @@ internal class CoverDiskCache {
         try {
             keyFile(dirOf(ctx), artUrl, bucket).writeBytes(bytes)
             trimIfNeeded(ctx)
+        } catch (_: Exception) { }
+    }
+
+    // ── v1.2.2: 持久化落盘双 key(专辑级 / 曲目级) ─────────────────────────────
+    // 目标:"只要成功获取过一次封面,就必须永久本地化,断网也可读"。
+    // 旧 artUrl key 只覆盖"走完 iTunes 下载末尾才落盘"的局部路径,且内嵌/custom 从不落盘。
+    // 新方案:fetch 任意路径成功拿图后,按 scope 落盘——
+    //   专辑级 album:<albumId>@<bucket> : albumId>0 非合集正常专辑(多首共享一张,跨 track 复用)
+    //   曲目级 track:<mediaId>@<bucket>  : 孤立单曲(albumId<=0)与合集(避免同 albumId 封面互相覆盖)
+    // 旧 artUrl key 缓存作废(不再读写,由大小上限+LRU 自然淘汰,不做兼容迁移)。
+
+    fun readAlbum(ctx: android.content.Context, albumId: Long, bucket: Int): ByteArray? =
+        readKey(ctx, "album:$albumId", bucket)
+    fun writeAlbum(ctx: android.content.Context, albumId: Long, bucket: Int, bytes: ByteArray) =
+        writeKey(ctx, "album:$albumId", bucket, bytes)
+    fun deleteAlbum(ctx: android.content.Context, albumId: Long) = deleteKeyPrefix(ctx, "album:$albumId")
+
+    fun readTrack(ctx: android.content.Context, mediaId: Long, bucket: Int): ByteArray? =
+        readKey(ctx, "track:$mediaId", bucket)
+    fun writeTrack(ctx: android.content.Context, mediaId: Long, bucket: Int, bytes: ByteArray) =
+        writeKey(ctx, "track:$mediaId", bucket, bytes)
+    fun deleteTrack(ctx: android.content.Context, mediaId: Long) = deleteKeyPrefix(ctx, "track:$mediaId")
+
+    private fun readKey(ctx: android.content.Context, key: String, bucket: Int): ByteArray? = synchronized(LOCK) {
+        val f = File(dirOf(ctx), sha1("$key@$bucket") + ".bin")
+        if (!f.exists()) return null
+        try {
+            f.setLastModified(System.currentTimeMillis())
+            f.readBytes()
+        } catch (_: Exception) { null }
+    }
+
+    private fun writeKey(ctx: android.content.Context, key: String, bucket: Int, bytes: ByteArray) = synchronized(LOCK) {
+        try {
+            File(dirOf(ctx), sha1("$key@$bucket") + ".bin").writeBytes(bytes)
+            trimIfNeeded(ctx)
+        } catch (_: Exception) { }
+    }
+
+    /** 删除某 key 的所有 bucket 文件(供 invalidateAlbum / 单曲失效时清残留)。
+     *  文件名 = sha1("$key@$bucket")+".bin",两个不同输入的 SHA-1 无前缀对应关系,
+     *  不能用 sha1("$key@") 做前缀匹配(那会一个都删不掉)。枚举 BUCKETS 逐个删。 */
+    private fun deleteKeyPrefix(ctx: android.content.Context, key: String) = synchronized(LOCK) {
+        try {
+            val d = dirOf(ctx)
+            for (b in BUCKETS) {
+                File(d, sha1("$key@$b") + ".bin").takeIf { it.exists() }?.delete()
+            }
         } catch (_: Exception) { }
     }
 

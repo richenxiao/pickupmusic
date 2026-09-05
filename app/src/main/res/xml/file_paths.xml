@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- v1.2.2: 把本地封面缓存目录暴露给系统 MediaSession/灵动岛(UriArtworkLoader 读 content://,
+    不读 artworkData 字节)。文件在 App 私有目录 filesDir/cover_cache,系统相册/图库不可见——
+    只通过本 FileProvider 的授权 content:// URI 访问,零相册污染。
+    另暴露 artist_image_override(手选写真缓存)供需要时复用。 -->
+<paths>
+    <files-path
+        name="cover_cache"
+        path="cover_cache/" />
+    <files-path
+        name="artist_image_override"
+        path="artist_image_override/" />
+</paths>

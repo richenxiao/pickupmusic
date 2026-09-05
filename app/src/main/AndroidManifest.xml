@@ -48,5 +48,17 @@
                 <action android:name="androidx.media3.session.MediaSessionService" />
             </intent-filter>
         </service>
+
+        <!-- v1.2.2: FileProvider 暴露本地封面缓存目录为 content:// URI,供系统 MediaSession/
+             灵动岛(UriArtworkLoader)读取 artworkUri。文件在私有目录,系统相册不可见,零污染。 -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.coverprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
     </application>
 </manifest>
