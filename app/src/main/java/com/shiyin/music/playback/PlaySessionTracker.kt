@@ -47,16 +47,24 @@ internal class PlaySessionTracker {
         var accumMs: Long,
         var counted: Boolean,
         var lastPosMs: Long,
+        var rowId: Long = 0L, // v1.2.1: 对应 play_event 行的主键 id,由 onTrackStarted 插入后回填。按行 id 定位 markCounted/finalize,避免"按 mediaId 最新行"子查询写错行。
     )
 
     /** 当前活跃 Session,null 表示尚未 start(未在播放任何曲目)。 */
     private var current: Session? = null
 
-    /** 累计有效播放跨过 30s 阈值时回调一次(同 Session 只触发一次),参数=mediaId。 */
-    var onCounted: ((Long) -> Unit)? = null
+    /** 累计有效播放跨过 30s 阈值时回调一次(同 Session 只触发一次),参数=(rowId, mediaId)。 */
+    var onCounted: ((Long, Long) -> Unit)? = null
 
-    /** Session 结束(切歌/循环新一轮/重播/finalize)时回调,参数=(mediaId, 累计有效秒数)。 */
-    var onFinalize: ((Long, Int) -> Unit)? = null
+    /** Session 结束时回调,参数=(rowId, mediaId, 累计有效秒数)。 */
+    var onFinalize: ((Long, Long, Int) -> Unit)? = null
+
+    /** v1.2.1: onTrackStarted 插入 play_event 后,把返回的行 id 回填到该 session,
+     *  使后续 onCounted/onFinalize 携带正确的行 id 供 DAO 精确定位。 */
+    fun setRowId(sessionId: Long, rowId: Long) {
+        val s = current
+        if (s != null && s.id == sessionId) s.rowId = rowId
+    }
 
     /**
      * 开始对 [mediaId] 的一次新播放 Session。若当前已有 Session,先结束它并回填 playedSec
@@ -95,7 +103,7 @@ internal class PlaySessionTracker {
                 if (!s.counted && s.accumMs >= COUNT_THRESHOLD_MS) {
                     s.counted = true
                     justCounted = true
-                    onCounted?.invoke(s.mediaId)
+                    onCounted?.invoke(s.rowId, s.mediaId)
                 }
             }
             // delta 超出 [1, MAX] (seek 大跳/倒退/原位):不累加,仅同步基线
@@ -124,7 +132,7 @@ internal class PlaySessionTracker {
         val s = current ?: return null
         current = null
         val playedSec = (s.accumMs / 1000L).toInt()
-        onFinalize?.invoke(s.mediaId, playedSec)
+        onFinalize?.invoke(s.rowId, s.mediaId, playedSec)
         return s.mediaId to playedSec
     }
 }

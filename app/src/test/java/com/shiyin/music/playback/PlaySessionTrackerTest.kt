@@ -27,15 +27,15 @@ class PlaySessionTrackerTest {
     private val MAX = PlaySessionTracker.MAX_SAMPLE_DELTA_MS        // 2000
     private val TICK = 300L                                         // 每拍 300ms
 
-    /** 记录 onCounted 触发次数与对应 mediaId。 */
+    /** 记录 onCounted 触发次数与对应 mediaId。回调=(rowId, mediaId),测试只关心 mediaId。 */
     private class CountRecorder {
         val counted = mutableListOf<Long>()
-        var onCounted: ((Long) -> Unit)? = { counted.add(it) }
+        var onCounted: ((Long, Long) -> Unit)? = { _, mediaId -> counted.add(mediaId) }
     }
-    /** 记录 onFinalize 的 (mediaId, playedSec) 序列。 */
+    /** 记录 onFinalize 的 (mediaId, playedSec) 序列。回调=(rowId, mediaId, playedSec),测试只关心后两者。 */
     private class FinRecorder {
         val finalized = mutableListOf<Pair<Long, Int>>()
-        var onFinalize: ((Long, Int) -> Unit)? = { id, sec -> finalized.add(id to sec) }
+        var onFinalize: ((Long, Long, Int) -> Unit)? = { _, mediaId, sec -> finalized.add(mediaId to sec) }
     }
 
     private fun newTracker(c: CountRecorder, f: FinRecorder) = PlaySessionTracker().apply {

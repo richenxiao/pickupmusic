@@ -60,24 +60,26 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
     private var gapJob: Job? = null
     /** v5.2 Bug9: fade-out coroutine for sleep-timer expiry. */
     private var fadeJob: Job? = null
-    private var onTrackStarted: ((Long) -> Unit)? = null
+    private var onTrackStarted: ((Long, Long) -> Unit)? = null
 
     // v1.2.1: 纯逻辑的"有效播放"计数追踪器(Spotify 式 30 秒阈值)。Session 生命周期、
     // seek 剔除、暂停/恢复累计都在 tracker 内部,可用纯 JVM 单测覆盖;本类每拍只喂数据。
     private val playTracker = PlaySessionTracker().apply {
-        onCounted = { id -> onPlayCounted?.invoke(id) }
-        onFinalize = { id, sec -> onPlayFinalized?.invoke(id, sec) }
+        onCounted = { rowId, id -> onPlayCounted?.invoke(rowId, id) }
+        onFinalize = { rowId, id, sec -> onPlayFinalized?.invoke(rowId, id, sec) }
     }
-    /** v1.2.1: 累计有效播放满 30 秒时触发(把该次播放计为一次有效播放)。 */
-    private var onPlayCounted: ((Long) -> Unit)? = null
-    /** v1.2.1: 切歌/播完时触发,回传该次播放的累计有效秒数(写 playedSec)。 */
-    private var onPlayFinalized: ((Long, Int) -> Unit)? = null
+    /** v1.2.1: syncFromPlayer 重连恢复分支只在冷启动首次跑一次,防 STATE_ENDED 后误开幽灵 session。 */
+    private var trackerInitialized = false
+    /** v1.2.1: 累计有效播放满 30 秒时触发,参数=(play_event 行 id, mediaId),DAO 按行 id 定位。 */
+    private var onPlayCounted: ((Long, Long) -> Unit)? = null
+    /** v1.2.1: 切歌/播完时触发,参数=(行 id, mediaId, 累计有效秒数)。 */
+    private var onPlayFinalized: ((Long, Long, Int) -> Unit)? = null
 
     fun connect(
         context: Context,
-        onStarted: (Long) -> Unit,
-        onPlayCounted: ((Long) -> Unit)? = null,
-        onPlayFinalized: ((Long, Int) -> Unit)? = null,
+        onStarted: (Long, Long) -> Unit,
+        onPlayCounted: ((Long, Long) -> Unit)? = null,
+        onPlayFinalized: ((Long, Long, Int) -> Unit)? = null,
     ) {
         onTrackStarted = onStarted
         this.onPlayCounted = onPlayCounted
@@ -144,7 +146,13 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
             if (id != null) {
                 manualQueue.removeAll { it.id == id }
                 startTracking(id)
-                onTrackStarted?.invoke(id)
+            } else {
+                // v1.3.3b review#B5: 过渡到 null(移除当前项/清空队列)——id!=null 分支的
+                // startTracking 会先 finalize 上一 session,id==null 直接跳过会让当前
+                // session 的 playedSec 永不回填(removeMediaItem 移除当前项后 STATE_ENDED
+                // 未必发),该次播放时长丢失。这里补 finalize;后续若过渡回新曲目,
+                // trackerInitialized 守卫的恢复分支照常开新 session。
+                finalizeCurrent()
             }
             queueVersion++
             // "常规间隔": with gapless off, album playback pauses ~1s between tracks.
@@ -184,15 +192,14 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
         val dur = c.duration
         if (dur > 0) durationMs = dur
         positionMs = c.currentPosition.coerceAtLeast(0)
-        // v1.2.1: 重连/进程恢复时若 tracker 尚无活跃 session(如服务仍在播但控制器是新建的),
-        // 以当前曲 start 一个新 session 并补插一条 play_event 行(onTrackStarted)。补插行很关键:
-        // 否则该 session 在内存里有累计、DB 里却无对应行,后续 markPlayCounted/finalizePlayEvent
-        // 的子查询会命中该 mediaId 的历史旧行,污染历史数据并可能错记计数。重启前已播时长
-        // 无法恢复(accumMs 从 0 起),但后续播放会继续累计,满 30s 仍会计数。
-        if (playTracker.currentMediaId() == null && currentId != null) {
-            playTracker.start(currentId!!)
-            onTrackStarted?.invoke(currentId!!)
+        // v1.2.1: 重连恢复分支——仅冷启动首次同步(controller 刚连上、服务已在播但 tracker 无 session)
+        // 跑一次,补插 play_event 行。用 trackerInitialized 守卫:STATE_ENDED 后 finalizeCurrent 把
+        // tracker 置 null,随后 controller.pause()/seekTo 触发 onEvents→syncFromPlayer,若不守卫会
+        // 给已结束的曲误开幽灵 session+插第二条 play_event→污染"最近播放"+虚增计数(每首队尾都中招)。
+        if (!trackerInitialized && playTracker.currentMediaId() == null && currentId != null) {
+            startTracking(currentId!!)
         }
+        trackerInitialized = true
     }
 
     private var tickerStarted = false
@@ -225,9 +232,17 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
 
     /** v1.2.1: 新曲目开始播放时调用——tracker.start 会先 finalize 当前 session(回填
      *  上一首/上一轮 playedSec),再为新曲开新 session。单曲循环"同 mediaId 新一轮"也
-     *  走这里:上一轮被 finalize、counted 重置,第二轮可独立计数。 */
+     *  走这里:上一轮被 finalize、counted 重置,第二轮可独立计数。返回 session id,
+     *  onTrackStarted 带 (mediaId, sessionId) 让 VM 插行后回填 rowId。 */
     private fun startTracking(id: Long) {
-        playTracker.start(id)
+        val sid = playTracker.start(id)
+        onTrackStarted?.invoke(id, sid)
+    }
+
+    /** v1.2.1: 供 MainViewModel.onTrackStarted 在插 play_event 后回填该 session 的行 id,
+     *  使后续 markCounted/finalize 按主键 id 精确定位(不靠"mediaId 最新行"子查询)。 */
+    internal fun setSessionRowId(sessionId: Long, rowId: Long) {
+        playTracker.setRowId(sessionId, rowId)
     }
 
     /** v1.2.1: 队列末尾播完(STATE_ENDED,无自动推进)时 finalize 当前 session 回填 playedSec。
@@ -258,21 +273,23 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
      *  can display the cover art. Uses setArtworkData (byte[]) instead of
      *  setArtworkUri (content://) because the system MediaController doesn't
      *  have permission to read arbitrary content:// URIs.
+     *  v1.2.2: ColorOS 灵动岛用 UriArtworkLoader 从 artworkUri 读封面(不读 artworkData)。
+     *  因此 [artworkUri] 传入 FileProvider 暴露的 content:// URI(指向 App 私有封面文件,
+     *  系统可读、不进相册),同时仍设 artworkData 兜底。两者都设,兼容标准通知与 ColorOS。
      *  v5: [forMediaId] pins the update to a specific track so that if the user
      *  skipped past it before the (slow) bitmap load landed, we don't stamp the
      *  old track's cover onto the now-playing track's metadata. */
-    fun updateArtworkData(data: ByteArray, forMediaId: Long? = null) {
+    fun updateArtworkData(data: ByteArray, forMediaId: Long? = null, artworkUri: android.net.Uri? = null) {
         val c = controller ?: return
         val idx = c.currentMediaItemIndex
         if (idx < 0 || idx >= c.mediaItemCount) return
         val item = c.getMediaItemAt(idx)
         if (forMediaId != null && item.mediaId.toLongOrNull() != forMediaId) return
+        val mb = item.mediaMetadata.buildUpon()
+            .setArtworkData(data, MediaMetadata.PICTURE_TYPE_FRONT_COVER)
+        if (artworkUri != null) mb.setArtworkUri(artworkUri)
         val newItem = item.buildUpon()
-            .setMediaMetadata(
-                item.mediaMetadata.buildUpon()
-                    .setArtworkData(data, MediaMetadata.PICTURE_TYPE_FRONT_COVER)
-                    .build()
-            )
+            .setMediaMetadata(mb.build())
             .build()
         c.replaceMediaItem(idx, newItem)
     }
@@ -300,7 +317,6 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
         currentId = startId
         queueVersion++
         startTracking(tracks[index].id)
-        onTrackStarted?.invoke(tracks[index].id)
     }
 
     /** v1.7 "添加到播放队列": inserts right after current + pending manual items. */

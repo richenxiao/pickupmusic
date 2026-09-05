@@ -29,9 +29,11 @@ object MediaScanner {
      *  " duet with ", " presents ", " prod. ", " produced by " */
     fun splitArtists(raw: String): List<String> {
         if (raw.isBlank() || raw == UNKNOWN_ARTIST) return listOf(raw)
+        // v1.2.1: 归一化全角标点→半角(共享 CharUtil)。CJK 输入法常出全角逗号"，"等,
+        // 下面的分隔正则只认半角,全角"，"不会被拆分→"AAA， BBB"识别不到作者。
+        val normalized = com.shiyin.music.data.normalize.CharUtil.normalizeFullWidthPunctuation(raw)
         val separators = listOf(
             Regex("""\s*/\s*"""),
-            Regex("""\s*、\s*"""),
             Regex("""\s*,\s*"""),
             Regex("""\s*&\s*"""),
             Regex("""\s+[fF]eat\.?\s+"""),
@@ -45,7 +47,7 @@ object MediaScanner {
             Regex("""\s+[pP]rod\.?\s+"""),
             Regex("""\s+[pP]roduced\s+[bB]y\s+"""),
         )
-        var result = listOf(raw)
+        var result = listOf(normalized)
         for (sep in separators) {
             result = result.flatMap { part -> part.split(sep).map { it.trim() }.filter { it.isNotBlank() } }
         }
