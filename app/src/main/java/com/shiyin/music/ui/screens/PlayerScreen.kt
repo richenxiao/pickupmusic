@@ -298,7 +298,7 @@ fun PlayerScreen(vm: MainViewModel) {
             Box(
                 Modifier
                     .fillMaxWidth()
-                    .height(22.dp)
+                    .height(12.dp)  // v1.3.3: 触摸范围从 22dp 缩小到 12dp,减少误触
                     .pointerInput(durMs) {
                         awaitEachGesture {
                             awaitFirstDown(requireUnconsumed = false)

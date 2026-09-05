@@ -1,10 +1,8 @@
 package com.shiyin.music.ui.screens
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -53,6 +51,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -77,6 +76,7 @@ import androidx.compose.ui.graphics.asComposeRenderEffect
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalDensity
@@ -506,6 +506,10 @@ private fun buildLibItems(vm: MainViewModel): List<LibItem> {
         if (chip == null || chip == "albums") {
             for ((key, ts) in vm.albumsMap()) {
                 val first = ts.first()
+                // v1.2.1: "专辑"筛选排除单曲(type==Single)——单曲不是专辑,不该出现在专辑列表。
+                // chip==null(全部)时仍显示单曲(带"单曲"标签),只在"专辑"筛选时排除。
+                // 用户可在「修改专辑信息」把单曲改标为专辑,override 优先,则不被排除。
+                if (chip == "albums" && vm.albumTypeFor(first.albumId) == "Single") continue
                 val (bg, fg) = coverPalette(first.paletteIndex)
                 // v5.2: show the album's actual type as the subtitle prefix —
                 // override wins (Album/EP/Single via the edit-info dialog),
@@ -547,13 +551,41 @@ private fun heartBrush(): Brush {
     return Brush.linearGradient(listOf(c.a400, c.s500))
 }
 
-/** v1.2.0 #6: 歌手头像内容——有写真(已获取/缓存)绑照片填满,无则首字母回退;进列表时 lazy fetch。 */
+/** v1.2.0 #6: 歌手头像内容——有写真(已获取/缓存)绑照片填满,无则首字母回退;进列表时 lazy fetch。
+ *  v1.3.5: 圆框头像走 personOnly(不拿专辑封面/banner 兜底——横幅塞圆框截成半张脸),
+ *  且经 alias 归一(合并过的歌手写真在规范名下,原名查不到)。宽图取上部裁(脸在上,
+ *  居中裁会切头——"头像显示不全"的直接原因),方/竖图居中。
+ *  v1.3.6: 提供方框版 [avatarImage] 供搜索页等圆框复用同一套裁剪逻辑。 */
 @Composable
 internal fun ArtistAvatarContent(vm: MainViewModel, name: String, fallbackInitial: String, fallbackFg: Color, fontSize: Float, loadSize: Dp = 130.dp) {
-    androidx.compose.runtime.LaunchedEffect(name) { vm.fetchArtistAvatar(name) }
+    androidx.compose.runtime.LaunchedEffect(name) { vm.fetchArtistAvatarPerson(name) }
     val bmp = rememberCandidateArt(vm.artistImage(name).ifBlank { null }, loadSize)
-    if (bmp != null) Image(bmp, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+    if (bmp != null) AvatarCropImage(bmp)
     else Text(fallbackInitial, fontFamily = Caprasimo, style = body(fontSize, FontWeight.Normal, fallbackFg).copy(fontFamily = Caprasimo))
+}
+
+/** v1.3.5: 圆框头像统一裁剪——宽图取上部(脸在上),方/竖图居中;fillMaxSize 绘制。 */
+@Composable
+internal fun AvatarCropImage(bmp: androidx.compose.ui.graphics.ImageBitmap) {
+    val wide = bmp.width > bmp.height * 1.2f
+    val srcW: Float; val srcH: Float; val srcOffset: androidx.compose.ui.geometry.Offset
+    if (wide) {
+        srcH = bmp.height.toFloat(); srcW = srcH
+        srcOffset = androidx.compose.ui.geometry.Offset(((bmp.width - srcW) / 2f).coerceAtLeast(0f), bmp.height * 0.05f)
+    } else {
+        val side = minOf(bmp.width, bmp.height).toFloat()
+        srcW = side; srcH = side
+        srcOffset = androidx.compose.ui.geometry.Offset(((bmp.width - side) / 2f).coerceAtLeast(0f), ((bmp.height - side) / 2f).coerceAtLeast(0f))
+    }
+    androidx.compose.foundation.Canvas(Modifier.fillMaxSize()) {
+        drawImage(
+            image = bmp,
+            srcOffset = androidx.compose.ui.unit.IntOffset(srcOffset.x.toInt(), srcOffset.y.toInt()),
+            srcSize = androidx.compose.ui.unit.IntSize(srcW.toInt().coerceAtLeast(1), srcH.toInt().coerceAtLeast(1)),
+            dstOffset = androidx.compose.ui.unit.IntOffset.Zero,
+            dstSize = androidx.compose.ui.unit.IntSize(size.width.toInt(), size.height.toInt()),
+        )
+    }
 }
 
 @Composable
@@ -664,7 +696,7 @@ private fun PlaylistDetail(vm: MainViewModel, pid: String) {
         // 顶栏:返回
         item {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                BackButton { vm.plId = null }
+                BackButton { vm.plId = null; vm.restoreTabIfDrillFullyClosed() }
             }
         }
         // 大封面(75% 宽 1:1):手选封面 / 4 拼 mosaic / 空占位
@@ -872,6 +904,12 @@ private fun AlbumDetail(vm: MainViewModel, key: String) {
     val first = tracks.first()
     val (bg, fg) = coverPalette(first.paletteIndex)
     val totalMin = (tracks.sumOf { it.durationSec } / 60).toInt()
+    // v1.2.2: 合集(Compilation)的曲目各自独立封面——落盘 key 走曲目级(track:mediaId),
+    // 避免同 albumId 下后落盘曲目覆盖先落盘曲目的封面。正常专辑用专辑级(album:albumId)共享。
+    val isCompilation = vm.albumTypeFor(first.albumId) == "Compilation"
+    val trackCoverScope = if (isCompilation)
+        com.shiyin.music.ui.components.ArtCache.CoverScope.TRACK
+    else com.shiyin.music.ui.components.ArtCache.CoverScope.AUTO
 
     // v5.2 #72: 拖拽排序改用 sh.calvin.reorderable 库,不再手写 dragIndex/dragDelta/
     // dragVel/dragKeyId 状态机 + 自动滚屏协程。状态由下方 reorderState + ReorderableItem 接管。
@@ -918,8 +956,13 @@ private fun AlbumDetail(vm: MainViewModel, key: String) {
     LazyColumn(
         state = listState,
         modifier = Modifier.fillMaxSize().clipToBounds(),
-        contentPadding = screenPadding,
-        verticalArrangement = Arrangement.spacedBy(16.dp),
+        // v1.3.3b: 专辑页顶部收紧——原共用 screenPadding(top=22)+spacedBy16,返回键和
+        // 封面距状态栏过远,上方大片空白。专辑页专用 padding top=10 + spacedBy 12。
+        // v1.3.5: 顶部 46→10dp(用户反馈"上方还有一片空白行,显得不协调"——要的是
+        // 收紧上抬,不是下移)。状态栏的空隙由 AppRoot 的 statusBarsPadding 提供,
+        // 这里只留返回键与状态栏的小间距。
+        contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 10.dp, bottom = 130.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         // 12: top bar — back only. The ⋮ was moved down next to 播放专辑 per
         // v4.3 so the album's edit entry sits with the action buttons, not the
@@ -933,6 +976,8 @@ private fun AlbumDetail(vm: MainViewModel, key: String) {
                 BackButton {
                     if (vm.albumEdit) vm.restoreAlbumOrderIfUncommitted(key)
                     vm.albumKey = null; vm.albumEdit = false
+                    // v1.3.3 返回恢复:下钻层全清则回原 tab;完整退出歌手层则清歌手快照
+                    if (!vm.restoreTabIfDrillFullyClosed() && vm.artistKey == null) vm.clearArtistUiState()
                 }
             }
         }
@@ -972,11 +1017,28 @@ private fun AlbumDetail(vm: MainViewModel, key: String) {
                 }
             }
         }
-        // 12: album name — large bold
+        // 12: album name — large bold.
+        // v1.3.3b: 自适应字号——长名(如 "help ever hurt never")固定 30sp 会把单词
+        // 丑陋地断在第二行开头。先按字符宽度估算一行放不放得下:放得下 30sp;放不下
+        // 缩到能一行的字号(下限 20sp,再小失了标题气质);连 20sp 都要两行 → 允许
+        // 两行、仍给 20sp。CJK≈1em/latin≈0.6em 估宽(与歌手页同法),0.92 安全系数。
         item {
+            val availWidthPx = with(androidx.compose.ui.platform.LocalDensity.current) {
+                // LazyColumn 内容宽 = 屏宽 - 2*20dp(start/end padding)
+                (androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp.dp - 40.dp).toPx()
+            }
+            val cjkCount = first.album.count { com.shiyin.music.data.normalize.CharUtil.isCjk(it.toString()) }
+            val widthFactor = cjkCount * 1.0f + (first.album.length - cjkCount) * 0.62f
+            val fitSize = (availWidthPx / widthFactor * 0.92f).let { px ->
+                with(androidx.compose.ui.platform.LocalDensity.current) { px.toSp().value }
+            }.coerceAtLeast(20f)
+            val titleSize = if (fitSize >= 30f) 30f else fitSize.coerceAtLeast(20f)
+            // v1.3.3b review#B4: 一律 maxLines=2——估宽(CJK 1em/latin 0.62em)偏小时,
+            // 短名估得下 30sp 但实际渲染更宽,单行上限会末尾截字;两行上限对短名无
+            // 副作用(仍一行),长名按需换行不截尾。
             Text(
                 first.album,
-                style = heading(30).copy(lineHeight = 34.sp),
+                style = heading(titleSize.toInt()).copy(lineHeight = (titleSize * 1.15f).sp),
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )
@@ -984,14 +1046,35 @@ private fun AlbumDetail(vm: MainViewModel, key: String) {
         // 12: artist name — clickable (7-C). Use goArtistOf so multi-artist
         // album strings (e.g. "A & B") open the collaborator picker instead of
         // navigating to a non-existent single-artist page.
+        // v1.3.5: 歌手名与日期左对齐成一条线(此前日期居中、与专辑名/歌手名错位,
+        // "没对齐很乱");LazyColumn 内容本身左对齐,去掉居中即齐。
+        // v1.3.6: 日期行不再紧贴歌手名——下移 10dp,落在歌手名与播放按钮行的中间
+        // 呼吸位(用户定调"挨得太紧,往下一点才协调")。
         item {
-            Text(
-                first.artist,
-                style = body(16f, FontWeight.SemiBold, c.a700),
-                modifier = Modifier.clickable { vm.goArtistOf(first.id) },
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
+            Column {
+                Text(
+                    first.artist,
+                    style = body(16f, FontWeight.SemiBold, c.a700),
+                    modifier = Modifier.clickable { vm.goArtistOf(first.id) },
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                // 同步读 albumDateCache(VM init 全量加载,albumDateRevision 订阅刷新)。
+                vm.albumDateRevision
+                val releaseDate = vm.albumDateOf(first.albumId)
+                // v1.3.6f: 类型前缀跟真实分类走(EP/单曲不再误标"专辑")——分类用
+                // 曲目数启发式 + 手动类型覆盖(album_info_override.type,与歌手页
+                // 专辑栏同一来源),合辑显示"合集"。
+                val typeOverride = first.albumId.takeIf { it > 0 }?.let { vm.albumInfoOverrides[it]?.type }?.takeIf { it.isNotBlank() }
+                val typeLabel = categoryLabel(classifyAlbum(tracks, typeOverride))
+                if (releaseDate.isNotBlank()) {
+                    Text(
+                        "$typeLabel · ${releaseDate.take(10)}",
+                        style = body(12f, FontWeight.Normal, c.n600),
+                        modifier = Modifier.padding(top = 10.dp),
+                    )
+                }
+            }
         }
         // 6: action buttons — Play album + ⋮ entry to the menu (drag-sort,
         // text-sort, edit-info, change-cover). In edit mode the ⋮ hides and
@@ -1082,6 +1165,7 @@ private fun AlbumDetail(vm: MainViewModel, key: String) {
                     onClick = { vm.playAlbum(key, t.id) },
                     highlighted = vm.hlId == t.id,
                     showMenu = true,
+                    coverScope = trackCoverScope,
                 )
             }
         }
@@ -1150,10 +1234,11 @@ private fun AlbumDetail(vm: MainViewModel, key: String) {
     }
 
     // ── 7-D: 未匹配歌名确认（v4.5）────────────────────────────────────────
-    // 仅当 applyAlbumOrderText 暂存了待确认顺序时显示。用户可选“应用已识别部分”
-    // 落库，或“取消返回修改”保留文本框继续编辑。
+    // 仅当文本排序 applyAlbumOrderText 暂存了待确认顺序时显示(pendingSource="text")。
+    // v1.3.3: Agent 写回(pendingSource="agent")的确认窗移到 AppRoot 全局层——本组合
+    // 在 Agent 页打开时不在组合树里,Agent 场景的确认走全局窗。
     val pending = vm.pendingOrder
-    if (pending != null) {
+    if (pending != null && vm.pendingSource == "text") {
         androidx.compose.material3.AlertDialog(
             onDismissRequest = { vm.cancelPendingOrder() },
             containerColor = c.surface,
@@ -1204,6 +1289,7 @@ private fun NumberedTrackRow(
     reorderScope: ReorderableCollectionItemScope? = null,
     editControls: (@Composable ReorderableCollectionItemScope.() -> Unit)? = null,
     checkboxSelected: Boolean? = null,
+    coverScope: com.shiyin.music.ui.components.ArtCache.CoverScope = com.shiyin.music.ui.components.ArtCache.CoverScope.AUTO,
 ) {
     val c = LocalOrganic.current
     val isCur = track.id == vm.player.currentId
@@ -1246,7 +1332,7 @@ private fun NumberedTrackRow(
                 modifier = Modifier.width(20.dp),
             )
             if (showCover) {
-                CoverArt(track, 40.dp, RoundedCornerShape(6.dp), modifier = Modifier.size(40.dp).shadowSm(RoundedCornerShape(6.dp)))
+                CoverArt(track, 40.dp, RoundedCornerShape(6.dp), modifier = Modifier.size(40.dp).shadowSm(RoundedCornerShape(6.dp)), coverScope = coverScope)
             }
             Column(Modifier.weight(1f)) {
                 val titleColor = when {
@@ -1333,12 +1419,39 @@ private fun ArtistDetail(vm: MainViewModel, name: String) {
             // 它不属于任一歌手，留在音乐库「合集」分类即可。
             classifyAlbum(entry.value) != AlbumCategory.Compilation
     }
-    var showAllAlbums by remember { mutableStateOf(false) }
+    // v1.3.3 返回恢复:局部状态改 VM 快照初值 + onDispose 写回——下钻专辑再返回时
+    // 恢复展开/滚动位;完整退出歌手页由 RootBackHandler 清快照(clearArtistUiState),
+    // 下次进入从顶部+折叠开始,不残留。remember {} 初值只对首次组合生效。
+    val savedUi = vm.artistUiState(name)
+    var showAllAlbums by remember(name) { mutableStateOf(savedUi.showAllAlbums) }
     // v4.3: song list grows 5 at a time when the user taps 展开 — no longer a
     // single 展开→all toggle. Initial cap is 5 tracks.
-    var songCap by remember { mutableStateOf(5) }
+    var songCap by remember(name) { mutableStateOf(savedUi.songCap) }
+    val listState = androidx.compose.foundation.lazy.rememberLazyListState(
+        savedUi.firstVisibleIndex, savedUi.firstVisibleOffset,
+    )
+    // 离开组合(下钻专辑/完整退出)立即写回快照——写回是恢复的充分条件,清理由
+    // RootBackHandler 在"完整退出"时统一做,两层职责分开。
+    // v1.3.3b bug 修:完整退出歌手页后快照仍被写回——退出路径(RootBackHandler/顶栏
+    // 返回)先置 artistKey=null 触发重组移除 ArtistDetail,onDispose 这才跑、把
+    // showAllAlbums=true 又写回快照,清了等于没清("退出再进回到专辑列表"的根因)。
+    // 修:onDispose 时若 artistKey 已不是本歌手(页面已退出),不写回,让清理生效。
+    androidx.compose.runtime.DisposableEffect(name) {
+        onDispose {
+            if (vm.artistKey == name) {
+                vm.saveArtistUiState(
+                    name,
+                    com.shiyin.music.ui.ArtistUiState(showAllAlbums, songCap, listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset),
+                )
+            }
+        }
+    }
 
     if (showAllAlbums) {
+        // v1.3.4: 专辑栏是歌手主页内的"三级层"——返回必须先收它、回歌手主页,而不是
+        // 直接清 artistKey 退到首页(RootBackHandler 感知不到这个内部状态,此前三级
+        // 返回直接跳一级)。onBack 由 LazyColumn 顶栏返回键共用同一逻辑。
+        BackHandler { showAllAlbums = false }
         ArtistAlbumList(
             vm = vm,
             artistName = name,
@@ -1360,31 +1473,45 @@ private fun ArtistDetail(vm: MainViewModel, name: String) {
     // 沉浸式: 外层已去掉 statusBarsPadding, 内容画到屏幕顶 y=0; 状态栏高度用于 overlay 定位
     val sbTopPx = WindowInsets.statusBars.asPaddingValues().calculateTopPadding().let { with(density) { it.toPx() } }
     val heroMaxPx = with(density) { artistHeroH.toPx() }
-    val listState = rememberLazyListState()
+    // (listState 已在上方与快照一起声明——v1.3.3 返回恢复)
     // collapseProgress: 0=展开,1=折叠; deferred 读 listState 无重组。
-    // v1.2.0 #6: 长内容(滚得到 2×heroH)丝滑到顶;短内容(滚不到)滚到尽头用 Animatable
-    // 平滑过渡 rawProgress→1(避免硬瞬移);无 spring 滞后(滚动期间直接用 rawProgress)。
-    val rawProgress by remember {
+    // v1.2.1: 旧实现固定除以 heroH(320dp),短内容(可滚距离<heroH)滚到底 rawProgress 到不了 1,
+    // 于是用 snap(spring)强拉到 1 → 1-2 首歌手"快到顶突然瞬移"、单首歌手"起点直跳终点"。
+    // 改为按"实际可滚距离"映射满程,彻底删掉 snap:
+    //   - 全部 item 可见(短内容)时可精确算总内容高,actualMaxScroll = max(0, 总高 - 视口)
+    //   - effectiveMax = min(heroH, actualMaxScroll):长内容(非全部可见)算不出总高→回退 heroH,
+    //     滚满 heroH 到顶(行为不变、丝滑);短内容满程=实际可滚距离,滚到底恰好到顶(无瞬移);
+    //     单首/无专辑(不能滚)actualMaxScroll=0 → 恒 0 停展开位(无瞬移)
+    val rawScrolled by remember {
         derivedStateOf {
             val first = listState.layoutInfo.visibleItemsInfo.firstOrNull()
-            if (first != null && first.index == 0) {
-                val scrolled = (-first.offset.toFloat()).coerceAtLeast(0f)
-                (scrolled / heroMaxPx).coerceIn(0f, 1f)
-            } else if (listState.firstVisibleItemIndex > 0) 1f
-            else 0f
+            when {
+                first != null && first.index == 0 -> (-first.offset.toFloat()).coerceAtLeast(0f)
+                listState.firstVisibleItemIndex > 0 -> heroMaxPx
+                else -> 0f
+            }
         }
     }
-    val snapAnim = remember { Animatable(0f) }
-    androidx.compose.runtime.LaunchedEffect(listState.canScrollForward) {
-        if (!listState.canScrollForward && rawProgress > 0f && rawProgress < 1f) {
-            snapAnim.snapTo(rawProgress)
-            snapAnim.animateTo(1f, spring(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = Spring.StiffnessHigh))
-        } else {
-            snapAnim.snapTo(0f)
+    val actualMaxScroll by remember {
+        derivedStateOf {
+            val info = listState.layoutInfo
+            val visible = info.visibleItemsInfo
+            val total = info.totalItemsCount
+            if (visible.isNotEmpty() && total > 0 && visible.size >= total) {
+                val contentH = visible.sumOf { it.size }.toFloat() +
+                    info.beforeContentPadding + info.afterContentPadding
+                (contentH - info.viewportSize.height).coerceAtLeast(0f)
+            } else {
+                heroMaxPx
+            }
         }
     }
+    val effectiveMax = minOf(heroMaxPx, actualMaxScroll)
     val collapseProgress by remember {
-        derivedStateOf { if (snapAnim.value > 0f) snapAnim.value else rawProgress }
+        derivedStateOf {
+            if (effectiveMax <= 0f) 0f
+            else (rawScrolled / effectiveMax).coerceIn(0f, 1f)
+        }
     }
     // v1.2.0 #6: 单标题一镜到底动画——只保留一个歌手名 Text,不进 LazyColumn(脱离滚动约束),
     // 用 graphicsLayer deferred 读 collapseProgress 驱动 translationX/Y + scale,从写真左下平滑位移
@@ -1403,14 +1530,15 @@ private fun ArtistDetail(vm: MainViewModel, name: String) {
     // 5 Single Title(overlay, graphicsLayer 一镜到底)
     BoxWithConstraints(Modifier.fillMaxSize().background(c.bg).clipToBounds()) {
         val screenW = with(density) { maxWidth.toPx() }
-        // v1.2.0 #6: 字号按名长+语种(CJK≈1em / latin≈0.52em)一次算到一行排完——不靠系统自动
-        // 换行(长名如 Tsutomu Mayuruna Kade Eino 会被丑陋地折两行)。0.92 安全系数保守防溢出,
-        // coerce[16,34]。纯算式无 onTextLayout 迭代→零闪烁;remember 只随 name/screenW 重算。
+        // v1.2.0 #6: 字号按名长+语种(CJK≈1em / latin≈0.6em)一次算到一行排完——不靠系统自动
+        // 换行(长名如 Tsutomu Mayuruna Kade Eino 会被丑陋地折两行)。0.88 安全系数保守防溢出,
+        // coerce[16,30]。v1.2.1: 拉丁系数 0.52→0.6(M/H/O 等宽字母实际更宽,旧值对短名如 HOYO-Mix
+        // 打到 34 上限后边缘溢出裁切末尾字符),上限 34→30 进一步留余量。remember 只随 name/screenW 重算。
         val expandedFontSize = remember(name, screenW) {
             val availSp = with(density) { (screenW - 44.dp.toPx()).toSp() }.value
-            val cjk = name.count { it.code in 0x3000..0x9FFF || it.code in 0xFF00..0xFFEF }
-            val widthFactor = cjk * 1.0f + (name.length - cjk) * 0.52f
-            (availSp / widthFactor * 0.92f).coerceIn(16f, 34f)
+            val cjk = name.count { com.shiyin.music.data.normalize.CharUtil.isCjk(it.toString()) }
+            val widthFactor = cjk * 1.0f + (name.length - cjk) * 0.6f
+            (availSp / widthFactor * 0.88f).coerceIn(16f, 30f)
         }
         val titleScale = 16f / expandedFontSize
         // ── 1 Background: 写真(第1张纸, 固定; y=0 含状态栏; alpha 联动淡出避免内容覆盖时硬切) ──
@@ -1442,7 +1570,7 @@ private fun ArtistDetail(vm: MainViewModel, name: String) {
                     val displayTracks = if (sortedTracks.size > songCap) sortedTracks.take(songCap) else sortedTracks
                     displayTracks.forEachIndexed { i, t ->
                         Box(Modifier.padding(horizontal = 16.dp)) {
-                            NumberedTrackRow(vm = vm, track = t, idx = i + 1, sub = t.album, onClick = { vm.play(t.id) }, showMenu = true, showCover = true)
+                            NumberedTrackRow(vm = vm, track = t, idx = i + 1, sub = t.album, onClick = { vm.playArtist(name, t.id) }, showMenu = true, showCover = true)
                         }
                     }
                     if (sortedTracks.size > songCap) {
@@ -1457,8 +1585,15 @@ private fun ArtistDetail(vm: MainViewModel, name: String) {
                     Column(Modifier.fillMaxWidth().background(c.bg).padding(horizontal = 16.dp)) {
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                             Text("专辑", style = body(14f, FontWeight.Bold, c.n700))
-                            Box(Modifier.clip(RoundedCornerShape(999.dp)).clickable { showAllAlbums = true }.padding(horizontal = 14.dp, vertical = 6.dp)) {
-                                Text("展开全部（${albums.size}）", style = body(12f, FontWeight.Bold, c.a700))
+                            // v1.3.6: 靠右(自然顶到内容区右缘,与列表对齐)且不标数量
+                            // (用户定调:数字删掉,更干净)。触区给足(整行右半段可点)。
+                            Box(
+                                Modifier
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .clickable { showAllAlbums = true }
+                                    .padding(horizontal = 8.dp, vertical = 6.dp),
+                            ) {
+                                Text("展开全部", style = body(12f, FontWeight.Bold, c.a700))
                             }
                         }
                     }
@@ -1494,7 +1629,12 @@ private fun ArtistDetail(vm: MainViewModel, name: String) {
                     alpha = (1f - f).coerceIn(0f, 1f)
                     translationY = -f * heroMaxPx
                 },
-        ) { ArtistActionBar(vm = vm, name = name, tracks = artistTracks) }
+        ) {
+            // v1.3.2: 队列全集放 remember——artistQueue 每次调用都遍历全部专辑做归属分类,
+            // 之前直接写在组合里,播放/重组时反复重算,歌手页滑动动画明显掉帧。
+            val actionBarTracks = remember(artistTracks) { vm.artistQueue(name) }
+            ArtistActionBar(vm = vm, name = name, tracks = actionBarTracks)
+        }
 
         // ── 4 Toolbar bg(状态栏+toolbar 同步变色淡入) ──
         Box(
@@ -1510,7 +1650,13 @@ private fun ArtistDetail(vm: MainViewModel, name: String) {
             Box(
                 Modifier.align(Alignment.CenterStart).padding(start = 12.dp)
                     .size(40.dp)
-                    .clickable { vm.artistKey = null; vm.artistMerge = false },
+                    .clickable {
+                        vm.artistKey = null; vm.artistMerge = false
+                        // v1.3.3 返回恢复:歌手页返回键——完整退出则清歌手快照(下次进入
+                        // 从顶部开始)+ 回原 tab。
+                        if (vm.albumKey == null && vm.plId == null) vm.clearArtistUiState()
+                        vm.restoreTabIfDrillFullyClosed()
+                    },
                 contentAlignment = Alignment.Center,
             ) {
                 Box(Modifier.fillMaxSize()
@@ -1549,7 +1695,10 @@ private fun ArtistDetail(vm: MainViewModel, name: String) {
                     .graphicsLayer {
                         val p = collapseProgress
                         translationY = (titleCollapsedCenterY - titleExpandedCenterY) * p
-                        translationX = (screenW / 2f - titleExpandedCenterX) * p
+                        // v1.2.1: titleExpandedCenterX 未测量(≤0,首帧/onGloballyPositioned 未触发)时
+                        // 不平移——否则 translationX=screenW/2*p 会把标题左边缘推到屏幕中线,
+                        // 右半截被外层 clipToBounds 裁切(短名如 HOYO-Mix 末尾 x 丢失即此因)。
+                        translationX = if (titleExpandedCenterX > 0f) (screenW / 2f - titleExpandedCenterX) * p else 0f
                         // animation.core 的 Float lerp 是 internal 不可访问,手写等价插值: 1+(target-1)*p
                         val s = 1f + (titleScale - 1f) * p
                         scaleX = s
@@ -1595,15 +1744,16 @@ private fun ArtistActionBar(vm: MainViewModel, name: String, tracks: List<Track>
                 )
             }
         }
-        // 随机播放: 纯图标,橙色(统一风格)
+        // 随机播放: 纯图标,橙色(统一风格)。队列=歌手全集且带 artist: key(resyncQueue 保持范围)
         Box(
-            Modifier.size(44.dp).clickable { vm.playRandom(tracks.map { it.id }) },
+            Modifier.size(44.dp).clickable { vm.playRandom(tracks.map { it.id }, "artist:$name") },
             contentAlignment = Alignment.Center,
         ) { OIcon(Lucide.Shuffle, 22.dp, c.accent) }
         // 主播放键: 实心圆形强调色(放大,视觉主按钮,最右); shadow 悬浮立体感(胶布贴)
+        // v1.3.2: 走 playArtist(歌手全集队列),不是全局 play(全库队列)
         Box(
             Modifier.size(52.dp).shadow(8.dp, CircleShape).clip(CircleShape).background(c.accent)
-                .clickable { tracks.firstOrNull()?.let { vm.play(it.id) } },
+                .clickable { tracks.firstOrNull()?.let { vm.playArtist(name, it.id) } },
             contentAlignment = Alignment.Center,
         ) { OIcon(Lucide.Play, 24.dp, c.bg) }
     }
@@ -1646,9 +1796,16 @@ private fun ArtistPhotoPickerDialog(vm: MainViewModel, name: String) {
                         }
                     }
                 }
-                // 候选写真(各源并行)
-                if (candidates.isEmpty()) {
+                // 候选写真(各源并行增量返回)+ 搜索进度
+                val pending = vm.artistPickerPending
+                val total = vm.artistPickerTotal
+                if (pending > 0) {
+                    Text("搜索中… 已完成 ${total - pending}/${total} 源", style = body(12f, FontWeight.Normal, c.n500), modifier = Modifier.padding(vertical = 4.dp))
+                }
+                if (candidates.isEmpty() && pending > 0) {
                     Text("正在搜索候选写真…", style = body(13f, FontWeight.Normal, c.n500), modifier = Modifier.padding(vertical = 8.dp))
+                } else if (candidates.isEmpty()) {
+                    Text("未找到候选写真，可粘贴链接或选本地文件。", style = body(13f, FontWeight.Normal, c.n500), modifier = Modifier.padding(vertical = 8.dp))
                 } else {
                     Column(verticalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.heightIn(max = 260.dp).verticalScroll(rememberScrollState())) {
                         candidates.forEach { img ->

@@ -23,6 +23,10 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.rememberCoroutineScope
@@ -192,9 +196,10 @@ fun AppRoot(vm: MainViewModel) {
             )
         }
 
-        // v1.2.0 #4: 左侧边缘右滑拉出侧边栏——阈值触发，交给上面的 LaunchedEffect
-        // 接管展开动画。手势由下方 Box(weight(1f)) 内的独立 overlay 捕获。
-        val openThresholdPx = with(LocalDensity.current) { 48.dp.toPx() }
+        // 侧边栏右滑阈值——过阈值后交给上面的 LaunchedEffect 接管展开动画。
+        // v1.3.3: 48→20dp——用户反馈右滑常没反应,阈值过高是主因之一。
+        // (手势本体在下方内容 Box 的 Final-pass pointerInput 里,见 v1.3.5 注释。)
+        val openThresholdPx = with(LocalDensity.current) { 20.dp.toPx() }
 
         // A track change can land on a song without lyrics while the
         // fullscreen lyric sheet is open — close it instead of a blank page.
@@ -221,64 +226,91 @@ fun AppRoot(vm: MainViewModel) {
                     transformOrigin = TransformOrigin(0f, 0.5f) // pivot left, so scale+translate leaves no gap
                 },
         ) {
-            Box(Modifier.weight(1f)) {
-                val contentKey = when {
-                    vm.settingsOpen -> "settings:${vm.filesView}"
-                    vm.recentOpen -> "recent"
-                    vm.statsOpen -> "stats"
-                    vm.updatesOpen -> "updates"
-                    else -> "tab:${vm.tab}"
-                }
-                AnimatedContent(
-                    targetState = contentKey,
-                    transitionSpec = { fadeIn(tween(250)) togetherWith fadeOut(tween(150)) },
-                    label = "screen",
-                ) { key ->
-                    // v1.2.0 #6: 非歌手页加 statusBarsPadding(内容回到状态栏下);歌手页由 LibraryScreen 内部
-                    // 处理(ArtistDetail 不加→写真 y=0)。解耦:歌手页不受这些页高度影响。
-                    val pad = Modifier.fillMaxSize().statusBarsPadding()
-                    when {
-                        key.startsWith("settings") -> Box(pad) { SettingsHost(vm) }
-                        key == "recent" -> Box(pad) { com.shiyin.music.ui.screens.RecentPlaysScreen(vm) }
-                        key == "stats" -> Box(pad) { com.shiyin.music.ui.screens.ListeningStatsScreen(vm) }
-                        key == "updates" -> Box(pad) { com.shiyin.music.ui.screens.YourUpdatesScreen(vm) }
-                        key == "tab:${Tab.Home}" -> Box(pad) { HomeScreen(vm) }
-                        key == "tab:${Tab.Search}" -> Box(pad) { SearchScreen(vm) }
-                        else -> LibraryScreen(vm)
+            // v1.3.5: 手势挂在内容 Box 自身(不再叠 overlay——旧 overlay 叠最上层把
+            // down 事件命中拦截,下方卡片全部点不了)。本手势用 **Final pass**:
+            // 子节点(横滚卡片行/竖滚列表/clickable)在 Main pass 先处理,处理完轮到
+            // 本手势——被消费(横滚正在滚)的事件直接放弃,不与任何滚动冲突;只有
+            // 横滚行翻到最左顶格、LazyRow 不再消费(事件未消费)时,继续右滑才累计
+            // 过阈值开抽屉。空白区无子节点消费,右滑照常开。这正是"滑到顶再右滑
+            // 拉侧边栏,其余时候互不干扰"的语义。
+            val onHomePage = vm.tab == com.shiyin.music.Tab.Home &&
+                vm.albumKey == null && vm.artistKey == null && vm.plId == null && vm.folderKey == null &&
+                !vm.settingsOpen && !vm.recentOpen && !vm.statsOpen && !vm.updatesOpen && !vm.agentOpen
+            val gestureBox = Modifier
+                .weight(1f)
+                .then(
+                    if (onHomePage && sidebarProgress.value < 0.001f) Modifier
+                        .pointerInput(openThresholdPx) {
+                            awaitEachGesture {
+                                val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Final)
+                                var netX = 0f; var absY = 0f
+                                while (true) {
+                                    val event = awaitPointerEvent(PointerEventPass.Final)
+                                    val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                                    // 别人消费过(横滚行/竖滚列表/长按)→ 放弃本次
+                                    if (change.isConsumed) break
+                                    netX += change.positionChange().x
+                                    absY += kotlin.math.abs(change.positionChange().y)
+                                    if (netX >= openThresholdPx && netX >= absY * 0.45f) {
+                                        vm.sidebarOpen = true
+                                        change.consume()
+                                        break
+                                    }
+                                    if (!change.pressed) break
+                                }
+                            }
+                        }
+                    else Modifier
+                )
+            Box(gestureBox) {
+                    val contentKey = when {
+                        vm.agentOpen -> "agent"
+                        vm.settingsOpen -> "settings:${vm.filesView}"
+                        vm.recentOpen -> "recent"
+                        vm.statsOpen -> "stats"
+                        vm.updatesOpen -> "updates"
+                        else -> "tab:${vm.tab}"
+                    }
+                    AnimatedContent(
+                        targetState = contentKey,
+                        transitionSpec = { fadeIn(tween(250)) togetherWith fadeOut(tween(150)) },
+                        label = "screen",
+                    ) { key ->
+                        // v1.2.0 #6: 非歌手页加 statusBarsPadding(内容回到状态栏下);歌手页由 LibraryScreen 内部
+                        // 处理(ArtistDetail 不加→写真 y=0)。解耦:歌手页不受这些页高度影响。
+                        val pad = Modifier.fillMaxSize().statusBarsPadding()
+                        when {
+                            key == "agent" -> Box(pad) { com.shiyin.music.ui.screens.AgentScreen(vm) }
+                            key.startsWith("settings") -> Box(pad) { SettingsHost(vm) }
+                            key == "recent" -> Box(pad) { com.shiyin.music.ui.screens.RecentPlaysScreen(vm) }
+                            key == "stats" -> Box(pad) { com.shiyin.music.ui.screens.ListeningStatsScreen(vm) }
+                            key == "updates" -> Box(pad) { com.shiyin.music.ui.screens.YourUpdatesScreen(vm) }
+                            key == "tab:${Tab.Home}" -> Box(pad) { HomeScreen(vm) }
+                            key == "tab:${Tab.Search}" -> Box(pad) { SearchScreen(vm) }
+                            else -> LibraryScreen(vm)
+                        }
                     }
                 }
-                // v1.2.0 #4: 左缘右滑拉侧边栏——独立 overlay（sibling on top），仅在抽屉收起时
-                // 渲染。home 屏卡片是全宽 clickable 会先吃 down，祖先级 pointerInput 实测收不到
-                // 事件（onDragStart 不触发），故改用 overlay 直接捕水平拖拽、累计右滑过 48dp
-                // 阈值即 vm.sidebarOpen=true。真机反馈 16dp 太窄、起点落在 gutter 外没命中——
-                // 加宽到 32dp 覆盖整个左 20dp gutter；detectHorizontalDragGestures 不消费单纯点按，
-                // 故卡片左侧点按仍透传 clickable，仅水平拖拽被 overlay 接走。
-                // 抽屉展开后 overlay 随 sidebarProgress>0 移除，不与 scrim/drawer 的关闭冲突。
-                if (sidebarProgress.value < 0.001f) {
-                    Box(
-                        Modifier
-                            .fillMaxHeight()
-                            .width(32.dp)
-                            .align(Alignment.CenterStart)
-                            .pointerInput(Unit) {
-                                var accum = 0f
-                                detectHorizontalDragGestures(
-                                    onDragStart = { accum = 0f },
-                                    onHorizontalDrag = { change, dragAmount ->
-                                        change.consume()
-                                        accum += dragAmount
-                                        if (accum >= openThresholdPx) vm.sidebarOpen = true
-                                    },
-                                    onDragEnd = { accum = 0f },
-                                    onDragCancel = { accum = 0f },
-                                )
-                            },
-                    )
-                }
-            }
             val cur = vm.trackById(vm.player.currentId)
-            if (cur != null && !vm.playerOpen) MiniPlayer(vm, cur)
-            BottomNav(vm)
+            // v1.3.0: Agent 页是独立对话界面,不显示底部导航栏和 MiniPlayer。
+            // v1.3.6: MiniPlayer 进出加动画——播放页展开时向下滑出、收起时滑回,
+            // 用与播放 sheet 相同的 DecelerateEasing 曲线族,与下拉动作呼应(此前
+            // 瞬间消失/弹回,按帧生硬——用户反馈的正是这)。AnimatedVisibility 让
+            // 布局高度同步动画(收起滑回时 BottomNav 自然下移接住,不再跳)。
+            if (!vm.agentOpen) {
+                androidx.compose.animation.AnimatedVisibility(
+                    visible = cur != null && !vm.playerOpen,
+                    enter = androidx.compose.animation.slideInVertically(
+                        animationSpec = tween(250, easing = CubicBezierEasing(0.4f, 0f, 0.2f, 1f)),
+                    ) { it } + androidx.compose.animation.fadeIn(tween(200)),
+                    exit = androidx.compose.animation.slideOutVertically(
+                        animationSpec = tween(200, easing = CubicBezierEasing(0.4f, 0f, 0.2f, 1f)),
+                    ) { it } + androidx.compose.animation.fadeOut(tween(150)),
+                ) {
+                    if (cur != null) MiniPlayer(vm, cur)
+                }
+                BottomNav(vm)
+            }
         }
 
         // v4.3: Spotify-style push drawer — the main content above is pushed
@@ -316,11 +348,13 @@ fun AppRoot(vm: MainViewModel) {
                         Text("拾音", style = heading(24))
                         Text("PickUpMusic", style = body(13f, FontWeight.Normal, c.n500), modifier = Modifier.padding(start = 0.dp, bottom = 3.dp))
                     }
-                    // v4: sidebar restructured — 5 items, no file-management here
+                    // v4: sidebar restructured — 5 items, no file-management here.
+                    // v1.3.0: Agent 移到"关于我们"上方,图标换 Sparkles(AI 语义)。
                     SidebarItem(Lucide.History, "最近播放") { vm.sidebarOpen = false; vm.recentOpen = true; vm.settingsOpen = false }
                     SidebarItem(Lucide.BarChart, "收听统计") { vm.sidebarOpen = false; vm.statsOpen = true; vm.settingsOpen = false }
                     SidebarItem(Lucide.Bell, "你的更新") { vm.sidebarOpen = false; vm.updatesOpen = true; vm.settingsOpen = false }
-                    SidebarItem(Lucide.Settings, "设置") { vm.sidebarOpen = false; vm.settingsOpen = true; vm.filesView = com.shiyin.music.FilesView.Root; vm.recentOpen = false; vm.statsOpen = false; vm.updatesOpen = false }
+                    SidebarItem(Lucide.Settings, "设置") { vm.sidebarOpen = false; vm.settingsOpen = true; vm.filesView = com.shiyin.music.FilesView.Root; vm.recentOpen = false; vm.statsOpen = false; vm.updatesOpen = false; vm.cleanEntry = false }
+                    SidebarItem(Lucide.Sparkles, "Agent") { vm.sidebarOpen = false; vm.agentOpen = true }
                     SidebarItem(Lucide.CircleInfo, "关于我们") { vm.sidebarOpen = false; vm.settingsOpen = true; vm.filesView = com.shiyin.music.FilesView.About }
                 }
             }
@@ -413,11 +447,80 @@ fun AppRoot(vm: MainViewModel) {
                 // fillMaxSize/scrim 对齐整页。
                 Box(Modifier.fillMaxHeight()) {
                     PlayerScreen(vm)
-                    PlayerMenuSheet(vm)
-                    QueueSheet(vm)
-                    // v5.2 歌词本 overlay 已从这里移出——它不再和 PlayerScreen 同窗口,
-                    // 改为下方独立的全屏 Dialog(后建窗口,盖在 ModalBottomSheet 之上),
-                    // 让右滑/predictive back 落到 Dialog 自己的 onDismissRequest 只关歌词本。
+                    // v1.3.3: PlayerMenuSheet / QueueSheet 从这里迁出——原先它们与
+                    // PlayerScreen 同窗口叠加，拖拽经 sheet 根的 anchoredDraggable、
+                    // 返回经 sheet window 的 dispatcher 都会作用到整个播放页（开着队列
+                    // 时下拉/返回退的是播放页本身）。改声明为播放 sheet 之后的独立
+                    // ModalBottomSheet（同全屏歌词本的"后建窗口居上"模式），手势/返回
+                    // 落在各自 window 上，只收弹层、播放页不动。
+                }
+            }
+        }
+
+        // v1.3.3 播放队列:独立 ModalBottomSheet(声明在播放 sheet 之后→后建窗口居上,
+        // scrim 盖住播放页)。下拉/返回落在队列自己的 window:只收队列;队列收起后
+        // 下拉/返回才轮到播放 sheet。沿用 v5.2 hotfix 3 的 sheetHasBeenVisible 闸门
+        // ——rememberModalBottomSheetState 初始值就是 Hidden,不做闸门会在首次组合时
+        // 立即触发 Hidden→关闭路径(重蹈"首次组合即误关"坑)。
+        if (vm.qSheetOpen && vm.playerOpen) {
+            val qSheetState = androidx.compose.material3.rememberModalBottomSheetState(
+                skipPartiallyExpanded = true,
+            )
+            var qSheetHasBeenVisible by androidx.compose.runtime.remember { mutableStateOf(false) }
+            androidx.compose.runtime.LaunchedEffect(qSheetState.currentValue, qSheetState.isVisible) {
+                if (qSheetState.isVisible) qSheetHasBeenVisible = true
+                if (qSheetHasBeenVisible && qSheetState.currentValue == androidx.compose.material3.SheetValue.Hidden && vm.qSheetOpen) {
+                    vm.qSheetOpen = false
+                    vm.qEdit = false
+                }
+            }
+            androidx.compose.material3.ModalBottomSheet(
+                onDismissRequest = { vm.qSheetOpen = false; vm.qEdit = false },
+                sheetState = qSheetState,
+                // v1.3.3b review#4: 删 sheetMaxWidth=M3 1.3+ 它同时约束 scrim 宽度,
+                // 宽屏上 scrim 会不满宽(两侧播放页裸露可点)。项目其他 sheet 也不传。
+                dragHandle = null,
+                scrimColor = Color.Black.copy(alpha = 0.35f),
+                containerColor = c.bg,
+                shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
+                // v5.2 同播放 sheet:置零默认 inset,系统栏由内容自己处理(底部导航栏
+                // padding 在 QueueSheetContent 内),背景连续填充到屏幕底缘。
+                contentWindowInsets = { WindowInsets(0, 0, 0, 0) },
+            ) {
+                // 高度由内容撑(替代原 SheetOverlay maxHeightFraction=0.64f):
+                // LazyColumn 自带 maxHeight 约束,不足 0.64 屏时按内容收短。
+                QueueSheetContent(vm)
+            }
+        }
+
+        // v1.3.3 三点菜单:独立 ModalBottomSheet(与队列 sheet 同模式,声明在其后)。
+        // 下拉/返回只收菜单;timer/speed 子页的返回在内容内由 vm.pMenuView 分支处理
+        // (RootBackHandler 的 pMenuView 分支保留作 sheet 外层安全网)。
+        if (vm.pMenuView != null && vm.playerOpen) {
+            val mSheetState = androidx.compose.material3.rememberModalBottomSheetState(
+                skipPartiallyExpanded = true,
+            )
+            var mSheetHasBeenVisible by androidx.compose.runtime.remember { mutableStateOf(false) }
+            androidx.compose.runtime.LaunchedEffect(mSheetState.currentValue, mSheetState.isVisible) {
+                if (mSheetState.isVisible) mSheetHasBeenVisible = true
+                if (mSheetHasBeenVisible && mSheetState.currentValue == androidx.compose.material3.SheetValue.Hidden && vm.pMenuView != null) {
+                    vm.pMenuView = null
+                }
+            }
+            androidx.compose.material3.ModalBottomSheet(
+                onDismissRequest = { vm.pMenuView = null },
+                sheetState = mSheetState,
+                // v1.3.3b review#4: 同队列 sheet——不传 sheetMaxWidth,scrim 满宽。
+                dragHandle = null,
+                scrimColor = Color.Black.copy(alpha = 0.35f),
+                containerColor = c.bg,
+                shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
+                contentWindowInsets = { WindowInsets(0, 0, 0, 0) },
+            ) {
+                // v1.3.3b: 播放速度子页有自定义速度输入框——contentWindowInsets 置零后
+                // sheet 不再自动避让 IME,内容包 imePadding 让输入框随键盘顶起。
+                Column(Modifier.imePadding()) {
+                    PlayerMenuSheetContent(vm)
                 }
             }
         }
@@ -526,6 +629,42 @@ fun AppRoot(vm: MainViewModel) {
         // and the PlayerScreen Failed-state card.
         LyricsSourcePickerDialog(vm)
         LyricsImportDialog(vm)
+
+        // v1.3.3: Agent 写回的排序确认窗(AppRoot 全局层)。之前确认窗定义在专辑页组合里,
+        // Agent 页打开时专辑页不在组合中——窗根本不出现,Agent「写回排序」永远等不到确认,
+        // 用户看来就是"写回卡死"。文本排序弹窗自己的确认窗仍在 LibraryScreen(pendingSource="text")。
+        val agentPending = vm.pendingOrder
+        if (agentPending != null && vm.pendingSource == "agent") {
+            androidx.compose.material3.AlertDialog(
+                onDismissRequest = { vm.cancelPendingOrder() },
+                containerColor = c.surface,
+                title = { Text("部分曲目未确定顺序", style = body(15f, FontWeight.ExtraBold, c.text)) },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("AI 未能确定以下曲目的官方位置:", style = body(12.5f, FontWeight.Normal, c.text))
+                        Text(
+                            agentPending.second.joinToString("，"),
+                            style = body(12.5f, FontWeight.Medium, c.a700),
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        Text(
+                            "「应用」后它们按原相对顺序排在已排序曲目之后;「取消」则本次排序不写入。",
+                            style = body(12f, FontWeight.Normal, c.n600),
+                        )
+                    }
+                },
+                confirmButton = {
+                    androidx.compose.material3.TextButton(onClick = { vm.commitPendingOrder() }) {
+                        Text("应用", style = body(14f, FontWeight.Bold, c.accent))
+                    }
+                },
+                dismissButton = {
+                    androidx.compose.material3.TextButton(onClick = { vm.cancelPendingOrder() }) {
+                        Text("取消", style = body(14f, FontWeight.Normal, c.n600))
+                    }
+                },
+            )
+        }
 
         ToastHost(vm)
     }
@@ -674,7 +813,7 @@ private fun RootBackHandler(vm: MainViewModel) {
         enabled = vm.saveSheetFor != null || vm.albumPickerId != null || vm.albumMoveFor != null || vm.trackMenuFor != null || vm.pMenuView != null ||
             vm.qSheetOpen || vm.lySheet || vm.lyricsOn || vm.sleepMenu || vm.playerOpen ||
             vm.artistMerge || vm.albumKey != null || vm.artistKey != null || vm.folderKey != null || vm.plId != null ||
-            vm.settingsOpen || vm.recentOpen || vm.statsOpen || vm.updatesOpen ||
+            vm.settingsOpen || vm.recentOpen || vm.statsOpen || vm.updatesOpen || vm.agentOpen ||
             vm.q.isNotEmpty() || vm.tab != Tab.Home || vm.devicePopupVisible || vm.sidebarOpen ||
             vm.albumBatchMoveSheet || vm.batchMoveMode,
     ) {
@@ -686,6 +825,7 @@ private fun RootBackHandler(vm: MainViewModel) {
             vm.recentOpen -> vm.recentOpen = false
             vm.statsOpen -> vm.statsOpen = false
             vm.updatesOpen -> vm.updatesOpen = false
+            vm.agentOpen -> vm.agentOpen = false
             vm.saveSheetFor != null -> vm.saveSheetFor = null
             vm.lyricsImportDialog -> vm.lyricsImportDialog = false
             vm.lyricsSourcePicker -> vm.lyricsSourcePicker = false
@@ -706,14 +846,34 @@ private fun RootBackHandler(vm: MainViewModel) {
                 if (vm.folderKey != null) {
                     vm.folderKey = null
                     vm.filesView = FilesView.Folders
+                } else if (vm.cleanEntry) {
+                    // v1.3.5: 首页清理建议卡直接进的清理页——返回跳过"设置根"直接
+                    // 回来源 tab(从哪来回哪)。退出设置即复位标记。
+                    vm.cleanEntry = false
+                    vm.filesView = FilesView.Root
+                    vm.sel = emptyMap()
+                    vm.settingsOpen = false
+                    vm.restoreTabIfDrillFullyClosed()
                 } else if (vm.filesView != FilesView.Root) {
                     vm.filesView = FilesView.Root
                     vm.sel = emptyMap()
                 } else vm.settingsOpen = false
             }
-            vm.plId != null -> vm.plId = null
-            vm.albumKey != null -> { vm.albumKey = null; vm.albumEdit = false; vm.albumEditText = false }
-            vm.artistKey != null -> vm.artistKey = null
+            vm.plId != null -> { vm.plId = null; vm.restoreTabIfDrillFullyClosed() }
+            vm.albumKey != null -> {
+                vm.albumKey = null; vm.albumEdit = false; vm.albumEditText = false
+                // v1.3.3 返回恢复:若下钻层已全清(如从首页进的专辑),tab 恢复原页面
+                // (原来留在 Library → "回音乐库不回首页"的根因)。清歌手页快照时机也
+                // 在这里:完整退出歌手页(artistKey 也空)清 artistUiState,不残留。
+                if (!vm.restoreTabIfDrillFullyClosed() && vm.artistKey == null) vm.clearArtistUiState()
+            }
+            vm.artistKey != null -> {
+                vm.artistKey = null
+                // 完整退出歌手页(无更深层)→ 清该歌手的 UI 快照,下次进入从顶部开始;
+                // 下钻专辑再返回时不会走到这(artistKey 非空),快照保留待恢复。
+                if (vm.albumKey == null && vm.plId == null) vm.clearArtistUiState()
+                vm.restoreTabIfDrillFullyClosed()
+            }
             vm.q.isNotEmpty() -> vm.q = ""
             vm.tab != Tab.Home -> vm.tab = Tab.Home
         }
@@ -835,13 +995,13 @@ private fun BottomNav(vm: MainViewModel) {
                         // 不能只切 tab（artistKey/albumKey 仍在 → 歌手页不退 → "没反应"）。
                         vm.tab = tab
                         vm.settingsOpen = false
+                        // v1.3.3 返回恢复:用户主动切 tab → 作废记录的下钻来源 tab,
+                        // 且主动离开歌手页也要清其快照(不残留)。
+                        vm.discardPrevTab()
+                        vm.clearArtistUiState()
                         vm.artistKey = null
                         vm.albumKey = null
                         vm.plId = null
-                        vm.folderKey = null
-                        vm.artistMerge = false
-                        vm.albumEdit = false
-                        vm.albumEditText = false
                     }
                     .padding(vertical = 5.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
@@ -906,14 +1066,15 @@ private fun BoxScope.TrackMenuSheet(vm: MainViewModel, onEditTrack: (Long) -> Un
 }
 
 // ── v1.5/v1.6 player ⋮ menu with sleep-timer subview ───────────────────────
+// v1.3.3: 外层 SheetOverlay 已移除——由 AppRoot 的独立 ModalBottomSheet 包裹本
+// 内容(与 QueueSheet 同模式),手势/返回只作用菜单弹层、不动播放页。
+// 子页跳转(timer/speed→root)仍在内容内用 vm.pMenuView 切换。
 @Composable
-private fun BoxScope.PlayerMenuSheet(vm: MainViewModel) {
+private fun PlayerMenuSheetContent(vm: MainViewModel) {
     val c = LocalOrganic.current
     val track = vm.trackById(vm.player.currentId)
-    val visible = vm.pMenuView != null && vm.playerOpen && track != null
-    SheetOverlay(visible = visible, onDismiss = { vm.pMenuView = null }) {
-        if (track == null) return@SheetOverlay
-        Column(Modifier.padding(start = 10.dp, end = 10.dp, top = 16.dp, bottom = 10.dp)) {
+    if (track == null) return
+    Column(Modifier.navigationBarsPadding().padding(start = 10.dp, end = 10.dp, top = 16.dp, bottom = 10.dp)) {
             if (vm.pMenuView != "timer" && vm.pMenuView != "timer-custom" && vm.pMenuView != "speed") {
                 SheetSongHeader(track)
                 SheetActionRow(Lucide.ListPlus, "保存到歌单") {
@@ -1254,19 +1415,15 @@ private fun BoxScope.PlayerMenuSheet(vm: MainViewModel) {
                 }
             }
         }
-    }
 }
 
 // ── v1.6/v1.7 play queue sheet ─────────────────────────────────────────────
+// v1.3.3: 外层 SheetOverlay 已移除——由 AppRoot 的独立 ModalBottomSheet 包裹本
+// 内容(独立 window,手势/返回只作用队列弹层)。内容层(拖拽排序/auto-scroll/
+// 右滑移除)不依赖 overlay 结构,原样保留。
 @Composable
-private fun BoxScope.QueueSheet(vm: MainViewModel) {
+private fun QueueSheetContent(vm: MainViewModel) {
     val c = LocalOrganic.current
-    val visible = vm.qSheetOpen && vm.playerOpen
-    SheetOverlay(
-        visible = visible,
-        onDismiss = { vm.qSheetOpen = false; vm.qEdit = false },
-        maxHeightFraction = 0.64f,
-    ) {
         // read to subscribe to queue mutations
         vm.player.queueVersion
         val byId = vm.lib().associateBy { it.id }
@@ -1320,7 +1477,7 @@ private fun BoxScope.QueueSheet(vm: MainViewModel) {
                 kotlinx.coroutines.delay(frameMs)
             }
         }
-        Column(Modifier.padding(start = 14.dp, end = 14.dp, top = 18.dp, bottom = 10.dp)) {
+        Column(Modifier.navigationBarsPadding().padding(start = 14.dp, end = 14.dp, top = 18.dp, bottom = 10.dp)) {
             Row(
                 Modifier
                     .fillMaxWidth()
@@ -1330,7 +1487,8 @@ private fun BoxScope.QueueSheet(vm: MainViewModel) {
             ) {
                 Text("播放队列", style = body(16f, FontWeight.ExtraBold, c.text), modifier = Modifier.weight(1f))
             }
-            LazyColumn(state = qListState) {
+            // v1.3.3: 独立 sheet 内列表高度自适应——不足 max 时按内容收短,超出滚动。
+            LazyColumn(state = qListState, modifier = Modifier.heightIn(max = 400.dp)) {
                 if (current != null) {
                     item {
                         Text(
@@ -1426,7 +1584,6 @@ private fun BoxScope.QueueSheet(vm: MainViewModel) {
                 }
             }
         }
-    }
 }
 
 @Composable
@@ -1873,6 +2030,8 @@ private fun BoxScope.AlbumMenuSheet(vm: MainViewModel) {
             }
             SheetActionRow(Lucide.Settings, "修改专辑信息") {
                 vm.albumMenuOpen = false
+                // v1.2.2 diag: 确认对话框是否被打开、albumKey 长什么样(是 aid: 还是 album|artist)
+                android.util.Log.d("ArtistEdit", "dialog OPEN albumKey=${vm.albumKey}")
                 vm.albumEditInfo = true
             }
             SheetActionRow(Lucide.Disc, "更换专辑封面") {
@@ -1884,27 +2043,142 @@ private fun BoxScope.AlbumMenuSheet(vm: MainViewModel) {
                 vm.batchMoveMode = true
                 vm.batchMoveSelected = emptySet()
             }
+            // v1.3.2: Agent 入口(图标与侧边栏一致)——打开对话页,Agent 打招呼 + 建议回复,
+            // 不再局限于"识别排序"一种处理。
+            SheetActionRow(Lucide.Sparkles, "Agent") {
+                vm.albumMenuOpen = false
+                vm.openAgentForAlbum(vm.albumKey ?: return@SheetActionRow)
+            }
         }
     }
 }
 
 // ── v4.3: album edit dialogs — info / cover / rematch prompt / track edit ──
+
+/**
+ * v1.3.6: 发布日期选择器(修改专辑信息弹窗)——替代滑杆(0..2030 拉条不可用)。
+ * 点开后弹**小号 AlertDialog 单选列表**(LazyColumn,Dialog 内容不受 DropdownMenu
+ * 的 intrinsic 测量约束——两轮实机闪退的根因:DropdownMenu 对上万项做固有测量,
+ * 先 LazyList 不支持,再 Column+scroll 撑出 340k px 高度 Constraints 爆表)。
+ * 打开自动定位到当前值;0 显示「未设置」。
+ */
+@Composable
+private fun DateDropdown(
+    label: String,
+    value: Int,
+    options: List<Int>,
+    modifier: Modifier = Modifier,
+    onSelect: (Int) -> Unit,
+) {
+    val c = LocalOrganic.current
+    var open by remember { mutableStateOf(false) }
+    Box(modifier) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(10.dp))
+                // 主题适配:输入态控件 surface + divider 描边(与 OutlinedTextField 同语言)。
+                .background(c.surface)
+                .border(1.dp, c.divider, RoundedCornerShape(10.dp))
+                .clickable { open = true }
+                .padding(horizontal = 12.dp, vertical = 9.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(label, style = body(11f, FontWeight.Normal, c.n500))
+            Spacer(Modifier.weight(1f))
+            Text(
+                if (value == 0) "未设置" else "$value",
+                style = body(12f, FontWeight.SemiBold, if (value == 0) c.n400 else c.text),
+            )
+            OIcon(Lucide.ChevronDown, 13.dp, c.n400)
+        }
+        if (open) {
+            val listState = androidx.compose.foundation.lazy.rememberLazyListState(
+                initialFirstVisibleItemIndex = (options.indexOf(value).coerceAtLeast(0) - 6).coerceAtLeast(0),
+            )
+            androidx.compose.material3.AlertDialog(
+                onDismissRequest = { open = false },
+                containerColor = c.surface,
+                title = { Text("选择$label", style = body(14f, FontWeight.ExtraBold, c.text)) },
+                text = {
+                    // Dialog 里 LazyColumn 安全(无 intrinsic 测量压力),定位靠
+                    // initialFirstVisibleItemIndex(选当前值往上留 6 项缓冲)。
+                    androidx.compose.foundation.lazy.LazyColumn(
+                        state = listState,
+                        modifier = Modifier.fillMaxWidth().heightIn(max = 360.dp),
+                    ) {
+                        items(options.size) { i ->
+                            val v = options[i]
+                            Row(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .clickable { onSelect(v); open = false }
+                                    .padding(horizontal = 8.dp, vertical = 11.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(
+                                    if (v == 0) "未设置" else "$v",
+                                    style = body(13.5f, if (v == value) FontWeight.ExtraBold else FontWeight.Normal, if (v == value) c.accent else c.text),
+                                    modifier = Modifier.weight(1f),
+                                )
+                                if (v == value) OIcon(Lucide.Check, 15.dp, c.accent)
+                            }
+                        }
+                    }
+                },
+                confirmButton = {
+                    androidx.compose.material3.TextButton(onClick = { open = false }) {
+                        Text("取消", style = body(13f, FontWeight.Normal, c.n600))
+                    }
+                },
+            )
+        }
+    }
+}
+
+/** 年月对应天数(年/月为 0 时按 31 给上限,滑着不卡顿)。 */
+private fun daysInMonth(y: Int, m: Int): Int = when (m) {
+    1, 3, 5, 7, 8, 10, 12 -> 31
+    4, 6, 9, 11 -> 30
+    2 -> if (y % 4 == 0 && (y % 100 != 0 || y % 400 == 0)) 29 else 28
+    else -> 31
+}
+
 @Composable
 private fun AlbumEditDialogs(vm: MainViewModel, trackEditFor: Long?, onTrackEditDismiss: () -> Unit) {
     val c = LocalOrganic.current
     val albumId = vm.albumKey?.removePrefix("aid:")?.toLongOrNull()
-    if (albumId != null) {
+    // v1.2.2: 改支持所有专辑(含无共享 albumId 的合集)——不要求 albumId 非空,
+    // 合集(albumKey 形如 "$album|$artist")也能改歌手。albumId 可能为 null。
+    val effAlbumId = albumId ?: 0L
+    if (vm.albumKey != null) {
         // v4.3: 修改专辑信息 (album name / artist → album_info_override)
         if (vm.albumEditInfo) {
             val first = vm.albumOrder(vm.albumKey!!).firstOrNull()
             if (first != null) {
-                var name by rememberSaveable(albumId) { mutableStateOf(first.album) }
-                var artist by rememberSaveable(albumId) { mutableStateOf(first.artist) }
+                var name by rememberSaveable(vm.albumKey) { mutableStateOf(first.album) }
+                var artist by rememberSaveable(vm.albumKey) { mutableStateOf(first.artist) }
                 // v9: pre-select the album's CURRENT effective category (manual
                 // override if set, else the track-count heuristic) so the chips
                 // reflect reality, not a blank default. "" = 自动 (no override).
-                val currentType = remember(albumId) { vm.albumTypeFor(albumId) }
-                var type by rememberSaveable(albumId) { mutableStateOf(currentType) }
+                val effAlbumId = albumId ?: (if (first.albumId > 0) first.albumId else 0L)
+                val currentType = remember(effAlbumId) { vm.albumTypeFor(effAlbumId) }
+                var type by rememberSaveable(vm.albumKey) { mutableStateOf(currentType) }
+                // v1.3.6: 发布日期编辑——年/月/日三个**下拉单选框**(旧版滑杆 0..2030
+                // 拉到崩,大跨度数值滑杆根本不可用——用户定调)。未识别日期默认"未设
+                // 置";选了年月日后按年月 clamp 天数;把"未设置"选回去即清空日期。
+                // v1.3.6 崩溃修复:旧版 savedDate.substring(5,7) 在空串日期(未识别)
+                // 上直接 StringIndexOutOfBounds 闪退——全部改 takeIf+长度守卫。
+                val savedDate = remember(vm.albumKey, vm.albumDateRevision) {
+                    if (effAlbumId > 0) vm.albumDateOf(effAlbumId) else ""
+                }
+                val initY = if (savedDate.length >= 4) savedDate.take(4).toIntOrNull() ?: 0 else 0
+                val initM = if (savedDate.length >= 7) savedDate.substring(5, 7).toIntOrNull() ?: 0 else 0
+                val initD = if (savedDate.length >= 10) savedDate.substring(8, 10).toIntOrNull() ?: 0 else 0
+                var dateY by rememberSaveable(vm.albumKey) { mutableIntStateOf(initY) }
+                var dateM by rememberSaveable(vm.albumKey) { mutableIntStateOf(initM) }
+                var dateD by rememberSaveable(vm.albumKey) { mutableIntStateOf(initD) }
                 androidx.compose.material3.AlertDialog(
                     onDismissRequest = { vm.albumEditInfo = false },
                     containerColor = c.surface,
@@ -1948,13 +2222,50 @@ private fun AlbumEditDialogs(vm: MainViewModel, trackEditFor: Long?, onTrackEdit
                                     )
                                 }
                             }
+                            // v1.3.6: 发布日期编辑 UI——年/月/日三个下拉单选框(旧版
+                            // 0..2030 滑杆对大跨度数值完全不可用,已废)。"未设置"可
+                            // 从任何一个下拉选回(清空日期);年月定天数后日下拉项即
+                            // 时收窄(31/30/29/28)。
+                            Text("发布日期", style = body(12f, FontWeight.Bold, c.n600))
+                            val dim = remember(dateY, dateM) { daysInMonth(dateY, dateM) }
+                            if (dateD > dim) dateD = dim
+                            // v1.3.6: 年上限随当前时间走(今天年份+1),不写死——
+                            // App 用到 2031 年时年份选项自己长上去。
+                            val curYear = java.util.Calendar.getInstance().get(java.util.Calendar.YEAR)
+                            Row(
+                                Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                DateDropdown("年", dateY, (0..(curYear + 1)).toList(), Modifier.weight(1.15f)) { dateY = it }
+                                DateDropdown("月", dateM, (0..12).toList(), Modifier.weight(1f)) { dateM = it }
+                                DateDropdown("日", dateD, (0..dim).toList(), Modifier.weight(1f)) { dateD = it }
+                            }
+                            val dateSet = dateY > 0 && dateM > 0 && dateD > 0
+                            Text(
+                                if (dateSet) "%04d-%02d-%02d".format(dateY, dateM, dateD)
+                                else "未设置(任一下拉选「未设置」即清除日期)",
+                                style = body(11f, FontWeight.Normal, if (dateSet) c.n600 else c.n400),
+                            )
                         }
                     },
                     confirmButton = {
                         androidx.compose.material3.TextButton(onClick = {
                             vm.albumEditInfo = false
-                            vm.saveAlbumInfo(albumId, name.trim(), artist.trim(), type)
-                            vm.rematchPromptFor = "album:$albumId"
+                            // v1.2.2: 有共享 albumId → 走专辑级保存(含类型/重匹配);
+                            // 无(合集 albumKey 非 aid:) → 只改歌手(整组单曲级)。
+                            android.util.Log.d("ArtistEdit", "dialog save: albumKey=${vm.albumKey} albumId=$albumId effAlbumId=$effAlbumId name=${name.trim()} artist=${artist.trim()}")
+                            if (albumId != null) {
+                                vm.saveAlbumInfo(albumId, name.trim(), artist.trim(), type)
+                                vm.rematchPromptFor = "album:$albumId"
+                                // v1.3.5: 日期一并保存(全 0 → 空串=清除)
+                                if (effAlbumId > 0) {
+                                    val iso = if (dateY > 0 && dateM > 0 && dateD > 0)
+                                        "%04d-%02d-%02d".format(dateY, dateM, dateD) else ""
+                                    if (iso != savedDate) vm.saveAlbumReleaseDate(effAlbumId, iso)
+                                }
+                            } else {
+                                vm.setAlbumArtist(vm.albumKey!!, artist.trim())
+                            }
                         }) { Text("保存", style = body(14f, FontWeight.SemiBold, c.a700)) }
                     },
                     dismissButton = {
@@ -1974,7 +2285,7 @@ private fun AlbumEditDialogs(vm: MainViewModel, trackEditFor: Long?, onTrackEdit
             val first = vm.albumOrder(vm.albumKey!!).firstOrNull()
             val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
                 if (uri != null) {
-                    vm.saveAlbumCover(albumId, uri.toString())
+                    vm.saveAlbumCover(effAlbumId, uri.toString())
                     vm.albumCoverEdit = false
                 }
             }
@@ -2025,7 +2336,7 @@ private fun AlbumEditDialogs(vm: MainViewModel, trackEditFor: Long?, onTrackEdit
                                     ) {
                                         candidates.forEach { cand ->
                                             CandidateCover(cand) {
-                                                vm.saveAlbumCover(albumId, cand.artUrl)
+                                                vm.saveAlbumCover(effAlbumId, cand.artUrl)
                                                 vm.albumCoverEdit = false
                                             }
                                         }
@@ -2052,7 +2363,7 @@ private fun AlbumEditDialogs(vm: MainViewModel, trackEditFor: Long?, onTrackEdit
                                     ),
                                 )
                                 androidx.compose.material3.TextButton(onClick = {
-                                    if (linkUrl.isNotBlank()) { vm.saveAlbumCover(albumId, linkUrl.trim()); vm.albumCoverEdit = false }
+                                    if (linkUrl.isNotBlank()) { vm.saveAlbumCover(effAlbumId, linkUrl.trim()); vm.albumCoverEdit = false }
                                 }) { Text("保存", style = body(14f, FontWeight.Bold, c.accent)) }
                             }
                         }
@@ -2088,7 +2399,7 @@ private fun AlbumEditDialogs(vm: MainViewModel, trackEditFor: Long?, onTrackEdit
                         }) { Text("选相册", style = body(14f, FontWeight.SemiBold, c.a700)) }
                         androidx.compose.material3.TextButton(onClick = {
                             vm.albumCoverEdit = false
-                            vm.clearAlbumCover(albumId)
+                            vm.clearAlbumCover(effAlbumId)
                         }) { Text("恢复默认", style = body(14f, FontWeight.Normal, c.n600)) }
                         androidx.compose.material3.TextButton(onClick = { vm.albumCoverEdit = false }) { Text("取消", style = body(14f, FontWeight.Normal, c.n600)) }
                     }

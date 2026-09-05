@@ -17,6 +17,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -45,6 +46,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
@@ -100,12 +102,15 @@ fun PermStep(vm: MainViewModel) {
             Modifier
                 .size(96.dp)
                 .shadowMd(CircleShape)
-                .clip(CircleShape)
-                .background(c.a300),
+                .clip(CircleShape),
             contentAlignment = Alignment.Center,
         ) {
-            // v1.8 brand mark: bowl catching a falling sound seed
-            OIcon(Lucide.Logo, 54.dp, c.a900)
+            // 与 launcher 同款图标(pickupmusic.png),与新图标统一,不再用旧 brand mark。
+            Image(
+                painter = painterResource(com.shiyin.music.R.drawable.pickupmusic),
+                contentDescription = "拾音",
+                modifier = Modifier.fillMaxSize(),
+            )
         }
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text("拾音", style = heading(40))

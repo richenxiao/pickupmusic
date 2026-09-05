@@ -39,6 +39,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.text.Collator
@@ -46,7 +47,7 @@ import java.util.Locale
 
 enum class Tab { Home, Search, Library }
 enum class ObStage { Perm, Scan, Done }
-enum class FilesView { Root, Clean, Trash, Folders, FolderContent, Ignored, Devices, About, Merges }
+enum class FilesView { Root, Clean, Trash, Folders, FolderContent, Ignored, Devices, About, Merges, ImageSources }
 enum class LyState { Idle, Searching, Failed }
 enum class LyricsKind { Embedded, Sidecar, Online, Imported }
 
@@ -80,6 +81,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private val db = AppDatabase.get(app)
     private val dao = db.dao()
+    /** v1.2.1: 与 player 同寿命的 app 级 scope。play-tracking DB 写(insertPlayEvent/markCounted/
+     *  finalizePlayEvent/pushRecent)用它而非 viewModelScope——viewModelScope 在 onCleared 前已被
+     *  cancel,退出时 flush 的 finalizePlayEvent 会变 no-op 致 playedSec 永久丢;且 Activity 销毁后
+     *  player 仍在 appScope 后台播,改用 appScope 后台播放仍被追踪。 */
+    private val appScope = (app as com.shiyin.music.ShiyinApp).appScope
     /** v1.2.0 阶段三：用户修正数据导出/导入。 */
     private val backupManager = com.shiyin.music.data.db.BackupManager(dao)
     // 共享 OkHttpClient，避免每次切歌新建连接池/线程池泄漏
@@ -91,6 +97,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** Returns a map of albumId -> releaseDate ISO string from album_art_cache. */
     suspend fun releaseDates(): Map<Long, String> = withContext(Dispatchers.IO) {
         dao.allArtCache().associate { it.albumId to it.releaseDate }
+    }
+
+    /** v1.3.3b: 单张专辑的发布日期(ISO 串,如 "1987-07-21T07:00:00Z";空=无)——
+     *  专辑页歌手名下显示用。 */
+    suspend fun releaseDateOf(albumId: Long): String = withContext(Dispatchers.IO) {
+        if (albumId <= 0) "" else dao.albumArtCache(albumId)?.releaseDate ?: ""
     }
     val settingsStore = SettingsStore(app)
     val player: PlayerController = (app as ShiyinApp).player
@@ -110,7 +122,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     // v1.2.0 #6: 歌手写真 URL（经 ArtistImageResolver 解析：override→cache→Discogs 等自动源）。
     // 与 artist.avatarUrl 解耦——头图改走本独立层，album cover cache 不混。
     var artistImages by mutableStateOf<Map<String, String>>(emptyMap()); private set
-    fun artistImage(name: String): String = artistImages[name] ?: ""
+    /** v1.3.5: 经 alias 归一再查(统计页/搜索页拿到的歌手名可能是合并前的原名,
+     *  直接按原名查缓存 miss → resolve 又触发一次网络、还常拿空 →"写真明明有,
+     *  这里却占位"的根因)。命中别名归并直接复用规范名的 URL。 */
+    fun artistImage(name: String): String =
+        artistImages[name] ?: artistImages[resolveArtist(name)] ?: ""
     var playCounts by mutableStateOf<Map<Long, Int>>(emptyMap()); private set
     var albumOverrides by mutableStateOf<Map<Long, AlbumOverrideEntity>>(emptyMap()); private set
     // v4.3: album-level manual edits (name/artist/cover) + single-track edits
@@ -118,6 +134,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     var trackInfoOverrides by mutableStateOf<Map<Long, com.shiyin.music.data.db.TrackInfoOverrideEntity>>(emptyMap()); private set
     // v4.3: 单曲迁移专辑（mediaId -> 目标 albumId），修正扫描错误的专辑归属
     var trackAlbumMoves by mutableStateOf<Map<Long, Long>>(emptyMap()); private set
+    // v1.3.3b: 歌手页专辑手动排序（歌手名 -> 专辑 key 有序列表），有则覆盖日期排序。
+    var artistAlbumOrders by mutableStateOf<Map<String, List<String>>>(emptyMap()); private set
+    /** v1.3.3b: 歌手页专辑列表日期异步加载结果（albumId -> ISO 日期），加载后 bump 触发重组。 */
+    var albumDateRevision by mutableStateOf(0); private set
+    private var albumDateCache: Map<Long, String> = emptyMap()
+    fun albumDateOf(albumId: Long): String = albumDateCache[albumId] ?: ""
 
     // v1.1.0: 振假名准确率层
     val furiganaJmdict = com.shiyin.music.data.furigana.JMdictReadingDictionary()
@@ -140,6 +162,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     var firstScanDone by mutableStateOf(false); private set
     var recentIds by mutableStateOf<List<Long>>(emptyList()); private set
     var deepseekApiKey by mutableStateOf(""); private set
+    /** v1.2.2 Agent: Tavily 联网搜索 key。 */
+    var tavilyApiKey by mutableStateOf(""); private set
+    /** v1.2.2 Agent: LLM 提供商配置(多供应商)+ 当前激活的 provider key。Agent 引擎据此选 LLM。 */
+    var llmProviders by mutableStateOf<List<com.shiyin.music.data.ai.LlmProviderConfig>>(com.shiyin.music.data.ai.LlmConfig.PRESETS); private set
+    var llmActiveProvider by mutableStateOf("deepseek"); private set
+    // v1.2.1: 写真源运行时可配(设置·写真源里填/开关)。空串=未配;disabledImageSources=关掉的源 key。
+    var fanartApiKey by mutableStateOf(""); private set
+    var lastfmApiKey by mutableStateOf(""); private set
+    var disabledImageSources by mutableStateOf<Set<String>>(emptySet()); private set
+    /** v1.3.2: 自定义写真源(设置·写真源可增删,CustomSource 按模板拉图)。 */
+    var customImageSources by mutableStateOf<List<com.shiyin.music.data.image.CustomImageSourceDef>>(emptyList()); private set
     // v1.1+: 自动保存识别结果（默认开）。关时识别结果临时展示不写入持久化。
     var autoSaveRecognition by mutableStateOf(true); private set
     // v1.1+: 自动识别缓存占用（歌词+封面），供设置页显示与清理。null=未统计。
@@ -161,6 +194,30 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     var scanDiagnosticResult by mutableStateOf<String?>(null)
 
     var tab by mutableStateOf(Tab.Home)
+    /** v1.3.3 返回恢复:下钻(openAlbum/openArtist/openPlaylist)把非 Library 的 tab 切到
+     *  Library 前,先记下来源 tab;返回清下钻层时恢复它(否则从首页进专辑返回落到音乐库)。
+     *  只有一层深度(下钻层互斥,进新层前清旧层),单字段即可,无栈。 */
+    private var prevTab: Tab? = null
+    /** v1.3.3 返回恢复:首页滚动位置常驻 VM——HomeScreen 被 AnimatedContent 销毁
+     *  重建(进专辑切 contentKey)后 rememberScrollState 归零;VM 持有则位置保留。
+     *  lazy:构造期不碰 Compose 快照(KSP/构造链安全),首次访问才创建。 */
+    val homeScroll: androidx.compose.foundation.ScrollState by lazy { androidx.compose.foundation.ScrollState(0) }
+    /** v1.3.3 返回恢复:歌手页 UI 状态快照(展开/滚动位),key=歌手名。
+     *  onDispose 即写回;完整退出歌手页清(不跨"完整退出"记住,参照主流)。 */
+    private val _artistUiStates = androidx.compose.runtime.mutableStateOf<Map<String, com.shiyin.music.ui.ArtistUiState>>(emptyMap())
+    val artistUiStates: Map<String, com.shiyin.music.ui.ArtistUiState> get() = _artistUiStates.value
+
+    fun artistUiState(name: String): com.shiyin.music.ui.ArtistUiState =
+        _artistUiStates.value[name] ?: com.shiyin.music.ui.ArtistUiState()
+    fun saveArtistUiState(name: String, s: com.shiyin.music.ui.ArtistUiState) {
+        _artistUiStates.value = _artistUiStates.value + (name to s)
+    }
+    /** 完整退出/主动离开歌手页时清快照,不残留污染下次进入。默认清当前 artistKey
+     *  对应歌手;artistKey 已被清空的场景(BottomNav 先清 key)可显式传 [name]。 */
+    fun clearArtistUiState(name: String? = null) {
+        val n = name ?: artistKey ?: return
+        _artistUiStates.value = _artistUiStates.value - n
+    }
     var sidebarOpen by mutableStateOf(false)
     var libSearchQuery by mutableStateOf("")
     var settingsOpen by mutableStateOf(false)
@@ -187,6 +244,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     // 待应用顺序 + 未匹配歌名暂存在此，由 UI 弹确认窗等待用户抉择。null=无待确认。
     var pendingOrder by mutableStateOf<Pair<List<Long>, List<String>>?>(null); private set
     private var pendingKey: String? = null
+    /** v1.3.3: 待确认顺序的来源("text"=专辑文本排序框 / "agent"=Agent 写回)——
+     *  决定确认窗显示在哪:文本排序的窗留在专辑页(有"返回修改"联动),Agent 的窗
+     *  提到 AppRoot 全局层(Agent 页打开时专辑页不在组合中,原窗根本不出现 → 卡死)。 */
+    var pendingSource by mutableStateOf<String?>(null); private set
     // v4.3: album ⋮ menu (replaces the old top-right ⋮ which only toggled text
     // sort). Opens from the edit-pill next to 播放专辑 and offers four actions:
     // drag-sort, text-sort, edit-info, change-cover.
@@ -272,9 +333,24 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 firstScanDone = s.firstScanDone
                 recentIds = s.recentIds
                 deepseekApiKey = s.deepseekApiKey
+                tavilyApiKey = s.tavilyApiKey
+                // v1.2.2 Agent: LLM 提供商配置 + 当前激活 provider(引擎据此选 LLM)
+                llmProviders = s.llmProviders
+                llmActiveProvider = s.llmActiveProvider
+                // v1.2.2 Agent: 把 LLM key 同步到 provider(源读取它,即时生效)
+                com.shiyin.music.data.ai.DeepSeekProvider.apiKey = s.deepseekApiKey
                 autoSaveRecognition = s.autoSaveRecognition
                 playbackSpeed = s.playbackSpeed
                 retroSpeedMode = s.retroSpeedMode
+                // v1.2.1: 写真源运行时配置同步到 ImageSourceConfig(源读取它,即时生效)
+                fanartApiKey = s.fanartApiKey
+                lastfmApiKey = s.lastfmApiKey
+                disabledImageSources = s.disabledImageSources
+                customImageSources = s.customImageSources
+                com.shiyin.music.data.image.ImageSourceConfig.fanartApiKey = s.fanartApiKey
+                com.shiyin.music.data.image.ImageSourceConfig.lastfmApiKey = s.lastfmApiKey
+                com.shiyin.music.data.image.ImageSourceConfig.disabledSources = s.disabledImageSources
+                com.shiyin.music.data.image.ImageSourceConfig.customSources = s.customImageSources
                 if (!settingsLoaded) {
                     settingsLoaded = true
                     isOnboarding = !s.onboarded
@@ -303,6 +379,20 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch { dao.albumInfoOverrideFlow().collect { l -> albumInfoOverrides = l.associateBy { it.albumId } } }
         viewModelScope.launch { dao.trackInfoOverrideFlow().collect { l -> trackInfoOverrides = l.associateBy { it.mediaId } } }
         viewModelScope.launch { dao.trackAlbumMoveFlow().collect { l -> trackAlbumMoves = l.associate { it.mediaId to it.albumId } } }
+        // v1.3.3b: 歌手页专辑手动排序 + 专辑日期缓存(一次性读全表——歌手/专辑数有限)
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val orders = dao.allArtistAlbumOrders().associate { e ->
+                    e.artistName to e.albumKeys.split(",").filter { it.isNotBlank() }
+                }
+                val dates = dao.allArtCache().associate { it.albumId to it.releaseDate }
+                withContext(Dispatchers.Main) {
+                    artistAlbumOrders = orders
+                    albumDateCache = dates
+                    albumDateRevision++
+                }
+            } catch (_: Exception) { }
+        }
         // v1.1.0: 振假名准确率层——后台加载 JMdict 派生词典 + 全局 override。
         // JMdict 冷解析在 IO 线程；未完成时 pipeline 跳过该层（安全降级，Kuromoji 兜底）。
         // ⚠️ 加载完成后必须 bump furiganaRevision——否则 produceState 不重算，第一首歌
@@ -338,7 +428,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 applyPendingRoutingFromDeviceRouter()
             }
         }
-        player.connect(app, { id -> onTrackStarted(id) }, { id -> onPlayCounted(id) }, { id, sec -> onPlayFinalized(id, sec) })
+        player.connect(app, { id, sid -> onTrackStarted(id, sid) }, { rowId, id -> onPlayCounted(rowId, id) }, { rowId, id, sec -> onPlayFinalized(rowId, id, sec) })
     }
 
     private var permGranted = false
@@ -368,10 +458,38 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      *  artist_image_cache / artist_image_override 表，扫描/更新不丢、自动源不覆盖手选。 */
     private val artistImageResolver = com.shiyin.music.data.image.ArtistImageResolver(dao)
 
+    /** v1.3.5: 头像语义的取图(列表/统计页小圆框用)——personOnly=true:只找人物照,
+     *  不拿专辑封面/banner 兜底。封面横幅塞进圆框会把人截成半张脸("头像显示不全"
+     *  的根因);歌手页大写真仍走 [fetchArtistAvatar](允许专辑兜底,宽图整张展示)。 */
+    fun fetchArtistAvatarPerson(name: String) {
+        viewModelScope.launch {
+            val canonical = resolveArtist(name)
+            val img = artistImageResolver.resolve(canonical, personOnly = true)
+            val url = img?.url ?: ""
+            // personOnly 解析为空时不清已有 URL(artistImages 里可能已有非 person 图,
+            // 有一张比空占位好);只在拿到结果时覆盖。
+            if (url.isNotBlank()) {
+                val extra = buildMap {
+                    put(name, url)
+                    if (canonical != name) put(canonical, url)
+                }
+                artistImages = artistImages + extra
+            }
+        }
+    }
+
     fun fetchArtistAvatar(name: String) {
         viewModelScope.launch {
-            val img = artistImageResolver.resolve(name, personOnly = false)
-            artistImages = artistImages + (name to (img?.url ?: ""))
+            // v1.3.5: 先经 alias 归一——与歌手页同 key,别名合并过的歌手不重复解析,
+            // 也修"统计页/搜索页按原名解析 miss → 占位,写真其实在规范名下"。
+            val canonical = resolveArtist(name)
+            val img = artistImageResolver.resolve(canonical, personOnly = false)
+            val url = img?.url ?: ""
+            val extra = buildMap {
+                put(name, url)
+                if (canonical != name) put(canonical, url)
+            }
+            artistImages = artistImages + extra
         }
     }
 
@@ -416,13 +534,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** v1.2.0 #6: 用该歌手某张专辑的封面作写真——提取封面 bitmaps 存内部文件,file:// 覆盖。 */
+    /** v1.2.0 #6: 用该歌手某张专辑的封面作写真——提取封面 bitmaps 存内部文件,file:// 覆盖。
+     *  v1.2.1: 直接复用 ArtCache.load(UI 显示封面走的同一条解析链:custom cover→内嵌→
+     *  iTunes 远程),保证"专辑页能显示的封面,这里就取得到"。旧实现自己重造 loadThumbnail
+     *  三级回退,对"封面已显示但 loadThumbnail 失败"的专辑仍报"暂无可用封面"。 */
     fun setArtistImageFromAlbumCover(name: String, track: com.shiyin.music.data.Track) {
         viewModelScope.launch {
             val ok = withContext(Dispatchers.IO) {
                 runCatching {
                     val ctx = getApplication<android.app.Application>()
-                    val bmp = ctx.contentResolver.loadThumbnail(track.uri, android.util.Size(600, 600), null)
+                    val bmp = com.shiyin.music.ui.components.ArtCache.load(ctx, track, 600)
+                        ?: return@runCatching false
                     val safe = name.filter { it.isLetterOrDigit() || it == '_' }.ifBlank { "artist" }
                     val dir = java.io.File(ctx.filesDir, "artist_image_override").apply { mkdirs() }
                     dir.listFiles()?.filter { it.name.startsWith("${safe}_") }?.forEach { it.delete() }
@@ -434,7 +556,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     true
                 }.getOrDefault(false)
             }
-            if (!ok) showToast("专辑封面保存失败", null)
+            if (!ok) showToast("该专辑无可用封面，可改用粘贴链接", null)
         }
     }
 
@@ -442,19 +564,42 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     // 供用户挑换;选完调 setArtistImageOverride 写覆盖(永久,旧覆盖被替换),UI 自动刷新。
     var artistPhotoPickerFor by mutableStateOf<String?>(null)
     var artistImageCandidates by mutableStateOf<List<com.shiyin.music.data.image.ArtistImage>>(emptyList()); private set
+    /** v1.2.1: picker 增量进度。pending=尚未完成的源数;total=参与源总数。UI 据此显示"搜索中… N/total",
+     *  不再空等所有源(最慢 18s 超时)才出结果——源完成一个就追加候选,数量实时涨,用户知道没卡死。 */
+    var artistPickerPending by mutableStateOf(0); private set
+    var artistPickerTotal by mutableStateOf(0); private set
 
     fun openArtistPhotoPicker(name: String) {
         artistPhotoPickerFor = name
         artistImageCandidates = emptyList()
+        val sources = com.shiyin.music.data.image.ArtistImageSources.enabledSources()
+        artistPickerTotal = sources.size
+        artistPickerPending = sources.size
         viewModelScope.launch {
-            // 各源 fetchAll 返回该源全部图(Discogs 多张/AudioDB thumb+fanart/Fanart bg+thumb),flatten 后去重。
-            // personOnly=true:跳过 iTunes(只回专辑封面,非人物照,且专辑封面已在「专辑封面」区可选)。
-            val list = coroutineScope {
-                com.shiyin.music.data.image.ArtistImageSources.sources
-                    .map { async { runCatching { it.fetchAll(name, personOnly = true) }.getOrNull().orEmpty() } }
-                    .awaitAll().flatten()
+            // v1.2.1: 增量——每源完成立刻追加新候选(去重),pending 递减。不 awaitAll 等所有。
+            val mu = kotlinx.coroutines.sync.Mutex()
+            val seenUrls = mutableSetOf<String>()
+            val jobs = sources.map { src ->
+                launch {
+                    var r = runCatching { src.fetchAll(name, personOnly = true) }.getOrNull().orEmpty()
+                    // v1.3.3b review#B9: picker 候选预检——无尺寸元数据的图(百度 middleURL、
+                    // 百科抓取图等)探测一次真实尺寸:死链/无法解码的在此滤掉,不让用户选完
+                    // 写进 override 后才发现头像空白(override 最高优先级且永不自动回退)。
+                    // 探测带出真实尺寸还能让 UI 裁剪按比例走。
+                    r = r.mapNotNull { img ->
+                        if (img.width > 0 && img.height > 0) img
+                        else artistImageResolver.probeDimensions(img.url)?.let { (w, h) -> img.copy(width = w, height = h) }
+                    }
+                    android.util.Log.d("AIM", "picker src ${src.key}: ${r.size} imgs" + (r.firstOrNull()?.url?.let { " first=${it.take(70)}" } ?: ""))
+                    mu.withLock {
+                        val fresh = r.filter { seenUrls.add(it.url) }  // add 返回 false=已存在→过滤掉
+                        if (fresh.isNotEmpty()) artistImageCandidates = (artistImageCandidates + fresh)
+                    }
+                    artistPickerPending = (artistPickerPending - 1).coerceAtLeast(0)
+                }
             }
-            artistImageCandidates = list.distinctBy { it.url }
+            jobs.forEach { it.join() }
+            artistPickerPending = 0
         }
     }
 
@@ -621,6 +766,19 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 return
             }
             player.syncQueue(ts)
+        } else if (key != null && key.startsWith("artist:")) {
+            // v1.3.2: 歌手队列保持歌手范围,与 album: 同样不被同步成全库——
+            // 旧逻辑 artist: 队列落进 else 分支,库一变队列就被替换成 sortedSongs()(全库)。
+            val ts = artistQueue(key.removePrefix("artist:"))
+            val cur = player.currentId
+            if (ts.isEmpty() || cur == null || ts.none { it.id == cur }) {
+                if (player.currentId != null && trackById(player.currentId) == null) {
+                    player.stopAndClear()
+                    playerOpen = false
+                }
+                return
+            }
+            player.syncQueue(ts)
         } else {
             player.syncQueue(sortedSongs())
         }
@@ -670,6 +828,44 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun resetAlbumOrder(key: String) {
         viewModelScope.launch(Dispatchers.IO) { dao.deleteOrder(key) }
+    }
+
+    // ── v1.3.3b: 歌手页专辑排序(手动 + AI 按发布时间) ──────────────────────
+    /** 保存某歌手的专辑顺序(手动拖拽/AI 排完后调用)。乐观更新内存 + 异步落库。
+     *  v1.3.3b review#2: state 写入切主线程(v5.2 #75 同因——后台线程写 snapshot
+     *  不保证立刻触发重组;fetchArtistAlbumDates 在 IO 协程里调这里)。 */
+    fun saveArtistAlbumOrder(artistName: String, keys: List<String>) {
+        viewModelScope.launch(Dispatchers.Main) {
+            artistAlbumOrders = artistAlbumOrders + (artistName to keys)
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            dao.upsertArtistAlbumOrder(
+                com.shiyin.music.data.db.ArtistAlbumOrderEntity(
+                    artistName, keys.joinToString(","), System.currentTimeMillis(),
+                )
+            )
+        }
+    }
+
+    /** 清除某歌手的手动专辑顺序(恢复按日期/名称自动排序)。 */
+    fun clearArtistAlbumOrder(artistName: String) {
+        viewModelScope.launch(Dispatchers.Main) { artistAlbumOrders = artistAlbumOrders - artistName }
+        viewModelScope.launch(Dispatchers.IO) { dao.deleteArtistAlbumOrder(artistName) }
+    }
+
+    /** 写入一张专辑的发布日期(iTunes 已有/AI 补查都用此入口),刷新内存缓存。
+     *  review#2: state 写入切主线程,DB 写留 IO。 */
+    fun saveAlbumReleaseDate(albumId: Long, iso: String) {
+        // v1.3.5: iso 允许空串=清除日期(编辑弹窗把年/月/日滑到 0 保存 → 清除);
+        // albumId<=0 仍然忽略。空串也走缓存+落库,专辑页/歌手栏随即不再显示日期。
+        if (albumId <= 0) return
+        viewModelScope.launch(Dispatchers.Main) {
+            albumDateCache = if (iso.isBlank()) albumDateCache - albumId else albumDateCache + (albumId to iso)
+            albumDateRevision++
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            try { dao.updateAlbumReleaseDate(albumId, iso) } catch (_: Exception) { }
+        }
     }
 
     fun snapshotAlbumOrder() {
@@ -779,13 +975,23 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val newOrder = mutableListOf<Long>()
         val used = HashSet<Long>()
         val missed = mutableListOf<String>() // v4.5: 记录未能匹配的行，交给 UI 提示
+        // v1.3.2: 归一化匹配——AI/网络版歌名与本地常有一丁点形式差异:括号注记
+        // ((feat. XX)/(Live))、空格差异(「何なん w」vs「何なんw」)等。比对时剥掉
+        // 括号注记与全部空白,这类行不再落进"未识别"。
+        fun normTitle(s: String): String =
+            s.replace(Regex("[(（\\[【].*?[)）\\]】]]"), "").replace(Regex("""\s+"""), "")
+        val normById = tracks.associate { it.id to normTitle(it.title).lowercase() }
         for (line in lines) {
             val title = line.replace(Regex("""^\d+[.、)\s]*"""), "").trim()
             if (title.isEmpty()) continue
+            val nTitle = normTitle(title).lowercase()
             // Prefer exact match first; fall back to contains so shorthand works.
             val match =
                 tracks.firstOrNull { it.id !in used && it.title.equals(title, ignoreCase = true) }
                     ?: tracks.firstOrNull { it.id !in used && it.title.contains(title, ignoreCase = true) }
+                    ?: tracks.firstOrNull { it.id !in used && nTitle.isNotEmpty() && normById[it.id] == nTitle }
+                    ?: tracks.firstOrNull { it.id !in used && nTitle.isNotEmpty() && normById[it.id]?.contains(nTitle) == true }
+                    ?: tracks.firstOrNull { it.id !in used && title.contains(it.title, ignoreCase = true) }
             if (match == null) { missed += title; continue } // v4.5: 跳过前记一笔，不再静默
             newOrder.add(match.id)
             used += match.id
@@ -797,6 +1003,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         if (missed.isNotEmpty()) {
             pendingOrder = newOrder.toList() to missed
             pendingKey = key
+            pendingSource = "text"
             return
         }
         commitOrder(key, newOrder.toList())
@@ -808,6 +1015,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val key = pendingKey ?: return
         pendingOrder = null
         pendingKey = null
+        pendingSource = null
         commitOrder(key, po.first)
     }
 
@@ -815,15 +1023,484 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun cancelPendingOrder() {
         pendingOrder = null
         pendingKey = null
+        pendingSource = null
+    }
+
+    /**
+     * v1.3.3: Agent 按本地索引写回专辑排序——AI 直接输出"本地编号序列"(对哪首排第几
+     * 做判断),不再输出官方歌名文本让本地猜匹配。名字与官方有一丁点差异(feat. 括号/
+     * 空格/繁简)由 AI 在分析时理清对应关系,这就是"AI 智能决策"而非"本地容错兜底"。
+     *
+     * 编号覆盖全部曲目 → 直接落库;有缺(AI 没确定全部)→ 走 pendingOrder 确认窗,
+     * 未确定的曲目按原相对顺序补尾,绝不硬编。
+     */
+    fun applyAlbumOrderIndices(key: String, indices: List<Int>) {
+        val tracks = albumOrder(key)
+        if (tracks.isEmpty()) return
+        val seen = HashSet<Int>()
+        val valid = indices.filter { it in tracks.indices && seen.add(it) }
+        if (valid.isEmpty()) return
+        val full = valid.map { tracks[it].id } +
+            tracks.filterIndexed { i, _ -> i !in seen }.map { it.id }
+        if (valid.size < tracks.size) {
+            pendingOrder = full to tracks.filterIndexed { i, _ -> i !in seen }.map { it.title }
+            pendingKey = key
+            pendingSource = "agent"
+        } else {
+            commitOrder(key, full)
+        }
     }
 
     /** 乐观更新内存 orders + 异步写库。applyAlbumOrderText / commitPendingOrder 共用。 */
-    private fun commitOrder(key: String, final: List<Long>) {
-        orders = orders + (key to final)  // 7-D: 即时刷新 UI
+    private fun commitOrder(key: String, final: List<Long>) {        orders = orders + (key to final)  // 7-D: 即时刷新 UI
         viewModelScope.launch(Dispatchers.IO) {
             dao.upsertOrder(AlbumOrderEntity(key, final.joinToString(",")))
         }
     }
+
+    // ── v1.2.2 Agent:对话式引擎入口(独立对话页) ────────────────────────────
+    // 用户在 Agent 页发自然语言指令 → AgentEngine.understand 选技能 → 执行 → 步骤面板
+    // 实时更新 → 写回前走 pendingOrder 闸门。写入层只碰 track_info_override/album_order/
+    // track_album_move,绝不碰 artist_aliases 全局表。
+    var agentOpen by mutableStateOf(false)
+    var agentSettingsOpen by mutableStateOf(false)
+    /** 对话消息流(用户消息 + Agent 消息,含步骤面板 + tokens)。 */
+    var agentMessages by mutableStateOf<List<AgentMessage>>(emptyList()); private set
+    var agentRunning by mutableStateOf(false); private set
+    /** 本次最近一次 LLM 调用的 tokens(供设置页/对话显示)。 */
+    var agentLastTokens by mutableStateOf<Pair<Int, Int>>(0 to 0); private set
+    /** 累计 prompt/completion tokens(从 token_usage_log 表读)。 */
+    var agentTotalTokens by mutableStateOf<Pair<Long, Long>>(0L to 0L); private set
+    /** v1.3.2: 默认回复建议(专辑页 Agent 入口带入,Agent 页点一条即发送)。 */
+    var agentSuggestions by mutableStateOf<List<String>>(emptyList()); private set
+    /** v1.3.3: 输入框草稿——离开 Agent 页暂存,回来恢复;执行中也能继续码字。 */
+    var agentDraft by mutableStateOf("")
+    /** v1.3.3: 当前 Agent 执行协程——供打断(对标 Claude/ChatGPT 的停止按钮)。 */
+    private var agentJob: kotlinx.coroutines.Job? = null
+
+    /** v1.3.3: 用户主动打断当前 Agent 回复/执行(停止按钮)。 */
+    fun stopAgent() {
+        agentJob?.let { job ->
+            if (job.isActive) {
+                job.cancel()
+                // 在当前消息尾部补一条打断提示(如果有进行中的消息);同时把步骤面板
+                // 里还在 RUNNING 的行标成终态——停止后波浪动画必须立刻停,不能继续转。
+                agentMessages.lastOrNull()?.let { last ->
+                    if (last.role == "agent") {
+                        val idx = agentMessages.size - 1
+                        val stoppedSteps = last.steps?.map {
+                            if (it.status == com.shiyin.music.data.ai.AgentEngine.StepStatus.RUNNING)
+                                it.copy(status = com.shiyin.music.data.ai.AgentEngine.StepStatus.FAILED, error = "已手动停止")
+                            else it
+                        }
+                        val stoppedText = if (last.text.isBlank()) "已停止。" else "${last.text}\n\n（已手动停止）"
+                        agentMessages = agentMessages.replaceAt(idx, last.copy(text = stoppedText, steps = stoppedSteps ?: last.steps))
+                    } else {
+                        agentMessages = agentMessages + AgentMessage("agent", "已停止。")
+                    }
+                }
+            }
+        }
+        agentJob = null
+        agentRunning = false
+    }
+
+    /** 打开 Agent 设置面板(右上齿轮)。 */
+    fun openAgentSettings() { agentSettingsOpen = true }
+
+    /** 刷新累计 tokens(从 DB 读)。Agent 页/设置页 onAppear 调。
+     *  v1.3.3b review#A1: state 写入切主线程(v5.2 #75 同因)。 */
+    fun refreshAgentTokens() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val t = com.shiyin.music.data.ai.TokenUsageStore.totals(getApplication())
+            kotlinx.coroutines.withContext(Dispatchers.Main) { agentTotalTokens = t }
+        }
+    }
+
+    /** Agent 对话消息。step=步骤面板(仅 Agent 消息);tokens=本次调用消耗。 */
+    data class AgentMessage(
+        val role: String,  // "user" / "agent"
+        val text: String,
+        val steps: List<com.shiyin.music.data.ai.AgentEngine.Step>? = null,
+        val tokens: Pair<Int, Int>? = null,
+        /** v1.3.3: 模型思考链(默认折叠,可展开)——让用户看到模型在想什么,不是空等。 */
+        val thinking: String? = null,
+        /** v1.3.3: 思考耗时 ms(UI 折叠态显示"已思考 X 秒",真实计时不用长度估)。 */
+        val thinkingMs: Long = 0L,
+    )
+
+    /** 当前上下文 + 写回桥,供 AgentEngine 技能调用。实现 SkillContext 接口。 */
+    private val agentCtx = object : com.shiyin.music.data.ai.AgentEngine.SkillContext {
+        override val albumKey: String? get() = this@MainViewModel.albumKey
+        override val artistKey: String? get() = this@MainViewModel.artistKey
+        override fun currentTrack(): Track? = player.currentId?.let { trackById(it) }
+        override fun albumTracks(): List<Track> = albumKey?.let { albumOrder(it) } ?: emptyList()
+        override fun albumTracksOf(key: String): List<Track> = albumOrder(key)
+
+        /** 按名找专辑:先精确(规范化后全等),再包含式;忽略大小写/空格/标点。 */
+        override fun findAlbum(query: String): String? {
+            val q = query.lowercase().filter { it.isLetterOrDigit() }
+            if (q.isBlank()) return null
+            val entries = albumsMap()
+            entries.forEach { (k, ts) ->
+                if (ts.firstOrNull()?.album?.lowercase()?.filter { it.isLetterOrDigit() } == q) return k
+            }
+            entries.forEach { (k, ts) ->
+                val n = ts.firstOrNull()?.album?.lowercase()?.filter { it.isLetterOrDigit() } ?: return@forEach
+                if (n.contains(q) || q.contains(n)) return k
+            }
+            return null
+        }
+
+        /** v1.3.6: 全库搜歌——标题/歌手/专辑任一模糊匹配(规范化后 contains),
+         *  按播放次数排序返回前 [limit] 条。"库里有没有XX"类问题不再靠模型瞎编。 */
+        override fun searchTracks(query: String, limit: Int): List<Track> {
+            val q = query.lowercase().filter { it.isLetterOrDigit() }
+            if (q.isBlank()) return emptyList()
+            val seen = HashSet<Long>()
+            return lib()
+                .filter { t ->
+                    seen.add(t.id) &&
+                        (t.title.lowercase().filter { it.isLetterOrDigit() }.contains(q) ||
+                            t.artist.lowercase().filter { it.isLetterOrDigit() }.contains(q) ||
+                            t.album.lowercase().filter { it.isLetterOrDigit() }.contains(q))
+                }
+                .sortedByDescending { playCountFor(it.id) }
+                .take(limit)
+        }
+
+        /** v1.3.6: 搜歌手名——库内歌手名模糊匹配,按该歌手总播放次数排序。 */
+        override fun searchArtists(query: String, limit: Int): List<String> {
+            val q = query.lowercase().filter { it.isLetterOrDigit() }
+            if (q.isBlank()) return emptyList()
+            val counts = HashMap<String, Int>()
+            for (t in lib()) {
+                for (a in com.shiyin.music.data.MediaScanner.splitArtists(t.artist)) {
+                    counts.merge(a, playCountFor(t.id), Int::plus)
+                }
+            }
+            return counts.entries
+                .filter { it.key.lowercase().filter { ch -> ch.isLetterOrDigit() }.contains(q) }
+                .sortedByDescending { it.value }
+                .take(limit)
+                .map { it.key }
+        }
+
+        override fun applyAlbumOrderText(key: String, text: String) = this@MainViewModel.applyAlbumOrderText(key, text)
+        override fun applyAlbumOrderIndices(key: String, indices: List<Int>) = this@MainViewModel.applyAlbumOrderIndices(key, indices)
+        override fun saveTrackInfo(mediaId: Long, title: String, artist: String) =
+            this@MainViewModel.saveTrackInfo(mediaId, title, artist, "")
+        override fun hasPendingOrder(): Boolean = pendingOrder != null
+        override fun logUsage(promptTokens: Int, completionTokens: Int, cacheTokens: Int) {
+            viewModelScope.launch(Dispatchers.IO) {
+                com.shiyin.music.data.ai.TokenUsageStore.log(
+                    getApplication(), llmActiveProvider, "agent", promptTokens, completionTokens, cacheTokens,
+                )
+            }
+        }
+    }
+
+    /** 用户在 Agent 页发指令。 */
+    fun sendAgentMessage(text: String) {
+        if (agentRunning || text.isBlank()) return
+        // v1.3.3b review#B6: 闸门过即置位——原 agentRunning=true 在消息 append 之后,
+        // 双击/IME onSend 与按钮点击并发时两次都能过闸 → 同一句话发两条、烧双份 token。
+        agentRunning = true
+        // v1.3.2: 用户开始对话后,初始建议立即消失(不常驻);本轮结束后按结果给后续建议
+        agentSuggestions = emptyList()
+        val config = activeLlmConfig()
+        android.util.Log.d(
+            "Agent",
+            "sendAgentMessage: provider=$llmActiveProvider model=${config?.model} baseUrl=${config?.baseUrl} " +
+                "keyLen=${config?.apiKey?.length ?: 0} tavilySet=${tavilyApiKey.isNotBlank()} ctx(album=$albumKey artist=$artistKey)",
+        )
+        agentMessages = agentMessages + AgentMessage("user", text.trim())
+        if (config == null) {
+            agentMessages = agentMessages + AgentMessage("agent", "尚未配置 LLM(右上设置里填 API Key + 选模型)。")
+            // review#B6: 未配置也是一次完整往返(同步回复),闸门放开
+            agentRunning = false
+            return
+        }
+        if (tavilyApiKey.isBlank()) {
+            agentMessages = agentMessages + AgentMessage("agent", "尚未配置 Tavily API Key(联网搜证不可用,在右上设置里填)。")
+        }
+        // v1.3.3: 持有 job 供 stopAgent() 打断
+        agentJob = viewModelScope.launch {
+            // 步骤面板状态(实时更新):先放意图理解的步骤,执行中按 skill 补 steps
+            val steps = mutableListOf<com.shiyin.music.data.ai.AgentEngine.Step>()
+            val msgIdx = agentMessages.size
+            // 占位一条 Agent 消息(后面替换)
+            agentMessages = agentMessages + AgentMessage("agent", "", steps.toList())
+            try {
+                // 1. 单次调用路由(v1.3.3: 技能判定 + 聊天回答合并为一次 LLM 往返,
+                //    闲聊不再"意图理解→聊天兜底"跑两次模型——那让"你好"也要等半分钟)
+                val history = agentMessages
+                    .filter { it.text.isNotBlank() && it.steps == null }
+                    .dropLast(1)  // 最后一条是刚 append 的当前指令,不算历史
+                    .takeLast(4)
+                    .map { it.role to it.text }
+                // 思考链实时流出(reasoning 增量) + 聊天回复实时流出(打字机数据源)
+                var intentThinking: String? = null
+                var streamedReply: String? = null
+                // v1.3.3b review#B2: SSE 回调在 IO 线程触发(LlmClient.callStream 在
+                // Dispatchers.IO)——按项目 v5.2 #75 约定,state 写入投递主线程执行,
+                // 思考胶囊/打字机不依赖"后台写 snapshot 恰好触发重组"。
+                val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
+                // v1.3.5: 事实性问题**先搜后答**——本地判定(问句+事实疑问词)在发车前
+                // 就查一遍,是事实问题 → 先 Tavily 搜证、带着资料路由,模型一次输出
+                // 核实后的答案。不再"先流出猜测、发现是 FACT 再吞回去重搜"(用户看到
+                // 答案闪现又消失,且猜测的瞎编答案不该露脸)。判定完全本地化,模型
+                // 不再打任何标记(不输出 FACT 字样,聊天文本零协议记号)。
+                val isFactQ = com.shiyin.music.data.ai.AgentEngine.looksLikeFactQuestion(text)
+                var webContext = ""
+                if (isFactQ && tavilyApiKey.isNotBlank()) {
+                    mainHandler.post {
+                        steps.upsert("web", "联网核实", com.shiyin.music.data.ai.AgentEngine.StepStatus.RUNNING)
+                        agentMessages = agentMessages.replaceAt(msgIdx, AgentMessage("agent", "", steps.toList()))
+                    }
+                    webContext = runCatching {
+                        com.shiyin.music.data.ai.TavilyService.search(tavilyApiKey, text.take(120))
+                    }.getOrNull() ?: ""
+                    mainHandler.post {
+                        steps.upsert("web", "联网核实", if (webContext.isBlank()) com.shiyin.music.data.ai.AgentEngine.StepStatus.FAILED else com.shiyin.music.data.ai.AgentEngine.StepStatus.DONE)
+                    }
+                }
+                var route = routeOnce(text, history, config, steps, msgIdx, mainHandler, webContext) { th, rp ->
+                    intentThinking = th; streamedReply = rp
+                }
+                if (route == null) {
+                    // 调用失败(429/网络/配置)——透传真实原因
+                    val err = com.shiyin.music.data.ai.LlmClient.lastError ?: "未知错误"
+                    agentMessages = agentMessages.replaceAt(
+                        msgIdx,
+                        AgentMessage("agent", "LLM 调用失败:$err\n请到右上「设置」检查供应商额度 / Key / 模型名。", steps.toList()),
+                    )
+                    return@launch
+                }
+                // v1.3.3b review#B7: 路由调用真实 usage(fast-path 无 LLM 调用=0)
+                val routeTokens = route.promptTokens to route.completionTokens
+                if (route.chatReply != null) {
+                    // 2a. 闲聊:回复已在 onContent 流式写入消息(打字机数据源已在)。
+                    // 这里只确保最终态一致并带真实思考耗时 + 本次 tokens。
+                    agentMessages = agentMessages.replaceAt(
+                        msgIdx,
+                        AgentMessage("agent", streamedReply ?: route.chatReply, null, tokens = routeTokens, thinking = route.thinking, thinkingMs = route.thinkingMs),
+                    )
+                    refreshAgentTokens()
+                    return@launch
+                }
+                // 2b. 技能路由。skill 与 chatReply 双空 = 模型无有效输出——按失败透传,不崩。
+                val plan = route.skill ?: run {
+                    val err = com.shiyin.music.data.ai.LlmClient.lastError ?: "模型无返回"
+                    agentMessages = agentMessages.replaceAt(msgIdx, AgentMessage("agent", "LLM 无有效回复:$err", steps.toList()))
+                    return@launch
+                }
+                android.util.Log.i("Agent", "plan: skill=${plan.skillKey} args=${plan.args} steps=${plan.steps}")
+                // v1.3.3 动画统一:步骤面板 = 思考后的产物,由路由(plan.steps)生成、显示在
+                // 思考胶囊下方(先思考→出计划→逐步执行)。步骤行文案优先用模型生成清单,
+                // fastPath/模型没给 steps 时用技能预置清单。
+                steps.clear()
+                val panelSteps = plan.steps.ifEmpty { panelStepsFor(plan.skillKey) }
+                for ((i, s) in panelSteps.withIndex()) {
+                    steps.add(com.shiyin.music.data.ai.AgentEngine.Step("step_$i", s, com.shiyin.music.data.ai.AgentEngine.StepStatus.PENDING))
+                }
+                agentMessages = agentMessages.replaceAt(msgIdx, AgentMessage("agent", "", steps.toList(), thinking = intentThinking))
+                // 2. 技能分发执行
+                val skill = com.shiyin.music.data.ai.AgentEngine.skillByKey(plan.skillKey)
+                if (skill == null) {
+                    agentMessages = agentMessages.replaceAt(msgIdx, AgentMessage("agent", "没有可执行技能「${plan.skillKey}」。"))
+                    return@launch
+                }
+                // v1.3.3b review#B7: lastTokens 原来恒 null(声明后从未赋值),"本次 N tokens"
+                // 从不显示——改记路由调用的真实 usage,技能内调用靠 refreshAgentTokens 累计。
+                val lastTokens: Pair<Int, Int>? = routeTokens
+                val result = skill.execute(
+                    agentCtx, plan.args, config, tavilyApiKey,
+                ) { id, st ->
+                    // 技能回调的语义步骤 id → 面板行:行文案用 plan 生成清单(upsert 就地
+                    // 更新时保留行上文案);语义索引超出模型给的步数时(模型只给 2 步但
+                    // 技能有 4 个回调)落到最后一行,不追加裸 id 行。
+                    val rowId = when (plan.skillKey) {
+                        "album_sort" -> when (id) {
+                            "tracks" -> "step_0"
+                            "search" -> "step_1"
+                            "analyze" -> "step_2"
+                            "writeback" -> "step_3"
+                            else -> id
+                        }
+                        // v1.3.6e: track_rename 三条路的步骤清单不同,按 args 分派行号:
+                        // rule=批量规则(分析/写回 2 行)|new_title=点名直改(定位/改名 2 行)
+                        // |其余=联网比对官方表(搜证/分析/写回 3 行)。
+                        "track_rename" -> when {
+                            plan.args.containsKey("rule") -> when (id) {
+                                "analyze" -> "step_0"
+                                "writeback" -> "step_1"
+                                else -> id
+                            }
+                            plan.args.containsKey("new_title") -> when (id) {
+                                "locate" -> "step_0"
+                                "rename" -> "step_1"
+                                else -> id
+                            }
+                            else -> when (id) {
+                                "search" -> "step_0"
+                                "analyze" -> "step_1"
+                                "writeback" -> "step_2"
+                                else -> id
+                            }
+                        }
+                        else -> when (id) {
+                            "search" -> "step_0"
+                            "analyze" -> "step_1"
+                            "writeback" -> "step_2"
+                            else -> id
+                        }
+                    }
+                    val effectiveRow = if (steps.none { it.id == rowId }) "step_${(steps.size - 1).coerceAtLeast(0)}" else rowId
+                    // v1.3.3: 联网搜证没搜到资料 → 行内给"未搜到相关资料"而不是空 ✗
+                    // (upsert 自动取的 lastError 已被业务路径清空)。
+                    val bizErr = if (st == com.shiyin.music.data.ai.AgentEngine.StepStatus.FAILED && id == "search")
+                        "未搜到相关资料" else null
+                    // v1.3.3b review#B2: 技能协程在 IO 线程回调——state 写入投递主线程。
+                    mainHandler.post {
+                        steps.upsert(effectiveRow, id, st, explicitError = bizErr)
+                        agentMessages = agentMessages.replaceAt(msgIdx, AgentMessage("agent", "", steps.toList(), lastTokens))
+                    }
+                }
+                // 记 tokens(意图理解 + 技能内 LLM 调用累计由 LlmClient 不自动汇总,
+                // 这里用一个近似:从 TokenUsageStore 读增量。简化:记录本次为 0 占位,
+                // 真实累计靠 refreshAgentTokens 从 DB 读)。
+                // v1.3.5: 面板清扫——技能 return 后仍可能有行停在 RUNNING(mainHandler
+                // 排队的 post 没到/技能路径漏回调,用户看到的"联网核实一直在滚、
+                // 写回永远 ○")。收尾时强制终态:还 RUNNING 的标 DONE(技能都 return 了,
+                // 说明流程走完)、没跑过的 PENDING 行从面板移除(不误导"还有事没做")。
+                // IO 协程里同步改 steps + 主线程写消息,一次落定。
+                for (i in steps.indices) {
+                    if (steps[i].status == com.shiyin.music.data.ai.AgentEngine.StepStatus.RUNNING) {
+                        steps[i] = steps[i].copy(status = com.shiyin.music.data.ai.AgentEngine.StepStatus.DONE)
+                    }
+                }
+                steps.removeAll { it.status == com.shiyin.music.data.ai.AgentEngine.StepStatus.PENDING }
+                // v1.3.3: 最终消息带上思考链(意图理解 + 技能内 LLM 调用,取最全的一条)+ 真实耗时。
+                val finalThinking = result.thinking ?: intentThinking
+                agentMessages = agentMessages.replaceAt(msgIdx, AgentMessage("agent", result.summary, steps.toList(), lastTokens, thinking = finalThinking, thinkingMs = route.thinkingMs))
+                // v1.3.2: 按本轮任务结果更新建议(点过/发过即消失,不常驻)
+                // v1.3.3: 删掉「查歌手名识别是否正确」建议——意义不明,任务完成后清空。
+                agentSuggestions = emptyList()
+                if (result.needsConfirm) {
+                    agentMessages = agentMessages + AgentMessage("agent", "部分曲目未匹配,请在弹出的确认窗里选择「应用已识别部分」或「取消」。")
+                }
+                refreshAgentTokens()
+            } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) {
+                    // v1.3.3: 用户打断——消息收尾(提示语+步骤标 FAILED)已由 stopAgent()
+                    // 在主线程完成,这里不再重复写消息(两处都写会竞态覆盖),只向上抛。
+                    throw e
+                }
+                agentMessages = agentMessages.replaceAt(msgIdx, AgentMessage("agent", "Agent 执行出错:${e.message ?: e.javaClass.simpleName}"))
+            } finally {
+                agentRunning = false
+            }
+        }
+    }
+
+    /** 面板预置步骤(按技能固定文案,与技能回调的语义 id 顺序一一对应)。 */
+    private fun panelStepsFor(skillKey: String): List<String> = when (skillKey) {
+        "album_sort" -> listOf("读取专辑曲目", "联网搜索官方顺序", "AI 核对生成顺序", "写回排序")
+        "artist_fix" -> listOf("联网搜证", "AI 分析修正", "写回本地")
+        "track_rename" -> listOf("联网搜证", "AI 分析修正", "写回本地")
+        "lyrics_fetch" -> listOf("搜索歌词源")
+        "library_query" -> listOf("检索音乐库", "组织回答")
+        else -> emptyList()
+    }
+
+    /**
+     * v1.3.4: 单次 route 调用(把 SSE 三回调的样板抽成一处——联网核实重发要再走
+     * 一遍同样的流)。思考链/打字机经 [onState] 回写调用方的局部变量(最终消息用),
+     * UI 更新(消息列表替换)仍在本函数内投递主线程。
+     */
+    private suspend fun routeOnce(
+        text: String,
+        history: List<Pair<String, String>>,
+        config: com.shiyin.music.data.ai.LlmProviderConfig,
+        steps: MutableList<com.shiyin.music.data.ai.AgentEngine.Step>,
+        msgIdx: Int,
+        mainHandler: android.os.Handler,
+        webContext: String = "",
+        onState: (thinking: String?, streamedReply: String?) -> Unit = { _, _ -> },
+    ): com.shiyin.music.data.ai.AgentEngine.Route? {
+        // v1.3.4: onThinking 传的是增量碎片——live 展开要看完整链,本地累积;
+        // null=重试轮开始,清空重攒(重试成功会从头重发全量)。
+        var thinkAcc: String? = null
+        return com.shiyin.music.data.ai.AgentEngine.route(
+            text, agentCtx, config,
+            onStep = { _, st ->
+                // 路由阶段不显示"分析意图"步骤行(与思考胶囊两套表达,同时出现动画
+                // 不统一);失败才落面板行透传原因。
+                if (st == com.shiyin.music.data.ai.AgentEngine.StepStatus.FAILED) {
+                    mainHandler.post {
+                        steps.upsert("intent", "思考中", st)
+                        agentMessages = agentMessages.replaceAt(msgIdx, AgentMessage("agent", "", steps.toList()))
+                    }
+                }
+            },
+            history = history,
+            webContext = webContext,
+            onThinking = { th ->
+                thinkAcc = if (th == null) "" else (thinkAcc ?: "") + th
+                mainHandler.post {
+                    onState(thinkAcc, null)
+                    agentMessages = agentMessages.replaceAt(msgIdx, AgentMessage("agent", "", steps.toList(), thinking = thinkAcc))
+                }
+            },
+            onContent = { partial ->
+                // sensenova 等模型的回复常以 \n\n 开头——不 trim 气泡顶会渲染一整行空白。
+                mainHandler.post {
+                    val clean = partial.trimStart()
+                    onState(null, clean)
+                    agentMessages = agentMessages.replaceAt(msgIdx, AgentMessage("agent", clean, steps.toList()))
+                }
+            },
+        )
+    }
+
+    /** 步骤面板用:按 id 就地更新步骤状态(行已存在则保留预置文案),无则追加。
+     *  v1.3.3: FAILED 时行内显示原因——[explicitError] 优先(业务失败如"未搜到资料"),
+     *  否则自动取 LlmClient.lastError(LLM/网络失败,如 HTTP 429)。 */
+    private fun MutableList<com.shiyin.music.data.ai.AgentEngine.Step>.upsert(
+        id: String, label: String, status: com.shiyin.music.data.ai.AgentEngine.StepStatus,
+        explicitError: String? = null,
+    ) {
+        val i = indexOfFirst { it.id == id }
+        val err = if (status == com.shiyin.music.data.ai.AgentEngine.StepStatus.FAILED)
+            explicitError ?: com.shiyin.music.data.ai.LlmClient.lastError
+        else null
+        if (i >= 0) set(i, com.shiyin.music.data.ai.AgentEngine.Step(id, this[i].label, status, err))
+        else add(com.shiyin.music.data.ai.AgentEngine.Step(id, label, status, err))
+    }
+
+    /** 对话消息:替换指定位置的那条(步骤面板逐帧更新用)。 */
+    private fun List<AgentMessage>.replaceAt(idx: Int, m: AgentMessage): List<AgentMessage> =
+        mapIndexed { i, old -> if (i == idx) m else old }
+
+    /** 打开/开关 Agent 页(侧边栏/专辑菜单)。agentOpen 公开可写,UI 直接赋值。 */
+
+    // v1.3.2: 专辑菜单的 Agent 入口——不自动执行排序,而是打开对话页打招呼 +
+    // 给出针对该专辑的建议回复,用户点建议或自行输入(Agent 不局限于排序一种处理)。
+    fun clearAgentSuggestions() { agentSuggestions = emptyList() }
+
+    fun openAgentForAlbum(key: String) {
+        agentOpen = true
+        val name = albumOrder(key).firstOrNull()?.album ?: key
+        if (agentMessages.isEmpty()) {
+            agentMessages = agentMessages + AgentMessage("agent", "你想让我对《$name》做什么呢?")
+        }
+        agentSuggestions = listOf(
+            "把《$name》排成正确顺序",
+            "介绍一下《$name》这张专辑",
+        )
+    }
+
 
     // duplicates / short audio, per prototype semantics
     fun dupGroups(): List<List<Track>> = lib()
@@ -1010,18 +1687,19 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     // ── playback actions ───────────────────────────────────────────────────
-    private fun onTrackStarted(id: Long) {
+    private fun onTrackStarted(id: Long, sessionId: Long) {
         lyState = LyState.Idle
         // v2: 恢复全局播放速度设置
         player.setPlaybackSpeed(playbackSpeed, retroSpeedMode)
-        viewModelScope.launch { settingsStore.pushRecent(id) }
-        // v1.2.1: 计数口径改为"累计有效播放满 30 秒"(Spotify 式)。开始播放只记一条
-        // completed=0 的事件(供 最近播放 显示);满 30 秒由 onPlayCounted 置 1(计为一次
-        // 有效播放),切歌由 onPlayFinalized 回填 playedSec。不再"开始即 +1",误触/跳过不计入。
-        viewModelScope.launch(Dispatchers.IO) {
+        appScope.launch { settingsStore.pushRecent(id) }
+        // v1.2.1: 计数口径"累计满 30s"。插一条 completed=0 的 play_event,拿回行 id 回填到
+        // session,使后续 markCounted/finalize 按主键 id 精确定位(不靠"mediaId 最新行"子查询,
+        // 避免同 mediaId 切歌/单曲循环并发 insertPlayEvent 时写错行)。用 appScope:Activity 销毁后
+        // player 仍在后台播,DB 写不能随 viewModelScope 死。
+        appScope.launch(Dispatchers.IO) {
             try {
                 val t = trackById(id) ?: return@launch
-                dao.insertPlayEvent(
+                val rowId = dao.insertPlayEvent(
                     com.shiyin.music.data.db.PlayEventEntity(
                         mediaId = id,
                         playedAt = System.currentTimeMillis(),
@@ -1029,72 +1707,65 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                         completed = false,
                     )
                 )
+                player.setSessionRowId(sessionId, rowId)
             } catch (_: Exception) { }
         }
         // v2.0: push album art to the system MediaSession (notification pill,
         // lock screen, quick-settings media control). Uses setArtworkData
         // (bitmap bytes) because the system MediaController can't read
-        // content:// URIs that the old setArtworkUri relied on.
-        // v1.1+: 统一用「App 识别匹配后的封面」(AlbumArtCacheEntity.url)，与 App UI
-        // 同源——此前读 content://media/.../albumart（文件内嵌旧封面）导致通知栏/锁屏
-        // 仍显旧封面。识别封面缺失时回退文件内嵌封面。
-        viewModelScope.launch(Dispatchers.IO) {
+        // content:// URIs.
+        // v1.2.2: 改走 ArtCache.loadForMediaSession(与 UI 同源本地优先链,内存/磁盘命中不联网),
+        // 修复系统控制台/灵动岛不显示本地已保存封面。协程用 appScope——activity 销毁后
+        // 后台播放时 viewModelScope 已 cancel 推不上封面。
+        appScope.launch(Dispatchers.IO) {
             val t = trackById(id) ?: return@launch
-            val bitmap = fetchMediaSessionCover(t) ?: return@launch
+            val app = getApplication<android.app.Application>()
+            val bitmap = com.shiyin.music.ui.components.ArtCache.loadForMediaSession(app, t, 600)
+            if (bitmap == null) {
+                android.util.Log.d("MediaArt", "no cover for mediaSession #$id")
+                return@launch
+            }
             try {
                 val bos = java.io.ByteArrayOutputStream()
-                bitmap.compress(android.graphics.Bitmap.CompressFormat.WEBP_LOSSY, 90, bos)
-                player.updateArtworkData(bos.toByteArray(), forMediaId = id)
+                // v1.2.2: 压缩用 JPEG(ColorOS 通知/灵动岛对 WEBP 兼容差)。
+                bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 90, bos)
+                val bytes = bos.toByteArray()
+                // v1.2.2: ColorOS 灵动岛用 UriArtworkLoader 从 artworkUri(content://)读封面,
+                // 不读 artworkData。把封面写进 FileProvider 暴露的私有文件(filesDir/cover_cache,
+                // 系统相册不可见、零污染),生成 content:// URI 一并设置。
+                var artworkUri: android.net.Uri? = null
+                try {
+                    val dir = java.io.File(app.filesDir, "cover_cache").apply { mkdirs() }
+                    val file = java.io.File(dir, "current_cover.jpg")
+                    file.writeBytes(bytes)
+                    artworkUri = androidx.core.content.FileProvider.getUriForFile(
+                        app,
+                        com.shiyin.music.BuildConfig.APPLICATION_ID + ".coverprovider",
+                        file,
+                    )
+                } catch (_: Exception) { /* FileProvider 失败则仅用 artworkData 兜底 */ }
+                player.updateArtworkData(bytes, forMediaId = id, artworkUri = artworkUri)
             } catch (_: Exception) { }
         }
-    }
-
-    /** v1.1+: 取 MediaSession 封面 bitmap。优先 App 识别匹配的封面（albumArtCache.url），
-     *  缺失则回退文件内嵌封面（content://media/.../albumart/<albumId>）。 */
-    private suspend fun fetchMediaSessionCover(t: com.shiyin.music.data.Track): android.graphics.Bitmap? {
-        // 1. 识别封面（AlbumArtCacheEntity.url，与 App UI 同源）
-        if (t.albumId > 0) {
-            try {
-                val cache = dao.albumArtCache(t.albumId)
-                val url = cache?.takeIf { it.url.isNotBlank() }?.url
-                if (url != null) {
-                    val hq = url.replace("100x100bb", "600x600bb").replace("100x100", "600x600")
-                    val req = okhttp3.Request.Builder().url(hq).build()
-                    // 复用共享 OkHttpClient，避免每次切歌新建连接池/线程池泄漏
-                    sharedHttpClient.newCall(req).execute().body?.byteStream()?.use { stream ->
-                        android.graphics.BitmapFactory.decodeStream(stream)
-                    }?.let { return it }
-                }
-            } catch (_: Exception) { }
-        }
-        // 2. 回退：文件内嵌封面
-        if (t.albumId <= 0) return null
-        return try {
-            val uri = android.content.ContentUris.withAppendedId(
-                android.net.Uri.parse("content://media/external/audio/albumart"), t.albumId,
-            )
-            getApplication<android.app.Application>().contentResolver.openInputStream(uri)?.use { stream ->
-                android.graphics.BitmapFactory.decodeStream(stream)
-            }
-        } catch (_: Exception) { null }
     }
 
     /** v1.2.1: 累计有效播放满 30 秒时由 PlayerController 触发——把该次 play_event
      *  计为一次有效播放(completed=1)。这是热度排序/收听统计的唯一计数口径,
      *  误触/跳过(<30s)永远到不了这里,不会污染数据。 */
-    private fun onPlayCounted(id: Long) {
-        viewModelScope.launch(Dispatchers.IO) {
-            try { dao.markPlayCounted(id) } catch (_: Exception) { }
+    private fun onPlayCounted(rowId: Long, id: Long) {
+        appScope.launch(Dispatchers.IO) {
+            try { dao.markPlayCounted(rowId) } catch (_: Exception) { }
         }
     }
 
     /** v1.2.1: 切歌/播完时由 PlayerController 触发,回传该次播放的累计有效秒数——
-     *  写入 play_event.playedSec,供 收听统计 总时长准确求和(而非用曲目总长冒充)。
+     *  写入 play_event.playedSec(按主键 [rowId] 定位),供 收听统计 总时长准确求和。
+     *  用 appScope:onCleared 时 viewModelScope 已 cancel,改 appScope 才能让退出 flush 真正落库。
      *  顺带 trim 掉 90 天前的事件(最近播放只看近 3 个月)。 */
-    private fun onPlayFinalized(id: Long, playedSec: Int) {
-        viewModelScope.launch(Dispatchers.IO) {
+    private fun onPlayFinalized(rowId: Long, id: Long, playedSec: Int) {
+        appScope.launch(Dispatchers.IO) {
             try {
-                dao.finalizePlayEvent(id, playedSec)
+                dao.finalizePlayEvent(rowId, playedSec)
                 val cutoff = System.currentTimeMillis() - 90L * 24 * 60 * 60 * 1000
                 dao.trimPlayEventsBefore(cutoff)
             } catch (_: Exception) { }
@@ -1159,6 +1830,41 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         player.playQueue(queue, realStart, "album:$key")
     }
 
+    /**
+     * v1.3.2: 歌手页的完整歌曲全集——播放队列的数据源。
+     * = 直接匹配(track 歌手字段 split 含该歌手)+ 歌手页专辑栏归属专辑的全部曲目,按 id 去重。
+     *
+     * 修复:之前只取 artistsMap()[name](按 track 歌手分组),与歌手页专辑栏(按「专辑位歌手」
+     * 归属)不一致——改过归属/批量迁移过的专辑整张缺席,播放列表/随机播放缺歌。
+     * 专辑内用 albumOrder(专辑页当前排序),专辑间按库顺序追加在直接匹配曲目之后。
+     */
+    fun artistQueue(name: String): List<Track> {
+        val seen = HashSet<Long>()
+        val q = ArrayList<Track>()
+        artistsMap()[name]?.forEach { t -> if (seen.add(t.id)) q.add(t) }
+        for ((k, ts) in albumsMap()) {
+            val attributed = name in com.shiyin.music.data.MediaScanner.splitArtists(ts.first().artist) &&
+                com.shiyin.music.ui.screens.classifyAlbum(ts) != com.shiyin.music.ui.screens.AlbumCategory.Compilation
+            if (!attributed) continue
+            for (t in albumOrder(k)) if (seen.add(t.id)) q.add(t)
+        }
+        return q
+    }
+
+    /** v1.3.1: 歌手页播放——队列只放该歌手的曲目,不是全库。
+     *  v1.3.2: 队列源改为 artistQueue(全集),覆盖归属专辑里 track 歌手字段不一致的曲。 */
+    fun playArtist(name: String, startId: Long? = null) {
+        val artistTracks = artistQueue(name)
+        val tappedHidden = startId != null && isHidden(startId)
+        val queue = if (tappedHidden) artistTracks.filter { it.id == startId || !isHidden(it.id) } else playbackFiltered(artistTracks)
+        if (queue.isEmpty()) return
+        val realStart = startId
+            ?.takeIf { id -> queue.any { it.id == id } }
+            ?: queue.first().id
+        player.setShuffle(false)
+        player.playQueue(queue, realStart, "artist:$name")
+    }
+
     fun playRandom() {
         val l = playbackFilteredSortedSongs()
         if (l.isEmpty()) return
@@ -1166,12 +1872,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         player.playQueue(l, l.random().id, null)
     }
 
-    /** Shuffle-play a specific set of IDs (e.g. artist tracks). */
-    fun playRandom(ids: List<Long>) {
+    /** Shuffle-play a specific set of IDs (e.g. artist tracks).
+     *  v1.3.2: [queueKey] 可选——传入时队列带 key(如 "artist:XX"),resyncQueue 保持范围,
+     *  否则库一变随机队列会被同步成全库。 */
+    fun playRandom(ids: List<Long>, queueKey: String? = null) {
         val tracks = playbackFiltered(ids.mapNotNull { trackById(it) })
         if (tracks.isEmpty()) return
         player.setShuffle(true)
-        player.playQueue(tracks, tracks.random().id, null)
+        player.playQueue(tracks, tracks.random().id, queueKey)
     }
 
     /** v1.2.0 #6: 顺序播放整个歌单（从 startId 起；null=从头播）。歌单详情页"播放"用。 */
@@ -1287,8 +1995,48 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 albumInfoOverrides = albumInfoOverrides.toMutableMap().also { it[albumId] = entity }
             }
         }
-        com.shiyin.music.ui.components.ArtCache.invalidateAlbum(albumId)
+        com.shiyin.music.ui.components.ArtCache.invalidateAlbum(getApplication<android.app.Application>(), albumId)
         showToast("专辑信息已保存", null)
+    }
+
+    /**
+     * v1.2.2: 设置整张专辑(含合集)的歌手。修复合集"专辑歌手设为未知艺术家不生效"——
+     * 旧实现只能经 saveAlbumInfo(albumId>0) 改,而合集常无共享正 albumId(albumsMap 按
+     * "$album|$artist" 分组),编辑对话框连 albumId 都拿不到,设置静默丢弃。
+     * 这里按 albumKey 定位整组曲目:有共享 albumId>0 → 走 album_info_override(整组一个值);
+     * 否则 → 对组内每首写 track_info_override.artist(display-only,单曲级),使组内
+     * 每首(含 first.artist)都显示为该歌手(如"未知艺术家")。
+     */
+    fun setAlbumArtist(key: String, artist: String) {
+        val tracks = albumOrder(key)
+        android.util.Log.d("ArtistEdit", "setAlbumArtist key=$key artist=$artist tracks=${tracks.size}")
+        if (tracks.isEmpty()) return
+        val sharedAlbumId = tracks.first().albumId
+        val hasSharedId = sharedAlbumId > 0 && tracks.all { it.albumId == sharedAlbumId }
+        android.util.Log.d("ArtistEdit", "  sharedAlbumId=$sharedAlbumId allSame=${tracks.all { it.albumId == sharedAlbumId }} hasSharedId=$hasSharedId")
+        if (hasSharedId) {
+            // 正常专辑 / 共享 albumId 的合集:存 album_info_override.artistName
+            val cur = albumInfoOverrides[sharedAlbumId]
+            android.util.Log.d("ArtistEdit", "  -> album_info_override path, cur=${cur?.albumName}")
+            saveAlbumInfo(sharedAlbumId, cur?.albumName ?: "", artist, cur?.type ?: "")
+            return
+        }
+        // 无共享 albumId(孤立单曲/杂烩合集):对每首写单曲级 artist override
+        val now = System.currentTimeMillis()
+        android.util.Log.d("ArtistEdit", "  -> per-track override path, ${tracks.size} tracks")
+        for (t in tracks) {
+            val cur = trackInfoOverrides[t.id]
+            val entity = com.shiyin.music.data.db.TrackInfoOverrideEntity(
+                mediaId = t.id,
+                title = cur?.title ?: "",
+                artist = artist,
+                note = cur?.note ?: "",
+                updatedAt = now,
+            )
+            trackInfoOverrides = trackInfoOverrides.toMutableMap().also { it[t.id] = entity }
+            viewModelScope.launch(Dispatchers.IO) { try { dao.upsertTrackInfoOverride(entity) } catch (_: Exception) { } }
+        }
+        showToast("已更新 ${tracks.size} 首的歌手", null)
     }
 
     /** Resolve the effective album type ("Album"/"EP"/"Single") for [albumId]:
@@ -1325,7 +2073,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 )
             )
         }
-        com.shiyin.music.ui.components.ArtCache.invalidateAlbum(albumId)
+        com.shiyin.music.ui.components.ArtCache.invalidateAlbum(getApplication<android.app.Application>(), albumId)
         showToast("专辑封面已更新", null)
     }
 
@@ -1346,7 +2094,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             )
             dao.deleteArtCacheForAlbum(albumId)
         }
-        com.shiyin.music.ui.components.ArtCache.invalidateAlbum(albumId)
+        com.shiyin.music.ui.components.ArtCache.invalidateAlbum(getApplication<android.app.Application>(), albumId)
         showToast("已恢复默认封面", null)
     }
 
@@ -1384,7 +2132,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             viewModelScope.launch(Dispatchers.IO) {
                 try { dao.deleteArtCacheForAlbum(albumId) } catch (_: Exception) { }
             }
-            com.shiyin.music.ui.components.ArtCache.invalidateAlbum(albumId)
+            com.shiyin.music.ui.components.ArtCache.invalidateAlbum(getApplication<android.app.Application>(), albumId)
             // if the playing track belongs to this album, re-fetch its lyrics too
             val cur = trackById(player.currentId)
             if (cur != null && cur.albumId == albumId) {
@@ -1587,6 +2335,137 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch { settingsStore.setRetroSpeedMode(v) }
     }
     fun setDeepSeekKey(v: String) = viewModelScope.launch { settingsStore.setDeepSeekKey(v) }
+    /** v1.2.2 Agent: Tavily 联网搜索 key 设置。 */
+    fun setTavilyKey(v: String) = viewModelScope.launch { settingsStore.setTavilyKey(v) }
+    /** v1.2.2 Agent: 保存全部 LLM 提供商配置。 */
+    fun setLlmProviders(providers: List<com.shiyin.music.data.ai.LlmProviderConfig>) =
+        viewModelScope.launch { settingsStore.setLlmProviders(providers) }
+    /** v1.2.2 Agent: 设置当前激活的 provider key。 */
+    fun setLlmActiveProvider(key: String) = viewModelScope.launch { settingsStore.setLlmActiveProvider(key) }
+    /** v1.2.2 Agent: 取当前激活 provider 的完整配置(含 key/endpoint/model)。无激活→null。 */
+    fun activeLlmConfig(): com.shiyin.music.data.ai.LlmProviderConfig? =
+        llmProviders.firstOrNull { it.key == llmActiveProvider }?.takeIf { it.isConfigured }
+
+    /**
+     * v1.3.3b: AI 获取歌手各专辑/EP/单曲的发布时间并按时间排序。
+     * 流程:Tavily 搜该歌手的作品年表 → LLM 输出每张专辑的发布日期(JSON,格式
+     * {"albums":[{"name":"...","date":"YYYY-MM-DD"}]}) → 逐张写 album_art_cache
+     * .releaseDate → 按日期(旧→新)生成顺序串存 artist_album_order。
+     * @return 成功解析到日期的专辑数;0=失败([onProgress] 已给原因)
+     */
+    suspend fun fetchArtistAlbumDates(
+        artistName: String,
+        /** 专辑三元组:albumKey(排序写回用)、albumId(日期写库用,≤0 跳过)、显示名(LLM 识别用) */
+        albums: List<Triple<String, Long, String>>,
+        onProgress: (String) -> Unit = {},
+    ): Int = kotlinx.coroutines.withContext(Dispatchers.IO) {
+        // v1.3.5: onProgress 在 IO 协程触发,调用方把回调直写 Compose state——v5.2 #75
+        // 同因(后台写不保证立即重组),状态行不更新/结束后残留"AI 正在联网获取…"。
+        // 统一投递主线程,同时打一条 logcat 供真机排查"点了没返回"到底卡在哪一步。
+        val progress: (String) -> Unit = { s ->
+            android.util.Log.i("Agent", "albumDates[$artistName]: $s")
+            android.os.Handler(android.os.Looper.getMainLooper()).post { onProgress(s) }
+        }
+        val config = activeLlmConfig()
+        if (config == null) { progress("未配置 LLM(Agent 设置里填 Key + 选模型)"); return@withContext 0 }
+        if (tavilyApiKey.isBlank()) { progress("未配置 Tavily 搜索 Key"); return@withContext 0 }
+
+        // 1. 联网搜该歌手的作品发布年表(中英关键词并搜,取先到的)
+        progress("联网搜索 $artistName 作品年表…")
+        val query = "$artistName albums discography release dates 专辑 发行日期 年表"
+        val tavilyCtx = runCatching {
+            com.shiyin.music.data.ai.TavilyService.search(tavilyApiKey, query)
+        }.getOrNull()
+        val ctxBlock = if (tavilyCtx.isNullOrBlank()) "(未搜到网络资料,凭你的知识回答)" else "网络资料:\n$tavilyCtx"
+
+        // 2. LLM 输出每张专辑的日期(编号方案:给本地列表编号,模型输出名字+日期)
+        progress("AI 分析发布时间…")
+        val listBlock = albums.joinToString("\n") { (_, _, name) -> "· $name" }
+        val prompt = """
+            歌手:$artistName 的本地专辑/EP/单曲清单(名字可能与官方写法略有差异,由你对应):
+            $listBlock
+
+            $ctxBlock
+
+            为上面每张作品输出官方发布日期。只返回 JSON:
+            {"albums":[{"name":"<上面清单里的原样名字>","date":"YYYY-MM-DD"}]}
+            规则:date 必须是真实发布日期(不确定的不要编造,直接不返回那一张);不要多余文字。
+        """.trimIndent()
+        val resp = com.shiyin.music.data.ai.LlmClient.call(config, listOf("user" to prompt))
+        val failReason = com.shiyin.music.data.ai.LlmClient.lastError
+        com.shiyin.music.data.ai.LlmClient.clearLastError()
+        if (resp == null) {
+            progress("LLM 调用失败:$failReason")
+            return@withContext 0
+        }
+        // 记 token
+        viewModelScope.launch(Dispatchers.IO) {
+            com.shiyin.music.data.ai.TokenUsageStore.log(
+                getApplication(), llmActiveProvider, "album_dates", resp.promptTokens, resp.completionTokens, resp.cacheTokens,
+            )
+        }
+
+        // 3. 解析 JSON → 名字→日期(归一化匹配:剥括号/空白,contains 兜底)
+        fun norm(s: String) = s.replace(Regex("[(（\\[【].*?[)）\\]】]]"), "").replace(Regex("""\s+"""), "").lowercase()
+        val dateByName = mutableMapOf<String, String>()
+        try {
+            val obj = com.google.gson.JsonParser.parseString(
+                Regex("""\{.*}""", RegexOption.DOT_MATCHES_ALL).find(resp.content ?: "")?.value ?: ""
+            ).asJsonObject
+            obj.getAsJsonArray("albums")?.forEach { el ->
+                val o = el?.asJsonObject ?: return@forEach
+                val n = o.get("name")?.asString ?: return@forEach
+                val d = o.get("date")?.asString ?: return@forEach
+                if (Regex("""\d{4}-\d{2}-\d{2}""").containsMatchIn(d)) dateByName[norm(n)] = d.take(10)
+            }
+        } catch (_: Exception) { }
+
+        // 4. 匹配本地专辑 + 写日期 + 按日期生成顺序(v1.3.4: 新→旧——最新发布在最上,
+        //    与歌手页作品列表的"栈"直觉一致;无日期保持原相对顺序补尾)
+        progress("写回日期与顺序…")
+        val dated = mutableListOf<Pair<Triple<String, Long, String>, String>>() // (专辑, 日期)
+        val undated = mutableListOf<Triple<String, Long, String>>()
+        for (a in albums) {
+            val hit = dateByName[a.third.let(::norm)]
+                ?: dateByName.entries.firstOrNull { it.key.contains(norm(a.third)) || norm(a.third).contains(it.key) }?.value
+            if (hit != null) {
+                dated.add(a to hit)
+                if (a.second > 0) saveAlbumReleaseDate(a.second, hit)
+            } else undated.add(a)
+        }
+        if (dated.isEmpty()) {
+            progress("AI 未能确定任何专辑的发布日期(可重试或换更强模型)")
+            return@withContext 0
+        }
+        val ordered = dated.sortedByDescending { it.second }.map { it.first } + undated
+        saveArtistAlbumOrder(artistName, ordered.map { it.first })
+        progress("")
+        dated.size
+    }
+    /** v1.2.1: 写真源 API key / 源开关(设置·写真源用)。 */
+    fun setFanartApiKey(v: String) = viewModelScope.launch { settingsStore.setFanartApiKey(v) }
+    fun setLastfmApiKey(v: String) = viewModelScope.launch { settingsStore.setLastfmApiKey(v) }
+    fun setImageSourceEnabled(sourceKey: String, enabled: Boolean) = viewModelScope.launch {
+        settingsStore.setImageSourceEnabled(sourceKey, enabled)
+
+    }
+
+    /** v1.3.2: 新增自定义写真源(名称 + URL,URL 里用 {name} 表示歌手名;apiKey 可选)。 */
+    fun addCustomImageSource(name: String, urlTemplate: String, apiKey: String = "") = viewModelScope.launch {
+        val def = com.shiyin.music.data.image.CustomImageSourceDef(
+            id = System.currentTimeMillis().toString(36),
+            name = name.trim().ifBlank { "自定义源" },
+            urlTemplate = urlTemplate.trim(),
+            apiKey = apiKey.trim(),
+        )
+        settingsStore.setCustomImageSources(customImageSources + def)
+    }
+
+    /** v1.3.2: 删除自定义写真源,并同步清掉它的禁用标记(源已删,标记无意义)。 */
+    fun removeCustomImageSource(id: String) = viewModelScope.launch {
+        settingsStore.setCustomImageSources(customImageSources.filter { it.id != id })
+        settingsStore.setImageSourceEnabled("custom-$id", true)
+    }
 
     // ── playlists ──────────────────────────────────────────────────────────
     fun playlistTrackList(pid: String): List<Track> {
@@ -2103,6 +2982,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     // ── clean-suggestion selection (prefilled per prototype) ───────────────
+    /** v1.3.5: 本次设置页是否由 openClean(首页清理建议卡)直接进入——true 时返回
+     *  跳过"设置根"直接回来源 tab(用户原则:从哪来回哪;此前从清理退出先落设置
+     *  根,再返回才回首页)。 */
+    var cleanEntry = false
+
     fun openClean() {
         val prefill = HashMap<Long, Boolean>()
         for (g in dupGroups()) g.drop(1).forEach { prefill[it.id] = true }
@@ -2110,6 +2994,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         sel = prefill
         filesView = FilesView.Clean
         settingsOpen = true
+        // v1.3.5: 记来源 tab,返回时直接回它(首页)
+        if (tab != Tab.Library && prevTab == null) prevTab = tab
+        cleanEntry = true
     }
 
     fun toggleSel(id: Long) {
@@ -2118,16 +3005,21 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     // ── navigation helpers (mirror the prototype's setState calls) ─────────
     fun openPlaylist(pid: String) {
+        // v1.3.3 返回恢复:tab 即将从非 Library 切到 Library → 记来源(仅第一次离开,
+        // 连续下钻歌手→专辑时不清,返回层层恢复仍回原 tab)。
+        if (tab != Tab.Library && prevTab == null) prevTab = tab
         plId = pid; tab = Tab.Library; libChip = "pls"
         settingsOpen = false; albumKey = null; artistKey = null
     }
 
     fun openArtist(name: String) {
+        if (tab != Tab.Library && prevTab == null) prevTab = tab
         artistKey = name; tab = Tab.Library
         settingsOpen = false; artistMerge = false; albumKey = null; plId = null
     }
 
     fun openAlbum(key: String) {
+        if (tab != Tab.Library && prevTab == null) prevTab = tab
         albumKey = key; albumEdit = false; tab = Tab.Library; settingsOpen = false
         // v4: mark album as "viewed" for 你的更新 (one-shot lifecycle)
         if (key.startsWith("aid:")) {
@@ -2137,6 +3029,26 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
     }
+
+    /**
+     * v1.3.3 返回恢复:RootBackHandler 清完一层下钻(albumKey/artistKey/plId)后调。
+     * 若清完这层后还有更上层的下钻(如 首页→歌手→专辑 返回到歌手层),不动 tab;
+     * 全部下钻层清空(真正退回原 tab 页面)→ 恢复 prevTab 并清字段,用后即清无残留。
+     * 返回 true = tab 已被恢复(调用方无需再动)。
+     */
+    fun restoreTabIfDrillFullyClosed(): Boolean {
+        val deeperExists = albumKey != null || artistKey != null || plId != null
+        if (!deeperExists && prevTab != null) {
+            tab = prevTab!!
+            prevTab = null
+            return true
+        }
+        return false
+    }
+
+    /** v1.3.3 返回恢复:用户主动切 tab(BottomNav/首页快捷入口)时作废记录的来源,
+     *  防止之后从下钻返回时错误恢复到陈旧 tab。 */
+    fun discardPrevTab() { prevTab = null }
 
     // ── v1.1/v1.7 navigation from player & row menus ───────────────────────
     private fun closeOverlays() {

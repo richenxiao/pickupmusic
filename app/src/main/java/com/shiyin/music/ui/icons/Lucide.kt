@@ -63,10 +63,25 @@ object Lucide {
         )
     }
     val Search by lazy { stroke("search", "M11 11m-8 0a8 8 0 1 0 16 0a8 8 0 1 0 -16 0", "m21 21-4.3-4.3") }
+    // AI/Agent 入口与对话发送用。Sparkles 四角星(6,8 主星 + 三颗小星),Send 纸飞机。
+    val Sparkles by lazy { stroke("sparkles", "M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z", "M20 3v4", "M22 5h-4", "M4 17v2", "M3 18h2") }
+    val Send by lazy { stroke("send", "M14.536 21.686a.5.5 0 0 0 .908-.317l.586-7.426.585 7.426a.5.5 0 0 0 .908.317l5.878-5.878a.5.5 0 0 0 .146-.448l-1.085-6.477a.5.5 0 0 0-.746-.375l-13.5 6.75a.5.5 0 0 0 0 .866l3.59 2.157") }
+    // Agent 设置里"自动获取模型"的刷新按钮。
+    val RefreshCw by lazy {
+        stroke(
+            "refreshCw",
+            "M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8",
+            "M21 3v5h-5",
+            "M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16",
+            "M8 16H3v5",
+        )
+    }
     val ChevronRight by lazy { stroke("chevR", "m9 18 6-6-6-6") }
     val ChevronLeft by lazy { stroke("chevL", "m15 18-6-6 6-6") }
     val ChevronDown by lazy { stroke("chevD", "m6 9 6 6 6-6") }
     val ChevronUp by lazy { stroke("chevU", "m18 15-6-6-6 6") }
+    /** v1.3.2: 向上箭头(Agent 发送键,图1风格)。Lucide "arrow-up"。 */
+    val ArrowUp by lazy { stroke("arrowUp", "M12 19V5", "m5 12 7-7 7 7") }
     val ArrowUpDown by lazy {
         stroke("arrowUpDown", "m21 16-4 4-4-4", "M17 20V4", "m3 8 4-4 4 4", "M7 4v16")
     }
@@ -88,6 +103,14 @@ object Lucide {
     /** 字幕/歌词框：圆角框内两行文字，用于「打开歌词」。 */
     val Captions by lazy {
         stroke("captions", "M4 6h16a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2Z", "M7 11h5", "M7 14h8")
+    }
+    /** 眼睛(明文),与 [EyeOff] 成对,用于密码框明/密文切换。 */
+    val Eye by lazy {
+        stroke(
+            "eye",
+            "M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0",
+            "M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z",
+        )
     }
     val EyeOff by lazy {
         stroke(
@@ -245,6 +268,10 @@ object Lucide {
         filled("skipFwd", "M5 4 L15 12 L5 20 Z", "M18 4h.5a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H18a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1z")
     }
     val Menu by lazy { stroke("menu", "M4 6h16", "M4 12h16", "M4 18h16", width = 2.5f) }
+    /** v1.3.5: 首页专用汉堡——三条线比标准 Menu 更长(20)、间距更大(y=4/12/20,跨 16
+     *  而非 12)、线更粗(3),在小圆按钮里视觉量级与"下午好"大标题相称(用户定调:
+     *  线要拉开,视觉不协调)。 */
+    val MenuWide by lazy { stroke("menuWide", "M3 4h18", "M3 12h18", "M3 20h18", width = 3f) }
     val Download by lazy { stroke("download", "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4", "m7 10 5 5 5-5", "M12 15V3") }
     // v4: sidebar icons
     val History by lazy { stroke("history", "M12 8v4l3 3", "M12 22a10 10 0 1 0 -10 -10", "M3 12H2") }

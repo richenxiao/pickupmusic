@@ -178,6 +178,13 @@ fun LyricsScreen(vm: MainViewModel) {
 
         // lyric lines, auto-centered on the active line
         val listState = rememberLazyListState()
+        // v1.3.0: 切歌立刻回顶——此前 listState 跨曲保留,新歌 activeI 从同值出发时
+        // LaunchedEffect(activeI) 不触发,列表停在上首歌滚到的位置,等唱到那行才跳
+        // (用户:"切到下一首时歌词还停留在最后的位置,应该是下一首自动更新到最上面")。
+        // 换曲瞬间先无动画归零,让跟随从第一行/前奏位置重新开始。
+        LaunchedEffect(track.id) {
+            listState.scrollToItem(0)
+        }
         LaunchedEffect(activeI) {
             if (activeI >= 0) {
                 val viewport = listState.layoutInfo.viewportSize.height

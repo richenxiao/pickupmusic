@@ -90,7 +90,8 @@ fun HomeScreen(vm: MainViewModel) {
     Column(
         Modifier
             .fillMaxSize()
-            .verticalScroll(rememberScrollState())
+            // v1.3.3 返回恢复:滚动位置用 VM 常驻 state——进专辑销毁重建后位置保留。
+            .verticalScroll(vm.homeScroll)
             .padding(top = 22.dp),
         verticalArrangement = Arrangement.spacedBy(18.dp),
     ) {
@@ -101,13 +102,16 @@ fun HomeScreen(vm: MainViewModel) {
                 .padding(horizontal = 20.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            // v1.3.6c: 三线与"下午好"同一起点线——图标 24dp 紧贴文字(文字左缘=
+            // 图标右缘,0 gap;用户要的是"下午好对着三线");触区由 Compose 的
+            // minimumInteractiveComponentSize 自动外扩到 ~48dp(点击不丢)。三线
+            // 左缘=20dp 网格边距=下方卡片左缘。
             Box(
                 Modifier
-                    .size(38.dp)
-                    .clip(androidx.compose.foundation.shape.CircleShape)
+                    .size(28.dp)
                     .clickable { vm.sidebarOpen = true },
-                contentAlignment = Alignment.Center,
-            ) { OIcon(Lucide.Menu, 18.dp, c.text) }
+                contentAlignment = Alignment.CenterStart,
+            ) { OIcon(Lucide.MenuWide, 24.dp, c.text) }
             val bucket = timeBucket()
             // v4.3: 颜文字按时间槽锁定 —— 同一时间槽内跨 tab 切换、旋转、进出页面均保持
             // 同一个颜文字（rememberSaveable 持久化），仅当跨过时间段边界（bucket 变化）
@@ -121,7 +125,10 @@ fun HomeScreen(vm: MainViewModel) {
                 }
             }
             val gt = "${greetingBase()} $face"
-            Text(gt, style = heading(26), modifier = Modifier.weight(1f))
+            // v1.3.6c: "下午好"与三线垂直居中——26sp 文字的行高(约 34dp)比 24dp
+            // 图标高,CenterVertically 下字形视觉偏上 2-3dp;往下挪 2dp 让字形
+            // 中轴与三线中轴真正对齐(用户:"下午好要对着三线才行")。
+            Text(gt, style = heading(26), modifier = Modifier.weight(1f).padding(start = 6.dp).offset(y = 2.dp))
         }
 
         // v2: 2×2 shortcut grid (removed 深夜书桌 + 通勤路上)
@@ -130,10 +137,13 @@ fun HomeScreen(vm: MainViewModel) {
         val cuts = listOf(
             Cut("♥", "我的喜欢", p0.first, p0.second) { vm.openPlaylist("p3") },
             Cut("♪", "全部歌曲", p4.first, p4.second) {
+                // v1.3.3 返回恢复:主动切 tab 作废下钻来源记录,防返回错误恢复。
+                vm.discardPrevTab()
                 vm.tab = Tab.Library; vm.libChip = "songs"; vm.plId = null; vm.albumKey = null; vm.artistKey = null; vm.settingsOpen = false
             },
             Cut("⇄", "随机播放", p3.first, p3.second) { vm.playRandom() },
-            Cut("✦", "清理建议", c.a200, c.a800) { vm.openClean() },
+            // v1.3.6: 清理建议 → 最近播放(用户定调;清理建议在设置里仍有入口)。
+            Cut("◷", "最近播放", c.a200, c.a800) { vm.recentOpen = true; vm.settingsOpen = false },
         )
         Column(
             Modifier.padding(horizontal = 20.dp),

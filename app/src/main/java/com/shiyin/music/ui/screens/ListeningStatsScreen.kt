@@ -1,5 +1,6 @@
 package com.shiyin.music.ui.screens
 
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -27,8 +28,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.shiyin.music.MainViewModel
@@ -36,6 +39,7 @@ import com.shiyin.music.data.formatDuration
 import com.shiyin.music.ui.components.OIcon
 import com.shiyin.music.ui.components.body
 import com.shiyin.music.ui.components.heading
+import com.shiyin.music.ui.components.rememberCandidateArt
 import com.shiyin.music.ui.icons.Lucide
 import com.shiyin.music.ui.theme.LocalOrganic
 
@@ -99,7 +103,13 @@ fun ListeningStatsScreen(vm: MainViewModel) {
                     albumPlayMap[key] = (albumPlayMap[key] ?: 0) + 1
                 }
             }
-            artistMap[t?.artist ?: "未知"] = (artistMap[t?.artist ?: "未知"] ?: 0) + 1
+            // v1.3.1: 艺人聚合口径与 artistsMap()/歌手页一致——先拆分多歌手串
+            // (lib() 已把 "A&B" 规范成 "A, B" 展示串,这里必须再拆回单名),
+            // 否则 key 是 "周杰伦, 费玉清" 整串,写真表里只有 "周杰伦"/"费玉清",
+            // 头像永远落空(歌手页有写真、统计页不显示的原因)。
+            for (n in (t?.let { com.shiyin.music.data.MediaScanner.splitArtists(it.artist) } ?: listOf("未知"))) {
+                artistMap[n] = (artistMap[n] ?: 0) + 1
+            }
             trackMap[ev.mediaId] = (trackMap[ev.mediaId] ?: 0) + 1
         }
         val albumCycles = albumPlayMap.mapValues { (key, plays) ->
@@ -193,9 +203,9 @@ fun ListeningStatsScreen(vm: MainViewModel) {
                 // a new line (previously displayed as a wrapped "15 次").
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                     Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        Box(Modifier.size(40.dp).clip(CircleShape).background(c.n200), contentAlignment = Alignment.Center) {
-                            OIcon(Lucide.User, 20.dp, c.n600)
-                        }
+                        // v1.3.0: 显示歌手写真(与歌手页/资料库同一套 override→cache→自动源),
+                        // 无写真回退 User 占位图标——此前这里恒为占位图标,写真已获取也不显示。
+                        StatsArtistAvatar(vm, artist)
                         Text(artist, style = body(14f, FontWeight.SemiBold, c.text), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
                     }
                     Text("$plays 次", style = body(12f, FontWeight.Bold, c.n500), maxLines = 1)
@@ -217,6 +227,30 @@ private fun <T> StatSection(title: String, items: List<Pair<T, Int>>, row: @Comp
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             items.forEach { row(it) }
+        }
+    }
+}
+
+/** v1.3.0: 收听统计歌手头像——复用资料库/歌手页的写真加载链(vm.fetchArtistAvatar →
+ *  ArtistImageResolver override→cache→自动源,rememberCandidateArt 磁盘缓存出图)。
+ *  无写真时保持原 User 占位图标。
+ *  v1.3.5: 改用 fetchArtistAvatarPerson(personOnly)——圆框头像不拿专辑封面/banner
+ *  兜底(封面横幅塞圆框会把人截成半张,"头像显示不全");经 alias 归一取图(别名合并
+ *  的歌手写真存在规范名下,原名查不到 → "写真明明有却占位"的另一半根因)。
+ *  v1.3.5: 宽图(背景/横幅类)圆裁时**取上部**——人脸在照片上部,居中裁会把头切掉
+ *  (后位歌手"显示不全"的直接原因;前三名碰巧是方图/近方图所以没暴露)。方/竖图
+ *  仍居中。 */
+@Composable
+private fun StatsArtistAvatar(vm: MainViewModel, name: String) {
+    val c = LocalOrganic.current
+    LaunchedEffect(name) { vm.fetchArtistAvatarPerson(name) }
+    val bmp = rememberCandidateArt(vm.artistImage(name).ifBlank { null }, 40.dp)
+    Box(Modifier.size(40.dp).clip(CircleShape).background(c.n200), contentAlignment = Alignment.Center) {
+        if (bmp != null) {
+            // 与资料库列表头像同一套裁剪(宽图取上部,方/竖图居中)
+            AvatarCropImage(bmp)
+        } else {
+            OIcon(Lucide.User, 20.dp, c.n600)
         }
     }
 }

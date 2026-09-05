@@ -33,6 +33,7 @@ import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.shiyin.music.MainViewModel
 import com.shiyin.music.data.search.FuzzySearch
@@ -47,6 +48,14 @@ import com.shiyin.music.ui.icons.Lucide
 import com.shiyin.music.ui.theme.Caprasimo
 import com.shiyin.music.ui.theme.Figtree
 import com.shiyin.music.ui.theme.LocalOrganic
+
+/** v1.3.5: 搜索页歌手匹配下的热门专辑行数据(key=albumKey, plays 仅排序用不展示)。 */
+private data class TopAlbumHit(
+    val key: String,
+    val first: com.shiyin.music.data.Track,
+    val typeZh: String,
+    val plays: Int,
+)
 
 @Composable
 fun SearchScreen(vm: MainViewModel) {
@@ -81,10 +90,15 @@ fun SearchScreen(vm: MainViewModel) {
         items.sortedByDescending { it.first.score }
     }
     // v1.2.0 #6: 艺人匹配(置顶行)——搜歌手名时第一个结果是圆头像歌手行,下面再列歌曲
+    // v1.3.1: 复用 FuzzySearch 的繁简互通管线——"藤井风"能匹配"藤井風"(繁体)。
     val artistMatch = remember(query) {
         val keys = vm.artistsMap().keys.toList()
-        keys.firstOrNull { it.equals(query, ignoreCase = true) }
-            ?: keys.firstOrNull { it.contains(query, ignoreCase = true) || query.contains(it, ignoreCase = true) }
+        val normQ = com.shiyin.music.data.search.FuzzySearch.normalize(query)
+        keys.firstOrNull { com.shiyin.music.data.search.FuzzySearch.normalize(it) == normQ }
+            ?: keys.firstOrNull {
+                val n = com.shiyin.music.data.search.FuzzySearch.normalize(it)
+                n.contains(normQ) || normQ.contains(n)
+            }
     }
 
     LazyColumn(
@@ -154,6 +168,68 @@ fun SearchScreen(vm: MainViewModel) {
                             Text("歌手", style = body(12.5f, FontWeight.Normal, c.n600), modifier = Modifier.padding(top = 2.dp))
                         }
                         OIcon(Lucide.ChevronRight, 17.dp, c.n400)
+                    }
+                }
+                // v1.3.3: 歌手匹配时,在歌手行下面显示该歌手热度前三的专辑(按播放次数排序),
+                // 再往下才是歌曲结果——让用户先看到歌手的热门专辑。
+                // v1.3.3b review#B3: 归属口径改与歌手页一致(splitArtists 含该歌手即算,
+                // 排除合集)——原 first.artist != artistMatch 精确比对会漏掉所有合作专辑
+                // (first.artist="A, B" 搜 A 永远不等)。
+                // v1.3.5 排版重做(用户定调):去掉"热门专辑"标题卡 + 播放次数;一专辑一行
+                // (封面 + 名字 + 像 Spotify 那样名字下一行"专辑/EP/单曲 · 歌手名"),
+                // 与下方歌曲行同一套行语言,不再三栏挤一排。
+                item(key = "artist-albums") {
+                    val artistAlbums = vm.albumsMap().entries
+                        .mapNotNull { (key, tracks) ->
+                            val first = tracks.firstOrNull() ?: return@mapNotNull null
+                            val owned = artistMatch in com.shiyin.music.data.MediaScanner.splitArtists(first.artist) &&
+                                com.shiyin.music.ui.screens.classifyAlbum(tracks) != com.shiyin.music.ui.screens.AlbumCategory.Compilation
+                            if (!owned) return@mapNotNull null
+                            val totalPlays = tracks.sumOf { vm.playCountFor(it.id) }
+                            val cat = com.shiyin.music.ui.screens.classifyAlbum(tracks)
+                            val typeStr = vm.albumTypeFor(first.albumId).ifBlank {
+                                when (cat) {
+                                    com.shiyin.music.ui.screens.AlbumCategory.Album -> "Album"
+                                    com.shiyin.music.ui.screens.AlbumCategory.EP -> "EP"
+                                    com.shiyin.music.ui.screens.AlbumCategory.Single -> "Single"
+                                    else -> "Album"
+                                }
+                            }
+                            val typeZh = when (typeStr) {
+                                "Single" -> "单曲"; "EP" -> "EP"; "Compilation" -> "合集"; else -> "专辑"
+                            }
+                            TopAlbumHit(key, first, typeZh, totalPlays)
+                        }
+                        .sortedByDescending { it.plays }
+                        .take(3)
+                    Column(Modifier.padding(top = 2.dp)) {
+                        for (h in artistAlbums) {
+                            Row(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(10.dp))
+                                    // 走 openAlbum(记 prevTab)——从搜索页进专辑,返回时回搜索。
+                                    .clickable { vm.commitSearch(); vm.openAlbum(h.key) }
+                                    .padding(horizontal = 4.dp, vertical = 6.dp),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                com.shiyin.music.ui.components.CoverArt(
+                                    h.first, 46.dp, RoundedCornerShape(8.dp), fontSize = 18,
+                                    modifier = Modifier.shadowSm(RoundedCornerShape(8.dp)),
+                                )
+                                Column(Modifier.weight(1f)) {
+                                    Text(h.first.album, style = body(14f, FontWeight.Bold, c.text), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                    Text(
+                                        "${h.typeZh} · ${h.first.artist}",
+                                        style = body(11.5f, FontWeight.Normal, c.n600),
+                                        maxLines = 1, overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.padding(top = 2.dp),
+                                    )
+                                }
+                                OIcon(Lucide.ChevronRight, 16.dp, c.n400)
+                            }
+                        }
                     }
                 }
             }

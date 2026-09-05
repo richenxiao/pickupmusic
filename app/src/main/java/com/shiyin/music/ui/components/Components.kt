@@ -34,6 +34,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
@@ -91,6 +92,10 @@ object ArtCache {
         override fun sizeOf(key: String, value: Bitmap): Int = value.byteCount
     }
     private val misses = HashSet<String>()
+    // v1.2.1: 重入保护——同 key(albumId@bucket)并发只跑一次 fetch,其余共享结果。
+    // 旧实现无保护,专辑列表给同一专辑的多次重组/多 tile 各发一次 fetch → 15 线程同搜
+    // 一张(日志实证)→ iTunes 限流 → 部分返回 0 → 封面瞬态"丢失" + 卡顿。
+    private val pending = java.util.Collections.synchronizedMap(mutableMapOf<String, kotlinx.coroutines.CompletableDeferred<Bitmap?>>())
 
     // v3.0: in-memory albumId -> (bg, fg) color pair. Read on the main thread
     // (Compose) without touching disk; populated as covers load.
@@ -117,7 +122,7 @@ object ArtCache {
         return synchronized(this) { cache.get(key) }
     }
 
-    suspend fun load(context: Context, track: Track, px: Int): Bitmap? {
+    suspend fun load(context: Context, track: Track, px: Int, coverScope: CoverScope = CoverScope.AUTO): Bitmap? {
         val artId = if (track.albumId > 0) track.albumId else -track.id
         val b = bucket(px)
         val key = "$artId@$b"
@@ -126,7 +131,73 @@ object ArtCache {
             cache.get(key)?.let { return it }
             if (missKey in misses) return null
         }
-        val bmp = withContext(Dispatchers.IO) {
+        // v1.2.1: 重入保护。同 key 并发:首个(owner)跑 fetchBmp 并 complete Deferred,
+        // 其余直接 await 同一 Deferred → 只发一次网络请求(杀掉 N 线程同搜一张的 storm)。
+        var owner = false
+        val def = synchronized(pending) {
+            pending[key]?.let { it } ?: run {
+                owner = true
+                kotlinx.coroutines.CompletableDeferred<Bitmap?>().also { pending[key] = it }
+            }
+        }
+        if (owner) {
+            try {
+                val bmp = fetchBmp(context, track, key, missKey, b, coverScope)
+                // v1.2.1: 先 complete(bmp) 再 ensureColors——若 ensureColors 抛异常(Cancellation/OOM),
+                // 已完成的 Deferred 不会被 catch 的 complete(null) 覆盖(CompletableDeferred 不可重置),
+                // awaiters 仍能拿到 bitmap,不因取色失败而丢封面。
+                def.complete(bmp)
+                if (bmp != null) ensureColors(context, track, bmp)
+            } catch (e: Throwable) {
+                // v1.2.1: 先 complete(null) 让 awaiters 不悬空;CancellationException 单独 rethrow,
+                // 否则 catch(Throwable) 会吞掉取消→fetchBmp 不协作取消、结构化并发被破坏。
+                def.complete(null)
+                if (e is kotlinx.coroutines.CancellationException) throw e
+            } finally {
+                synchronized(pending) { if (pending[key] === def) pending.remove(key) }
+            }
+        }
+        return def.await()
+    }
+
+    /**
+     * v1.2.2: 给系统媒体会话(通知栏/锁屏/灵动岛)取封面。与 UI 同一条本地优先链,
+     * 并优先复用 UI 正在显示的那张(内存 LruCache)。旧实现 fetchMediaSessionCover 手写
+     * OkHttp 联网下载,不查缓存、大陆易失败→系统控制台/灵动岛经常无封面。本方法复用
+     * [load](custom cover→内嵌→downloadBitmap 磁盘命中不联网),本地有图就不联网。
+     */
+    suspend fun loadForMediaSession(context: Context, track: Track, px: Int = 600): Bitmap? {
+        // 优先 UI 已在内存的同一张(正在播放页/列表显示的那张),零成本且与用户所见一致
+        getCached(track, px)?.let { return it }
+        return load(context, track, px)
+    }
+
+    /** v1.2.2: 落盘 key 作用域。AUTO=按 albumId 判定(>0 专辑级,否则曲目级);TRACK=强制曲目级
+     *  (孤立单曲/合集用,避免同 albumId 或 albumId=0 的封面互相覆盖)。 */
+    enum class CoverScope { AUTO, TRACK }
+
+    /** v1.2.1: load() 的 fetch 体(custom cover → 内嵌 → iTunes 兜底 + 缓存写入),抽出供重入保护 owner 调用。
+     *  v1.2.2: 开头磁盘读优先(曾经获取过就永久本地可读,断网也能显示);任一路径成功拿图都统一落盘
+     *  (writeAlbum 专辑级 / writeTrack 曲目级,视 coverScope),不再只落在 iTunes 下载末尾。 */
+    private suspend fun fetchBmp(context: Context, track: Track, key: String, missKey: String, b: Int, coverScope: CoverScope): Bitmap? =
+        withContext(Dispatchers.IO) {
+            // v1.2.2: 磁盘读优先——先按 scope key 查本地持久化,命中直接解码(断网可用)。
+            // 若这里命中,不会重复联网/重复落盘。
+            val useTrackKey = coverScope == CoverScope.TRACK || track.albumId <= 0
+            val diskBytes = if (useTrackKey) diskCache.readTrack(context, track.id, b)
+                             else diskCache.readAlbum(context, track.albumId, b)
+            if (diskBytes != null) {
+                android.util.Log.d("ArtCache", "disk(scope) hit ${if (useTrackKey) "track" else "album"} id=${if (useTrackKey) track.id else track.albumId} bucket=$b")
+                return@withContext android.graphics.BitmapFactory.decodeByteArray(diskBytes, 0, diskBytes.size)
+            }
+            // v1.2.2: 成功路径统一落盘(内存命中前/后都要写盘,确保"获取过一次就永久本地化")。
+            fun persist(bmp: android.graphics.Bitmap) {
+                val bytes = java.io.ByteArrayOutputStream().also {
+                    bmp.compress(android.graphics.Bitmap.CompressFormat.WEBP_LOSSY, 90, it)
+                }.toByteArray()
+                if (useTrackKey) diskCache.writeTrack(context, track.id, b, bytes)
+                else diskCache.writeAlbum(context, track.albumId, b, bytes)
+            }
             try {
                 // v4.3: custom cover override wins — it's the user's pinned "real"
                 // album cover, so every track on the album shows the same art instead
@@ -143,11 +214,13 @@ object ArtCache {
                             cache.put(key, decoded)
                             misses.remove(missKey)
                         }
+                        persist(decoded)
                         return@withContext decoded
                     }
                 }
                 val loaded = context.contentResolver.loadThumbnail(track.uri, Size(b, b), null)
                 synchronized(this@ArtCache) { cache.put(key, loaded) }
+                if (loaded != null) persist(loaded)   // v1.2.2: 内嵌封面也落盘
                 loaded
             } catch (_: Exception) {
                 // v2.0: iTunes fallback when embedded art is missing
@@ -158,6 +231,7 @@ object ArtCache {
                         cache.put(key, networkBmp)
                         misses.remove(missKey)
                     }
+                    persist(networkBmp)   // v1.2.2: 联网识别的也落盘(不再是仅 downloadBitmap 内部 artUrl 落盘)
                     // v4: store the iTunes releaseDate alongside the bitmap
                     val releaseDate = networkResult?.second ?: ""
                     if (releaseDate.isNotEmpty() && track.albumId > 0) {
@@ -175,11 +249,6 @@ object ArtCache {
                 }
             }
         }
-        // v3.0: extract + cache cover colors (outside the sync block, inside
-        // the enclosing suspend function, so no suspension-in-critical-section).
-        if (bmp != null) ensureColors(context, track, bmp)
-        return bmp
-    }
 
     /** v9: load one iTunes candidate cover at ~[px] for the candidate picker.
      *  Public so the 更换专辑封面 dialog can render thumbnails async. v1.2.0 起
@@ -306,6 +375,13 @@ object ArtCache {
         }
     }
 
+    /** v1.2.2: 同 invalidateAlbum 并一并删除该专辑的本地持久化封面文件(album key),
+     *  使封面变更/重新匹配后磁盘不再命中旧图。 */
+    fun invalidateAlbum(context: Context, albumId: Long) {
+        invalidateAlbum(albumId)
+        if (albumId > 0) diskCache.deleteAlbum(context, albumId)
+    }
+
     /** Warm the in-memory color cache from disk (called once at startup).
      *  v4: only loads rows whose source matches PALETTE_VERSION; older rows are
      *  skipped (not deleted) so ensureColors re-extracts with the new algorithm. */
@@ -362,7 +438,7 @@ object ArtCache {
         if (overrideType.equals("Single", ignoreCase = true)) {
             return loadPerTrackCover(context, track, px)
         }
-        val candidates = fetchITunesCandidates(track)
+        val candidates = fetchITunesCandidates(track, multiRegion = false)
         if (candidates.isEmpty()) return null
         val best = pickBestCoverCandidate(track.album, candidates)
         val bmp = downloadBitmap(context, best.artUrl, px) ?: return null
@@ -447,7 +523,7 @@ object ArtCache {
      *  appear alongside albums in the picker (iTunes' `entity=album` filter
      *  otherwise drops them). */
     suspend fun loadCandidates(track: Track, offset: Int = 0, limit: Int = 8): List<Candidate> {
-        return fetchITunesCandidates(track, limit = limit, includeSongs = true, offset = offset)
+        return fetchITunesCandidates(track, limit = limit, includeSongs = true, offset = offset, multiRegion = true)
             .distinctBy { it.artUrl }
     }
 
@@ -470,6 +546,7 @@ object ArtCache {
         limit: Int = 5,
         includeSongs: Boolean = false,
         offset: Int = 0,
+        multiRegion: Boolean = false,
     ): List<Candidate> {
         if (track.album == com.shiyin.music.data.NO_ALBUM || track.albumId <= 0) return emptyList()
         return withContext(Dispatchers.IO) {
@@ -477,29 +554,65 @@ object ArtCache {
                 .connectTimeout(8, java.util.concurrent.TimeUnit.SECONDS)
                 .readTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
                 .build()
+            // v1.2.1: 多区域搜索。iTunes 默认 US 区,日/中文资源要用英语译名才搜不到;
+            // 带 country 参数搜原产地区域商店(日语歌搜 JP、中文搜 CN/TW),用原始名即可命中。
+            // multiRegion=false(auto 匹配,要快):只搜最佳猜测单区域;true(picker,要多候选):循环所有区域。
+            // v1.3.3b review#B8: auto 的 CJK 分支原先固定 JP——纯汉字(无假名)的中文歌手
+            // 也被路由 JP 区,中文专辑在 JP 商店常搜不到(自动封面命中率下降)。改按语言
+            // 分派:含假名=日语→JP;仅汉字=中文→CN(候选次区),首命中即停的机制不变。
+            val hasCjk = { s: String -> com.shiyin.music.data.normalize.CharUtil.isCjk(s) }
+            val hasKana = { s: String -> s.any { it.code in 0x3040..0x30FF } }
+            val cjkText = hasCjk(track.album) || hasCjk(track.artist) || hasCjk(track.title)
+            val countries = when {
+                !multiRegion && cjkText && (hasKana(track.album) || hasKana(track.artist) || hasKana(track.title)) -> listOf("JP")
+                !multiRegion && cjkText -> listOf("CN", "JP")
+                !multiRegion -> listOf("US")
+                cjkText -> listOf("JP", "CN", "TW", "HK", "US")
+                else -> listOf("US", "GB")
+            }
             val out = ArrayList<Candidate>()
+            val seenArt = HashSet<String>()
             val queries = mutableListOf("album").apply { if (includeSongs) add("song") }
             for (entity in queries) {
-                try {
-                    val term = java.net.URLEncoder.encode("${track.album} ${track.artist} music", "UTF-8")
-                    val url = "https://itunes.apple.com/search?term=$term&media=music&limit=$limit&entity=$entity&offset=$offset"
-                    val req = okhttp3.Request.Builder().url(url).build()
-                    val body = client.newCall(req).execute().body?.string() ?: continue
-                    val json = com.google.gson.JsonParser.parseString(body).asJsonObject
-                    val results = json.getAsJsonArray("results") ?: continue
-                    for (elem in results) {
-                        val o = elem.asJsonObject
-                        val artUrl = o.get("artworkUrl100")?.asString ?: continue
-                        val collectionType = if (entity == "song") "Single" else (o.get("collectionType")?.asString ?: "")
-                        val name = o.get("collectionName")?.asString ?: o.get("trackName")?.asString ?: ""
-                        out += Candidate(
-                            artUrl = artUrl,
-                            albumName = name,
-                            collectionType = collectionType,
-                            releaseDate = o.get("releaseDate")?.asString ?: "",
-                        )
+                // v1.2.1: 主 term 用"专辑名+歌手";若搜不到,回退"歌名+歌手"(专辑名错误/泛化时救回)。
+                val terms = ArrayList<String>(2).apply {
+                    add("${track.album} ${track.artist}")
+                    add("${track.title} ${track.artist}")
+                }
+                val foundAny = intArrayOf(0)
+                for (term0 in terms) {
+                    if (foundAny[0] > 0) break  // 主 term 命中就不再回退
+                    for (country in countries) {
+                        // v1.2.1: auto(multiRegion=false)首个命中区域即停(快);picker(multiRegion=true)
+                        // 不 break——查所有区域商店,聚合各国封面变体给用户挑(原 break 让 picker 只显一区)。
+                        if (!multiRegion && foundAny[0] > 0) break
+                        try {
+                            val term = java.net.URLEncoder.encode(term0, "UTF-8")
+                            val url = "https://itunes.apple.com/search?term=$term&media=music&limit=$limit&entity=$entity&offset=$offset&country=$country"
+                            val req = okhttp3.Request.Builder().url(url).build()
+                            val body = client.newCall(req).execute().body?.string() ?: continue
+                            val json = com.google.gson.JsonParser.parseString(body).asJsonObject
+                            val results = json.getAsJsonArray("results") ?: continue
+                            var added = 0
+                            for (elem in results) {
+                                val o = elem.asJsonObject
+                                val artUrl = o.get("artworkUrl100")?.asString ?: continue
+                                if (!seenArt.add(artUrl)) continue  // 跨区域去重
+                                val collectionType = if (entity == "song") "Single" else (o.get("collectionType")?.asString ?: "")
+                                val name = o.get("collectionName")?.asString ?: o.get("trackName")?.asString ?: ""
+                                out += Candidate(
+                                    artUrl = artUrl.replace("100x100bb", "600x600bb").replace("100x100", "600x600"),
+                                    albumName = name,
+                                    collectionType = collectionType,
+                                    releaseDate = o.get("releaseDate")?.asString ?: "",
+                                )
+                                added++
+                            }
+                            foundAny[0] += added
+                            android.util.Log.d("AIM", "coverCand entity=$entity country=$country term=${term0.take(30)} → +$added")
+                        } catch (_: Exception) { /* skip this country */ }
                     }
-                } catch (_: Exception) { /* skip this entity */ }
+                }
             }
             out
         }
@@ -575,14 +688,14 @@ object ArtCache {
 }
 
 @Composable
-fun rememberAlbumArt(track: Track?, sizeDp: Dp): ImageBitmap? {
+fun rememberAlbumArt(track: Track?, sizeDp: Dp, coverScope: ArtCache.CoverScope = ArtCache.CoverScope.AUTO): ImageBitmap? {
     val context = LocalContext.current
     val px = with(LocalDensity.current) { sizeDp.roundToPx() }.coerceAtLeast(32)
     // v1.2.0：初始值同步查内存缓存命中即显示，避免列表滚动 item 回收重组时
     // null→bitmap 一帧闪烁 + 反复加载。未命中 produceState 异步 load 补。
     val initial = track?.let { ArtCache.getCached(it, px)?.asImageBitmap() }
-    val state = produceState<ImageBitmap?>(initial, track?.id) {
-        value = track?.let { ArtCache.load(context, it, px)?.asImageBitmap() }
+    val state = produceState<ImageBitmap?>(initial, track?.id, coverScope) {
+        value = track?.let { ArtCache.load(context, it, px, coverScope)?.asImageBitmap() }
     }
     return state.value
 }
@@ -667,8 +780,9 @@ fun CoverArt(
     showDeco: Boolean = false,
     fillToParent: Boolean = false,
     modifier: Modifier = Modifier,
+    coverScope: ArtCache.CoverScope = ArtCache.CoverScope.AUTO,
 ) {
-    val art = rememberAlbumArt(track, size)
+    val art = rememberAlbumArt(track, size, coverScope)
     val (bg, fg) = coverPalette(track?.paletteIndex ?: 0)
     val sizeMod = if (fillToParent) Modifier.fillMaxSize() else Modifier.size(size)
     Box(
@@ -873,14 +987,16 @@ fun OrganicSwitch(checked: Boolean, onToggle: () -> Unit) {
 
 // ── the 3-bar playing EQ indicator ─────────────────────────────────────────
 @Composable
-fun EqBars(playing: Boolean, modifier: Modifier = Modifier) {
+fun EqBars(playing: Boolean, modifier: Modifier = Modifier, barMaxHeight: Dp = 16.dp) {
     val c = LocalOrganic.current
+    // v1.3.2: 可缩放(barMaxHeight),Agent 步骤面板复用作"进行中"音浪指示
+    val s = barMaxHeight.value / 16f
     val t = rememberInfiniteTransition(label = "eq")
     val h1 by t.animateFloat(5f, 14f, infiniteRepeatable(tween(450, easing = LinearEasing), RepeatMode.Reverse), label = "b1")
     val h2 by t.animateFloat(13f, 4f, infiniteRepeatable(tween(400, easing = LinearEasing), RepeatMode.Reverse), label = "b2")
     val h3 by t.animateFloat(8f, 15f, infiniteRepeatable(tween(500, easing = LinearEasing), RepeatMode.Reverse), label = "b3")
     Row(
-        modifier = modifier.height(16.dp),
+        modifier = modifier.height(barMaxHeight),
         horizontalArrangement = Arrangement.spacedBy(2.5.dp),
         verticalAlignment = Alignment.Bottom,
     ) {
@@ -888,7 +1004,7 @@ fun EqBars(playing: Boolean, modifier: Modifier = Modifier) {
             Box(
                 Modifier
                     .width(3.5.dp)
-                    .height(h.dp)
+                    .height((h * s).dp)
                     .clip(RoundedCornerShape(2.dp))
                     .background(c.accent)
             )
@@ -984,3 +1100,39 @@ fun TrackRow(
 }
 
 fun trackSubtitle(track: Track): String = track.artist
+
+/**
+ * v1.3.2: 密文输入框(API Key 等敏感值)——默认 •••• 遮蔽,尾部眼睛按钮切换明/密文。
+ * Agent 设置与写真源设置共用。
+ */
+@Composable
+fun PasswordField(
+    value: String,
+    onValueChange: (String) -> Unit,
+    label: String,
+    placeholder: String = "",
+    modifier: Modifier = Modifier,
+) {
+    val c = LocalOrganic.current
+    var visible by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
+    androidx.compose.material3.OutlinedTextField(
+        value = value,
+        onValueChange = onValueChange,
+        label = { Text(label, style = body(12f, FontWeight.Normal, c.n600)) },
+        placeholder = if (placeholder.isBlank()) null else ({ Text(placeholder, style = body(13f, FontWeight.Normal, c.n500)) }),
+        singleLine = true,
+        modifier = modifier.fillMaxWidth(),
+        visualTransformation = if (visible) androidx.compose.ui.text.input.VisualTransformation.None
+        else androidx.compose.ui.text.input.PasswordVisualTransformation(),
+        trailingIcon = {
+            Box(
+                Modifier.size(32.dp).clip(CircleShape).clickable { visible = !visible },
+                contentAlignment = Alignment.Center,
+            ) { OIcon(if (visible) Lucide.EyeOff else Lucide.Eye, 16.dp, c.n500) }
+        },
+        colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
+            focusedTextColor = c.text, unfocusedTextColor = c.text, cursorColor = c.accent,
+            focusedBorderColor = c.accent, unfocusedBorderColor = c.divider,
+        ),
+    )
+}

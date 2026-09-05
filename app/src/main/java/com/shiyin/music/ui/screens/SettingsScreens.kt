@@ -55,6 +55,7 @@ import com.shiyin.music.data.formatSizeMb
 import com.shiyin.music.ui.components.EqBars
 import com.shiyin.music.ui.components.OIcon
 import com.shiyin.music.ui.components.OrganicSwitch
+import com.shiyin.music.ui.components.PasswordField
 import com.shiyin.music.ui.components.PillButton
 import com.shiyin.music.ui.components.body
 import com.shiyin.music.ui.components.heading
@@ -76,6 +77,7 @@ fun SettingsHost(vm: MainViewModel) {
         FilesView.Devices -> DevicesScreen(vm)
         FilesView.About -> AboutScreen(vm)
         FilesView.Merges -> MergesScreen(vm)
+        FilesView.ImageSources -> ImageSourcesScreen(vm)
     }
 }
 
@@ -321,6 +323,24 @@ private fun SettingsRoot(vm: MainViewModel) {
             }
         }
 
+        // v1.2.1: 写真源配置(API key + 源开关)入口
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .shadowSm(RoundedCornerShape(28.dp))
+                .clip(RoundedCornerShape(28.dp))
+                .background(c.surface)
+                .clickable { vm.filesView = FilesView.ImageSources }
+                .padding(horizontal = 16.dp, vertical = 13.dp),
+            horizontalArrangement = Arrangement.spacedBy(13.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            OIcon(Lucide.User, 19.dp, c.n700)
+            Text("写真源", style = body(15f, FontWeight.SemiBold, c.text), modifier = Modifier.weight(1f))
+            Text("配置 · ${vm.disabledImageSources.size} 关", style = body(12.5f, FontWeight.Normal, c.n600))
+            OIcon(Lucide.ChevronRight, 18.dp, c.n500)
+        }
+
         // v1.5: about entry
         Row(
             Modifier
@@ -335,7 +355,7 @@ private fun SettingsRoot(vm: MainViewModel) {
         ) {
             OIcon(Lucide.CircleInfo, 19.dp, c.n700)
             Text("关于我们", style = body(15f, FontWeight.SemiBold, c.text), modifier = Modifier.weight(1f))
-            Text("拾音 v1.2.1", style = body(12.5f, FontWeight.Normal, c.n600))
+            Text("拾音 v1.3.0", style = body(12.5f, FontWeight.Normal, c.n600))
             OIcon(Lucide.ChevronRight, 18.dp, c.n500)
         }
 
@@ -765,7 +785,7 @@ private fun AboutScreen(vm: MainViewModel) {
                     .clip(RoundedCornerShape(999.dp))
                     .background(c.n100)
                     .padding(horizontal = 10.dp, vertical = 3.dp)
-            ) { Text("v1.2.1", style = body(12f, FontWeight.Normal, c.n800)) }
+            ) { Text("v1.3.0", style = body(12f, FontWeight.Normal, c.n800)) }
             Row(
                 Modifier.padding(top = 6.dp),
                 horizontalArrangement = Arrangement.spacedBy(7.dp),
@@ -785,24 +805,50 @@ private fun AboutScreen(vm: MainViewModel) {
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 Text("更新内容", style = body(13f, FontWeight.ExtraBold, c.text).copy(letterSpacing = 1.sp))
-                // 只列当前正式版本变更，旧版本日志不再展示。
-                // 规则:同大版本(v1.2.x)各修订版日志都保留;进入下一大版本(v1.3.x)时
-                // 移除前一版本的日志。
-                data class VerChange(val version: String, val items: List<String>)
+                // 规则:同大版本(v1.2.x)各修订版日志都保留;进入下一大版本(v1.3.x)时移除前一版本日志。
+                // 编写规范:用户视角,不写内部实现/类名/字段;分类 ✨新功能/🚀优化体验/🐛问题修复;
+                // 某类无内容不强行加;版本号不带日期。
+                data class VerChange(
+                    val version: String,
+                    val newFeatures: List<String> = emptyList(),
+                    val improvements: List<String> = emptyList(),
+                    val fixes: List<String> = emptyList(),
+                )
                 val versions = listOf(
-                    VerChange("v1.2.1", listOf(
-                        "播放计数优化：改为累计真实播放满 30 秒才算一次有效播放，误触和快速跳过不再污染播放次数与热度排序。",
-                        "收听统计时长更准：总时长按实际播放秒数统计，不再用曲目总长冒充，跳过和快进的时长不计入。",
-                        "歌手写真源稳定性提升与多项细节修复。",
-                    )),
-                    VerChange("v1.2.0", listOf(
-                        "歌手主页全新重做：沉浸式写真背景，上下滑歌手名从写真左下平滑滑入顶栏，单标题一镜到底动画、无闪烁。",
-                        "歌手写真自动获取：Discogs、AudioDB 等多源并行匹配人物写真，可手选替换/粘贴链接，小众歌手回退专辑封面，缓存本地不重复抓。",
-                        "搜索优化：专辑名命中整张置顶、跨字段分词匹配，找歌更快更准。",
-                        "歌手页与首页/搜索/音乐库高度解耦：歌手页写真沉浸式铺满状态栏，其余页面各自留出状态栏间距，互不影响。",
-                        "喜欢按钮长按可选加入任意歌单（单击仍默认「我的喜欢」）。",
-                        "音乐库新增「合集」分类；左缘右滑拉侧边栏；滑动条空闲自动隐藏；专辑/EP/单曲统一「播放」文案。",
-                    )),
+                    VerChange(
+                        version = "v1.3.0",
+                        newFeatures = listOf(
+                            "新增 Agent 对话页：用自然语言让 AI 帮你整理音乐库。支持联网搜证后自动排序专辑曲目、修正识别错的歌手名、为当前歌曲找歌词，每步执行进度可见，写回前需你确认。",
+                            "Agent 支持批量改歌名：说「把专辑里每首歌的XX后缀去掉」「繁体转简体」「片假名换成汉字官方名」，AI 逐首分析列出改动清单后写回；也可以直接点名「把 A 改成 B」，改完逐行对照验收。",
+                            "Agent 会主动检索本地音乐库：问「库里有没有这首歌」「我常听哪些」不再靠 AI 瞎编，答案基于你的真实曲库和播放次数。",
+                            "Agent 支持多家大模型：DeepSeek、OpenRouter、智谱、通义预设一键切换，也可自定义任意 OpenAI 兼容服务商；设置页可查看 Token 用量趋势（输入 / 输出 / 缓存命中 / 成本曲线）。",
+                            "歌手写真可在设置里手动配置来源：填入 Fanart / Last.fm 的 API Key 可获得更多写真，也可单独开关某个来源。",
+                        ),
+                        improvements = listOf(
+                            "选择歌手写真时，候选图边找边显示，不再空等全部来源；搜索进度可见，不会再像卡住。",
+                            "专辑封面搜索支持多地区：日语、中文歌曲用原名即可匹配到对应地区商店的封面，不再需要英文名。",
+                            "已获取的专辑封面本地持久化保存：断网也能立即显示，不再每次冷启动都重新解码或下载。",
+                            "歌手页打开速度提升，封面加载更稳，减少了重复请求导致的卡顿。",
+                            "Agent 回复像逐字打字一样流式呈现；AI 思考过程收进可展开的思考面板，思考中亮橙色呼吸灯，完成后自动折叠。",
+                            "歌词本切到下一首时立即从顶部开始跟随，不再停留上一首的最后位置。",
+                            "专辑页日期前缀按真实类型显示（专辑 / EP / 单曲 / 合集 · 日期），不再一律写「专辑」。",
+                        ),
+                        fixes = listOf(
+                            "修复 Agent 修正歌手名时，因未把歌曲编号交给 AI 导致永远修正不成功的问题。",
+                            "修复 Agent 改歌名「提示成功但实际没改」的问题（改名的目标专辑与新旧歌名现在如实交给 AI）。",
+                            "修复部分 AI 模型把答案写在思考里导致改名无结果、却显示完成的问题；拿不准的歌名保持原样不动，不再瞎改。",
+                            "修复 Agent 设置页打开闪退、提示「未配置大模型」但配置其实存在的问题。",
+                            "修复更换封面来源或选择自定义封面后，旧封面仍缓存不清、不刷新的问题。",
+                            "修复部分情况下播放次数统计不准确的问题：误触、快速跳过不再被计入播放次数和热度排序（累计真实播放满 30 秒才算一次有效播放）。",
+                            "修复退出应用或切到后台后，正在播放的歌曲时长未被正确记录的问题。",
+                            "修复单曲循环时播放计数可能错乱、同一首歌重复计数异常的问题。",
+                            "修复歌手主页名字在内容较少的歌手上会突然瞬移到顶栏的问题，现在滚动到顶平滑到位。",
+                            "修复部分歌手名（含全角逗号等标点）无法正确识别为多位歌手的问题。",
+                            "修复音乐库「专辑」筛选仍混入单曲的问题。",
+                            "修复从专辑封面生成歌手写真时偶尔提示「无可用封面」的问题。",
+                            "修复专辑信息编辑里发布时间的年份列表固定到 2030 年的问题，现在跟随当前年份。",
+                        ),
+                    ),
                 )
                 for (ver in versions) {
                     Text(
@@ -810,11 +856,20 @@ private fun AboutScreen(vm: MainViewModel) {
                         style = body(12.5f, FontWeight.Bold, c.text).copy(letterSpacing = 0.5.sp),
                         modifier = Modifier.padding(top = 4.dp),
                     )
-                    for (ch in ver.items) {
-                        // 悬挂缩进:圆点单独一列,正文换行后与首字对齐(不再缩到圆点下方)
-                        Row(verticalAlignment = Alignment.Top, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            Text("·", style = body(12f, FontWeight.Bold, c.n700))
-                            Text(ch, style = body(12f, FontWeight.Normal, c.n700).copy(lineHeight = 17.sp), modifier = Modifier.weight(1f))
+                    val sections = listOf(
+                        "✨ 新功能" to ver.newFeatures,
+                        "🚀 优化体验" to ver.improvements,
+                        "🐛 问题修复" to ver.fixes,
+                    )
+                    for ((label, items) in sections) {
+                        if (items.isEmpty()) continue
+                        Text(label, style = body(11.5f, FontWeight.Bold, c.n600).copy(letterSpacing = 0.5.sp), modifier = Modifier.padding(top = 4.dp))
+                        for (ch in items) {
+                            // 悬挂缩进:圆点单独一列,正文换行后与首字对齐
+                            Row(verticalAlignment = Alignment.Top, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Text("·", style = body(12f, FontWeight.Bold, c.n700))
+                                Text(ch, style = body(12f, FontWeight.Normal, c.n700).copy(lineHeight = 17.sp), modifier = Modifier.weight(1f))
+                            }
                         }
                     }
                 }
@@ -848,7 +903,8 @@ private fun AboutScreen(vm: MainViewModel) {
         // 赞赏页(整页):提示语 + 微信/支付宝赞赏码(各占整行,放大;点击保存到相册)
         if (supportSheetOpen) {
             Column(
-                Modifier.fillMaxSize().background(c.bg).verticalScroll(rememberScrollState()),
+                Modifier.fillMaxSize().background(c.bg).verticalScroll(rememberScrollState())
+                    .padding(horizontal = 20.dp).padding(top = 22.dp),
                 verticalArrangement = Arrangement.spacedBy(24.dp),
             ) {
                 SubPageHeader("赞赏开发者") { supportSheetOpen = false }
@@ -1027,6 +1083,214 @@ private fun TrashScreen(vm: MainViewModel) {
             }
         }
     }
+}
+
+// ── v1.2.1 写真源配置子页 · v1.3.2 重排:两段式(内置源 / 自定义源)。
+//      需 Key 的源(Fanart/Last.fm)与用户自建 URL 源统一归入「自定义源」(置底),
+//      Key 密文填写,保存按钮只在有未保存修改时出现。 ──
+@Composable
+private fun ImageSourcesScreen(vm: MainViewModel) {
+    val c = LocalOrganic.current
+    var keyDialogFor by remember { mutableStateOf<String?>(null) }  // "fanart" / "lastfm"
+    var addDialogOpen by remember { mutableStateOf(false) }
+    Column(
+        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).padding(top = 22.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        SubPageHeader("写真源") { vm.filesView = FilesView.Root }
+
+        // ── 内置源(无需 Key 的;Fanart/Last.fm 移入下方「自定义源」)──
+        Column(
+            Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(c.surface).padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            Text("内置源", style = body(13f, FontWeight.ExtraBold, c.text).copy(letterSpacing = 0.5.sp))
+            val labels = com.shiyin.music.data.image.ArtistImageSources.sourceLabels
+            val order = com.shiyin.music.data.image.ArtistImageSources.sources.map { it.key }
+                .filter { it != "fanart" && it != "lastfm" }
+            for (key in order) {
+                val enabled = key !in vm.disabledImageSources
+                Row(
+                    Modifier.fillMaxWidth().padding(vertical = 7.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(labels[key] ?: key, style = body(14f, FontWeight.SemiBold, c.text), modifier = Modifier.weight(1f))
+                    androidx.compose.material3.Switch(
+                        checked = enabled,
+                        onCheckedChange = { vm.setImageSourceEnabled(key, it) },
+                        colors = androidx.compose.material3.SwitchDefaults.colors(checkedTrackColor = c.accent),
+                    )
+                }
+            }
+        }
+
+        // ── 自定义源:需 Key 的内置源 + 用户自建 URL 源,配置好即同内置源一样开关 ──
+        Column(
+            Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(c.surface).padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text("自定义源", style = body(13f, FontWeight.ExtraBold, c.text).copy(letterSpacing = 0.5.sp), modifier = Modifier.weight(1f))
+                Box(
+                    Modifier.size(28.dp).clip(CircleShape).background(c.accent).clickable { addDialogOpen = true },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    OIcon(Lucide.Plus, 15.dp, Color.White)
+                }
+            }
+            // ① 需 Key 的内置源(Fanart / Last.fm):填好 Key 即生效,可开关
+            val keyedSources = listOf(
+                Triple("fanart", com.shiyin.music.data.image.ArtistImageSources.sourceLabels["fanart"] ?: "Fanart.tv", vm.fanartApiKey),
+                Triple("lastfm", com.shiyin.music.data.image.ArtistImageSources.sourceLabels["lastfm"] ?: "Last.fm", vm.lastfmApiKey),
+            )
+            for ((key, label, savedKey) in keyedSources) {
+                val enabled = key !in vm.disabledImageSources
+                Row(
+                    Modifier.fillMaxWidth().padding(vertical = 7.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(label, style = body(14f, FontWeight.SemiBold, c.text))
+                        if (savedKey.isNotBlank()) {
+                            Text("已配置", style = body(10f, FontWeight.Bold, c.s700))
+                        }
+                    }
+                    PillButton(
+                        "修改键", onClick = { keyDialogFor = key },
+                        bg = null, textColor = c.accent, borderColor = c.divider,
+                        fontSize = 12f, padH = 12.dp, padV = 6.dp,
+                    )
+                    androidx.compose.material3.Switch(
+                        checked = enabled,
+                        onCheckedChange = { vm.setImageSourceEnabled(key, it) },
+                        colors = androidx.compose.material3.SwitchDefaults.colors(checkedTrackColor = c.accent),
+                    )
+                }
+            }
+
+            // ② 用户自建的 URL 源
+            for (def in vm.customImageSources) {
+                val key = "custom-${def.id}"
+                val enabled = key !in vm.disabledImageSources
+                Row(
+                    Modifier.fillMaxWidth().padding(vertical = 7.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(def.name, style = body(14f, FontWeight.SemiBold, c.text), modifier = Modifier.weight(1f))
+                    Box(Modifier.size(30.dp).clip(CircleShape).clickable { vm.removeCustomImageSource(def.id) }, contentAlignment = Alignment.Center) {
+                        OIcon(Lucide.Trash, 15.dp, c.n500)
+                    }
+                    androidx.compose.material3.Switch(
+                        checked = enabled,
+                        onCheckedChange = { vm.setImageSourceEnabled(key, it) },
+                        colors = androidx.compose.material3.SwitchDefaults.colors(checkedTrackColor = c.accent),
+                        modifier = Modifier.padding(start = 6.dp),
+                    )
+                }
+            }
+        }
+    }
+    when (keyDialogFor) {
+        "fanart" -> SourceKeyDialog("Fanart.tv API Key", vm.fanartApiKey, onDismiss = { keyDialogFor = null }) {
+            vm.setFanartApiKey(it); keyDialogFor = null
+        }
+        "lastfm" -> SourceKeyDialog("Last.fm API Key", vm.lastfmApiKey, onDismiss = { keyDialogFor = null }) {
+            vm.setLastfmApiKey(it); keyDialogFor = null
+        }
+    }
+    if (addDialogOpen) AddCustomSourceDialog(vm) { addDialogOpen = false }
+}
+
+/**
+ * v1.3.2: 填 API Key 的弹窗(密文 + 眼睛切换)。保存按钮只在有未保存修改时出现——
+ * 已保存/未改动时不显示,不常态占据界面。
+ */
+@Composable
+private fun SourceKeyDialog(title: String, current: String, onDismiss: () -> Unit, onSave: (String) -> Unit) {
+    val c = LocalOrganic.current
+    var input by remember(current) { mutableStateOf(current) }
+    val dirty = input.trim() != current
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = c.surface,
+        title = { Text(title, style = heading(16)) },
+        text = {
+            PasswordField(
+                value = input, onValueChange = { input = it },
+                label = if (current.isBlank()) "API Key" else "已配置 · 输入新值覆盖,留空保存则清除",
+                placeholder = "API Key",
+            )
+        },
+        confirmButton = {
+            if (dirty) {
+                androidx.compose.material3.TextButton(onClick = { onSave(input.trim()) }) {
+                    Text("保存", style = body(14f, FontWeight.Bold, c.accent))
+                }
+            }
+        },
+        dismissButton = {
+            androidx.compose.material3.TextButton(onClick = onDismiss) {
+                Text(if (dirty) "取消" else "关闭", style = body(14f, FontWeight.Normal, c.n600))
+            }
+        },
+    )
+}
+
+/** v1.3.2: 添加自定义写真源的弹窗(名称 + URL + 可选 Key)。URL 里 {name} 为歌手名占位。 */
+@Composable
+private fun AddCustomSourceDialog(vm: MainViewModel, onDismiss: () -> Unit) {
+    val c = LocalOrganic.current
+    var name by remember { mutableStateOf("") }
+    var tpl by remember { mutableStateOf("") }
+    var apiKey by remember { mutableStateOf("") }
+    val valid = tpl.trim().startsWith("http") && tpl.contains("{name}")
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = c.surface,
+        title = { Text("添加自定义源", style = heading(18)) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    "URL 里用 {name} 表示歌手名(自动 URL 编码)。响应为 JSON 时自动提取其中的图片链接;URL 以 .jpg/.png 等图片扩展名结尾则视为直连图片。需要鉴权的 API 可填 Key:URL 里写 {key} 表示 Key 位置,不写则自动以 Bearer 头附带。",
+                    style = body(11.5f, FontWeight.Normal, c.n600).copy(lineHeight = 16.sp),
+                )
+                androidx.compose.material3.OutlinedTextField(
+                    value = name, onValueChange = { name = it },
+                    label = { Text("名称", style = body(12f, FontWeight.Normal, c.n600)) },
+                    singleLine = true, modifier = Modifier.fillMaxWidth(),
+                    colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = c.text, unfocusedTextColor = c.text, cursorColor = c.accent,
+                        focusedBorderColor = c.accent, unfocusedBorderColor = c.divider,
+                    ),
+                )
+                androidx.compose.material3.OutlinedTextField(
+                    value = tpl, onValueChange = { tpl = it },
+                    label = { Text("URL", style = body(12f, FontWeight.Normal, c.n600)) },
+                    placeholder = { Text("https://api.example.com/img?artist={name}", style = body(12f, FontWeight.Normal, c.n500)) },
+                    singleLine = true, modifier = Modifier.fillMaxWidth(),
+                    colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = c.text, unfocusedTextColor = c.text, cursorColor = c.accent,
+                        focusedBorderColor = c.accent, unfocusedBorderColor = c.divider,
+                    ),
+                )
+                PasswordField(
+                    value = apiKey, onValueChange = { apiKey = it },
+                    label = "API Key(可选)", placeholder = "该 API 需要鉴权时再填",
+                )
+            }
+        },
+        confirmButton = {
+            androidx.compose.material3.TextButton(
+                enabled = valid,
+                onClick = { vm.addCustomImageSource(name, tpl, apiKey); onDismiss() },
+            ) { Text("添加", style = body(14f, FontWeight.Bold, if (valid) c.accent else c.n500)) }
+        },
+        dismissButton = {
+            androidx.compose.material3.TextButton(onClick = onDismiss) {
+                Text("取消", style = body(14f, FontWeight.Normal, c.n600))
+            }
+        },
+    )
 }
 
 // ── v2.0 DeepSeek API key input dialog ─────────────────────────────────
