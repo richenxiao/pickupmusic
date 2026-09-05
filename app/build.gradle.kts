@@ -15,8 +15,8 @@ android {
         applicationId = "com.shiyin.music"
         minSdk = 31
         targetSdk = 36
-        versionCode = 10201
-        versionName = "1.2.1"
+        versionCode = 10300
+        versionName = "1.3.0"
         // v1.2.0 阶段一：instrumented test runner 显式用 androidx（不显式设时，
         // androidTest APK 经 R8 后 AGP 可能回退到系统框架 android.test.InstrumentationTestRunner
         // 致使 instrumentation 进程启动即崩）。
@@ -57,6 +57,7 @@ android {
             // 配合 app/proguard-rules.pro 保护 Kuromoji/Gson/Room/Media3 等反射依赖。
             // proguard-android.txt 自带 -dontoptimize（不开优化 pass，最稳）；混淆开，
             // mapping.txt 输出用于反混淆崩溃栈。Kuromoji 33MB 词表为 JAR 资源，不受影响。
+            // (v1.3.0 调试期曾临时关闭过一次,排完 Agent 日志已恢复。)
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(
@@ -108,8 +109,14 @@ android {
     // 使本地/CI 跑 testDebugUnitTest 只跑确定性(mock/fixture)测试,不受 Discogs 按 IP
     // 限流偶发失败干扰。联网测试单独运行用 `gradle testNetwork` 任务(见文件末注册)。
     testOptions {
-        unitTests.all {
-            it.useJUnit { excludeCategories("com.shiyin.music.testing.NetworkTest") }
+        unitTests {
+            // v1.2.1: 单测 JVM 无 android.jar 实现,写真源里的 android.util.Log 诊断日志
+            // 会让 NetworkTest 抛 "Method d not mocked"(源逻辑并未被测,日志只是副作用)。
+            // 开 returnDefaultValues 让 Log 等框架桩默认返回零值,联网测试可真正跑通。
+            isReturnDefaultValues = true
+            all {
+                it.useJUnit { excludeCategories("com.shiyin.music.testing.NetworkTest") }
+            }
         }
     }
 }
