@@ -69,3 +69,8 @@ tools/jmdict-build/tools/
 docs/design/
 docs/photos/
 *-this-session-is-being-continued-*.txt
+
+# agent 调试日志与 review 临时产物,不入库
+.agent-logcat*.txt
+.review-findings.txt
+.review-tmp/
