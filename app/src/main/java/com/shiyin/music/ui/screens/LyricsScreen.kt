@@ -146,10 +146,12 @@ fun LyricsScreen(vm: MainViewModel) {
                 Modifier
                     .size(38.dp)
                     .clip(CircleShape)
-                    .background(btnBg)
+                    // v1.3.x 虚影修复(方案 A):半透明 btnBg(artFg@14%)在深色封面上是
+                    // "光晕"虚影的来源;改实心深盘(同「あ」按钮),图标已换 filled 实心路径。
+                    .background(Color(0xFF1E1E22))
                     .clickable { vm.lyricsOn = false; vm.lySheet = false },
                 contentAlignment = Alignment.Center,
-            ) { OIcon(Lucide.ChevronDown, 19.dp, artFg) }
+            ) { OIcon(Lucide.ChevronDownFilled, 17.dp, artFg) }
             Column(
                 Modifier.weight(1f),
                 verticalArrangement = Arrangement.spacedBy(2.dp),
@@ -176,10 +178,11 @@ fun LyricsScreen(vm: MainViewModel) {
                     Modifier
                         .size(38.dp)
                         .clip(CircleShape)
-                        .background(btnBg)
+                        // v1.3.x 虚影修复(方案 A):同关闭按钮——半透明底换实心深盘+filled 图标。
+                        .background(Color(0xFF1E1E22))
                         .clickable { vm.lySheet = !vm.lySheet },
                     contentAlignment = Alignment.Center,
-                ) { OIcon(Lucide.Sliders, 16.dp, artFg) }
+                ) { OIcon(Lucide.SlidersFilled, 17.dp, artFg) }
             }
         }
 
@@ -358,7 +361,11 @@ fun LyricsScreen(vm: MainViewModel) {
                         Modifier
                             .size(38.dp)
                             .clip(CircleShape)
-                            .background(if (furiganaOn) artFg else btnBg)
+                            // v1.3.x 虚影修复(方案 A):未激活态原来是 artFg@14% 半透明底,
+                            // 在深色封面上呈一圈"光晕"虚影(用户三处虚影反馈之一)。改实心
+                            // 深盘——固定暗色(与未解析封面的兜底色同族),不随封面取色
+                            // 变浅,视觉上是一块安静的实心圆,无光晕;激活态 artFg 不变。
+                            .background(if (furiganaOn) artFg else Color(0xFF1E1E22))
                             .clickable { furiganaOn = !furiganaOn },
                         contentAlignment = Alignment.Center,
                     ) {
