@@ -794,6 +794,15 @@ private fun AboutScreen(vm: MainViewModel) {
                 OIcon(Lucide.Shield, 14.dp, c.s700)
                 Text("完全本地运行 · 不上传任何数据", style = body(12.5f, FontWeight.Bold, c.s700))
             }
+            // v1.3.x: 数据源 credit——JMdict 派生读法表随包分发须署名 EDRDG(CC BY-SA,
+            // 项目约定连续两版漏补,这次随振假名增强一起补)。UtaTen 对照属联网获取
+            // (每曲一次、有本地缓存),一并说明来源。
+            Text(
+                "振假名注音数据源：JMdict（© EDRDG，CC BY-SA）· UtaTen 歌词站对照",
+                style = body(10.5f, FontWeight.Normal, c.n600),
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                modifier = Modifier.padding(top = 6.dp, start = 24.dp, end = 24.dp),
+            )
             // v3.3: 每次更新附上更新内容清单，方便用户对照功能变化
             Column(
                 Modifier
