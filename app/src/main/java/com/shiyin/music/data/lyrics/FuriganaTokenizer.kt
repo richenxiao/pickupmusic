@@ -269,8 +269,9 @@ object FuriganaTokenizer {
         return sb.toString()
     }
 
-    /** 是否为汉字（常用 CJK 区 + 扩展 A + 兼容汉字）。 */
-    private fun isKanji(ch: Char): Boolean {
+    /** 是否为汉字（常用 CJK 区 + 扩展 A + 兼容汉字）。v1.3.x 起公开:LLM 兜底层
+     *  (FuriganaLlmAssist)收集空缺段时复用同一判定。 */
+    fun isKanji(ch: Char): Boolean {
         val c = ch.code
         return c in 0x4E00..0x9FFF || c in 0x3400..0x4DBF || c in 0xF900..0xFAFF
     }
@@ -280,8 +281,9 @@ object FuriganaTokenizer {
      * 返点 々 ヽ ヾ / ゝ ゞ 。任何罗马字母、空格、数字、"*" 等非假名字符出现即视为
      * 格式非法 → 不可信 → 不注音（宁可无假名，不显错假名）。兜底防任何环节产出格式
      * 破碎的 reading 被当正常结果渲染。
+     * v1.3.x 起公开:LLM 兜底层对模型输出复用同一校验——假名格式防线全链路一致。
      */
-    private fun isValidKanaReading(reading: String): Boolean {
+    fun isValidKanaReading(reading: String): Boolean {
         if (reading.isEmpty()) return false
         for (ch in reading) {
             val c = ch.code
