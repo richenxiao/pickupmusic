@@ -177,8 +177,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     var autoSaveRecognition by mutableStateOf(true); private set
     // v1.1+: 自动识别缓存占用（歌词+封面），供设置页显示与清理。null=未统计。
     var recognitionCacheBytes by mutableStateOf<Long?>(null); private set
-    // v1.1+: 外部假名校验状态反馈。
-    var externalFetchStatus by mutableStateOf<String?>(null); private set
     // v2: 播放速度调节（全局持久化）
     var playbackSpeed by mutableStateOf(1.0f); private set
     var retroSpeedMode by mutableStateOf(true); private set
@@ -2856,61 +2854,171 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    // ── v1.3.x: 振假名三层增强(UtaTen 自动对照 + LLM 缺口兜底) ─────────────────
+    // 编排:本地词典出结果(照常) → UtaTen 权威对照(冲突/空缺直接采信,覆盖 LLM 行)
+    // → 仍空缺的段整曲一次 LLM 兜底(候选约束+位置白名单)。失败矩阵:
+    //   · UtaTen 网络失败 → 跳过该层照常走 LLM;负缓存 6h(防离线连环重试)
+    //   · UtaTen 未收录 → 负缓存 7d(收录不会瞬变)
+    //   · UtaTen 页面无假名 → 绑歌词版本永久跳过(该版本永远不会有)
+    //   · UtaTen 解析/对齐失败 → 负缓存 1d(防站改版被连环锤)
+    //   · LLM 调用失败 → 不落"完成"标记,下次自动重试(LlmClient 内置 1 次重试已耗尽才到这)
+    //   · LLM 输出位置/读法非法 → 逐条白名单过滤,宁弃勿错
+    //   · DB 写入失败 → 重试 1 次,仍失败提示且不崩
+    // 任一层失败最坏回到现状(增强层只做增量),状态经 [furiganaAssistStatus] 透出,
+    // 「重新校验」可带 force 逐层重跑。
+    /** 负缓存:key=layer:mediaId:hash, value=过期时刻(now+ttl)。到期前该层跳过重试。 */
+    private val furiganaNegCache = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    /** LLM 兜底触发门槛:应用 UtaTen 后仍空缺的段 ≥3 才值得一次 LLM 往返
+     *  (用户拍板默认 3,真机数据出来后再调;force 重新校验不受限)。 */
+    private val LLM_GAP_THRESHOLD = 3
+    private fun negOk(key: String): Boolean {
+        val until = furiganaNegCache[key] ?: return true
+        if (System.currentTimeMillis() >= until) { furiganaNegCache.remove(key); return true }
+        return false
+    }
+
+    /** UI 可见的增强状态(null=无进行中/无结论;""=正在跑;非空=结论文案)。 */
+    var furiganaAssistStatus by mutableStateOf<String?>(null); private set
+
+    /** DB 重试 1 次的写入:失败抛出由调用方归类。 */
+    private suspend fun upsertEvidenceRetry(rows: List<com.shiyin.music.data.db.ExternalReadingEvidenceEntity>) {
+        try { dao.upsertExternalEvidence(rows) }
+        catch (e: kotlinx.coroutines.CancellationException) { throw e }
+        catch (_: Exception) { dao.upsertExternalEvidence(rows) }
+    }
+
     /**
-     * v1.1+: 异步抓取外部带假名歌词 evidence。每步给用户明确反馈（不吞异常）。
-     * 成功后缓存到 (mediaId+lyricsHash)，后续完全离线。任一失败不影响本地显示。
-     * ⚠️ UtaTen 假名为第三方内容——正式发行前须合规评估，当前为实验性手动触发。
+     * 振假名增强主入口(歌词本开振假名时自动触发;force=true 跳过全部缓存/负缓存)。
+     * 三层按序跑,各层独立失败独立降级;结果写入 external_reading_evidence
+     * (source="utaten:*"/"llm:*"),管线里低于人工 Song Override。
      */
-    fun fetchExternalReadingEvidence() {
-        val cur = currentLyrics ?: run {
-            externalFetchStatus = "错误：歌词尚未加载"
-            return
-        }
-        val track = trackById(cur.mediaId) ?: run {
-            externalFetchStatus = "错误：未找到曲目信息"
-            return
-        }
+    fun ensureFuriganaEvidence(force: Boolean = false) {
+        val cur = currentLyrics ?: return
+        val track = trackById(cur.mediaId) ?: return
         val hash = com.shiyin.music.data.furigana.LyricsHash.of(cur.raw)
-        externalFetchStatus = "loading"
+        val mediaId = cur.mediaId
+        val localLines = cur.parsed.lines.map { it.text }
+        furiganaAssistStatus = ""
         viewModelScope.launch(Dispatchers.IO) {
-            try {
-                // 已缓存则跳过
-                if (dao.externalEvidence(cur.mediaId, hash).isNotEmpty()) {
-                    withContext(Dispatchers.Main) { externalFetchStatus = "已有缓存（无需重复获取）" }
-                    return@launch
+            val now = System.currentTimeMillis()
+            val existing = try { dao.externalEvidence(mediaId, hash) } catch (_: Exception) { emptyList() }
+            val utatenDone = existing.any { it.source.startsWith("utaten") }
+            val llmDone = existing.any { it.source.startsWith("llm") }
+            val notes = ArrayList<String>(3)
+            var wrote = false
+
+            // ── 层1: UtaTen 权威对照 ──
+            if (force || !utatenDone) {
+                if (force || negOk("utaten:$mediaId:$hash")) {
+                    try {
+                        val provider = com.shiyin.music.data.furigana.external.UtaTenProvider()
+                        val occ = provider.resolve(track.title, track.artist, localLines)
+                        val rows = occ!!.map {
+                            com.shiyin.music.data.db.ExternalReadingEvidenceEntity(
+                                mediaId = mediaId, lyricsHash = hash,
+                                lineIndex = it.lineIndex, charStart = it.charStart, length = it.length,
+                                surface = "", reading = it.reading, source = it.source, confidence = 1, fetchedAt = now,
+                            )
+                        }
+                        // REPLACE 主键(mediaId,hash,line,charStart)——UtaTen 行天然覆盖旧 LLM 行
+                        upsertEvidenceRetry(rows)
+                        furiganaNegCache.remove("utaten:$mediaId:$hash")
+                        wrote = true
+                        notes.add("UtaTen 对照 ${rows.size} 处")
+                    } catch (e: com.shiyin.music.data.furigana.external.UtaTenProvider.ResolveException) {
+                        // 负缓存 TTL 按失败原因分档:未收录 7d(收录不会瞬变)、页面无假名
+                        // 绑定本歌词版本永久跳过、网络/解析/对齐 1d(防站改版被连环锤)
+                        val ttl = when (e.reason) {
+                            com.shiyin.music.data.furigana.external.UtaTenProvider.Reason.NO_MATCH -> 7L * 24 * 3600_000L
+                            com.shiyin.music.data.furigana.external.UtaTenProvider.Reason.NO_FURIGANA -> Long.MAX_VALUE / 4
+                            else -> 24 * 3600_000L
+                        }
+                        furiganaNegCache["utaten:$mediaId:$hash"] = System.currentTimeMillis() + ttl
+                        notes.add("UtaTen: ${e.message?.take(40)}")
+                    } catch (e: kotlinx.coroutines.CancellationException) {
+                        throw e
+                    } catch (t: Throwable) {
+                        furiganaNegCache["utaten:$mediaId:$hash"] = System.currentTimeMillis() + 6 * 3600_000L
+                        notes.add("UtaTen: ${t.message?.take(30) ?: "异常"}")
+                    }
+                } else notes.add("UtaTen: 稍后自动重试")
+            } else notes.add("UtaTen 已缓存")
+
+            // ── 层2: LLM 缺口兜底 ──
+            val needLlm = force || !llmDone
+            if (needLlm) {
+                val config = activeLlmConfig()
+                val fresh = try { dao.externalEvidence(mediaId, hash) } catch (_: Exception) { existing }
+                // 层1 刚写入/历史已有的 UtaTen 行,先重算分词拿"应用后仍空缺"的段
+                val segments = try {
+                    val overrides = try { dao.songReadingOverrides(mediaId, hash) } catch (_: Exception) { emptyList() }
+                    val byLine = overrides.groupBy { it.lineIndex }.mapValues { (_, rs) -> rs.associate { it.charStart to it.reading } }
+                    val extByLine = fresh.groupBy { it.lineIndex }.mapValues { (_, rs) -> rs.associate { it.charStart to (it.length to it.reading) } }
+                    localLines.mapIndexed { idx, text ->
+                        com.shiyin.music.data.lyrics.FuriganaTokenizer.toSegments(
+                            text, lineOverrides = byLine[idx], externalEvidence = extByLine[idx],
+                            correction = com.shiyin.music.data.furigana.LyricsReadingOverrides, jmdict = furiganaJmdict,
+                        )
+                    }
+                } catch (_: Exception) { null }
+                if (config == null) {
+                    notes.add("LLM 兜底: 未配置(设置里填)")
+                } else if (segments == null) {
+                    notes.add("LLM 兜底: 本地分词失败,跳过")
+                } else {
+                    val gaps = com.shiyin.music.data.furigana.FuriganaLlmAssist.collectGaps(segments) {
+                        furiganaJmdict.readings(it) ?: emptyList()
+                    }
+                    if (gaps.isEmpty()) {
+                        notes.add("无空缺段,LLM 跳过")
+                    } else if (gaps.size < LLM_GAP_THRESHOLD && !force) {
+                        // 用户拍板:默认门槛 3——零星 1-2 个空缺段不值一次 LLM 往返
+                        // (用户可长按逐个改);force(手动重新校验)不受门槛限制。
+                        notes.add("空缺段 ${gaps.size} 处未过门槛($LLM_GAP_THRESHOLD),跳过 LLM")
+                    } else {
+                        val prompt = com.shiyin.music.data.furigana.FuriganaLlmAssist.buildPrompt(localLines, gaps)
+                        val resp = com.shiyin.music.data.ai.LlmClient.call(
+                            config, listOf("user" to prompt), maxTokens = 4096,
+                        )
+                        if (resp == null) {
+                            val err = com.shiyin.music.data.ai.LlmClient.lastError ?: "网络/额度异常"
+                            notes.add("LLM 兜底失败($err),下次自动重试")
+                        } else {
+                            val fixes = com.shiyin.music.data.furigana.FuriganaLlmAssist.parseFixes(resp.content ?: "", gaps)
+                            if (fixes.isEmpty()) {
+                                notes.add("LLM 无有效补注(${gaps.size} 空缺),下次自动重试")
+                            } else {
+                                val rows = fixes.map { f ->
+                                    val g = gaps.first { it.lineIndex == f.lineIndex && it.charStart == f.charStart && it.length == f.length }
+                                    com.shiyin.music.data.db.ExternalReadingEvidenceEntity(
+                                        mediaId = mediaId, lyricsHash = hash,
+                                        lineIndex = f.lineIndex, charStart = f.charStart, length = f.length,
+                                        surface = g.surface, reading = f.reading,
+                                        source = "llm:${config.model.take(20)}", confidence = 0, fetchedAt = now,
+                                    )
+                                }
+                                try {
+                                    upsertEvidenceRetry(rows)
+                                    agentCtx.logUsage(resp.promptTokens, resp.completionTokens, resp.cacheTokens)
+                                    wrote = true
+                                    notes.add("LLM 补注 ${rows.size}/${gaps.size} 处")
+                                } catch (e: kotlinx.coroutines.CancellationException) {
+                                    throw e
+                                } catch (t: Throwable) {
+                                    notes.add("结果写入失败(${t.message?.take(20) ?: "DB"}),可点重新校验重试")
+                                }
+                            }
+                        }
+                    }
                 }
-                val localLines = cur.parsed.lines.map { it.text }
-                val provider = com.shiyin.music.data.furigana.external.UtaTenProvider(
-                    diagFilePath = getApplication<android.app.Application>().getExternalFilesDir(null)?.resolve("furigana_align_diag.txt")?.absolutePath
-                )
-                val occ = provider.resolve(track.title, track.artist, localLines)
-                if (occ == null) {
-                    withContext(Dispatchers.Main) { externalFetchStatus = "失败：未知原因" }
-                    return@launch
-                }
-                // 存 evidence
-                val now = System.currentTimeMillis()
-                val rows = occ.map {
-                    com.shiyin.music.data.db.ExternalReadingEvidenceEntity(
-                        mediaId = cur.mediaId, lyricsHash = hash,
-                        lineIndex = it.lineIndex, charStart = it.charStart, length = it.length,
-                        surface = "", reading = it.reading, source = it.source, confidence = 1, fetchedAt = now,
-                    )
-                }
-                dao.upsertExternalEvidence(rows)
-                bumpFuriganaRevision()
-                withContext(Dispatchers.Main) { externalFetchStatus = "成功：保存了 ${occ.size} 个注音" }
-            } catch (e: com.shiyin.music.data.furigana.external.UtaTenProvider.ResolveException) {
-                val msg = when (e.reason) {
-                    com.shiyin.music.data.furigana.external.UtaTenProvider.Reason.NO_MATCH -> "失败：未找到匹配歌曲"
-                    com.shiyin.music.data.furigana.external.UtaTenProvider.Reason.NO_FURIGANA -> "失败：来源页面无假名数据"
-                    com.shiyin.music.data.furigana.external.UtaTenProvider.Reason.NETWORK -> "失败：${e.message}"
-                    com.shiyin.music.data.furigana.external.UtaTenProvider.Reason.PARSE -> "失败：解析异常"
-                    com.shiyin.music.data.furigana.external.UtaTenProvider.Reason.ALIGN -> "失败：本地歌词无法可靠对齐"
-                }
-                withContext(Dispatchers.Main) { externalFetchStatus = msg }
-            } catch (t: Throwable) {
-                withContext(Dispatchers.Main) { externalFetchStatus = "失败：${t.message ?: "未知错误"}" }
+            } else notes.add("LLM 已缓存")
+
+            withContext(Dispatchers.Main) {
+                furiganaAssistStatus = if (wrote) {
+                    notes.joinToString("；").also { bumpFuriganaRevision() }
+                } else notes.joinToString("；").ifBlank { "无更新" }
+                // 有写入时 bump 已触发重算;纯失败(无写入)不动现有注音
+                if (wrote) showToast("振假名校验：$furiganaAssistStatus", null)
             }
         }
     }

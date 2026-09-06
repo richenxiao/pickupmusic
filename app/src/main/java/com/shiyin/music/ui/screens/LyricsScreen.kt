@@ -113,6 +113,13 @@ fun LyricsScreen(vm: MainViewModel) {
             vm.furiganaSegmentsFor(ly)
         }
     }
+    // v1.3.x: 开启振假名即自动跑三层增强(UtaTen 权威对照 + LLM 缺口兜底)。
+    // 每曲每版本只自动跑一次(evidence 表缓存判重);结果经 furiganaRevision 触发上面的
+    // produceState 重算,注音自动刷新。失败各自降级并写 furiganaAssistStatus,调整
+    // 弹层里可见并可手动重跑。切歌(ly 变)后对新曲再判一次。
+    LaunchedEffect(furiganaOn, ly) {
+        if (furiganaOn && hasKana) vm.ensureFuriganaEvidence()
+    }
     // V1.1: 长按编辑 Song Override 入口（最小可用）
     var pickerLine by remember { mutableStateOf<Int?>(null) }
     // (lineIndex, segment, currentReading)：按出现位置存，同 surface 多次出现可分别设
@@ -409,8 +416,8 @@ fun LyricsScreen(vm: MainViewModel) {
             onBumpOffset = { vm.bumpLyricsOffset(it) },
             onOpenSourcePicker = { vm.lyricsSourcePicker = true },
             onRematchAI = { vm.rematchWithAI() },
-            onFetchExternalReading = { vm.fetchExternalReadingEvidence() },
-            externalFetchStatus = vm.externalFetchStatus,
+            onRefetchFurigana = { vm.ensureFuriganaEvidence(force = true) },
+            furiganaAssistStatus = vm.furiganaAssistStatus,
             onSave = { vm.saveLyrics() },
             onDelete = { vm.deleteLyrics() },
         )
@@ -597,8 +604,8 @@ private fun LyricsAdjustSheet(
     onBumpOffset: (Long) -> Unit,
     onOpenSourcePicker: () -> Unit,
     onRematchAI: () -> Unit,
-    onFetchExternalReading: () -> Unit,
-    externalFetchStatus: String?,
+    onRefetchFurigana: () -> Unit,
+    furiganaAssistStatus: String?,
     onSave: () -> Unit,
     onDelete: () -> Unit,
 ) {
@@ -707,20 +714,24 @@ private fun LyricsAdjustSheet(
                         }
                     }
                 }
-                // v1.1+: 外部假名校验（实验）——Phase 2: 按钮有明确执行反馈。
+                // v1.3.x: 振假名三层校验(UtaTen 权威对照 + LLM 缺口兜底)——开启「あ」时
+                // 已自动跑过一次;这里显示结果状态 + 手动"重新校验"(force,逐层重跑,
+                // UtaTen 失败换网络窗口/LLM 失败换 Key 后用得上)。旧"外部假名校验(实验)"
+                // 单层按钮由本入口取代(同一 evidence 表,旧缓存数据继续有效)。
                 Row(Modifier.fillMaxWidth()) {
-                    val status = externalFetchStatus
+                    val status = furiganaAssistStatus
+                    val running = status == ""
                     val label = when {
-                        status == null -> "外部假名校验（实验）"
-                        status == "loading" -> "搜索中…"
-                        else -> status
+                        running -> "振假名校验中…"
+                        status.isNullOrBlank() -> "振假名校验(开启时已自动跑)"
+                        else -> "校验:$status"
                     }
                     Box(
                         Modifier
                             .fillMaxWidth()
                             .clip(RoundedCornerShape(999.dp))
                             .background(panelBtnBg)
-                            .clickable { if (status != "loading") onFetchExternalReading() }
+                            .clickable(enabled = !running) { onRefetchFurigana() }
                             .padding(vertical = 11.dp),
                         contentAlignment = Alignment.Center,
                     ) {
