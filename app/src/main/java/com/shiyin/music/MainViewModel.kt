@@ -2844,14 +2844,34 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 .mapValues { (_, rows) -> rows.associate { it.charStart to (it.length to it.reading) } }
         } catch (_: Exception) { emptyMap() }
         return ly.parsed.lines.mapIndexed { idx, line ->
-            com.shiyin.music.data.lyrics.FuriganaTokenizer.toSegments(
-                line.text,
-                lineOverrides = byLine[idx],
-                externalEvidence = extByLine[idx],
-                correction = com.shiyin.music.data.furigana.LyricsReadingOverrides,
-                jmdict = furiganaJmdict,
-            )
+            // v1.3.x 用户反馈:"作词：XXX 作曲：XXX"元数据行不该注音——人名注音
+            // 经常错且无价值,词典/UtaTen/LLM 三层全部对它禁用(返回全 null 段)。
+            if (isLyricsMetadataLine(line.text)) {
+                com.shiyin.music.data.lyrics.FuriganaTokenizer.toSegments(
+                    line.text, lineOverrides = null, externalEvidence = null,
+                    correction = null, jmdict = null,
+                ).map { seg -> seg.copy(reading = null) }
+            } else {
+                com.shiyin.music.data.lyrics.FuriganaTokenizer.toSegments(
+                    line.text,
+                    lineOverrides = byLine[idx],
+                    externalEvidence = extByLine[idx],
+                    correction = com.shiyin.music.data.furigana.LyricsReadingOverrides,
+                    jmdict = furiganaJmdict,
+                )
+            }
         }
+    }
+
+    /**
+     * 歌词元数据行判定:"作词：XXX 作曲：XXX"这类非歌词正文行。用户定调不注音
+     * (人名注音常错且无价值)。宽匹配中日英写法:作词/作詞/作曲/编曲/編曲/编词/
+     * 作编曲/填词/填詞/歌词/作詞作曲 + :/：/。英文 lyric(s)/words/music by 也算。
+     */
+    private fun isLyricsMetadataLine(line: String?): Boolean {
+        if (line.isNullOrBlank()) return false
+        val t = line.trim()
+        return Regex("""(?i)^(作词|作詞|作曲|编曲|編曲|编词|填词|填詞|作编曲|作詞|lyrics?|words?|music)\s*[:：]""").containsMatchIn(t)
     }
 
     // ── v1.3.x: 振假名三层增强(UtaTen 自动对照 + LLM 缺口兜底) ─────────────────
@@ -2910,10 +2930,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             // ── 层1: UtaTen 权威对照 ──
             if (force || !utatenDone) {
                 if (force || negOk("utaten:$mediaId:$hash")) {
+                    val utatenT0 = android.os.SystemClock.elapsedRealtime()
                     try {
                         val provider = com.shiyin.music.data.furigana.external.UtaTenProvider()
                         val occ = provider.resolve(track.title, track.artist, localLines)
-                        val rows = occ!!.map {
+                        // 用户反馈:"作词：XXX 作曲：XXX"这类元数据行不该注音(人名经常
+                        // 注错且无价值)——UtaTen 回来的 occurrence 里元数据行整行剔除。
+                        val occFiltered = occ!!.filter { !isLyricsMetadataLine(localLines.getOrNull(it.lineIndex)) }
+                        val rows = occFiltered.map {
                             com.shiyin.music.data.db.ExternalReadingEvidenceEntity(
                                 mediaId = mediaId, lyricsHash = hash,
                                 lineIndex = it.lineIndex, charStart = it.charStart, length = it.length,
@@ -2925,6 +2949,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                         furiganaNegCache.remove("utaten:$mediaId:$hash")
                         wrote = true
                         notes.add("UtaTen 对照 ${rows.size} 处")
+                        android.util.Log.i("FuriganaAssist", "utaten resolve ${android.os.SystemClock.elapsedRealtime() - utatenT0}ms rows=${rows.size} (filtered ${occ.size - occFiltered.size})")
                     } catch (e: com.shiyin.music.data.furigana.external.UtaTenProvider.ResolveException) {
                         // 负缓存 TTL 按失败原因分档:未收录 7d(收录不会瞬变)、页面无假名
                         // 绑定本歌词版本永久跳过、网络/解析/对齐 1d(防站改版被连环锤)
@@ -2966,9 +2991,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 } else if (segments == null) {
                     notes.add("LLM 兜底: 本地分词失败,跳过")
                 } else {
-                    val gaps = com.shiyin.music.data.furigana.FuriganaLlmAssist.collectGaps(segments) {
+                    // 用户反馈:"作词：XXX 作曲：XXX"元数据行不注音——收集空缺段时
+                    // 先按行过滤,元数据行的段不进 LLM(不给模型机会注人名)。
+                    val gapsAll = com.shiyin.music.data.furigana.FuriganaLlmAssist.collectGaps(segments) {
                         furiganaJmdict.readings(it) ?: emptyList()
                     }
+                    val gaps = gapsAll.filter { !isLyricsMetadataLine(localLines.getOrNull(it.lineIndex)) }
                     if (gaps.isEmpty()) {
                         notes.add("无空缺段,LLM 跳过")
                     } else if (gaps.size < LLM_GAP_THRESHOLD && !force) {
@@ -2977,9 +3005,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                         notes.add("空缺段 ${gaps.size} 处未过门槛($LLM_GAP_THRESHOLD),跳过 LLM")
                     } else {
                         val prompt = com.shiyin.music.data.furigana.FuriganaLlmAssist.buildPrompt(localLines, gaps)
+                        // callSec=45:全局 120s readTimeout 给流式聊天,后台静默任务撞上
+                        // 挂住的连接就是干等 2 分钟(真机 SocketTimeoutException 实测);
+                        // retries=0:兜底层有自己的"下次自动重试",单次快速失败即可。
+                        val llmT0 = android.os.SystemClock.elapsedRealtime()
                         val resp = com.shiyin.music.data.ai.LlmClient.call(
                             config, listOf("user" to prompt), maxTokens = 4096,
+                            callSec = 45, retries = 0,
                         )
+                        android.util.Log.i("FuriganaAssist", "llm call ${android.os.SystemClock.elapsedRealtime() - llmT0}ms gaps=${gaps.size} → ${if (resp != null) "ok" else com.shiyin.music.data.ai.LlmClient.lastError?.take(50)}")
                         if (resp == null) {
                             val err = com.shiyin.music.data.ai.LlmClient.lastError ?: "网络/额度异常"
                             notes.add("LLM 兜底失败($err),下次自动重试")

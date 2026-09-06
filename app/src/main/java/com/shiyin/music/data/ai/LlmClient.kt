@@ -74,16 +74,29 @@ object LlmClient {
      * v1.3.5: 重试 2→1 次——readTimeout 放宽到 120s 后,网络异常路径最坏
      * 3 次 × 120s = 6 分钟"无返回"(用户实测 10 分钟量级假死)。1 次重试保住死连接
      * 复用的真实收益(1s 内失败的那种),超时类(真等了 120s)不再翻倍罚时。
+     * v1.3.x furigana: [callSec] per-call 读超时(秒)——振假名兜底这类轻量结构化
+     * 调用传 45s:全局 120s 是给流式聊天(打字机可边等边看)留的,后台静默任务撞上
+     * 挂住的连接就是干等 2 分钟(真机 SocketTimeoutException 实测,串行链路总耗时
+     * 破分钟的元凶)。[retries] 同因:兜底层有自己的"下次自动重试",这里 0 次即可。
      */
-    suspend fun call(config: LlmProviderConfig, messages: List<Pair<String, String>>, temperature: Double = 0.0, maxTokens: Int = 2048): LlmResponse? {
+    suspend fun call(
+        config: LlmProviderConfig,
+        messages: List<Pair<String, String>>,
+        temperature: Double = 0.0,
+        maxTokens: Int = 2048,
+        callSec: Long = 120,
+        retries: Int = 1,
+    ): LlmResponse? {
         var attempt = 0
         var backoffMs = 1000L
         while (true) {
-            val r = callOnce(config, messages, temperature, maxTokens)
+            val t0 = android.os.SystemClock.elapsedRealtime()
+            val r = callOnce(config, messages, temperature, maxTokens, callSec)
+            android.util.Log.i(TAG, "LLM call ${android.os.SystemClock.elapsedRealtime() - t0}ms (callSec=$callSec) → ${if (r != null) "ok" else lastError?.take(60)}")
             // 成功 / 非网络类失败(服务端响应了:HTTP 错误码、配置问题) → 直接返回
             if (r != null || lastError?.startsWith("网络异常") != true) return r
-            // 网络异常 → 重试(最多 1 次)
-            if (attempt >= 1) return r
+            // 网络异常 → 重试(默认 1 次;轻量调用传 0)
+            if (attempt >= retries) return r
             attempt++
             android.util.Log.w(TAG, "LLM 网络异常,${backoffMs}ms 后第 $attempt 次重试: $lastError")
             kotlinx.coroutines.delay(backoffMs)
@@ -219,7 +232,7 @@ object LlmClient {
     }
 
     /** 单次调用(无重试)。网络异常时 lastError 以"网络异常"开头,供 call 判定可重试。 */
-    private suspend fun callOnce(config: LlmProviderConfig, messages: List<Pair<String, String>>, temperature: Double, maxTokens: Int): LlmResponse? =
+    private suspend fun callOnce(config: LlmProviderConfig, messages: List<Pair<String, String>>, temperature: Double, maxTokens: Int, callSec: Long = 120): LlmResponse? =
         withContext(Dispatchers.IO) {
             if (!config.isConfigured) {
                 lastError = "供应商未配置(缺 API Key 或模型名)"
@@ -252,7 +265,15 @@ object LlmClient {
                     .post(body.toRequestBody(JSON))
                     .build()
 
-                val resp = client.newCall(req).execute()
+                // v1.3.x furigana: per-call 客户端——轻量结构化任务(振假名兜底)传
+                // callSec=45,独立实例避免污染全局 120s 流式配置。
+                val perCallClient = if (callSec == 120L) client else OkHttpClient.Builder()
+                    .connectTimeout(15, TimeUnit.SECONDS)
+                    .readTimeout(callSec, TimeUnit.SECONDS)
+                    .writeTimeout(15, TimeUnit.SECONDS)
+                    .build()
+
+                val resp = perCallClient.newCall(req).execute()
                 val respBody = resp.body?.string()
                 android.util.Log.d(TAG, "LLM resp http=${resp.code} body=${respBody?.take(300)}")
                 if (respBody == null) { lastError = "服务端响应为空(HTTP ${resp.code})"; return@withContext null }

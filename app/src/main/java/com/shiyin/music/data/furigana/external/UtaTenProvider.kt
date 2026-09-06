@@ -35,9 +35,12 @@ class UtaTenProvider(
         artist: String,
         localLyricLines: List<String>,
     ): List<OccurrenceReading>? = withContext(Dispatchers.IO) {
+        // v1.3.x: 会话内补试 1 次(两次请求各自重试一次)——真机实测失败集中在
+        // 连接建立/慢响应,单次 15s 硬超时对国内访问偏紧;收紧到 10s + 重试,
+        // 总等待上限不变但抖动容错翻倍。
         // 1. 搜索歌曲
         val lyricId = try {
-            searchLyricId(title, artist)
+            retryOnce("search") { searchLyricId(title, artist) }
         } catch (t: Throwable) {
             throw ResolveException(Reason.NETWORK, "搜索页面访问失败：${t.message ?: t::class.simpleName}")
         }
@@ -45,7 +48,7 @@ class UtaTenProvider(
 
         // 2. 抓取歌词页
         val html = try {
-            fetchHtml("https://utaten.com/lyric/$lyricId")
+            retryOnce("lyric") { fetchHtml("https://utaten.com/lyric/$lyricId") }
         } catch (t: Throwable) {
             throw ResolveException(Reason.NETWORK, "歌词页面访问失败：${t.message ?: t::class.simpleName}")
         }
@@ -73,6 +76,23 @@ class UtaTenProvider(
         aligned.map { it.copy(source = "$id:$artist/$title".take(60)) }
     }
 
+    /** 简单重试:失败(抛异常或 null)间隔 800ms 再试一次,仍失败抛最后一次异常/返回 null。 */
+    private suspend fun <T> retryOnce(stage: String, block: () -> T?): T? {
+        val t0 = android.os.SystemClock.elapsedRealtime()
+        val first = try { block() } catch (t: Throwable) { t }
+        if (first !is Throwable) {
+            android.util.Log.i("FuriganaAssist", "utaten $stage ok ${android.os.SystemClock.elapsedRealtime() - t0}ms")
+            @Suppress("UNCHECKED_CAST")
+            return first as T?
+        }
+        android.util.Log.w("FuriganaAssist", "utaten $stage fail#1 ${android.os.SystemClock.elapsedRealtime() - t0}ms: ${first.message?.take(60)} → retry")
+        kotlinx.coroutines.delay(800)
+        val t1 = android.os.SystemClock.elapsedRealtime()
+        val second = try { block() } catch (t: Throwable) { throw t }
+        android.util.Log.i("FuriganaAssist", "utaten $stage retry ${android.os.SystemClock.elapsedRealtime() - t1}ms → ${if (second != null) "ok" else "null"}")
+        return second
+    }
+
     /** 搜索并返回最匹配的 /lyric/<id>。匹配策略：取搜索结果中第一个 /lyric/<id> 链接。 */
     private fun searchLyricId(title: String, artist: String): String? {
         val q = buildString {
@@ -88,16 +108,23 @@ class UtaTenProvider(
     }
 
     private fun fetchHtml(urlStr: String): String? {
+        val t0 = android.os.SystemClock.elapsedRealtime()
         val conn = (URL(urlStr).openConnection() as HttpURLConnection).apply {
             requestMethod = "GET"
             setRequestProperty("User-Agent", userAgent)
             setRequestProperty("Accept-Language", "ja-JP,ja;q=0.9")
-            connectTimeout = 15000
-            readTimeout = 15000
+            // v1.3.x: 补 Referer——歌词页请求从站内搜索页跳来是真实浏览器形态,
+            // 无 Referer 的裸请求更易被反爬层拒绝/重定向(真机 UtaTen 连接失败
+            // 主嫌疑之一)。
+            setRequestProperty("Referer", "https://utaten.com/")
+            connectTimeout = 10_000
+            readTimeout = 10_000
             instanceFollowRedirects = true
         }
         try {
-            if (conn.responseCode !in 200..299) return null
+            val code = conn.responseCode
+            android.util.Log.i("FuriganaAssist", "utaten GET ${urlStr.take(70)} http=$code ${android.os.SystemClock.elapsedRealtime() - t0}ms len=${conn.contentLength}")
+            if (code !in 200..299) return null
             return conn.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
         } finally {
             conn.disconnect()
