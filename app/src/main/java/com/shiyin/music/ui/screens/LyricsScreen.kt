@@ -142,16 +142,17 @@ fun LyricsScreen(vm: MainViewModel) {
                 .padding(start = 20.dp, end = 20.dp, top = 16.dp, bottom = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            // v1.3.x 虚影终版(用户三轮反馈定调):问题从来不是图标描边/实心风格,
+            // 是图标外那层圆形色块背景本身不该存在。去掉 background(含全部半透明/
+            // 黑纱/实心变体),Box 只保留尺寸+clip+clickable 当触区;图标还原描边
+            // 风格,直接悬浮在歌词背景上。无底色=无叠加=无虚影。
             Box(
                 Modifier
                     .size(38.dp)
                     .clip(CircleShape)
-                    // v1.3.x 虚影修复(方案 A):半透明 btnBg(artFg@14%)在深色封面上是
-                    // "光晕"虚影的来源;改实心深盘(同「あ」按钮),图标已换 filled 实心路径。
-                    .background(Color(0xFF1E1E22))
                     .clickable { vm.lyricsOn = false; vm.lySheet = false },
                 contentAlignment = Alignment.Center,
-            ) { OIcon(Lucide.ChevronDownFilled, 17.dp, artFg) }
+            ) { OIcon(Lucide.ChevronDown, 19.dp, artFg) }
             Column(
                 Modifier.weight(1f),
                 verticalArrangement = Arrangement.spacedBy(2.dp),
@@ -174,15 +175,14 @@ fun LyricsScreen(vm: MainViewModel) {
                 )
             }
             if (ly.canAdjust) {
+                // v1.3.x 虚影终版:同关闭按钮——无背景,图标悬浮,clickable 触区。
                 Box(
                     Modifier
                         .size(38.dp)
                         .clip(CircleShape)
-                        // v1.3.x 虚影修复(方案 A):同关闭按钮——半透明底换实心深盘+filled 图标。
-                        .background(Color(0xFF1E1E22))
                         .clickable { vm.lySheet = !vm.lySheet },
                     contentAlignment = Alignment.Center,
-                ) { OIcon(Lucide.SlidersFilled, 17.dp, artFg) }
+                ) { OIcon(Lucide.Sliders, 16.dp, artFg) }
             }
         }
 
@@ -357,15 +357,14 @@ fun LyricsScreen(vm: MainViewModel) {
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 if (hasKana) {
+                    // v1.3.x 虚影终版:同上两个按钮——去掉圆形底色块。未激活态:
+                    // 无背景,あ 字原色悬浮;激活态保留 artFg 实心盘(这个是功能
+                    // 状态指示,用户验证过满意,保留)。
                     Box(
                         Modifier
                             .size(38.dp)
                             .clip(CircleShape)
-                            // v1.3.x 虚影修复(方案 A):未激活态原来是 artFg@14% 半透明底,
-                            // 在深色封面上呈一圈"光晕"虚影(用户三处虚影反馈之一)。改实心
-                            // 深盘——固定暗色(与未解析封面的兜底色同族),不随封面取色
-                            // 变浅,视觉上是一块安静的实心圆,无光晕;激活态 artFg 不变。
-                            .background(if (furiganaOn) artFg else Color(0xFF1E1E22))
+                            .background(if (furiganaOn) artFg else androidx.compose.ui.graphics.Color.Transparent)
                             .clickable { furiganaOn = !furiganaOn },
                         contentAlignment = Alignment.Center,
                     ) {
