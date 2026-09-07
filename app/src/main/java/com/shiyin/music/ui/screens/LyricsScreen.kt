@@ -136,23 +136,34 @@ fun LyricsScreen(vm: MainViewModel) {
         // (only settings+close on the right), which left the top corner feeling
         // empty — re-adding the centered title + artist fixes that without
         // crowding the lyric body.
-        Row(
+        // v1.3.x 歌词本四项体验:头行 Row 的 top padding 16→8——上方状态栏 inset 之外
+    // 还空一截,整体再往上贴一点(用户:"把歌词本头行整体往上移动一点点")。
+    Row(
             Modifier
                 .fillMaxWidth()
-                .padding(start = 20.dp, end = 20.dp, top = 16.dp, bottom = 8.dp),
+                .padding(start = 20.dp, end = 20.dp, top = 8.dp, bottom = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             // v1.3.x 虚影终版(用户三轮反馈定调):问题从来不是图标描边/实心风格,
             // 是图标外那层圆形色块背景本身不该存在。去掉 background(含全部半透明/
             // 黑纱/实心变体),Box 只保留尺寸+clip+clickable 当触区;图标还原描边
             // 风格,直接悬浮在歌词背景上。无底色=无叠加=无虚影。
+            // v1.3.x 四项体验:①clickable 无 indication——底色已去,涟漪圈成了
+            // 唯一残留的"触碰反馈块",一并去掉(用户:"不需要这个触碰反馈")。
+            // ③图标调大调粗补偿存在感(ChevronDown 19→23,Sliders 16→19,描边
+            // 用 Lucide 里的加粗变体)。④返回改调 requestLyricsExit()——与物理
+            // 返回键同一下拉退出动画,不再瞬间消失(动画状态机在 AppRoot 的
+            // Dialog 层,按钮原来直接置 lyricsOn=false 跳过了它)。
             Box(
                 Modifier
                     .size(38.dp)
                     .clip(CircleShape)
-                    .clickable { vm.lyricsOn = false; vm.lySheet = false },
+                    .clickable(
+                        interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                        indication = null,
+                    ) { vm.requestLyricsExit() },
                 contentAlignment = Alignment.Center,
-            ) { OIcon(Lucide.ChevronDown, 19.dp, artFg) }
+            ) { OIcon(Lucide.ChevronDownBold, 23.dp, artFg) }
             Column(
                 Modifier.weight(1f),
                 verticalArrangement = Arrangement.spacedBy(2.dp),
@@ -176,13 +187,17 @@ fun LyricsScreen(vm: MainViewModel) {
             }
             if (ly.canAdjust) {
                 // v1.3.x 虚影终版:同关闭按钮——无背景,图标悬浮,clickable 触区。
+                // 四项体验:同返回键——无涟漪 + 图标调大调粗补偿存在感。
                 Box(
                     Modifier
                         .size(38.dp)
                         .clip(CircleShape)
-                        .clickable { vm.lySheet = !vm.lySheet },
+                        .clickable(
+                            interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                            indication = null,
+                        ) { vm.lySheet = !vm.lySheet },
                     contentAlignment = Alignment.Center,
-                ) { OIcon(Lucide.Sliders, 16.dp, artFg) }
+                ) { OIcon(Lucide.SlidersBold, 19.dp, artFg) }
             }
         }
 
@@ -359,13 +374,17 @@ fun LyricsScreen(vm: MainViewModel) {
                 if (hasKana) {
                     // v1.3.x 虚影终版:同上两个按钮——去掉圆形底色块。未激活态:
                     // 无背景,あ 字原色悬浮;激活态保留 artFg 实心盘(这个是功能
-                    // 状态指示,用户验证过满意,保留)。
+                    // 状态指示,用户验证过满意,保留)。四项体验:涟漪一并去掉
+                    // (激活/未激活都不需要触碰反馈块)。
                     Box(
                         Modifier
                             .size(38.dp)
                             .clip(CircleShape)
                             .background(if (furiganaOn) artFg else androidx.compose.ui.graphics.Color.Transparent)
-                            .clickable { furiganaOn = !furiganaOn },
+                            .clickable(
+                                interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                                indication = null,
+                            ) { furiganaOn = !furiganaOn },
                         contentAlignment = Alignment.Center,
                     ) {
                         Text(

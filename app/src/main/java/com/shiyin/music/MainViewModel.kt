@@ -269,6 +269,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     var playerOpen by mutableStateOf(false)
     var lyricsOn by mutableStateOf(false)
     var lySheet by mutableStateOf(false)
+    // v1.3.x 歌词本四项体验④:左上角返回键的退出请求回调。歌词本 Dialog 的退出
+    // 动画状态机(MutableTransitionState)在 AppRoot 层,按钮拿不到——原直接置
+    // lyricsOn=false 会瞬间销毁 Dialog、跳过下拉动画,与物理返回键(dismissOnBackPress
+    // → onDismissRequest → 播动画→动画完再置 false)行为不一致。AppRoot 组装 Dialog
+    // 时把"播动画→销毁"流程注入这里,两条退出路径共用。
+    var lyricsExitRequest by mutableStateOf<(() -> Unit)?>(null)
+    fun requestLyricsExit() { lyricsExitRequest?.invoke() ?: run { lyricsOn = false; lySheet = false } }
     var lyricsImportDialog by mutableStateOf(false)
     var lyricsSourcePicker by mutableStateOf(false)
     var sleepMenu by mutableStateOf(false)

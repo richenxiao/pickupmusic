@@ -80,6 +80,9 @@ object Lucide {
     val ChevronLeft by lazy { stroke("chevL", "m15 18-6-6 6-6") }
     val ChevronDown by lazy { stroke("chevD", "m6 9 6 6 6-6") }
     val ChevronUp by lazy { stroke("chevU", "m18 15-6-6-6 6") }
+    // v1.3.x 歌词本四项体验:歌词本返回/设置键去底色后视觉存在感偏弱,补加粗变体
+    // (stroke 2.75→3.6 + 略放大)——只用于歌词本页,别处维持标准 2.75。
+    val ChevronDownBold by lazy { stroke("chevD-b", "m6 9 6 6 6-6", width = 3.6f) }
     /** v1.3.2: 向上箭头(Agent 发送键,图1风格)。Lucide "arrow-up"。 */
     val ArrowUp by lazy { stroke("arrowUp", "M12 19V5", "m5 12 7-7 7 7") }
     val ArrowUpDown by lazy {
@@ -158,6 +161,15 @@ object Lucide {
             "sliders",
             "M21 4h-7", "M10 4H3", "M21 12h-9", "M8 12H3", "M21 20h-5", "M12 20H3",
             "M14 2v4", "M8 10v4", "M16 18v4",
+        )
+    }
+    // v1.3.x 歌词本四项体验:同 ChevronDownBold——设置键加粗变体,只用于歌词本页。
+    val SlidersBold by lazy {
+        stroke(
+            "sliders-b",
+            "M21 4h-7", "M10 4H3", "M21 12h-9", "M8 12H3", "M21 20h-5", "M12 20H3",
+            "M14 2v4", "M8 10v4", "M16 18v4",
+            width = 3.6f,
         )
     }
     // v1.3.x 虚影三稿曾加过 ChevronDownFilled/SlidersFilled 实心图标(方案 A),

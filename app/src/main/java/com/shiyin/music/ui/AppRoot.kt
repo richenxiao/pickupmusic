@@ -552,6 +552,18 @@ fun AppRoot(vm: MainViewModel) {
             // setDimAmount(0f),退出下滑期间背后不再有黑灰遮罩。返回路由(Dialog 窗口+
             // dismissOnBackPress)不变,只动 scrim。
             val winRef = androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf<android.view.Window?>(null) }
+            // v1.3.x 四项体验④:把"播下拉动画→动画完销毁"注入 VM——歌词本左上角
+            // 返回键调 vm.requestLyricsExit(),与物理返回键(onDismissRequest)同一条
+            // 退出路径,行为一致(此前按钮直接置 lyricsOn=false 瞬间消失无动画)。
+            // 离开 Dialog 组合域时清空,防悬挂引用(下次组装重新注入)。
+            vm.lyricsExitRequest = {
+                vm.lySheet = false
+                animState.targetState = false
+                winRef.value?.let { it.setDimAmount(0f) }
+            }
+            androidx.compose.runtime.DisposableEffect(Unit) {
+                onDispose { if (vm.lyricsExitRequest != null) vm.lyricsExitRequest = null }
+            }
             androidx.compose.ui.window.Dialog(
                 onDismissRequest = {
                     android.util.Log.d("LyricsDebug", "Dialog onDismissRequest fired (lyricsOn=${vm.lyricsOn})")
