@@ -9,6 +9,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.TextStyle
@@ -197,14 +198,19 @@ fun RubyText(
             }
 
             // 2. 单一 baseLayout（带单层 ruby 槽）。换行骨架与绘制坐标全部从此取。
+            //    v1.3.x 动画重构:无槽基础行高改用调用方 lineHeight(未指定时
+            //    baseVal×1.3 兜底)——p=0 收拢后的行与 Text 分支(同 36sp)
+            //    逐字节一致,开关切换行节奏不跳;此前用 baseVal*1.3=33.8sp,
+            //    关闭结束瞬间会 33.8→36 跳一下。
             val rubySizePx = with(density) { rubySize.toPx() }
             val singleRubySp = with(density) { (rubySizePx / density.density).sp }
             val lineGapSp = with(density) { gapPx / density.density }
+            val baseLineH = if (style.lineHeight.isSpecified) style.lineHeight.value else baseVal * 1.3f
             val baseStyle = if (hasRuby) {
                 style.copy(
                     color = color,
                     textAlign = textAlign,
-                    lineHeight = (baseVal * 1.3f + singleRubySp.value + lineGapSp).sp,
+                    lineHeight = (baseLineH + singleRubySp.value + lineGapSp).sp,
                     lineHeightStyle = LineHeightStyle(
                         alignment = LineHeightStyle.Alignment.Bottom,
                         trim = LineHeightStyle.Trim.None,
@@ -248,12 +254,13 @@ fun RubyText(
             // 变量是每组的 s(g),左侧系数 h_i(h_i≥0),右侧 -h_j,均为正系数的
             // 线性不等式。逐段可用宽(右缘到下一注音左缘)的旧约束废弃——它假设
             // "假名从 surface 左缘起排",与居中绘制不符(正是盲区②)。
-            // 解法:按组从左到右扫描。s 取 min(1, 各约束解出的上界):单组内
-            // 多段时相邻约束左右端同组,解 s ≤ (c_j - c_i - margin)/(h_i + h_j);
-            // 跨组对(i 组 ≠ j 组)两变量,保守取"最坏情形先解左组"——先假定右组
-            // s_j=1 解出 s_i 上界(右侧假名不缩,把余量全部留给左侧;右侧组随后
-            // 用自己已定的比例参与后续约束,从左向右传播)。从左向右一次扫描
-            // O(n²) 最坏、通常 O(n)。
+            // 解法(v1.3.x 第二轮:对称求解):从左向右扫描,每个相邻注音对
+            //   s_pair = (c_j - c_i - margin) / (h_i + h_j)
+            // 作为上界**同时**套给两侧组(各自取 min)。同组对左右端同组,天然
+            // 对称;跨组对也统一比例——相邻注音字号一致符合日语排版观感,杜绝
+            // 第一轮"先假定右侧不缩、负担全给左侧"求出的 0.95/1.00 不对称解
+            // (几何上塞得下但视觉"一大一小",实机验证打回)。clamp 到
+            // [rubyShrinkMin, 1]。从左向右一次扫描 O(n)。
             val groupIds = IntArray(segments.size) { -1 }
             var gid = 0
             for (i in segments.indices) {
@@ -287,11 +294,7 @@ fun RubyText(
                 center[i] = (left + right) / 2f
                 segLine[i] = lineStart
             }
-            // 从左向右逐组解 s_g(初值 1,被触及的约束收紧):
-            //   - 同组相邻对 (i,j)(g_i==g_j): s ≤ (c_j - c_i - m) / (h_i + h_j)
-            //   - 跨组对: 左组假定右组已定(从左向右传播,右侧 s 已在上轮定下);
-            //     右组首次被触及时假定左侧 s=1 已入不等式——两侧都往安全方向
-            //     多让,不迭代。clamp 到 [rubyShrinkMin, 1]。
+            // 从左向右逐对解对称比例(初值 1,被触及的约束收紧):
             val scaleByGroup = FloatArray(gid) { 1f }
             var prevKanaIdx = -1
             for (i in segments.indices) {
@@ -300,28 +303,12 @@ fun RubyText(
                     val hSum = halfW[prevKanaIdx] + halfW[i]
                     if (hSum > 0f) {
                         val margin = if (groupIds[prevKanaIdx] == groupIds[i]) gapPx else rubyGap2Px
-                        val slack = center[i] - center[prevKanaIdx] - margin
-                        val bound = slack / hSum
+                        val bound = ((center[i] - center[prevKanaIdx] - margin) / hSum)
+                            .coerceIn(rubyShrinkMin, 1f)
                         val gi = groupIds[prevKanaIdx]
                         val gj = groupIds[i]
-                        // 同组对:一个变量;跨组对:左组按 s_j 已定解上界、右组按
-                        // s_i 已定解上界,两侧都收紧(各自往安全方向多让)。
-                        if (gi == gj) {
-                            if (bound < scaleByGroup[gi]) {
-                                scaleByGroup[gi] = bound.coerceIn(rubyShrinkMin, 1f)
-                            }
-                        } else {
-                            val bi = (center[i] - center[prevKanaIdx] - margin - halfW[i] * scaleByGroup[gj]) /
-                                halfW[prevKanaIdx].coerceAtLeast(0.001f)
-                            if (bi < scaleByGroup[gi]) {
-                                scaleByGroup[gi] = bi.coerceIn(rubyShrinkMin, 1f)
-                            }
-                            val bj = (center[i] - center[prevKanaIdx] - margin - halfW[prevKanaIdx] * scaleByGroup[gi]) /
-                                halfW[i].coerceAtLeast(0.001f)
-                            if (bj < scaleByGroup[gj]) {
-                                scaleByGroup[gj] = bj.coerceIn(rubyShrinkMin, 1f)
-                            }
-                        }
+                        if (bound < scaleByGroup[gi]) scaleByGroup[gi] = bound
+                        if (bound < scaleByGroup[gj]) scaleByGroup[gj] = bound
                     }
                 }
                 prevKanaIdx = i
@@ -348,24 +335,41 @@ fun RubyText(
         val mRanges = measured.mRanges
         val kanaLayouts = measured.kanaLayouts
 
-        // v1.3.x 双驱动值:heightProgress 驱动画布高度(行高增量)+文字下沉量,
-        // kanaProgress 驱动假名透明度+下滑归位。p=0 时高度=无槽布局、文字贴顶,
-        // 与关闭态 Text 等高——开关切换行节奏不跳。动画期间偏移/透明度不进
+        // v1.3.x 双驱动值:heightProgress 驱动画布高度(行高增量)+文字下沉,
+        // kanaProgress 驱动假名透明度+下滑归位。p=0 时高度=无槽布局、与 Text
+        // 分支逐字节一致——开关切换行节奏不跳。动画期间偏移/透明度不进
         // 测量 key(测量与进度无关),按帧绘制。
+        // 逐行几何:完整布局第 i 行行框 [i·L, (i+1)·L],L=基础行高+槽,Bottom
+        // 对齐文字在行框底部(槽在文字上方)。进度 hp 时目标行框高=基础+槽·hp,
+        // 第 i 行目标框顶 = i·(基础+槽·hp),文字应在 [框顶+槽·hp, +基础]。
+        // 由完整布局换算:第 i 行文字整体上移 dy_i = -(i+1)·槽·(1-hp)。
+        // 一个全局平移表达不了逐行递增间距 → 逐行 clip 到目标条带内平移绘制。
         val hp = heightProgress.coerceIn(0f, 1f)
         val kp = kanaProgress.coerceIn(0f, 1f)
         val fullH = baseLayout.size.height
         val slotPerLinePx = with(density) { rubySize.toPx() } + gapPx
         val lineCount = baseLayout.lineCount
         val slotTotalPx = slotPerLinePx * lineCount
+        // 槽完全展开的行高(px)与无槽基础行高——从布局反推:L = fullH/lineCount
+        val slotLineH = fullH / lineCount.coerceAtLeast(1)
+        val baseLineHPx = slotLineH - slotPerLinePx
         val hPx = (fullH - slotTotalPx * (1f - hp)).coerceAtLeast(1f)
         val h = with(density) { hPx.toDp() }
-        // 布局的 Bottom 对齐把 ruby 槽压在每行文字上方:p<1 时槽未完全展开,
-        // 文字在完整布局中的纵向位置比目标低 slotPerLine*(1-p)/行——整体上移
-        // 补偿量 = slotPerLinePx * (1-hp) * 所在行序数(每行补一份,逐行累加)。
         val rubySlotPx = slotPerLinePx
         Canvas(Modifier.fillMaxWidth().height(h)) {
-            drawText(baseLayout, color = color, topLeft = Offset(0f, -slotPerLinePx * (1f - hp) * lineCount))
+            // 逐行:clip 到该行目标条带,整布局平移 dy_i 绘制(条带只露出第 i 行)
+            if (hp >= 0.999f) {
+                drawText(baseLayout, color = color, topLeft = Offset.Zero)
+            } else {
+                for (line in 0 until lineCount) {
+                    val bandTop = line * (baseLineHPx + slotPerLinePx * hp)
+                    val bandBottom = bandTop + baseLineHPx + slotPerLinePx * hp
+                    val dy = -(line + 1) * slotPerLinePx * (1f - hp)
+                    clipRect(0f, bandTop, size.width, bandBottom) {
+                        drawText(baseLayout, color = color, topLeft = Offset(0f, dy))
+                    }
+                }
+            }
             if (!hasRuby || kp <= 0f) return@Canvas
             for (i in segments.indices) {
                 val kana = kanaLayouts[i] ?: continue
@@ -390,10 +394,14 @@ fun RubyText(
                 val kanaH = kana.size.height.toFloat()
                 // 水平居中于 surface，clamp 到画布内保证完整可见（防最左边假名被裁半边）
                 val x = (cx - kanaW / 2f).coerceIn(0f, (maxW.toFloat() - kanaW).coerceAtLeast(0f))
-                // 垂直居中于 ruby 槽（文字上方）——kp<1 时从稍高位置下滑归位:
-                // 未到位量 (1-kp)×rubySlotPx/2,叠加在槽内居中位置之上。
-                val y = lineTop + ((rubySlotPx - kanaH) / 2f).coerceAtLeast(0f) -
-                    (1f - kp) * (rubySlotPx / 2f) - slotPerLinePx * (1f - hp) * lineStart
+                // 假名垂直位置 = 槽内居中 + 该行下沉量 dy(lineStart) + 未归位量
+                // ((1-kp)·槽/2,从稍高处下滑)。clamp 到该行目标条带顶,防半开槽
+                // 时假名越进上一行文字区。
+                val bandTopLine = lineStart * (baseLineHPx + slotPerLinePx * hp)
+                val y = (lineTop + ((rubySlotPx - kanaH) / 2f).coerceAtLeast(0f)
+                    - (lineStart + 1) * slotPerLinePx * (1f - hp)
+                    - (1f - kp) * (rubySlotPx / 2f))
+                    .coerceAtLeast(bandTopLine)
                 drawText(
                     kana, color = color.copy(alpha = color.alpha * kp),
                     topLeft = Offset(x, y),
