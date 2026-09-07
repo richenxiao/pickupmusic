@@ -138,10 +138,13 @@ fun LyricsScreen(vm: MainViewModel) {
         // crowding the lyric body.
         // v1.3.x 歌词本四项体验:头行 Row 的 top padding 16→8——上方状态栏 inset 之外
     // 还空一截,整体再往上贴一点(用户:"把歌词本头行整体往上移动一点点")。
+    // v1.3.x 第二轮:再收紧 top 8→4;左右 padding 20→22 与下方歌词列
+    // (LazyColumn padding(horizontal=22))完全同边界——返回/编辑键的左右边
+    // 缘对齐内容区,视觉不再错位(用户:"边界要和内容对齐,现在不协调")。
     Row(
             Modifier
                 .fillMaxWidth()
-                .padding(start = 20.dp, end = 20.dp, top = 8.dp, bottom = 8.dp),
+                .padding(start = 22.dp, end = 22.dp, top = 4.dp, bottom = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             // v1.3.x 虚影终版(用户三轮反馈定调):问题从来不是图标描边/实心风格,

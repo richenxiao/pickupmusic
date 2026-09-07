@@ -143,7 +143,10 @@ fun PlayerScreen(vm: MainViewModel) {
             .statusBarsPadding()
             .navigationBarsPadding()
             .padding(horizontal = 24.dp)
-            .padding(top = 18.dp),
+            // v1.3.x 第二轮头行收紧:18→6——状态栏 inset 之外还留一截空白,
+            // 用户反馈"整体往上提一点,更紧凑一些"。头行 Row fillMaxWidth 无
+            // 独立左右 padding,左右边缘天然与外层 24dp 的内容区对齐。
+            .padding(top = 6.dp),
     ) {
         // top bar — back / spacer / menu. v5.2 Bug6: no drag-handle strip
         // above this row; the row itself is also the visual top of the sheet
@@ -191,7 +194,7 @@ fun PlayerScreen(vm: MainViewModel) {
                     art, null,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(top = 16.dp, bottom = 22.dp)
+                        .padding(top = 12.dp, bottom = 18.dp)
                         .shadowLg(RoundedCornerShape(16.dp))
                         .clip(RoundedCornerShape(16.dp))
                         .clickable { vm.goAlbumOf(track.id, highlight = false) },
@@ -202,7 +205,7 @@ fun PlayerScreen(vm: MainViewModel) {
                     Modifier
                         .fillMaxWidth()
                         .aspectRatio(1f)
-                        .padding(top = 16.dp, bottom = 22.dp),
+                        .padding(top = 12.dp, bottom = 18.dp),
                     contentAlignment = Alignment.Center,
                 ) {
                     Box(
