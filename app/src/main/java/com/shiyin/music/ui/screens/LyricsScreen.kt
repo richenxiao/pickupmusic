@@ -265,6 +265,22 @@ fun LyricsScreen(vm: MainViewModel) {
                     )
                     val rubySegs = segmentsByLine?.getOrElse(i) { null }
                     if (furiganaOn && hasKana && rubySegs != null) {
+                        // v1.3.x 行高过渡动画(用户设计方案):单进度 hp 同步驱动
+                        // 行高增量+文字下沉("腾出空间"和"文字下沉"一个连贯动作),
+                        // 假名淡入+从稍高处下滑归位。开启:hp/kp 同 spec 240ms
+                        // FastOutSlowIn(数值恒同步=单驱动效果);关闭:kp 110ms
+                        // 先淡出(字先消失),hp 240ms 完整收拢(空间再合拢)——
+                        // 不对称时序避免"假名消失空间没缩"或"空间缩了假名悬空"。
+                        val hp by androidx.compose.animation.core.animateFloatAsState(
+                            if (furiganaOn) 1f else 0f,
+                            animationSpec = tween(240, easing = androidx.compose.animation.core.FastOutSlowInEasing),
+                            label = "rubyHp",
+                        )
+                        val kp by androidx.compose.animation.core.animateFloatAsState(
+                            if (furiganaOn) 1f else 0f,
+                            animationSpec = tween(if (furiganaOn) 240 else 110, easing = androidx.compose.animation.core.FastOutSlowInEasing),
+                            label = "rubyKp",
+                        )
                         RubyText(
                             text = line.text,
                             segments = rubySegs,
@@ -272,6 +288,8 @@ fun LyricsScreen(vm: MainViewModel) {
                                 .copy(lineHeight = 36.sp),
                             color = lineColor,
                             modifier = Modifier.weight(1f),
+                            heightProgress = hp,
+                            kanaProgress = kp,
                         )
                     } else {
                         Text(

@@ -66,9 +66,16 @@ data class RubySegment(val surface: String, val reading: String?, val startOffse
  *   同放。行首/行尾越界仍由绘制时 x 轴 clamp 兜底（与旧行为一致：宁可轻微
  *   越过相邻字符上方，不为贴边强缩字号）。
  *
- * 行高：带振假名的行 lineHeight = 文字自然行高(baseVal×1.3 兜底) + 单层 ruby 槽
- * (rubySize + gap)，Bottom 对齐把 ruby 槽压在文字上方。单一 ruby 槽（无堆叠），
- * 所有带振假名行行高一致、稳定。不带振假名的行沿用调用方 lineHeight，行高紧凑。
+ * 行高：带振假名的行 lineHeight = 调用方 lineHeight(未指定时 baseVal×1.3 兜底)
+ * + 单层 ruby 槽(rubySize + gap)，Bottom 对齐把 ruby 槽压在文字上方。单一 ruby
+ * 槽（无堆叠），所有带振假名行行高一致、稳定；槽收尽后(p=0)与无注音行完全等高，
+ * 开关切换行节奏不跳。不带振假名的行沿用调用方 lineHeight，行高紧凑。
+ *
+ * v1.3.x 行高过渡动画(用户设计方案)：[heightProgress] 驱动行高增量与文字下沉
+ * (同一进度,腾空与下沉一个连贯动作);[kanaProgress] 驱动假名淡入/淡出与轻微
+ * 下滑归位。开启方向调用方给两者相同 spec(数值恒同步=单驱动效果);关闭方向
+ * kanaProgress 更快(110ms 先消失,行高 240ms 后合拢,"字先消失、空间再合拢")。
+ * 两进度均不进测量 key——测量结果与进度无关,Canvas 高度/平移/透明度按帧绘制。
  */
 @Composable
 fun RubyText(
@@ -81,6 +88,9 @@ fun RubyText(
     rubyShrinkMin: Float = 0.55f,
     color: Color = style.color,
     textAlign: TextAlign = TextAlign.Start,
+    // v1.3.x 过渡动画双驱动值(0f..1f,默认 1f=完整态)——见类注释
+    heightProgress: Float = 1f,
+    kanaProgress: Float = 1f,
 ) {
     // 安全检查：segments 拼接必须等于 text。若不一致（produceState 竞态、
     // splitOkurigana 边界问题等），安全降级为整行无注音——绝不崩溃。
@@ -338,11 +348,25 @@ fun RubyText(
         val mRanges = measured.mRanges
         val kanaLayouts = measured.kanaLayouts
 
-        val h = with(density) { baseLayout.size.height.toDp() }
-        val rubySlotPx = with(density) { rubySize.toPx() } + gapPx
+        // v1.3.x 双驱动值:heightProgress 驱动画布高度(行高增量)+文字下沉量,
+        // kanaProgress 驱动假名透明度+下滑归位。p=0 时高度=无槽布局、文字贴顶,
+        // 与关闭态 Text 等高——开关切换行节奏不跳。动画期间偏移/透明度不进
+        // 测量 key(测量与进度无关),按帧绘制。
+        val hp = heightProgress.coerceIn(0f, 1f)
+        val kp = kanaProgress.coerceIn(0f, 1f)
+        val fullH = baseLayout.size.height
+        val slotPerLinePx = with(density) { rubySize.toPx() } + gapPx
+        val lineCount = baseLayout.lineCount
+        val slotTotalPx = slotPerLinePx * lineCount
+        val hPx = (fullH - slotTotalPx * (1f - hp)).coerceAtLeast(1f)
+        val h = with(density) { hPx.toDp() }
+        // 布局的 Bottom 对齐把 ruby 槽压在每行文字上方:p<1 时槽未完全展开,
+        // 文字在完整布局中的纵向位置比目标低 slotPerLine*(1-p)/行——整体上移
+        // 补偿量 = slotPerLinePx * (1-hp) * 所在行序数(每行补一份,逐行累加)。
+        val rubySlotPx = slotPerLinePx
         Canvas(Modifier.fillMaxWidth().height(h)) {
-            drawText(baseLayout, color = color, topLeft = Offset.Zero)
-            if (!hasRuby) return@Canvas
+            drawText(baseLayout, color = color, topLeft = Offset(0f, -slotPerLinePx * (1f - hp) * lineCount))
+            if (!hasRuby || kp <= 0f) return@Canvas
             for (i in segments.indices) {
                 val kana = kanaLayouts[i] ?: continue
                 val mStart = mRanges[i][0]
@@ -366,9 +390,14 @@ fun RubyText(
                 val kanaH = kana.size.height.toFloat()
                 // 水平居中于 surface，clamp 到画布内保证完整可见（防最左边假名被裁半边）
                 val x = (cx - kanaW / 2f).coerceIn(0f, (maxW.toFloat() - kanaW).coerceAtLeast(0f))
-                // 垂直居中于 ruby 槽（文字上方）
-                val y = lineTop + ((rubySlotPx - kanaH) / 2f).coerceAtLeast(0f)
-                drawText(kana, color = color, topLeft = Offset(x, y))
+                // 垂直居中于 ruby 槽（文字上方）——kp<1 时从稍高位置下滑归位:
+                // 未到位量 (1-kp)×rubySlotPx/2,叠加在槽内居中位置之上。
+                val y = lineTop + ((rubySlotPx - kanaH) / 2f).coerceAtLeast(0f) -
+                    (1f - kp) * (rubySlotPx / 2f) - slotPerLinePx * (1f - hp) * lineStart
+                drawText(
+                    kana, color = color.copy(alpha = color.alpha * kp),
+                    topLeft = Offset(x, y),
+                )
             }
         }
     }
