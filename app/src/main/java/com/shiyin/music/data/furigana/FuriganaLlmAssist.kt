@@ -76,24 +76,32 @@ object FuriganaLlmAssist {
      * 解析 LLM 返回的补注清单。逐条过三道校验,任何一道不过即丢弃该条(宁弃勿错):
      * ①(line,start,len) 必须与 [gaps] 白名单精确匹配;②读法必须全是合法假名;
      * ③该段有候选时读法必须在候选内。JSON 提取容错:直接解析失败时退化用大括号
-     * 正则抠第一个 JSON 对象(模型偶尔包 ``` 围栏或前后缀文字)。
+     * 正则抠 JSON 对象(模型偶尔包 ``` 围栏或前后缀文字)——首个 '{' 起找到与之
+     * 配平的 '}'(逐字符数深度),修 code-review:贪婪 \{.*} 会吃到行尾最后一个
+     * '}',后面还有带大括号的说明文字/第二个对象时整段解析失败、合法补注全丢。
+     * 字段逐个宽松读取:数字字段 runCatching 取整(模型偶回 "line":"L3" 这类
+     * 字符串/小数——asInt 直接抛 NumberFormatException 会穿出"永不崩"契约,
+     * 经 viewModelScope 未捕获协程杀进程)。
      */
     fun parseFixes(raw: String, gaps: List<Gap>): List<Fix> {
         val whitelist = HashMap<String, Gap>(gaps.size)
         for (g in gaps) whitelist["${g.lineIndex}|${g.charStart}|${g.length}"] = g
         val obj = runCatching { JsonParser.parseString(raw.trim()).asJsonObject }.getOrNull()
             ?: run {
-                val m = Regex("""\{.*}""", RegexOption.DOT_MATCHES_ALL).find(raw) ?: return emptyList()
-                runCatching { JsonParser.parseString(m.value).asJsonObject }.getOrNull() ?: return emptyList()
+                val json = firstBalancedBraces(raw) ?: return emptyList()
+                runCatching { JsonParser.parseString(json).asJsonObject }.getOrNull() ?: return emptyList()
             }
         val arr = runCatching { obj.getAsJsonArray("fixes") }.getOrNull() ?: return emptyList()
         // 按位置去重(后到覆盖先到)——模型偶尔对同一片段给两行,保留它的最终判断
         val byPos = LinkedHashMap<String, Fix>()
         for (el in arr) {
             val o = runCatching { el.asJsonObject }.getOrNull() ?: continue
-            val line = o.get("line")?.takeIf { it.isJsonPrimitive }?.asInt ?: continue
-            val start = o.get("start")?.takeIf { it.isJsonPrimitive }?.asInt ?: continue
-            val len = o.get("len")?.takeIf { it.isJsonPrimitive }?.asInt ?: continue
+            // v1.3.x code-review 修复:非数字原始值(字符串/小数/布尔)按"字段缺失"
+            // 处理丢弃该条,绝不抛——JsonPrimitive.asInt 对非数字字符串抛
+            // NumberFormatException,会穿破"永不崩"契约杀进程
+            val line = o.intOrNull("line") ?: continue
+            val start = o.intOrNull("start") ?: continue
+            val len = o.intOrNull("len") ?: continue
             val reading = o.get("reading")?.takeIf { it.isJsonPrimitive }?.asString?.trim() ?: continue
             val g = whitelist["$line|$start|$len"] ?: continue
             if (!FuriganaTokenizer.isValidKanaReading(reading)) continue
@@ -101,5 +109,42 @@ object FuriganaLlmAssist {
             byPos["$line|$start|$len"] = Fix(line, start, len, reading)
         }
         return byPos.values.toList()
+    }
+
+    /** 首个配平大括号段("{" 起逐字符计深度到配平 "}"),无配平段返回 null。 */
+    private fun firstBalancedBraces(raw: String): String? {
+        val start = raw.indexOf('{')
+        if (start < 0) return null
+        var depth = 0
+        var inStr = false
+        var esc = false
+        for (i in start until raw.length) {
+            val c = raw[i]
+            if (esc) { esc = false; continue }
+            when {
+                inStr && c == '\\' -> esc = true
+                c == '"' -> inStr = !inStr
+                !inStr && c == '{' -> depth++
+                !inStr && c == '}' -> {
+                    depth--
+                    if (depth == 0) return raw.substring(start, i + 1)
+                }
+            }
+        }
+        return null
+    }
+
+    /** JSON 数字字段宽松读取:数字原始值取整;字符串可整转(如 "2"/"2.0")也收;
+     *  其余(布尔/对象/无法解析)返回 null——调用方按字段缺失丢弃该条,不抛。 */
+    private fun com.google.gson.JsonObject.intOrNull(key: String): Int? {
+        return runCatching {
+            when (val v = get(key)) {
+                null, !is com.google.gson.JsonPrimitive -> null
+                else -> {
+                    if (v.isNumber) v.asInt
+                    else v.asString.toDoubleOrNull()?.toInt()
+                }
+            }
+        }.getOrNull()
     }
 }

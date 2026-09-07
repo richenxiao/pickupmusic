@@ -114,6 +114,48 @@ class FuriganaLlmAssistTest {
         assertEquals("みょうにち", fixes[0].reading)
     }
 
+    // ── v1.3.x code-review 修复的回归用例 ────────────────────────────────────
+
+    @Test
+    fun parseFixes_数字字段为字符串_宽松转整不抛() {
+        // 模型偶回 "line":"0" / "len":"2.0" 这类字符串数字——旧 asInt 直接抛
+        // NumberFormatException 杀进程;现在按可转数字收,不可转丢弃该条
+        val raw = """{"fixes":[{"line":"0","start":0,"len":"2","reading":"あした"},{"line":"1","start":3,"len":"x","reading":"おおち"}]}"""
+        val fixes = FuriganaLlmAssist.parseFixes(raw, gaps)
+        assertEquals(1, fixes.size)
+        assertEquals("あした", fixes[0].reading)
+    }
+
+    @Test
+    fun parseFixes_布尔字段_整条丢弃不抛() {
+        val raw = """{"fixes":[{"line":true,"start":0,"len":2,"reading":"あした"}]}"""
+        assertTrue(FuriganaLlmAssist.parseFixes(raw, gaps).isEmpty())
+    }
+
+    @Test
+    fun parseFixes_围栏后还有带大括号的文字_平衡提取首个对象() {
+        // 旧贪婪正则 \{.*} 吃到最后一个 '}',拼起来解析失败,合法补注全丢
+        val raw = "结果:{\"fixes\":[{\"line\":0,\"start\":0,\"len\":2,\"reading\":\"あした\"}]} 补充说明见 {注释}"
+        val fixes = FuriganaLlmAssist.parseFixes(raw, gaps)
+        assertEquals(1, fixes.size)
+        assertEquals("あした", fixes[0].reading)
+    }
+
+    @Test
+    fun parseFixes_两个JSON对象_只取首个配平段() {
+        val raw = """{"fixes":[{"line":0,"start":0,"len":2,"reading":"あした"}]}{"fixes":[]}"""
+        val fixes = FuriganaLlmAssist.parseFixes(raw, gaps)
+        assertEquals(1, fixes.size)
+    }
+
+    @Test
+    fun parseFixes_字符串里含大括号_不误判配平() {
+        // reading 字符串值里有 '{' '}' 字符,逐字符配平(含字符串/转义态)不受影响
+        val raw = """{"fixes":[{"line":0,"start":0,"len":2,"reading":"あした"}]}"""
+        val fixes = FuriganaLlmAssist.parseFixes("prefix $raw suffix", gaps)
+        assertEquals(1, fixes.size)
+    }
+
     // ── buildPrompt ────────────────────────────────────────────────────────
 
     @Test
