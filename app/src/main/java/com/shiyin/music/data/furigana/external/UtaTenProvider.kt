@@ -40,16 +40,19 @@ class UtaTenProvider(
         // 总等待上限不变但抖动容错翻倍。
         // 1. 搜索歌曲
         val lyricId = try {
-            retryOnce("search") { searchLyricId(title, artist) }
+            retryOnce("search", { searchLyricId(title, artist) })
         } catch (t: Throwable) {
+            // 协程取消原样上抛(不是网络失败,别写负缓存/别继续层2)
+            if (t is kotlinx.coroutines.CancellationException) throw t
             throw ResolveException(Reason.NETWORK, "搜索页面访问失败：${t.message ?: t::class.simpleName}")
         }
         if (lyricId == null) throw ResolveException(Reason.NO_MATCH, "未找到匹配的歌曲")
 
         // 2. 抓取歌词页
         val html = try {
-            retryOnce("lyric") { fetchHtml("https://utaten.com/lyric/$lyricId") }
+            retryOnce("lyric", { fetchHtml("https://utaten.com/lyric/$lyricId") })
         } catch (t: Throwable) {
+            if (t is kotlinx.coroutines.CancellationException) throw t
             throw ResolveException(Reason.NETWORK, "歌词页面访问失败：${t.message ?: t::class.simpleName}")
         }
         if (html == null) throw ResolveException(Reason.NETWORK, "歌词页面访问失败（HTTP 非 200）")
@@ -76,16 +79,22 @@ class UtaTenProvider(
         aligned.map { it.copy(source = "$id:$artist/$title".take(60)) }
     }
 
-    /** 简单重试:失败(抛异常或 null)间隔 800ms 再试一次,仍失败抛最后一次异常/返回 null。 */
+    /** 简单重试:失败(抛异常【或返回 null】)间隔 800ms 再试一次,仍失败抛最后
+     *  异常/返回 null。v1.3.x code-review 修复:null 短路——fetchHtml 对 HTTP
+     *  非 2xx 返回 null 不抛,旧逻辑"first !is Throwable"把 null 当成功直接
+     *  返回,瞬时 403/502 一次都未重试就被归类 NO_MATCH(7 天负缓存)。
+     *  CancellationException 原样 rethrow:协程取消不是"失败要重试",吞掉会让
+     *  上层把取消当 ResolveException(NETWORK) 写负缓存、继续在死任务上跑层2。 */
     private suspend fun <T> retryOnce(stage: String, block: () -> T?): T? {
         val t0 = android.os.SystemClock.elapsedRealtime()
-        val first = try { block() } catch (t: Throwable) { t }
-        if (first !is Throwable) {
+        val first: Any? = try { block() } catch (t: Throwable) { t }
+        if (first != null && first !is Throwable) {
             android.util.Log.i("FuriganaAssist", "utaten $stage ok ${android.os.SystemClock.elapsedRealtime() - t0}ms")
             @Suppress("UNCHECKED_CAST")
-            return first as T?
+            return first as T
         }
-        android.util.Log.w("FuriganaAssist", "utaten $stage fail#1 ${android.os.SystemClock.elapsedRealtime() - t0}ms: ${first.message?.take(60)} → retry")
+        if (first is kotlinx.coroutines.CancellationException) throw first
+        android.util.Log.w("FuriganaAssist", "utaten $stage ${if (first == null) "null" else "fail"}#1 ${android.os.SystemClock.elapsedRealtime() - t0}ms${if (first is Throwable) ": ${first.message?.take(60)}" else ""} → retry")
         kotlinx.coroutines.delay(800)
         val t1 = android.os.SystemClock.elapsedRealtime()
         val second = try { block() } catch (t: Throwable) { throw t }

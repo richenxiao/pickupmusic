@@ -265,12 +265,13 @@ object LlmClient {
                     .post(body.toRequestBody(JSON))
                     .build()
 
-                // v1.3.x furigana: per-call 客户端——轻量结构化任务(振假名兜底)传
-                // callSec=45,独立实例避免污染全局 120s 流式配置。
-                val perCallClient = if (callSec == 120L) client else OkHttpClient.Builder()
-                    .connectTimeout(15, TimeUnit.SECONDS)
+                // v1.3.x furigana: per-call 读超时——轻量结构化任务(振假名兜底)传
+                // callSec=45,全局 120s 给流式聊天。code-review 修正:newBuilder()
+                // 派生自全局 client(共享连接池/dispatcher/keep-alive 复用),替代
+                // 此前每次 callSec≠120 就 new OkHttpClient()(独立连接池=每次完整
+                // TLS 握手,实例线程不释放)。
+                val perCallClient = if (callSec == 120L) client else client.newBuilder()
                     .readTimeout(callSec, TimeUnit.SECONDS)
-                    .writeTimeout(15, TimeUnit.SECONDS)
                     .build()
 
                 val resp = perCallClient.newCall(req).execute()

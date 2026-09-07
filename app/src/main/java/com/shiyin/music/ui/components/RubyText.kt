@@ -109,12 +109,15 @@ fun RubyText(
     val rubyVal = baseVal * rubySizeRatio
     val rubySize = rubyVal.sp
     val gapPx = with(density) { rubyGap.toPx() }
-    val rubyStyle = remember(style, rubyVal, color) {
+    // v1.3.x code-review: rubyStyle 的 remember 键不含 color——颜色不影响布局,
+    // 假名文本的绘制色由 drawText(color=) 按帧提供(同 baseLayout 的做法);
+    // style.copy 里也不带 color,避免闭包捕获调用方每帧变化的 color 造成键失效。
+    val rubyStyle = remember(style, rubyVal) {
         // Trim.Both 让假名布局高度=字号本身（剥掉字体 ascent/descent 额外量），
         // 否则 kanaH≈字号×1.2 会溢出 ruby 槽顶顶到上一行。
         style.copy(
             fontSize = rubySize,
-            color = color,
+            color = androidx.compose.ui.graphics.Color.Unspecified,
             lineHeight = rubySize,
             lineHeightStyle = LineHeightStyle(
                 alignment = LineHeightStyle.Alignment.Center,
@@ -126,12 +129,23 @@ fun RubyText(
     BoxWithConstraints(modifier) {
         val maxW = with(density) { maxWidth.toPx() }.toInt().coerceAtLeast(1)
         val hasRuby = segments.any { it.reading != null }
-        // 重新测量键：输入文本 + 各段假名 + 字号 + 槽位 + 颜色 + 对齐 + 可用宽度 + 是否带振假名
+        // 重新测量键:输入文本 + 各段假名 + 字号 + 行高 + 槽位 + 可用宽度 + 是否带
+        // 振假名。v1.3.x code-review 两项修正:
+        //  ① color 不进 key——颜色不影响布局测量,而 LyricsScreen 常驻挂载后行色
+        //    220ms 渐变每帧都换色,旧 key 含 color.value 会逐帧全量重测量(整段
+        //    排版+逐段假名+收缩求解),低端机肉眼可见卡顿;颜色由 Canvas 绘制层
+        //    drawText(color=) 按帧取,不进 remember 缓存。rubyStyle 里的 color 同
+        //    步移除。
+        //  ② lineHeight 进 key——baseStyle.lineHeight 从 style.lineHeight 派生后,
+        //    若未来调用方同文本同字号换 lineHeight,旧 key 不变会拿回旧布局
+        //    (画布高度/条带几何全错位)。
+        val lineHKey = if (style.lineHeight.isSpecified) style.lineHeight.value else -1f
         val key = buildString {
             append(text); append('|')
             segments.forEach { append(it.reading ?: ""); append(',') }
             append('|'); append(baseVal); append(':'); append(rubyVal); append(':')
-            append(gapPx); append(':'); append(color.value.toLong()); append(':')
+            append(lineHKey); append(':')
+            append(gapPx); append(':')
             append(textAlign.toString()); append(':'); append(maxW); append(':'); append(hasRuby)
         }
         val measured = remember(key) {

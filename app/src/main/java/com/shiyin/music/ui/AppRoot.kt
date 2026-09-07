@@ -555,11 +555,16 @@ fun AppRoot(vm: MainViewModel) {
             // v1.3.x 四项体验④:把"播下拉动画→动画完销毁"注入 VM——歌词本左上角
             // 返回键调 vm.requestLyricsExit(),与物理返回键(onDismissRequest)同一条
             // 退出路径,行为一致(此前按钮直接置 lyricsOn=false 瞬间消失无动画)。
-            // 离开 Dialog 组合域时清空,防悬挂引用(下次组装重新注入)。
-            vm.lyricsExitRequest = {
-                vm.lySheet = false
-                animState.targetState = false
-                winRef.value?.let { it.setDimAmount(0f) }
+            // code-review 正规化:组合期直接赋值是"反向写状态"——每次重组都写新
+            // lambda(无效快照失效),组合若在赋值后、DisposableEffect 注册前被
+            // 丢弃,悬挂清理不会执行。改 SideEffect(组合成功落定后才写)+ 键含
+            // animState/winRef 生命周期由下面的 DisposableEffect 统一管理。
+            androidx.compose.runtime.SideEffect {
+                vm.lyricsExitRequest = {
+                    vm.lySheet = false
+                    animState.targetState = false
+                    winRef.value?.let { it.setDimAmount(0f) }
+                }
             }
             androidx.compose.runtime.DisposableEffect(Unit) {
                 onDispose { if (vm.lyricsExitRequest != null) vm.lyricsExitRequest = null }

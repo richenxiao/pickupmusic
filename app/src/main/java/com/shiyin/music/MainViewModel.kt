@@ -2878,8 +2878,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private fun isLyricsMetadataLine(line: String?): Boolean {
         if (line.isNullOrBlank()) return false
         val t = line.trim()
-        return Regex("""(?i)^(作词|作詞|作曲|编曲|編曲|编词|填词|填詞|作编曲|作詞|lyrics?|words?|music)\s*[:：]""").containsMatchIn(t)
+        return METADATA_LINE_RX.containsMatchIn(t)
     }
+
+    // v1.3.x code-review:①提升为常量——此前每次调用都 Regex() 重编译,分词/证据
+    // 每行每次重算都调,一次 assist 数百次模式编译纯浪费;②补日文复合署名格式
+    // 「作詞・作曲：」「作詞/作曲：」(・与 / 分隔)与 編曲 简繁、作編曲——旧模式
+    // ^作詞 后紧跟 \s*[:：] 匹配不到 ・/ 作词的复合行,人名仍被注音(正是本功能
+    // 要消灭的现象);③清重复项(作詞 出现两次)。
+    private val METADATA_LINE_RX = Regex(
+        """(?i)^(作词|作詞|作曲|编曲|編曲|作編曲|编曲|编词|填词|填詞|作詞|lyrics?|words?|music)(\s*[/:：·・]\s*(作词|作詞|作曲|编曲|編曲|作編曲|编词|填词|填詞))*\s*[:：]"""
+    )
 
     // ── v1.3.x: 振假名三层增强(UtaTen 自动对照 + LLM 缺口兜底) ─────────────────
     // 编排:本地词典出结果(照常) → UtaTen 权威对照(冲突/空缺直接采信,覆盖 LLM 行)
@@ -2895,6 +2904,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     // 「重新校验」可带 force 逐层重跑。
     /** 负缓存:key=layer:mediaId:hash, value=过期时刻(now+ttl)。到期前该层跳过重试。 */
     private val furiganaNegCache = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    /** in-flight 闸门(key 同负缓存):自动触发/开关抖动/手动重跑并发时,同曲同
+     *  时刻只跑一个 assist——否则第二次进来的读不到第一次未落库的行,UTaTen+LLM
+     *  全套请求/token 双倍烧(code-review 实锤:toggle off→on 重入,layer 各自
+     *  完整重跑并发)。sheet 按钮 enabled=!running 只挡了手动路径,自动路径裸奔。 */
+    private val furiganaRunning = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
     /** LLM 兜底触发门槛:应用 UtaTen 后仍空缺的段 ≥3 才值得一次 LLM 往返
      *  (用户拍板默认 3,真机数据出来后再调;force 重新校验不受限)。 */
     private val LLM_GAP_THRESHOLD = 3
@@ -2924,10 +2938,35 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val track = trackById(cur.mediaId) ?: return
         val hash = com.shiyin.music.data.furigana.LyricsHash.of(cur.raw)
         val mediaId = cur.mediaId
-        val localLines = cur.parsed.lines.map { it.text }
+        val runKey = "run:$mediaId:$hash"
+        // in-flight 闸门:force 手动重跑等自动任务收尾(手动重跑语义=校验,不是
+        // 放弃)。同 key 并发第二进来直接退出,无双倍请求。
+        if (!furiganaRunning.add(runKey)) {
+            if (!force) return
+            // force 等在途跑完再走(简单实现:直接放弃本次 force,UI 提示稍后;
+            // 等锁会阻塞主线程状态更新,不做)
+            furiganaAssistStatus = "校验进行中,请稍候"
+            return
+        }
         furiganaAssistStatus = ""
         viewModelScope.launch(Dispatchers.IO) {
-            val now = System.currentTimeMillis()
+            try {
+                ensureFuriganaEvidenceLocked(cur, track, hash, mediaId, force)
+            } finally {
+                furiganaRunning.remove(runKey)
+            }
+        }
+    }
+
+    private suspend fun ensureFuriganaEvidenceLocked(
+        cur: com.shiyin.music.LoadedLyrics,
+        track: com.shiyin.music.data.Track,
+        hash: String,
+        mediaId: Long,
+        force: Boolean,
+    ) {
+        val localLines = cur.parsed.lines.map { it.text }
+        val now = System.currentTimeMillis()
             val existing = try { dao.externalEvidence(mediaId, hash) } catch (_: Exception) { emptyList() }
             val utatenDone = existing.any { it.source.startsWith("utaten") }
             val llmDone = existing.any { it.source.startsWith("llm") }
@@ -2958,12 +2997,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                         notes.add("UtaTen 对照 ${rows.size} 处")
                         android.util.Log.i("FuriganaAssist", "utaten resolve ${android.os.SystemClock.elapsedRealtime() - utatenT0}ms rows=${rows.size} (filtered ${occ.size - occFiltered.size})")
                     } catch (e: com.shiyin.music.data.furigana.external.UtaTenProvider.ResolveException) {
-                        // 负缓存 TTL 按失败原因分档:未收录 7d(收录不会瞬变)、页面无假名
-                        // 绑定本歌词版本永久跳过、网络/解析/对齐 1d(防站改版被连环锤)
+                        // 负缓存 TTL 按失败原因分档(v1.3.x code-review 对齐口径:
+                        // 网络/解析/对齐失败是"暂时性"——6h 后重试,不再 24h;
+                        // 文档块 2887 行起的口径以这里为准):未收录 7d(收录不会
+                        // 瞬变)、页面无假名绑本歌词版本永久跳过、其余 6h(防离线
+                        // 连环重试又不至于一次抖动死一天)。
                         val ttl = when (e.reason) {
                             com.shiyin.music.data.furigana.external.UtaTenProvider.Reason.NO_MATCH -> 7L * 24 * 3600_000L
                             com.shiyin.music.data.furigana.external.UtaTenProvider.Reason.NO_FURIGANA -> Long.MAX_VALUE / 4
-                            else -> 24 * 3600_000L
+                            else -> 6 * 3600_000L
                         }
                         furiganaNegCache["utaten:$mediaId:$hash"] = System.currentTimeMillis() + ttl
                         notes.add("UtaTen: ${e.message?.take(40)}")
@@ -2980,7 +3022,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             val needLlm = force || !llmDone
             if (needLlm) {
                 val config = activeLlmConfig()
-                val fresh = try { dao.externalEvidence(mediaId, hash) } catch (_: Exception) { existing }
+                // v1.3.x code-review 修复(优先级反转):重读失败时旧代码退回
+                // UtaTen 写入前的 existing 快照,UtaTen 刚写的权威行对 gaps 不可见
+                // → LLM 把同一主键的权威行 REPLACE 掉(置信 0 覆盖置信 1)。
+                // 重读失败 = 本轮放弃 LLM 层(宁可这轮不补,不可反转优先级)。
+                val fresh = try { dao.externalEvidence(mediaId, hash) } catch (_: Exception) { null }
+                if (fresh == null) {
+                    notes.add("LLM 兜底: 证据重读失败,本轮跳过")
+                } else {
                 // 层1 刚写入/历史已有的 UtaTen 行,先重算分词拿"应用后仍空缺"的段
                 val segments = try {
                     val overrides = try { dao.songReadingOverrides(mediaId, hash) } catch (_: Exception) { emptyList() }
@@ -3022,13 +3071,27 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                         )
                         android.util.Log.i("FuriganaAssist", "llm call ${android.os.SystemClock.elapsedRealtime() - llmT0}ms gaps=${gaps.size} → ${if (resp != null) "ok" else com.shiyin.music.data.ai.LlmClient.lastError?.take(50)}")
                         if (resp == null) {
-                            val err = com.shiyin.music.data.ai.LlmClient.lastError ?: "网络/额度异常"
-                            notes.add("LLM 兜底失败($err),下次自动重试")
+                            // v1.3.x code-review 修复(lastError 串扰):全局单例
+                            // lastError 是所有调用方共享的——振假名后台跑期间若
+                            // 用户同时用 Agent 聊天,这里读到的是 Agent 那次调用的
+                            // 错误。原因归属已不可靠 → 显示通用文案,不给假细节。
+                            notes.add("LLM 兜底失败(网络/额度),下次自动重试")
                         } else {
                             val fixes = com.shiyin.music.data.furigana.FuriganaLlmAssist.parseFixes(resp.content ?: "", gaps)
                             if (fixes.isEmpty()) {
-                                notes.add("LLM 无有效补注(${gaps.size} 空缺),下次自动重试")
+                                // v1.3.x code-review 修复(无限重烧):解析零结果与调用失败
+                                // 同级——若不加 TTL,每次开歌词本/开关 あ 都整曲 prompt
+                                // 重烧一次,零进展。负缓存 1d,force 不受限。
+                                if (force) {
+                                    notes.add("LLM 无有效补注(${gaps.size} 空缺)")
+                                } else {
+                                    furiganaNegCache["llm:$mediaId:$hash"] = System.currentTimeMillis() + 24 * 3600_000L
+                                    notes.add("LLM 无有效补注(${gaps.size} 空缺),明天自动重试")
+                                }
                             } else {
+                                // 补注落库前先给"零结果"负缓存清位:成功补注要允许
+                                // 之后缺口的自然重试,不带着昨天的失败 TTL。
+                                furiganaNegCache.remove("llm:$mediaId:$hash")
                                 val rows = fixes.map { f ->
                                     val g = gaps.first { it.lineIndex == f.lineIndex && it.charStart == f.charStart && it.length == f.length }
                                     com.shiyin.music.data.db.ExternalReadingEvidenceEntity(
@@ -3052,6 +3115,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                         }
                     }
                 }
+                }
             } else notes.add("LLM 已缓存")
 
             withContext(Dispatchers.Main) {
@@ -3061,7 +3125,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 // 有写入时 bump 已触发重算;纯失败(无写入)不动现有注音
                 if (wrote) showToast("振假名校验：$furiganaAssistStatus", null)
             }
-        }
     }
 
     /** 保存当前曲当前版本某出现位置的 Song Override（当て字/歌曲专属读法）。
