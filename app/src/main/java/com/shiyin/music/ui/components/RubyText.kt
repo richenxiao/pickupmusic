@@ -52,11 +52,13 @@ data class RubySegment(val surface: String, val reading: String?, val startOffse
  *   - 全部坐标（getBoundingBox / getLineForOffset）取自单一 baseLayout，杜绝
  *     "探测布局"与"绘制布局"因行高不同在边界字符上换行漂移。
  *
- * 宽注音处理（v1.1 重做：废弃竖排堆叠，改 shrink-to-fit）：
+ * 宽注音处理（v1.1 重做：废弃竖排堆叠，改 shrink-to-fit；v1.3.x 改连读组统一）：
  *   单字汉字对应多假名时，水平假名可能比汉字宽、居中后侵入相邻假名范围。此前用过
- *   "竖排堆叠"补丁——实测占纵向空间过大、违背日语排版习惯，已废弃。现改为：当某段
- *   假名（默认字号）宽于其可用宽度（到下一段注音的距离）时，按比例缩小该段假名字号
- *   直到横向塞下（下限 [rubyShrinkMin]），始终水平排列在汉字正上方，绝不竖排。
+ *   "竖排堆叠"补丁——实测占纵向空间过大、违背日语排版习惯，已废弃。改为按段
+ *   shrink-to-fit（宽于到下一段注音的距离则缩字号，下限 [rubyShrinkMin]，始终
+ *   水平在汉字正上方）。v1.3.x 修复"同词字号参差"：直接相邻的带读音段（分词把
+ *   一个词拆成多段，如 心+臓）划为连读组，组内全部假名按同一比例统一缩小——
+ *   词里任何一段需要收缩，词的全部注音一起缩，绝不出现"一个字偏小一个正常"。
  *
  * 行高：带振假名的行 lineHeight = 文字自然行高(baseVal×1.3 兜底) + 单层 ruby 槽
  * (rubySize + gap)，Bottom 对齐把 ruby 槽压在文字上方。单一 ruby 槽（无堆叠），
@@ -201,16 +203,30 @@ fun RubyText(
                 constraints = Constraints(maxWidth = maxW),
             )
 
-            // 3. 逐注音段判定 shrink 比例：若默认字号假名宽于其可用宽度（到下一段注音
-            //    的距离）则按比例缩小到 [rubyShrinkMin, 1]，始终水平。预量缩小后的假名。
+            // 3. 连读组 shrink-to-fit（v1.3.x 改造：单位从"段"升级为"连读组"）。
+            //    直接相邻（原文中连续、无任何间隔段）的带读音段划为一个连读组——
+            //    分词把一个词拆成多段（心=こころ + 臓=ぞう）时同属一组。组内逐段
+            //    独立算"自己的假名不越界所需的最小比例"，全组取最紧值统一应用：
+            //    同一个词的所有注音字号完全一致，杜绝"こころ 被缩而 ぞう 原样"的
+            //    字号参差；组间不额外收紧（组由无读音段隔开，天然有间隙）。
+            //    逐段比例 = 段假名默认宽 / 可用宽（到同一下一段注音左边界或行右缘
+            //    的距离 - 间隙），clamp 到 [rubyShrinkMin, 1]。组比例齐了再统一
+            //    应用（组内无任何收缩需求 → 保持默认字号）。
             val kanaLayouts = ArrayList<TextLayoutResult?>(segments.size)
+            // 连读分组：i 直接邻接 i-1（段在原文中紧挨,segments 铺满全文时相邻
+            // 索引必然连续）且都带读音且首字同行 → 同组（跨行不并组:两行可用宽
+            // 不同,组比例无意义）
+            val groupIds = IntArray(segments.size) { -1 }
+            var gid = 0
             for (i in segments.indices) {
-                val hLayout = defaultKanaLayouts[i]
-                val reading = segments[i].reading
-                if (hLayout == null || reading == null) {
-                    kanaLayouts.add(null)
-                    continue
-                }
+                if (segments[i].reading == null) continue
+                val sameGroupAsPrev = i > 0 && segments[i - 1].reading != null &&
+                    baseLayout.getLineForOffset(mRanges[i - 1][0]) == baseLayout.getLineForOffset(mRanges[i][0])
+                groupIds[i] = if (sameGroupAsPrev) groupIds[i - 1] else gid++
+            }
+            val minScaleByGroup = HashMap<Int, Float>()
+            for (i in segments.indices) {
+                if (segments[i].reading == null) { kanaLayouts.add(null); continue }
                 val mStart = mRanges[i][0]
                 val lineStart = baseLayout.getLineForOffset(mStart)
                 val surfaceLeft = baseLayout.getBoundingBox(mStart).left
@@ -225,20 +241,26 @@ fun RubyText(
                     } else break
                 }
                 val available = (nextLeft - surfaceLeft - gapPx).coerceAtLeast(0f)
-                val kanaW = hLayout.size.width.toFloat()
-                val scale = if (kanaW > available) {
-                    (available / kanaW).coerceIn(rubyShrinkMin, 1f)
-                } else 1f
-                kanaLayouts.add(
-                    if (scale >= 0.999f) hLayout
-                    else {
-                        val shrunkStyle = rubyStyle.copy(fontSize = (rubyVal * scale).sp)
-                        measurer.measure(
-                            reading, shrunkStyle,
-                            constraints = Constraints(maxWidth = Int.MAX_VALUE),
-                        )
-                    },
-                )
+                val kanaW = defaultKanaLayouts[i]!!.size.width.toFloat()
+                if (kanaW > available) {
+                    val scale = (available / kanaW).coerceIn(rubyShrinkMin, 1f)
+                    val g = groupIds[i]
+                    minScaleByGroup[g] = minOf(minScaleByGroup[g] ?: 1f, scale)
+                }
+                kanaLayouts.add(null)
+            }
+            for (i in segments.indices) {
+                val reading = segments[i].reading ?: continue
+                val hLayout = defaultKanaLayouts[i] ?: continue
+                val scale = minScaleByGroup[groupIds[i]] ?: 1f
+                kanaLayouts[i] = if (scale >= 0.999f) hLayout
+                else {
+                    val shrunkStyle = rubyStyle.copy(fontSize = (rubyVal * scale).sp)
+                    measurer.measure(
+                        reading, shrunkStyle,
+                        constraints = Constraints(maxWidth = Int.MAX_VALUE),
+                    )
+                }
             }
             Measured(baseLayout, mRanges, kanaLayouts)
         }
