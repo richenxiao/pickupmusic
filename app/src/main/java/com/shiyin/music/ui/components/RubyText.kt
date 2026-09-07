@@ -40,10 +40,14 @@ data class RubySegment(val surface: String, val reading: String?, val startOffse
  * 渲染策略：用 Compose TextMeasurer 对整行做正常段落排版（免费得到正确的日文
  * shaping / 自动换行 / 居中），再用 Canvas 把假名逐段画在对应汉字上方。
  *
- * 布局正确性（v1.1 修复"换行后振假名脱离正文"）：
- *   - 每个 segment 用零宽不换行符 U+2060（WORD JOINER）包裹，使 Skia 不会在
- *     segment 内部断行——换行只发生在 segment 之间。每个带振假名的文本单元作为
- *     不可分割的布局单元参与测量与换行，换行后假名跟随其 surface 整体落到新行。
+ * 布局正确性（v1.1 修复"换行后振假名脱离正文";v1.3.x 修"开注音后断行异常"）：
+ *   - 断行保护（零宽不换行符 U+2060 WORD JOINER）只插在「多字共享一个完整读音」
+ *     的段内部——surface 拆两半会把整段读音撕离一半字符（「二人/ふたり」拆开 =
+ *     「二=ふたり」的错误信息，违反"宁可不显示、不可显示错"）。段边界全部放开
+ *     可断行：读音属于各自段内，边界断行不会拆散任何读音↔surface 对。
+ *     v1.1–v1.2 曾把全部段边界也粘死，断行机会只剩无读音段内部零星几处，贪婪
+ *     断行取行宽内最靠后的机会——常落在行首四五字处，"开注音后只有四五个字就
+ *     换行"即由此而来（三层增强把注音覆盖率拉满后集中暴露）。
  *     原文偏移↔测量文本偏移用 offMap 互转。
  *   - 全部坐标（getBoundingBox / getLineForOffset）取自单一 baseLayout，杜绝
  *     "探测布局"与"绘制布局"因行高不同在边界字符上换行漂移。
@@ -131,12 +135,19 @@ fun RubyText(
                 off = end
             }
 
-            // 1b. 构造「各 segment 原子化」的测量文本：用零宽不换行 U+2060（WORD JOINER）
-            //     包裹每个 segment，使 Skia 不会在 segment 内部断行——换行只发生在
-            //     segment 之间。每个带振假名的文本单元作为不可分割的布局单元参与换行，
-            //     换行后假名跟随其 surface 整体落到新行，杜绝脱离。offMap[原文offset]=测量offset。
+            // 1b. 构造测量文本。断行保护（零宽不换行 U+2060 WORD JOINER）只保留在
+            //     「多字共享一个完整读音」的段内部：surface 拆两半会把整段读音从
+            //     一半字符上撕下来（「二人/ふたり」拆开就成了「二=ふたり」的错误
+            //     信息，违反"宁可不显示、不可显示错"——用户定调：宁可断行不完全
+            //     一致，不可读音显示错误）。其余位置全部放开：
+            //     v1.1 起每个段前后都插 WJ 把全部段边界焊死，整行断行机会只剩
+            //     "无读音段内部"零星几处，贪婪断行取行宽内最靠后的机会——常落在
+            //     行首四五字处，即"开注音后只有四五个字就换行"的主根因。段边界
+            //     断行不拆散任何读音↔surface 对（读音属于各自段内），v1.1"注音
+            //     脱离"只由 surface 自身被拆引起，由段内 WJ 继续保证。
+            //     offMap[原文offset]=测量offset。
             val WJ = '⁠'
-            val measureText = StringBuilder(text.length + segments.size * 2)
+            val measureText = StringBuilder(text.length + segments.size)
             val offMap = IntArray(text.length + 1)
             var oOrig = 0
             for (idx in segments.indices) {
@@ -146,19 +157,16 @@ fun RubyText(
                     measureText.append(text[oOrig])
                     oOrig++
                 }
-                measureText.append(WJ)
                 val segLen = segments[idx].surface.length
-                // v1.2.0: 带注音段字间也插 WJ，防 CJK 字间断行把多字 surface（如「二人」）
-                // 拆到两行致注音脱离（原 v1.1 只在段边界插 WJ，挡不住段内字间断行）。
-                // 无注音段不加，保留长送假名/标点串的内部断行能力免得整段溢出。
-                val atomic = segments[idx].reading != null
+                // 只有"带读音且 ≥2 字"的段才防拆；单字读音段无处可拆、无读音段
+                // 保留内部断行能力（长送假名/标点串免得整段溢出）。
+                val atomic = segments[idx].reading != null && segLen >= 2
                 for (c in 0 until segLen) {
                     offMap[oOrig] = measureText.length
                     measureText.append(text[oOrig])
                     oOrig++
                     if (atomic && c < segLen - 1) measureText.append(WJ)
                 }
-                measureText.append(WJ)
             }
             while (oOrig <= text.length) {
                 offMap[oOrig] = measureText.length
