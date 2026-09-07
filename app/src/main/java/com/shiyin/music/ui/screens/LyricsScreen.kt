@@ -136,15 +136,16 @@ fun LyricsScreen(vm: MainViewModel) {
         // (only settings+close on the right), which left the top corner feeling
         // empty — re-adding the centered title + artist fixes that without
         // crowding the lyric body.
-        // v1.3.x 歌词本四项体验:头行 Row 的 top padding 16→8——上方状态栏 inset 之外
-    // 还空一截,整体再往上贴一点(用户:"把歌词本头行整体往上移动一点点")。
-    // v1.3.x 第二轮:再收紧 top 8→4;左右 padding 20→22 与下方歌词列
-    // (LazyColumn padding(horizontal=22))完全同边界——返回/编辑键的左右边
-    // 缘对齐内容区,视觉不再错位(用户:"边界要和内容对齐,现在不协调")。
+        // v1.3.x 歌词本头行三轮定稿:top padding 16→8→4→0(贴到状态栏 inset 下缘,
+    // 不画进状态栏前提下的极限);左右 padding 22 与下方歌词列同边界。
+    // v1.3.x 第二轮排查补充:padding 对齐的是触区 Box 的边缘,但图标在 38dp
+    // 触区内【居中】,字形左/右缘还缩进 ~(38-图标宽)/2 ≈ 7.5dp——视觉上仍没
+    // 对齐。改图标贴边:返回键 CenterStart(字形左缘贴内容左边界)、编辑键
+    // CenterEnd(字形右缘贴内容右边界),触区大小不变(点击面积不减)。
     Row(
             Modifier
                 .fillMaxWidth()
-                .padding(start = 22.dp, end = 22.dp, top = 4.dp, bottom = 8.dp),
+                .padding(start = 22.dp, end = 22.dp, top = 0.dp, bottom = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             // v1.3.x 虚影终版(用户三轮反馈定调):问题从来不是图标描边/实心风格,
@@ -165,7 +166,7 @@ fun LyricsScreen(vm: MainViewModel) {
                         interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
                         indication = null,
                     ) { vm.requestLyricsExit() },
-                contentAlignment = Alignment.Center,
+                contentAlignment = Alignment.CenterStart,
             ) { OIcon(Lucide.ChevronDownBold, 23.dp, artFg) }
             Column(
                 Modifier.weight(1f),
@@ -191,6 +192,7 @@ fun LyricsScreen(vm: MainViewModel) {
             if (ly.canAdjust) {
                 // v1.3.x 虚影终版:同关闭按钮——无背景,图标悬浮,clickable 触区。
                 // 四项体验:同返回键——无涟漪 + 图标调大调粗补偿存在感。
+                // ③贴边:字形右缘贴内容右边界(与返回键对称),触区不变。
                 Box(
                     Modifier
                         .size(38.dp)
@@ -199,7 +201,7 @@ fun LyricsScreen(vm: MainViewModel) {
                             interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
                             indication = null,
                         ) { vm.lySheet = !vm.lySheet },
-                    contentAlignment = Alignment.Center,
+                    contentAlignment = Alignment.CenterEnd,
                 ) { OIcon(Lucide.SlidersBold, 19.dp, artFg) }
             }
         }
@@ -264,23 +266,29 @@ fun LyricsScreen(vm: MainViewModel) {
                         label = "lineColor",
                     )
                     val rubySegs = segmentsByLine?.getOrElse(i) { null }
-                    if (furiganaOn && hasKana && rubySegs != null) {
-                        // v1.3.x 行高过渡动画(用户设计方案):单进度 hp 同步驱动
-                        // 行高增量+文字下沉("腾出空间"和"文字下沉"一个连贯动作),
-                        // 假名淡入+从稍高处下滑归位。开启:hp/kp 同 spec 240ms
-                        // FastOutSlowIn(数值恒同步=单驱动效果);关闭:kp 110ms
-                        // 先淡出(字先消失),hp 240ms 完整收拢(空间再合拢)——
-                        // 不对称时序避免"假名消失空间没缩"或"空间缩了假名悬空"。
-                        val hp by androidx.compose.animation.core.animateFloatAsState(
-                            if (furiganaOn) 1f else 0f,
-                            animationSpec = tween(240, easing = androidx.compose.animation.core.FastOutSlowInEasing),
-                            label = "rubyHp",
-                        )
-                        val kp by androidx.compose.animation.core.animateFloatAsState(
-                            if (furiganaOn) 1f else 0f,
-                            animationSpec = tween(if (furiganaOn) 240 else 110, easing = androidx.compose.animation.core.FastOutSlowInEasing),
-                            label = "rubyKp",
-                        )
+                    // v1.3.x 动画重构(实机验证打回后重做):hp/kp 必须在
+                    // furiganaOn 分支【外】——此前写在分支内,开启时 RubyText
+                    // 首次组合 animateFloatAsState 初始值=目标值(无 0→1 可播),
+                    // 关闭时整支卸载动画状态机直接销毁,两个方向都瞬间跳变。
+                    // 现在振假名可用的日文行【始终挂载 RubyText】不随开关装卸,
+                    // p=0 时渲染与 Text 分支逐字节一致(无槽行高=调用方 36sp),
+                    // 开关切换由 hp/kp 连续驱动过渡。
+                    val hasRubyLine = hasKana && rubySegs != null
+                    // 单进度 hp 同步驱动行高增量+文字下沉("腾出空间"和"文字
+                    // 下沉"一个连贯动作),假名淡入+从稍高处下滑归位。开启:hp/kp
+                    // 同 spec 240ms FastOutSlowIn(数值恒同步=单驱动效果);关闭:
+                    // kp 110ms 先淡出(字先消失),hp 240ms 完整收拢(空间再合拢)。
+                    val hp by androidx.compose.animation.core.animateFloatAsState(
+                        if (furiganaOn && hasRubyLine) 1f else 0f,
+                        animationSpec = tween(240, easing = androidx.compose.animation.core.FastOutSlowInEasing),
+                        label = "rubyHp",
+                    )
+                    val kp by androidx.compose.animation.core.animateFloatAsState(
+                        if (furiganaOn && hasRubyLine) 1f else 0f,
+                        animationSpec = tween(if (furiganaOn) 240 else 110, easing = androidx.compose.animation.core.FastOutSlowInEasing),
+                        label = "rubyKp",
+                    )
+                    if (hasRubyLine) {
                         RubyText(
                             text = line.text,
                             segments = rubySegs,
