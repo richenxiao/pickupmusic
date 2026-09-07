@@ -9,6 +9,7 @@ import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.horizontalScroll
@@ -215,18 +216,39 @@ fun LyricsScreen(vm: MainViewModel) {
         LaunchedEffect(track.id) {
             listState.scrollToItem(0)
         }
+        // v1.3.x 滚动流畅度(用户反馈"逐行切换僵硬、帧率低,想要振假名切换那种
+        // 流畅度"):animateScrollToItem 用默认 spring,与全页 240ms FastOutSlowIn
+        // 动画语言不一致。可见行(逐行推进的常态)改 animateScrollBy 精确差值,
+        // spec 统一 240ms FastOutSlowIn——与行高/振假名动画同节奏;不可见行
+        // (seek 大跳)保留 animateScrollToItem。item.offset 即该行顶部当前在
+        // 视口中的位置,滚动差 = offset − (视口半高−60),正值向上滚。
         LaunchedEffect(activeI) {
             if (activeI >= 0) {
-                val viewport = listState.layoutInfo.viewportSize.height
-                listState.animateScrollToItem(activeI, scrollOffset = -(viewport / 2 - 60))
+                val info = listState.layoutInfo
+                val viewport = info.viewportSize.height
+                val target = info.visibleItemsInfo.firstOrNull { it.index == activeI }
+                if (target != null) {
+                    val d = target.offset - (viewport / 2 - 60)
+                    if (kotlin.math.abs(d) > 0.5f) {
+                        listState.animateScrollBy(
+                            d.toFloat(),
+                            tween(240, easing = androidx.compose.animation.core.FastOutSlowInEasing),
+                        )
+                    }
+                } else {
+                    listState.animateScrollToItem(activeI, scrollOffset = -(viewport / 2 - 60))
+                }
             }
         }
-        LazyColumn(
-            state = listState,
-            modifier = Modifier
+        // v1.3.x 滚动流畅度:渐隐遮罩改父 Box 层叠加——LazyColumn 不再挂
+        // graphicsLayer Offscreen(滚动中每帧全尺寸纹理拷贝,低端机掉帧主源)。
+        // DstIn 挖穿语义保留(文字要被真正裁透明),只是把离屏合成从列表层挪到
+        // 外层 Box 一次;Box 内只有列表,合成成本同量级,但列表自身层不再每帧
+        // 离屏重绘,滚动期间文本层可走普通合成路径。
+        Box(
+            Modifier
                 .weight(1f)
                 .fillMaxWidth()
-                .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
                 .drawWithContent {
                     drawContent()
                     drawRect(
@@ -236,7 +258,12 @@ fun LyricsScreen(vm: MainViewModel) {
                         ),
                         blendMode = BlendMode.DstIn,
                     )
-                }
+                },
+        ) {
+        LazyColumn(
+            state = listState,
+            modifier = Modifier
+                .fillMaxWidth()
                 .padding(horizontal = 22.dp),
             contentPadding = androidx.compose.foundation.layout.PaddingValues(top = 10.dp, bottom = 150.dp),
         ) {
@@ -323,6 +350,7 @@ fun LyricsScreen(vm: MainViewModel) {
                 }
             }
         }
+        } // v1.3.x: 包裹 LazyColumn 的渐隐遮罩 Box(见上方注释)在此闭合
 
         // bottom bar: slim progress + time row + play/pause.
         // Order per v4.3 spec: progress bar on top, time row hugging it just
