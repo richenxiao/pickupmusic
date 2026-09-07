@@ -52,13 +52,19 @@ data class RubySegment(val surface: String, val reading: String?, val startOffse
  *   - 全部坐标（getBoundingBox / getLineForOffset）取自单一 baseLayout，杜绝
  *     "探测布局"与"绘制布局"因行高不同在边界字符上换行漂移。
  *
- * 宽注音处理（v1.1 重做：废弃竖排堆叠，改 shrink-to-fit；v1.3.x 改连读组统一）：
- *   单字汉字对应多假名时，水平假名可能比汉字宽、居中后侵入相邻假名范围。此前用过
- *   "竖排堆叠"补丁——实测占纵向空间过大、违背日语排版习惯，已废弃。改为按段
- *   shrink-to-fit（宽于到下一段注音的距离则缩字号，下限 [rubyShrinkMin]，始终
- *   水平在汉字正上方）。v1.3.x 修复"同词字号参差"：直接相邻的带读音段（分词把
- *   一个词拆成多段，如 心+臓）划为连读组，组内全部假名按同一比例统一缩小——
- *   词里任何一段需要收缩，词的全部注音一起缩，绝不出现"一个字偏小一个正常"。
+ * 宽注音处理（v1.1 废弃竖排堆叠改 shrink-to-fit；v1.3.x 两轮重做）：
+ *   单字汉字对应多假名时，水平假名可能比汉字宽、居中后侵入相邻假名范围。始终
+ *   水平排列在汉字正上方，绝不竖排；宽于约束则按比例缩字号（下限 [rubyShrinkMin]）。
+ *   v1.3.x 第一轮改"连读组统一缩放"修同词字号参差；第二轮发现旧"逐段可用宽"
+ *   模型两处盲区（单个空格分隔的相邻读音全部命中）：① 只有右向约束，后一个
+ *   相邻读音可用宽直达行尾几乎不缩 → 相同读音相邻"前缩后不缩"；② 假名居中于
+ *   surface，宽出部分左右各伸一半，相邻两段假名可同时伸进共享间隙互挤——
+ *   surface 间距够 ≠ 假名不碰。现改为「成对假名边距约束」：同行任两段相邻注音
+ *   约束 kana_i.right + margin ≤ kana_j.left（同组 margin 小=读法连续，跨组
+ *   margin 大=词间透气），两侧假名宽度同乘比例 s 线性一次可解；组比例取触及
+ *   该组全部约束的最小值——组内字号统一保持，相邻同读音约束对称 → 两侧同缩
+ *   同放。行首/行尾越界仍由绘制时 x 轴 clamp 兜底（与旧行为一致：宁可轻微
+ *   越过相邻字符上方，不为贴边强缩字号）。
  *
  * 行高：带振假名的行 lineHeight = 文字自然行高(baseVal×1.3 兜底) + 单层 ruby 槽
  * (rubySize + gap)，Bottom 对齐把 ruby 槽压在文字上方。单一 ruby 槽（无堆叠），
@@ -203,19 +209,41 @@ fun RubyText(
                 constraints = Constraints(maxWidth = maxW),
             )
 
-            // 3. 连读组 shrink-to-fit（v1.3.x 改造：单位从"段"升级为"连读组"）。
-            //    直接相邻（原文中连续、无任何间隔段）的带读音段划为一个连读组——
-            //    分词把一个词拆成多段（心=こころ + 臓=ぞう）时同属一组。组内逐段
-            //    独立算"自己的假名不越界所需的最小比例"，全组取最紧值统一应用：
-            //    同一个词的所有注音字号完全一致，杜绝"こころ 被缩而 ぞう 原样"的
-            //    字号参差；组间不额外收紧（组由无读音段隔开，天然有间隙）。
-            //    逐段比例 = 段假名默认宽 / 可用宽（到同一下一段注音左边界或行右缘
-            //    的距离 - 间隙），clamp 到 [rubyShrinkMin, 1]。组比例齐了再统一
-            //    应用（组内无任何收缩需求 → 保持默认字号）。
-            val kanaLayouts = ArrayList<TextLayoutResult?>(segments.size)
-            // 连读分组：i 直接邻接 i-1（段在原文中紧挨,segments 铺满全文时相邻
-            // 索引必然连续）且都带读音且首字同行 → 同组（跨行不并组:两行可用宽
-            // 不同,组比例无意义）
+            // 3. 成对假名边距约束的 shrink-to-fit（v1.3.x 重做：单位"段→连读组",
+            //    模型"逐段可用宽→成对边距"）。两轮迭代的结论:
+            //    a) 连读组:直接相邻的带读音段(分词把一个词拆成多段,心=こころ +
+            //       臓=ぞう)划为一组,组内字号必须统一——词里任何一段需要收缩,
+            //       词的全部注音一起缩,杜绝"一个字偏小一个正常"的参差。
+            //    b) 成对约束:旧"逐段可用宽"只有右向约束,相邻读音"宴 宴"的前者
+            //       可用宽=到后者 surface 左缘(单字+空格,3 假名放不下→缩),后者
+            //       直达行尾(不缩)——相同读音一个缩一个不缩;且假名居中于 surface,
+            //       宽出部分左右各伸一半,相邻两段假名可同时伸进共享间隙互挤
+            //       (surface 间距够 ≠ 假名不碰;3 假名 ≈36sp 才伸得进 ≈13sp 的
+            //       半角空格间隙,≤2 假名 ≈24sp 比单字还窄不伸——即"三个以上
+            //       假名才挤"的观察)。故改为:同一行上任两段相邻注音(无论是否
+            //       同组)约束 前假名右缘 + margin ≤ 后假名左缘;假名居中,两端各
+            //       伸 kanaW/2·s,约束两侧宽度同乘 s,线性一次可解(见下)。跨行
+            //       段不参与(两行布局独立);margin 同组取 rubyGapPx(读法连续),
+            //       跨组取 2×(词间透气)。组比例=触及该组全部约束的最小值;
+            //       相邻同读音约束对称 → 两侧同缩同放。行首/行尾越界由绘制时
+            //       x-clamp 兜底,不参与缩放(宁可轻微越过相邻字符上方,不为贴
+            //       边强缩字号)。
+            //    c) 不需要死板全缩(用户补充):三假名标注的汉字,若旁边没有拥挤
+            //       的可能,就完全不缩——只有约束真的被触及时才产生收缩需求,
+            //       本模型天然如此(无约束触发的组保持默认字号)。
+            val rubyGap2Px = gapPx * 2f
+            // 收缩约束建模:组 g 的假名按 s_g ≤ 1 缩。假名 i 居中于其 surface,
+            // 半宽 h_i·s,面心 c_i(surface 中心)。约束:相邻注音对 (i,j)
+            //   c_i + h_i·s(g_i) + margin ≤ c_j - h_j·s(g_j)
+            // 变量是每组的 s(g),左侧系数 h_i(h_i≥0),右侧 -h_j,均为正系数的
+            // 线性不等式。逐段可用宽(右缘到下一注音左缘)的旧约束废弃——它假设
+            // "假名从 surface 左缘起排",与居中绘制不符(正是盲区②)。
+            // 解法:按组从左到右扫描。s 取 min(1, 各约束解出的上界):单组内
+            // 多段时相邻约束左右端同组,解 s ≤ (c_j - c_i - margin)/(h_i + h_j);
+            // 跨组对(i 组 ≠ j 组)两变量,保守取"最坏情形先解左组"——先假定右组
+            // s_j=1 解出 s_i 上界(右侧假名不缩,把余量全部留给左侧;右侧组随后
+            // 用自己已定的比例参与后续约束,从左向右传播)。从左向右一次扫描
+            // O(n²) 最坏、通常 O(n)。
             val groupIds = IntArray(segments.size) { -1 }
             var gid = 0
             for (i in segments.indices) {
@@ -224,35 +252,77 @@ fun RubyText(
                     baseLayout.getLineForOffset(mRanges[i - 1][0]) == baseLayout.getLineForOffset(mRanges[i][0])
                 groupIds[i] = if (sameGroupAsPrev) groupIds[i - 1] else gid++
             }
-            val minScaleByGroup = HashMap<Int, Float>()
+            // 各段假名默认半宽、surface 中心、所在行(px,居中绘制假设)
+            val halfW = FloatArray(segments.size)
+            val center = FloatArray(segments.size)
+            val segLine = IntArray(segments.size)
             for (i in segments.indices) {
-                if (segments[i].reading == null) { kanaLayouts.add(null); continue }
+                if (segments[i].reading == null) continue
                 val mStart = mRanges[i][0]
+                val mEnd = mRanges[i][1]
                 val lineStart = baseLayout.getLineForOffset(mStart)
-                val surfaceLeft = baseLayout.getBoundingBox(mStart).left
-                // 可用宽度 = 到同一下一段注音段左边界（或行右边界）的距离 - 间隙
-                var nextLeft = baseLayout.getLineRight(lineStart)
-                for (j in (i + 1) until segments.size) {
-                    if (segments[j].reading == null) continue
-                    val nStart = mRanges[j][0]
-                    if (baseLayout.getLineForOffset(nStart) == lineStart) {
-                        nextLeft = baseLayout.getBoundingBox(nStart).left
-                        break
-                    } else break
+                val lineEnd = baseLayout.getLineForOffset((mEnd - 1).coerceAtLeast(mStart))
+                val left: Float; val right: Float
+                if (lineStart == lineEnd) {
+                    left = baseLayout.getBoundingBox(mStart).left
+                    right = baseLayout.getBoundingBox((mEnd - 1).coerceAtLeast(mStart)).right
+                } else {
+                    // 防御：带读音 ≥2 字段已原子化不应跨行；若仍跨行（极长单段
+                    // 超行宽），注音标首行那截——与绘制分支同一口径。
+                    val firstLineLast = (baseLayout.getLineEnd(lineStart) - 1).coerceAtLeast(mStart)
+                    left = baseLayout.getBoundingBox(mStart).left
+                    right = baseLayout.getBoundingBox(firstLineLast).right
                 }
-                val available = (nextLeft - surfaceLeft - gapPx).coerceAtLeast(0f)
-                val kanaW = defaultKanaLayouts[i]!!.size.width.toFloat()
-                if (kanaW > available) {
-                    val scale = (available / kanaW).coerceIn(rubyShrinkMin, 1f)
-                    val g = groupIds[i]
-                    minScaleByGroup[g] = minOf(minScaleByGroup[g] ?: 1f, scale)
-                }
-                kanaLayouts.add(null)
+                halfW[i] = defaultKanaLayouts[i]!!.size.width / 2f
+                center[i] = (left + right) / 2f
+                segLine[i] = lineStart
             }
+            // 从左向右逐组解 s_g(初值 1,被触及的约束收紧):
+            //   - 同组相邻对 (i,j)(g_i==g_j): s ≤ (c_j - c_i - m) / (h_i + h_j)
+            //   - 跨组对: 左组假定右组已定(从左向右传播,右侧 s 已在上轮定下);
+            //     右组首次被触及时假定左侧 s=1 已入不等式——两侧都往安全方向
+            //     多让,不迭代。clamp 到 [rubyShrinkMin, 1]。
+            val scaleByGroup = FloatArray(gid) { 1f }
+            var prevKanaIdx = -1
+            for (i in segments.indices) {
+                if (segments[i].reading == null) continue
+                if (prevKanaIdx >= 0 && segLine[prevKanaIdx] == segLine[i]) {
+                    val hSum = halfW[prevKanaIdx] + halfW[i]
+                    if (hSum > 0f) {
+                        val margin = if (groupIds[prevKanaIdx] == groupIds[i]) gapPx else rubyGap2Px
+                        val slack = center[i] - center[prevKanaIdx] - margin
+                        val bound = slack / hSum
+                        val gi = groupIds[prevKanaIdx]
+                        val gj = groupIds[i]
+                        // 同组对:一个变量;跨组对:左组按 s_j 已定解上界、右组按
+                        // s_i 已定解上界,两侧都收紧(各自往安全方向多让)。
+                        if (gi == gj) {
+                            if (bound < scaleByGroup[gi]) {
+                                scaleByGroup[gi] = bound.coerceIn(rubyShrinkMin, 1f)
+                            }
+                        } else {
+                            val bi = (center[i] - center[prevKanaIdx] - margin - halfW[i] * scaleByGroup[gj]) /
+                                halfW[prevKanaIdx].coerceAtLeast(0.001f)
+                            if (bi < scaleByGroup[gi]) {
+                                scaleByGroup[gi] = bi.coerceIn(rubyShrinkMin, 1f)
+                            }
+                            val bj = (center[i] - center[prevKanaIdx] - margin - halfW[prevKanaIdx] * scaleByGroup[gi]) /
+                                halfW[i].coerceAtLeast(0.001f)
+                            if (bj < scaleByGroup[gj]) {
+                                scaleByGroup[gj] = bj.coerceIn(rubyShrinkMin, 1f)
+                            }
+                        }
+                    }
+                }
+                prevKanaIdx = i
+            }
+            // 组比例应用:缩过的组重测假名,未触及约束的组保持默认字号(不缩)
+            val kanaLayouts = ArrayList<TextLayoutResult?>(segments.size)
+            repeat(segments.size) { kanaLayouts.add(null) }
             for (i in segments.indices) {
                 val reading = segments[i].reading ?: continue
                 val hLayout = defaultKanaLayouts[i] ?: continue
-                val scale = minScaleByGroup[groupIds[i]] ?: 1f
+                val scale = scaleByGroup[groupIds[i]]
                 kanaLayouts[i] = if (scale >= 0.999f) hLayout
                 else {
                     val shrunkStyle = rubyStyle.copy(fontSize = (rubyVal * scale).sp)
