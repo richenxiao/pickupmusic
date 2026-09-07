@@ -353,12 +353,18 @@ fun RubyText(
         // 槽完全展开的行高(px)与无槽基础行高——从布局反推:L = fullH/lineCount
         val slotLineH = fullH / lineCount.coerceAtLeast(1)
         val baseLineHPx = slotLineH - slotPerLinePx
-        val hPx = (fullH - slotTotalPx * (1f - hp)).coerceAtLeast(1f)
+        // v1.3.x 回归修复(实机:未开振假名时英文行/作词作曲行被压裁成半高):
+        // hasRuby=false 的行 baseStyle 本就不含槽(测量高度=无槽高度),上面的
+        // 槽减项对它们是错减——无条件减去 slotTotal×(1-hp) 把画布裁得比布局矮
+        // 一截。槽减项只对 hasRuby=true(布局内真嵌着槽)的行有意义;无注音行
+        // 画布高度=布局原高,p=0/p=1 都不受 hp 影响。这也解释"开振假名后恢复
+        // 正常":hp→1 减项归零。
+        val hPx = if (hasRuby) (fullH - slotTotalPx * (1f - hp)).coerceAtLeast(1f) else fullH.toFloat()
         val h = with(density) { hPx.toDp() }
         val rubySlotPx = slotPerLinePx
         Canvas(Modifier.fillMaxWidth().height(h)) {
             // 逐行:clip 到该行目标条带,整布局平移 dy_i 绘制(条带只露出第 i 行)
-            if (hp >= 0.999f) {
+            if (!hasRuby || hp >= 0.999f) {
                 drawText(baseLayout, color = color, topLeft = Offset.Zero)
             } else {
                 for (line in 0 until lineCount) {
