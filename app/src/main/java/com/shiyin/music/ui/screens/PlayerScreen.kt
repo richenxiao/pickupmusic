@@ -61,6 +61,8 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.boundsInWindow as boundsInWindowExt
 import androidx.compose.ui.platform.LocalContext
 import androidx.mediarouter.app.SystemOutputSwitcherDialogController
 import androidx.compose.ui.platform.LocalDensity
@@ -481,39 +483,33 @@ private fun LyricsPeekCard(vm: MainViewModel, artBg: Color, artFg: Color, dimC: 
             .shadowMd(RoundedCornerShape(28.dp))
             .clip(RoundedCornerShape(28.dp))
             .background(artBg)
+            // v1.3.x morph P0(设计文档 §3.3-2):卡片 window 坐标 Rect 持续上报——
+            // morph overlay 展开起点/收起终点取卡片实时位置(播放页滚动、切歌后
+            // bounds 变化都实时跟随)。P0 只上报无消费者,行为零变化。
+            .onGloballyPositioned { coords ->
+                vm.lyricsCardBounds = coords.boundsInWindowExt()
+            }
             .clickable { if (lines.isNotEmpty()) vm.lyricsOn = true }
             .padding(horizontal = 20.dp, vertical = 18.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text("歌词", style = body(11.5f, FontWeight.ExtraBold, dimC).copy(letterSpacing = 1.8.sp))
-            if (ly != null) {
-                Text(ly.sourceLabel, style = body(11f, FontWeight.Bold, dimC))
-            }
-        }
+        com.shiyin.music.ui.components.LyricsCardHeaderRow(
+            sourceLabel = if (ly != null) ly.sourceLabel else null,
+            dimC = dimC,
+        )
         if (lines.isNotEmpty() && ly != null) {
             val durMs = if (vm.player.durationMs > 0) vm.player.durationMs else track.durationMs
             val activeI = ly.parsed.activeIndex(vm.player.positionMs, durMs, ly.offsetMs)
             val peekStart = (activeI - 1).coerceIn(0, (lines.size - 4).coerceAtLeast(0))
-            Column(Modifier.padding(top = 4.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                lines.drop(peekStart).take(4).forEachIndexed { j, line ->
-                    val isActive = peekStart + j == activeI
-                    Text(
-                        line.text,
-                        style = body(19f, FontWeight.ExtraBold, if (isActive) artFg else artFg.copy(alpha = 0.42f))
-                            .copy(lineHeight = 28.sp),
-                        maxLines = 1, overflow = TextOverflow.Ellipsis,
-                    )
-                }
-            }
-            Row(Modifier.fillMaxWidth().padding(top = 10.dp), horizontalArrangement = Arrangement.End) {
-                Box(
-                    Modifier
-                        .clip(RoundedCornerShape(999.dp))
-                        .background(btnBg)
-                        .padding(horizontal = 16.dp, vertical = 8.dp)
-                ) { Text("展开歌词", style = body(12.5f, FontWeight.Bold, artFg)) }
-            }
+            com.shiyin.music.ui.components.LyricsCardPreview(
+                lines = lines.map { it.text },
+                activeIndex = activeI,
+                peekStart = peekStart,
+                fg = artFg,
+                fontSize = 19.sp,
+                lineHeight = 28.sp,
+            )
+            com.shiyin.music.ui.components.LyricsCardExpandPill(btnBg = btnBg, fg = artFg)
         } else {
             when (vm.lyState) {
                 LyState.Searching -> {

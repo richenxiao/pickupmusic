@@ -269,6 +269,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     var playerOpen by mutableStateOf(false)
     var lyricsOn by mutableStateOf(false)
     var lySheet by mutableStateOf(false)
+    // v1.3.x morph P0(设计文档 §3.3-2):歌词卡片 window 坐标 Rect 持续上报
+    // (onGloballyPositioned)——morph overlay 展开起点/收起终点取卡片实时位置。
+    // P0 只上报暂无消费者;P1 overlay 读取。Rect 非稳定类型,存 field 不做
+    // 状态订阅(overlay 用 snapshotFlow 轮询读,避免 Rect 相等性缺失导致的
+    // 无效重组)。
+    var lyricsCardBounds: androidx.compose.ui.geometry.Rect? = null
     // v1.3.x 歌词本四项体验④:左上角返回键的退出请求回调。歌词本 Dialog 的退出
     // 动画状态机(MutableTransitionState)在 AppRoot 层,按钮拿不到——原直接置
     // lyricsOn=false 会瞬间销毁 Dialog、跳过下拉动画,与物理返回键(dismissOnBackPress
