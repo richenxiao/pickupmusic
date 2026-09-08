@@ -227,7 +227,16 @@ fun LyricsScreen(vm: MainViewModel) {
         // (用户:"切到下一首时歌词还停留在最后的位置,应该是下一首自动更新到最上面")。
         // 换曲瞬间先无动画归零,让跟随从第一行/前奏位置重新开始。
         LaunchedEffect(track.id) {
-            listState.scrollToItem(0)
+            // v1.3.x morph P2(§3.4-4 锚行对齐):overlay 架构下首次组合即预滚到
+            // 当前播放行(与跟行同公式无动画版)——morph 交叉淡化区间里预览当前行
+            // 与列表该行位置对齐,锚行视觉位移 ≤8dp。旧"切歌回顶"语义由 morph
+            // 时代替:overlay 每次进入都是新组合,每次都滚到 activeI。
+            if (activeI >= 0) {
+                val viewport = listState.layoutInfo.viewportSize.height
+                listState.scrollToItem(activeI, scrollOffset = -(viewport / 2 - 60))
+            } else {
+                listState.scrollToItem(0)
+            }
         }
         // v1.3.x 滚动流畅度(用户反馈"逐行切换僵硬、帧率低,想要振假名切换那种
         // 流畅度"):animateScrollToItem 用默认 spring,与全页 240ms FastOutSlowIn
@@ -235,7 +244,10 @@ fun LyricsScreen(vm: MainViewModel) {
         // spec 统一 240ms FastOutSlowIn——与行高/振假名动画同节奏;不可见行
         // (seek 大跳)保留 animateScrollToItem。item.offset 即该行顶部当前在
         // 视口中的位置,滚动差 = offset − (视口半高−60),正值向上滚。
+        // v1.3.x morph P2(§3.4-5 跟行暂停):morph 进行中(progress<0.95)跳过,
+        // 避免动画中途列表自己滚(锚行已由上条预滚对齐)。
         LaunchedEffect(activeI) {
+            if (vm.lyricsMorphProgress.floatValue in 0.001f..0.949f) return@LaunchedEffect
             if (activeI >= 0) {
                 val info = listState.layoutInfo
                 val viewport = info.viewportSize.height

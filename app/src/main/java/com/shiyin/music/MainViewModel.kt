@@ -275,6 +275,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     // 状态订阅(overlay 用 snapshotFlow 轮询读,避免 Rect 相等性缺失导致的
     // 无效重组)。
     var lyricsCardBounds: androidx.compose.ui.geometry.Rect? = null
+    // v1.3.x morph P2(§3.3-5):morph progress 透传——PlayerScreen 内容淡出
+    // (alpha 1→0.3)由它驱动。overlay 每帧写入(Animatable.floatState),
+    // PlayerScreen 延迟读(graphicsLayer 块内),不触发重组。
+    val lyricsMorphProgress = androidx.compose.runtime.mutableFloatStateOf(0f)
     // v1.3.x 歌词本四项体验④:左上角返回键的退出请求回调。歌词本 Dialog 的退出
     // 动画状态机(MutableTransitionState)在 AppRoot 层,按钮拿不到——原直接置
     // lyricsOn=false 会瞬间销毁 Dialog、跳过下拉动画,与物理返回键(dismissOnBackPress

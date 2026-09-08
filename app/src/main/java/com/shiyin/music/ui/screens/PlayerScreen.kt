@@ -73,6 +73,7 @@ import androidx.compose.ui.unit.sp
 import com.shiyin.music.LyState
 import com.shiyin.music.MainViewModel
 import com.shiyin.music.data.formatDuration
+import com.shiyin.music.ui.components.LyricsMorphSpec
 import com.shiyin.music.ui.components.OIcon
 import com.shiyin.music.ui.components.body
 import com.shiyin.music.ui.components.coverPalette
@@ -138,6 +139,13 @@ fun PlayerScreen(vm: MainViewModel) {
     Column(
         Modifier
             .fillMaxSize()
+            // v1.3.x morph P2(§3.3-5):morph 展开/收起期间播放页内容淡出
+            // 1→0.3(只淡出不滑出,§4 偏差5)。graphicsLayer 块内延迟读 VM 透传的
+            // progress,不触发重组;progress==0(歌词本关)恒为 alpha 1。
+            .graphicsLayer {
+                val mp = vm.lyricsMorphProgress.floatValue
+                alpha = 1f - 0.7f * ((mp / LyricsMorphSpec.PLAYER_DIM_END).coerceIn(0f, 1f))
+            }
             .background(c.bg)
             // v5.2: sheet 的 contentWindowInsets 已置零，系统栏由这里处理。background 在前
             // →背景连续填充到屏幕边缘（含状态栏/导航栏区域），不再有 sheet 单独留的底部
