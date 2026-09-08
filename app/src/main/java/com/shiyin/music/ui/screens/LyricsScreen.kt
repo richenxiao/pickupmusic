@@ -53,6 +53,8 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.boundsInWindow as boundsInWindowExt
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -271,10 +273,33 @@ fun LyricsScreen(vm: MainViewModel) {
         // 播放页按钮位置,点击无响应)。弃用 DstIn:滚动内容上方叠一层与页面同色
         // (safeBg)的透明渐变——文字"渐隐入背景色"视觉等价,零混合模式,物理上
         // 不可能挖穿任何层。纯绘制,不拦截触摸(无 clickable 即不参与命中)。
+        // v1.3.x morph P3(§3.5):列表区 bounds 上报给 overlay 指针闸门(chrome 区
+        // = 列表区外);nestedScroll 守卫(§3.5-2 兜底):指针闸门没截住的"列表在
+        // 顶+向下"剩余 delta 全量消费喂 morph 拖拽,不让它冒到播放 sheet 的
+        // anchoredDraggable(§1.2 结构性风险:pre 派发 sheet 连接子先看到)。
+        androidx.compose.runtime.LaunchedEffect(listState) {
+            androidx.compose.runtime.snapshotFlow { !listState.canScrollBackward }
+                .collect { vm.lyricsListAtTop = it }
+        }
         Box(
             Modifier
                 .weight(1f)
-                .fillMaxWidth(),
+                .fillMaxWidth()
+                .onGloballyPositioned { coords ->
+                    val b = coords.boundsInWindowExt()
+                    vm.lyricsListTopPx = b.top
+                    vm.lyricsListBottomPx = b.bottom
+                }
+                .nestedScroll(object : androidx.compose.ui.input.nestedscroll.NestedScrollConnection {
+                    override fun onPreScroll(available: androidx.compose.ui.geometry.Offset, source: androidx.compose.ui.input.nestedscroll.NestedScrollSource): androidx.compose.ui.geometry.Offset {
+                        // 只拦"列表在顶+向下"——其余(向上滚/未到顶)全放行
+                        if (available.y > 0f && !listState.canScrollBackward) {
+                            vm.lyricsMorphDrag?.invoke(available.y)
+                            return available
+                        }
+                        return androidx.compose.ui.geometry.Offset.Zero
+                    }
+                }),
         ) {
         LazyColumn(
             state = listState,

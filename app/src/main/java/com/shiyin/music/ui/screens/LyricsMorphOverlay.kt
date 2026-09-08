@@ -2,6 +2,8 @@ package com.shiyin.music.ui.screens
 
 import androidx.compose.animation.core.Animatable
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -25,6 +27,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -91,11 +94,19 @@ fun LyricsMorphOverlay(vm: MainViewModel, morph: LyricsMorphState) {
         snapshotFlow { morph.phase == LyricsMorphState.Phase.Closing && !morph.isRunning && morph.progress.value == 0f }
             .collect { done -> if (done) { vm.lyricsOn = false; vm.lySheet = false } }
     }
+    // P3:守卫(LyricsScreen nestedScroll)喂拖拽共用 morph.onDrag——
+    // 屏高从 LocalConfiguration 取(onDrag 内部另有卡顶/屏高20%下限保护)。
+    val screenH = androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp *
+        androidx.compose.ui.platform.LocalDensity.current.density
     SideEffect {
         vm.lyricsExitRequest = { scope.launch { morph.collapse(vm.lyricsCardBounds) } }
+        vm.lyricsMorphDrag = { delta -> morph.onDrag(delta, screenH) }
     }
     DisposableEffect(Unit) {
-        onDispose { if (vm.lyricsExitRequest != null) vm.lyricsExitRequest = null }
+        onDispose {
+            if (vm.lyricsExitRequest != null) vm.lyricsExitRequest = null
+            if (vm.lyricsMorphDrag != null) vm.lyricsMorphDrag = null
+        }
     }
 
     val cornerBase = with(density) { 28.dp.toPx() }
@@ -119,6 +130,60 @@ fun LyricsMorphOverlay(vm: MainViewModel, morph: LyricsMorphState) {
     Box(
         Modifier
             .fillMaxSize()
+            // ── P3-① 指针闸门(§3.5 主防御,必须做)──
+            // 播放 sheet 的 anchoredDraggable 会对"sheet 正文任意位置"的下拉 1:1 跟手
+            // (§1.2 结构性行为),nestedScroll pre 派发它先看到——靠 nestedScroll 防不
+            // 住。必须在指针层拦截:过 touch slop 后判主轴,垂直向下且(列表到顶或
+            // 起点在 chrome 区)→ 从该事件起消费整条手势流,事件根本到不了
+            // LazyColumn 和 sheet 的 drag 检测;其余(向上/水平/列表未到顶向下)不
+            // 消费,正常派发。chrome 区=顶栏/底栏(非列表区),由 LyricsScreen 经
+            // VM 透传"该 y 是否 chrome"判定——简单版:y 在列表区外即 chrome。
+            .pointerInput(Unit) {
+                // 速度追踪:松手甩动判定用(velocityTracker 在 awaitEachGesture 内
+                // 跨事件累计,松手时 calculateVelocity)
+                val tracker = androidx.compose.ui.input.pointer.util.VelocityTracker()
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    var dragging = false
+                    var lastY = down.position.y
+                    while (true) {
+                        val event = awaitPointerEvent()
+                        val change = event.changes.firstOrNull() ?: break
+                        tracker.addPosition(change.uptimeMillis, change.position)
+                        if (!dragging) {
+                            // 过 slop 前不消费(down/移动都放行,点击/长按/滚动不受扰)
+                            val dy = change.position.y - down.position.y
+                            if (kotlin.math.abs(dy) > viewConfiguration.touchSlop) {
+                                val isDown = dy > 0f
+                                val inChrome = vm.lyricsListTopPx != null && (lastY < vm.lyricsListTopPx!! || lastY > vm.lyricsListBottomPx!!)
+                                val atTop = vm.lyricsListAtTop
+                                if (isDown && (inChrome || atTop)) dragging = true else break
+                            }
+                            lastY = change.position.y
+                        }
+                        if (dragging) {
+                            // 整条手势流全消费:列表/sheet 都收不到
+                            morph.onDrag(change.position.y - lastY, size.height.toFloat())
+                            lastY = change.position.y
+                            change.consume()
+                        }
+                        if (!event.changes.any { it.pressed }) {
+                            // 松手:拖拽距离/速度判定(§3.5-3)
+                            if (dragging) {
+                                val velocity = tracker.calculateVelocity().y
+                                val dd = (1f - morph.progress.value) * (morph.cardBounds?.top ?: 1f)
+                                val thresholdPx = 120.dp.toPx()
+                                if (dd > thresholdPx || velocity > 2200f) {
+                                    scope.launch { morph.collapse(vm.lyricsCardBounds, velocity) }
+                                } else {
+                                    scope.launch { morph.progress.animateTo(1f, com.shiyin.music.ui.components.LyricsMorphSpec.collapseSpring) }
+                                }
+                            }
+                            break
+                        }
+                    }
+                }
+            }
             .graphicsLayer {
                 val b: Rect = morph.cardBounds ?: return@graphicsLayer
                 val pp = morph.progress.value

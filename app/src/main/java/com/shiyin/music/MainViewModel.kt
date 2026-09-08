@@ -279,6 +279,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     // (alpha 1→0.3)由它驱动。overlay 每帧写入(Animatable.floatState),
     // PlayerScreen 延迟读(graphicsLayer 块内),不触发重组。
     val lyricsMorphProgress = androidx.compose.runtime.mutableFloatStateOf(0f)
+    // v1.3.x morph P3(§3.5-4):手势协同状态——指针闸门判"起点是否 chrome 区
+    // (列表区外)"与"列表是否已在顶"。LyricsScreen 写入(列表 bounds 随布局
+    // 更新 + canScrollBackward 派生),overlay 的 pointerInput 读。普通 field,
+    // 手势事件里读不触发重组。
+    var lyricsListTopPx: Float? = null
+    var lyricsListBottomPx: Float? = null
+    var lyricsListAtTop: Boolean = true
+    // P3:守卫喂拖拽的回调——overlay 注入 morph.onDrag 封装,LyricsScreen 的
+    // nestedScroll 守卫调用。与 lyricsExitRequest 同注入模式(SideEffect+清空)。
+    var lyricsMorphDrag: ((Float) -> Unit)? = null
     // v1.3.x 歌词本四项体验④:左上角返回键的退出请求回调。歌词本 Dialog 的退出
     // 动画状态机(MutableTransitionState)在 AppRoot 层,按钮拿不到——原直接置
     // lyricsOn=false 会瞬间销毁 Dialog、跳过下拉动画,与物理返回键(dismissOnBackPress
