@@ -52,10 +52,18 @@ class LyricsMorphState(private val scope: CoroutineScope) {
 
     val isRunning: Boolean get() = progress.isRunning
 
-    /** 展开:snapTo(0) → 弹簧到 1。入口先置 Opening 防 §3.6-4 起点误判。 */
+    /** 展开:snapTo(0) → 弹簧到 1。入口先置 Opening 防 §3.6-4 起点误判。
+     *  cardBounds==null(首帧未测得即被点击/Activity 重建)按 §3.6-5 兜底:
+     *  直接 snapTo(1f) 稳态全屏(无形变)——重建场景这正是期望行为(不播动画),
+     *  极端时序宁可无动画不可渲染 0×0 图层闪帧。 */
     suspend fun open(card: Rect?) {
         phase = Phase.Opening
         cardBounds = card
+        if (card == null) {
+            progress.snapTo(1f)
+            phase = Phase.Opened
+            return
+        }
         progress.snapTo(0f)
         progress.animateTo(1f, LyricsMorphSpec.expandSpring)
         phase = Phase.Opened

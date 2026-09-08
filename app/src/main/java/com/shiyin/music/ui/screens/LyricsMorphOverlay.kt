@@ -106,6 +106,10 @@ fun LyricsMorphOverlay(vm: MainViewModel, morph: LyricsMorphState) {
         onDispose {
             if (vm.lyricsExitRequest != null) vm.lyricsExitRequest = null
             if (vm.lyricsMorphDrag != null) vm.lyricsMorphDrag = null
+            // P4 边界:progress 透传值必须随卸载归零——否则下次打开歌词本时
+            // LyricsScreen 跟行暂停判定(0.001..0.949 区间)读到残留值会误判
+            // "morph 进行中"而永久停跳跟行。
+            vm.lyricsMorphProgress.floatValue = 0f
         }
     }
 

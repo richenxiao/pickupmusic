@@ -497,7 +497,8 @@ private fun LyricsPeekCard(vm: MainViewModel, artBg: Color, artFg: Color, dimC: 
             .onGloballyPositioned { coords ->
                 vm.lyricsCardBounds = coords.boundsInWindowExt()
             }
-            .clickable { if (lines.isNotEmpty()) vm.lyricsOn = true }
+            // v1.3.x morph P4(§2.6 连点防抖):已开着(含 morph 进行中)不重复置位
+            .clickable { if (lines.isNotEmpty() && !vm.lyricsOn) vm.lyricsOn = true }
             .padding(horizontal = 20.dp, vertical = 18.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
