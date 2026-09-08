@@ -296,25 +296,16 @@ fun LyricsScreen(vm: MainViewModel) {
                 }
             }
         }
-        // v1.3.x 滚动流畅度:渐隐遮罩改父 Box 层叠加——LazyColumn 不再挂
-        // graphicsLayer Offscreen(滚动中每帧全尺寸纹理拷贝,低端机掉帧主源)。
-        // DstIn 挖穿语义保留(文字要被真正裁透明),只是把离屏合成从列表层挪到
-        // 外层 Box 一次;Box 内只有列表,合成成本同量级,但列表自身层不再每帧
-        // 离屏重绘,滚动期间文本层可走普通合成路径。
+        // v1.3.x 渐隐遮罩第三稿(实机打回两轮后定稿):上一稿把 DstIn+drawWithContent
+        // 挪到外层 Box 却没带 Offscreen 离屏隔离——DstIn 失去隔离边界后把页面背景
+        // 一起挖穿,播放条上方一条带透出 Dialog 窗口背后的播放页(实机:能看到
+        // 播放页按钮位置,点击无响应)。弃用 DstIn:滚动内容上方叠一层与页面同色
+        // (safeBg)的透明渐变——文字"渐隐入背景色"视觉等价,零混合模式,物理上
+        // 不可能挖穿任何层。纯绘制,不拦截触摸(无 clickable 即不参与命中)。
         Box(
             Modifier
                 .weight(1f)
-                .fillMaxWidth()
-                .drawWithContent {
-                    drawContent()
-                    drawRect(
-                        brush = Brush.verticalGradient(
-                            0.85f to Color.Black,
-                            1f to Color.Transparent,
-                        ),
-                        blendMode = BlendMode.DstIn,
-                    )
-                },
+                .fillMaxWidth(),
         ) {
         LazyColumn(
             state = listState,
@@ -406,7 +397,17 @@ fun LyricsScreen(vm: MainViewModel) {
                 }
             }
         }
-        } // v1.3.x: 包裹 LazyColumn 的渐隐遮罩 Box(见上方注释)在此闭合
+            // 底部渐隐:叠一层 safeBg 透明渐变(压在滚动内容之上)。同 DstIn 旧版
+            // 的视觉(文字在底缘渐隐),但无混合模式;宽度和列表对齐(含 22dp 边距外
+            // 的整宽,与旧行为一致——旧 DstIn 作用域也是整个列表宽度)。
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .height(110.dp)
+                    .align(Alignment.BottomCenter)
+                    .background(Brush.verticalGradient(listOf(safeBg.copy(alpha = 0f), safeBg))),
+            )
+        } // 渐隐遮罩包裹 Box 闭合
 
         // bottom bar: slim progress + time row + play/pause.
         // Order per v4.3 spec: progress bar on top, time row hugging it just
