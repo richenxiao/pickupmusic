@@ -411,8 +411,10 @@ fun AppRoot(vm: MainViewModel) {
                     // 说明 sheet 的 onDismissRequest 抢先消费了手势事件。
                     android.util.Log.d("BackDebug", "触发：sheet onDismissRequest (lyricsOn=${vm.lyricsOn} qSheet=${vm.qSheetOpen} pMenu=${vm.pMenuView})")
                     // v5.2 #44: 兜底——overlay 开着时只关 overlay（逐级返回），否则退播放页。
+                    // v1.3.x morph P1(§3.6-1):lyricsOn 分支改走收起动画(requestLyricsExit
+                    // → morph collapse),不再直接置 false 瞬间消失。
                     when {
-                        vm.lyricsOn -> vm.lyricsOn = false
+                        vm.lyricsOn -> vm.requestLyricsExit()
                         vm.qSheetOpen -> { vm.qSheetOpen = false; vm.qEdit = false }
                         vm.pMenuView != null -> vm.pMenuView = if (vm.pMenuView == "timer-custom") "timer" else if (vm.pMenuView == "timer" || vm.pMenuView == "speed") "root" else null
                         else -> { vm.playerOpen = false; vm.sleepMenu = false }
@@ -453,6 +455,15 @@ fun AppRoot(vm: MainViewModel) {
                     // 时下拉/返回退的是播放页本身）。改声明为播放 sheet 之后的独立
                     // ModalBottomSheet（同全屏歌词本的"后建窗口居上"模式），手势/返回
                     // 落在各自 window 上，只收弹层、播放页不动。
+                    // v1.3.x morph P1(设计文档 §3.1):歌词本从独立 Dialog 改为同窗口
+                    // overlay——后组居上盖在 PlayerScreen 之上;容器形变/进出动画全部
+                    // 在 LyricsMorphOverlay 内(单一 progress 驱动)。lyricsOn=false 时
+                    // 整层不组合,零常驻开销。
+                    if (vm.lyricsOn) {
+                        val morphScope = androidx.compose.runtime.rememberCoroutineScope()
+                        val morph = androidx.compose.runtime.remember { com.shiyin.music.ui.components.LyricsMorphState(morphScope) }
+                        com.shiyin.music.ui.screens.LyricsMorphOverlay(vm, morph)
+                    }
                 }
             }
         }
@@ -525,96 +536,11 @@ fun AppRoot(vm: MainViewModel) {
             }
         }
 
-        // v5.2 歌词本:全屏 Dialog(独立窗口,声明在 ModalBottomSheet 之后→后建窗口居上)。
-        // 返回路由【不变】:右滑/predictive back 仍走 Dialog 窗口的 dismissOnBackPress→
-        // onDismissRequest,只关 lyricsOn、playerOpen 不动→回播放页(不退首页)。
-        // 只在 onDismissRequest 上叠加退出动画:先 animState.targetState=false 播下滑,
-        // 放完(currentState→false)再 vm.lyricsOn=false 销毁 Dialog。
-        // LyricsDebug 日志供回归验证 onDismissRequest 是否真的由 Dialog 触发(而非被 sheet 抢走)。
-        if (vm.lyricsOn && vm.playerOpen) {
-            val lTrack = vm.trackById(vm.player.currentId)
-            val lBg = if (lTrack != null) {
-                com.shiyin.music.ui.components.rememberCoverPalette(lTrack).first
-            } else {
-                c.bg
-            }
-            val animState = androidx.compose.runtime.remember {
-                MutableTransitionState(false).apply { targetState = true }
-            }
-            androidx.compose.runtime.LaunchedEffect(animState.currentState, animState.targetState) {
-                if (!animState.targetState && !animState.currentState) {
-                    android.util.Log.d("LyricsDebug", "exit anim done → vm.lyricsOn=false")
-                    vm.lyricsOn = false
-                }
-            }
-            // v5.2 #72: 用官方 Window.setDimAmount(0f) 清 Dialog 窗口的 dim/scrim——
-            // DialogWindowProvider 是 Compose 公开接口(javap 确认 public),经它拿窗口再
-            // setDimAmount(0f),退出下滑期间背后不再有黑灰遮罩。返回路由(Dialog 窗口+
-            // dismissOnBackPress)不变,只动 scrim。
-            val winRef = androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf<android.view.Window?>(null) }
-            // v1.3.x 四项体验④:把"播下拉动画→动画完销毁"注入 VM——歌词本左上角
-            // 返回键调 vm.requestLyricsExit(),与物理返回键(onDismissRequest)同一条
-            // 退出路径,行为一致(此前按钮直接置 lyricsOn=false 瞬间消失无动画)。
-            // code-review 正规化:组合期直接赋值是"反向写状态"——每次重组都写新
-            // lambda(无效快照失效),组合若在赋值后、DisposableEffect 注册前被
-            // 丢弃,悬挂清理不会执行。改 SideEffect(组合成功落定后才写)+ 键含
-            // animState/winRef 生命周期由下面的 DisposableEffect 统一管理。
-            androidx.compose.runtime.SideEffect {
-                vm.lyricsExitRequest = {
-                    vm.lySheet = false
-                    animState.targetState = false
-                    winRef.value?.let { it.setDimAmount(0f) }
-                }
-            }
-            androidx.compose.runtime.DisposableEffect(Unit) {
-                onDispose { if (vm.lyricsExitRequest != null) vm.lyricsExitRequest = null }
-            }
-            androidx.compose.ui.window.Dialog(
-                onDismissRequest = {
-                    android.util.Log.d("LyricsDebug", "Dialog onDismissRequest fired (lyricsOn=${vm.lyricsOn})")
-                    animState.targetState = false
-                    // #72: 退出动画开始的同一时机清 dim,下滑期间无黑灰遮罩
-                    winRef.value?.let { it.setDimAmount(0f); android.util.Log.d("LyricsDebug", "setDimAmount(0f) at exit-start") }
-                },
-                properties = androidx.compose.ui.window.DialogProperties(
-                    usePlatformDefaultWidth = false,
-                    dismissOnBackPress = true,
-                    dismissOnClickOutside = false,
-                    decorFitsSystemWindows = false,
-                ),
-            ) {
-                // #72: Dialog 内容首次组合时,经 LocalView 的 parent 链找 DialogWindowProvider,
-                // 拿窗口、setDimAmount(0f) 并缓存到 winRef(供 onDismissRequest 复用)。
-                val dlgView = androidx.compose.ui.platform.LocalView.current
-                androidx.compose.runtime.DisposableEffect(dlgView) {
-                    var p: android.view.View? = dlgView
-                    while (p != null) {
-                        val wp = p as? androidx.compose.ui.window.DialogWindowProvider
-                        if (wp != null) {
-                            winRef.value = wp.window
-                            wp.window.setDimAmount(0f)
-                            android.util.Log.d("LyricsDebug", "found DialogWindowProvider → setDimAmount(0f)")
-                            break
-                        }
-                        p = p.parent as? android.view.View
-                    }
-                    onDispose { }
-                }
-                androidx.compose.animation.AnimatedVisibility(
-                    visibleState = animState,
-                    enter = slideInVertically(tween(250)) { it / 6 } + fadeIn(tween(250)),
-                    exit = slideOutVertically(tween(250)) { it },
-                ) {
-                    Box(
-                        Modifier
-                            .fillMaxSize()
-                            .background(lBg)
-                            .statusBarsPadding()
-                            .navigationBarsPadding(),
-                    ) { LyricsScreen(vm) }
-                }
-            }
-        }
+        // v1.3.x morph P1(设计文档 §3.1 删除清单):歌词本旧全屏 Dialog 整块删除
+        // ——由同窗口 LyricsMorphOverlay 取代(挂播放 sheet 内容 Box,见上方)。
+        // 随之失效:winRef/setDimAmount(ModalBottomSheet scrim 本就透明)、
+        // MutableTransitionState/AnimatedVisibility 滑入滑出(morph 取代)、
+        // LyricsDebug 日志。返回路由见 RootBackHandler lyricsOn 分支(已改收起动画)。
 
         // (PlayerMenuSheet / QueueSheet / 全屏歌词 overlay 已移入上方 ModalBottomSheet
         //  content，与播放页同一 popup 窗口，确保盖在播放页之上、可点击。)
@@ -855,7 +781,9 @@ private fun RootBackHandler(vm: MainViewModel) {
             vm.pMenuView != null -> vm.pMenuView = null
             vm.qSheetOpen -> { vm.qSheetOpen = false; vm.qEdit = false }
             vm.lySheet -> vm.lySheet = false
-            vm.lyricsOn -> vm.lyricsOn = false
+            // v1.3.x morph P1(§3.6-1):物理返回键同走收起动画(overlay 完成监听
+            // 到 0 才置 lyricsOn=false,同"动画完再销毁"模式)。
+            vm.lyricsOn -> vm.requestLyricsExit()
             vm.sleepMenu -> vm.sleepMenu = false
             vm.playerOpen -> vm.playerOpen = false
             vm.artistMerge -> vm.artistMerge = false

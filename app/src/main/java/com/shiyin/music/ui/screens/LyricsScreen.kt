@@ -1,7 +1,6 @@
 package com.shiyin.music.ui.screens
 
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -130,53 +129,13 @@ fun LyricsScreen(vm: MainViewModel) {
     // (lineIndex, segment, currentReading)：按出现位置存，同 surface 多次出现可分别设
     var editing by remember { mutableStateOf<Triple<Int, RubySegment, String>?>(null) }
 
-    // v1.3.x 下拉退出(用户需求:"滚动到最顶部后继续下拉,和播放页一样丝滑下滑
-    // 退出"):播放页的下拉丝滑来自 ModalBottomSheet 自带 anchoredDraggable(结构
-    // 性能力,歌词本是全屏 Dialog 复用不了同一实现)。这里自建同质手势:
-    //  ① nestedScroll 挂在整页 Column 上——LazyColumn 已到顶且继续向下拖时,
-    //     剩余 delta 转为整页下移位移(exitDrag ≥ 0,向下拖为正,页面跟随下移);
-    //  ② 位移实时跟手(与 sheet 拖拽同感),松手按阈值/速度判定:过阈→
-    //     requestLyricsExit()(物理返回键同一条"播动画→销毁"路径);未过→
-    //     Animatable spring 回弹归位;
-    //  ③ 手指未拖/向上滚时不干预,列表正常消费。
-    // listState 提前到这里声明:连接子要引用 canScrollBackward。
+    // v1.3.x morph P1:歌词本旧下拉退出(7ddb048 nestedScroll+exitDrag)删除——
+    // morph overlay 架构下:①位移内层 Column 会被容器 clip 裁掉;②松手
+    // requestLyricsExit 又触发 morph 收起,同一次拖拽跑两段位移("执行两次"
+    // 实机反馈的根源)。拖拽收起手势由 P3 在 overlay 层重建(设计文档 §3.5,
+    // 指针闸门+nestedScroll 守卫双层防御)。listState 提前声明保留(P3 守卫
+    // 还要用 canScrollBackward)。
     val listState = rememberLazyListState()
-    val exitDrag = remember { androidx.compose.animation.core.Animatable(0f) }
-    val scope = androidx.compose.runtime.rememberCoroutineScope()
-    val exitThresholdPx = with(androidx.compose.ui.platform.LocalDensity.current) { 120.dp.toPx() }  // 松手退出阈值(约 1/6 屏)
-    val atTop: () -> Boolean = { !listState.canScrollBackward }
-    val nested = remember(atTop) {
-        object : androidx.compose.ui.input.nestedscroll.NestedScrollConnection {
-            override fun onPreScroll(available: androidx.compose.ui.geometry.Offset, source: androidx.compose.ui.input.nestedscroll.NestedScrollSource): androidx.compose.ui.geometry.Offset {
-                // 手指向上滚(available.y<0)或列表未到顶:不拦截
-                if (available.y < 0f || !atTop()) return androidx.compose.ui.geometry.Offset.Zero
-                // 列表已在顶部,继续下拉:全量转为退出位移(跟手)
-                val next = (exitDrag.value + available.y).coerceAtLeast(0f)
-                if (next != exitDrag.value) { scope.launch { exitDrag.snapTo(next) }; return available }
-                return androidx.compose.ui.geometry.Offset.Zero
-            }
-            override fun onPostScroll(consumed: androidx.compose.ui.geometry.Offset, available: androidx.compose.ui.geometry.Offset, source: androidx.compose.ui.input.nestedscroll.NestedScrollSource): androidx.compose.ui.geometry.Offset {
-                // 列表自己消费不完的向下增量(顶部 contentPadding 空隙先被列表吃)
-                if (available.y > 0f && atTop()) {
-                    val next = (exitDrag.value + available.y).coerceAtLeast(0f)
-                    if (next != exitDrag.value) { scope.launch { exitDrag.snapTo(next) }; return available }
-                }
-                return androidx.compose.ui.geometry.Offset.Zero
-            }
-            override suspend fun onPreFling(available: androidx.compose.ui.unit.Velocity): androidx.compose.ui.unit.Velocity {
-                if (exitDrag.value > 0f) {
-                    val overThreshold = exitDrag.value > exitThresholdPx || available.y > 2200f
-                    if (overThreshold) {
-                        exitDrag.snapTo(0f)
-                        vm.requestLyricsExit()  // 与物理返回键同一条下拉退出动画
-                        return available
-                    }
-                    scope.launch { exitDrag.animateTo(0f, spring(dampingRatio = 0.8f, visibilityThreshold = 1f)) }
-                }
-                return androidx.compose.ui.unit.Velocity.Zero
-            }
-        }
-    }
     Box(Modifier
         .fillMaxSize()
         .background(safeBg)
@@ -184,8 +143,6 @@ fun LyricsScreen(vm: MainViewModel) {
     Column(
         Modifier
             .fillMaxSize()
-            .nestedScroll(nested)
-            .graphicsLayer { translationY = exitDrag.value }
     ) {
         // Top bar — three-zone layout (back | title/artist centered | settings+close)
         // mirroring the player's top row so the visual hierarchy matches the
