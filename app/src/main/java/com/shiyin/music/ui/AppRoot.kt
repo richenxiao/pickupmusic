@@ -217,7 +217,10 @@ fun AppRoot(vm: MainViewModel) {
             Modifier
                 .fillMaxSize()
                 .then(Modifier.navigationBarsPadding())
-                .imePadding()
+                // 不加 imePadding——它会随键盘把整个 Column(含 MiniPlayer/BottomNav)顶起,
+                // "搜索页弹键盘顶飞底部导航栏"的根源。键盘盖住底部导航即可;要避让键盘的
+                // 界面各自处理:AgentScreen 根 Column 自带 imePadding,播放 sheet 内容在
+                // ModalBottomSheet 内部也单独 imePadding(输入框随键盘顶起靠它们)。
                 .graphicsLayer {
                     val p = sidebarProgress.value
                     translationX = size.width * 0.5f * p
