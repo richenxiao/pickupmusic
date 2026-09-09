@@ -338,6 +338,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     // lyrics runtime
     var lyState by mutableStateOf(LyState.Idle)
     var currentLyrics by mutableStateOf<LoadedLyrics?>(null); private set
+    /** v1.3.x: 手动匹配的实时进度文案(agent websearch 两阶段:联网搜索→AI 生成);
+     *  null=普通匹配,预览卡用默认"正在匹配歌词…"。 */
+    var lyProgressText by mutableStateOf<String?>(null); private set
+    /** v1.3.x: 最近一次匹配失败的可读原因(LLM HTTP 429/网络异常/未配置等);null=用默认文案。 */
+    var lyFailReason by mutableStateOf<String?>(null); private set
     private val triedAuto = HashSet<Long>()
     private var lyricsJob: Job? = null
 
@@ -2622,10 +2627,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** v3.0: match lyrics from a specific source. */
+    /** v3.0: match lyrics from a specific source.
+     *  v1.3.x: 来源菜单改结构化五选项后只有 fetch 型源(LRCLIB/网易云)走这里——未知 id
+     *  直接拒绝,不再 coerceAtLeast(0) 静默落到 LRCLIB(旧:任意字符串都被当 LRCLIB 查)。 */
     fun rematchSource(source: String) {
         val track = trackById(player.currentId) ?: return
-        val idx = LyricsFetcher.SOURCES.indexOf(source).coerceAtLeast(0)
+        val idx = LyricsFetcher.SOURCES.indexOf(source)
+        if (idx < 0) return
         lySheet = false
         lyricsJob?.cancel()
         lyricsJob = viewModelScope.launch {
@@ -2633,33 +2641,87 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** v2.0: try DeepSeek AI for lyrics. */
-    fun rematchWithAI() {
+    /**
+     * v1.3.x: Agent 联网搜歌词(歌词来源菜单"agent websearch"项)。取代旧"AI 补全"
+     * (rematchWithAI→DeepSeekService 直连——无联网、硬编码的 deepseek-chat 模型名
+     * 2026-07 已停用,注定失败,随本版下线)。
+     *
+     * 与其余来源的秒级响应不同:先 Tavily 搜歌词资料(2-5s)再 LLM 生成(8-40s),全程
+     * 10-60s。进度经 [lyProgressText] 两阶段透出(预览卡实时显示+可取消);失败原因经
+     * [lyFailReason] 透传。资料里没有带时间戳的版本时接受纯文本歌词(不强制时间戳)。
+     */
+    fun rematchWithAgentWeb() {
         val track = trackById(player.currentId) ?: return
-        if (deepseekApiKey.isBlank()) return
         lySheet = false
         lyricsJob?.cancel()
         lyricsJob = viewModelScope.launch {
             lyState = LyState.Searching
+            lyFailReason = null
+            // 阶段①文案自带时长预期——在等待开始前告诉用户"这要等很久",不是卡死。
+            lyProgressText = "联网搜索歌词,约需 10-60 秒…"
             try {
-                val raw = com.shiyin.music.data.ai.DeepSeekService.searchLyrics(deepseekApiKey, track.title, track.artist)
-                if (raw != null) {
-                    val parsed = LrcParser.parse(raw)
-                    if (!parsed.isEmpty) {
-                        currentLyrics = LoadedLyrics(track.id, raw, parsed, "deepseek", LyricsKind.Online, saved = false, offsetMs = 0)
-                        lyState = LyState.Idle
-                        lySheet = true
-                        autoSaveRecognizedLyrics(track.id, raw, "deepseek")
-                        return@launch
-                    }
+                // 阶段①: Tavily 搜歌词站资料,供 LLM 对照(搜不到也能凭模型知识生成)。
+                val webContext = runCatching {
+                    com.shiyin.music.data.ai.TavilyService.search(tavilyApiKey, "${track.title} ${track.artist} 歌词")
+                }.getOrNull() ?: ""
+                // 阶段②: LLM 生成;优先 LRC(带时间戳),资料没时间轴就纯文本——两者都导入。
+                lyProgressText = "AI 生成歌词…"
+                val config = activeLlmConfig() ?: run {
+                    lyFailReason = "未配置大模型(Agent 右上「设置」里填 API Key)"
+                    lyState = LyState.Failed
+                    return@launch
                 }
-            } catch (_: Exception) { }
-            lyState = LyState.Failed
+                val prompt = """
+                    请写出歌曲《${track.title}》(歌手:${track.artist})的完整歌词。
+                    输出要求:
+                    1. 优先输出带时间轴的 LRC 格式,每行形如 [mm:ss.xx]歌词文本
+                    2. 资料里没有时间轴信息时,输出纯文本歌词,每行一句,不要编号
+                    3. 只输出歌词本身,不要任何解释、前缀或代码围栏
+                    ${if (webContext.isBlank()) "(没有搜索到资料,凭你确定的知识输出;不确定的段落宁可省略,不要编造)" else "参考资料(以此为准;资料没覆盖的段落凭你的知识补齐,不确定的宁可省略):\n$webContext"}
+                """.trimIndent()
+                val resp = com.shiyin.music.data.ai.LlmClient.call(config, listOf("user" to prompt), maxTokens = 4096) ?: run {
+                    lyFailReason = com.shiyin.music.data.ai.LlmClient.lastError ?: "LLM 调用失败"
+                    lyState = LyState.Failed
+                    return@launch
+                }
+                // token 消耗入账(与 Agent 对话同表,设置页累计可见);IO 里写,不阻塞主流程。
+                viewModelScope.launch(Dispatchers.IO) {
+                    com.shiyin.music.data.ai.TokenUsageStore.log(
+                        getApplication(), llmActiveProvider, "lyrics_agent", resp.promptTokens, resp.completionTokens,
+                    )
+                }
+                val raw = resp.content?.trim()?.takeIf { it.isNotBlank() } ?: run {
+                    lyFailReason = "模型没有返回歌词内容"
+                    lyState = LyState.Failed
+                    return@launch
+                }
+                val parsed = LrcParser.parse(raw)
+                if (parsed.isEmpty) {
+                    lyFailReason = "模型输出的内容无法解析为歌词"
+                    lyState = LyState.Failed
+                    return@launch
+                }
+                currentLyrics = LoadedLyrics(track.id, raw, parsed, "agent websearch", LyricsKind.Online, saved = false, offsetMs = 0)
+                lyState = LyState.Idle
+                lySheet = true
+                autoSaveRecognizedLyrics(track.id, raw, "agent websearch")
+            } finally {
+                lyProgressText = null
+            }
         }
+    }
+
+    /** v1.3.x: 取消进行中的歌词匹配(agent websearch 长耗时路径的预览卡「取消」按钮)。 */
+    fun cancelLyricsSearch() {
+        lyricsJob?.cancel()
+        lyState = LyState.Idle
+        lyProgressText = null
+        lyFailReason = null
     }
 
     private suspend fun matchOnline(track: Track, sourceIndex: Int, thenNextSource: Boolean, reopenSheet: Boolean = false) {
         lyState = LyState.Searching
+        lyFailReason = null
         val sources = LyricsFetcher.SOURCES
         // Bug4a: try sources in order, preferring any that yields timestamped
         // lyrics (LRC). Plain-text results are accepted only as a last resort
@@ -2687,17 +2749,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             i++; attempts++
         }
         var found: Pair<String, String>? = syncedFound ?: plainFound
-        // v2.0: try DeepSeek as fallback when API key is set
-        if (found == null && deepseekApiKey.isNotBlank()) {
-            val aiRaw = com.shiyin.music.data.ai.DeepSeekService.searchLyrics(deepseekApiKey, track.title, track.artist)
-            if (aiRaw != null) {
-                val parsed = LrcParser.parse(aiRaw)
-                if (!parsed.isEmpty) {
-                    found = "deepseek" to aiRaw
-                    // AI fallback always wins over a plain-text local source.
-                }
-            }
-        }
+        // v1.3.x: 旧 v2.0 DeepSeek 兜底已下线——硬编码的 deepseek-chat 模型名 2026-07 停用,
+        // 该路径注定失败还拖慢级联;联网搜歌词改走 rematchWithAgentWeb(来源菜单手动选)。
         if (found == null) {
             // v5.2 #67: 级联全失败时,从 triedAuto 移除该曲——下次进歌词本能重新自动级联
             // (否则 triedAuto 永久挡住,只能手动切源)。这样"两个都没才显示无资源"成立。

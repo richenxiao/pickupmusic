@@ -545,10 +545,8 @@ fun LyricsScreen(vm: MainViewModel) {
             btnBg = btnBg,
             safeBg = safeBg,
             ly = ly,
-            deepseekKey = vm.deepseekApiKey,
             onBumpOffset = { vm.bumpLyricsOffset(it) },
             onOpenSourcePicker = { vm.lyricsSourcePicker = true },
-            onRematchAI = { vm.rematchWithAI() },
             onRefetchFurigana = { vm.ensureFuriganaEvidence(force = true) },
             furiganaAssistStatus = vm.furiganaAssistStatus,
             onSave = { vm.saveLyrics() },
@@ -733,10 +731,8 @@ private fun LyricsAdjustSheet(
     btnBg: Color,
     safeBg: Color,
     ly: com.shiyin.music.LoadedLyrics,
-    deepseekKey: String,
     onBumpOffset: (Long) -> Unit,
     onOpenSourcePicker: () -> Unit,
-    onRematchAI: () -> Unit,
     onRefetchFurigana: () -> Unit,
     furiganaAssistStatus: String?,
     onSave: () -> Unit,
@@ -832,21 +828,9 @@ private fun LyricsAdjustSheet(
                     )
                     SheetPill("切换来源", panelBtnBg, panelFg) { onOpenSourcePicker() }
                 }
-                if (deepseekKey.isNotBlank()) {
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(9.dp)) {
-                        Box(
-                            Modifier
-                                .weight(1f)
-                                .clip(RoundedCornerShape(999.dp))
-                                .background(panelFg)
-                                .clickable { onRematchAI() }
-                                .padding(vertical = 11.dp),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Text("AI 补全", style = body(13f, FontWeight.ExtraBold, Color.Black))
-                        }
-                    }
-                }
+                // v1.3.x: 旧"AI 补全"行已下线(DeepSeekService 直连无联网、依赖的 deepseek-chat
+                // 模型名已停用)——联网搜歌词并入歌词来源菜单的"agent websearch"项,进度在
+                // 播放页预览卡实时显示、可取消。
                 // v1.3.x: 振假名三层校验(UtaTen 权威对照 + LLM 缺口兜底)——开启「あ」时
                 // 已自动跑过一次;这里显示结果状态 + 手动"重新校验"(force,逐层重跑,
                 // UtaTen 失败换网络窗口/LLM 失败换 Key 后用得上)。旧"外部假名校验(实验)"

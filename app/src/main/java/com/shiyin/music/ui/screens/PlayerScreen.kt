@@ -544,7 +544,9 @@ private fun LyricsPeekCard(vm: MainViewModel, artBg: Color, artFg: Color, dimC: 
                             )
                         }
                         Column {
-                            Text("正在匹配歌词…", style = body(14f, FontWeight.ExtraBold, artFg))
+                            // v1.3.x: agent websearch 两阶段实时进度(联网搜索→AI 生成);
+                            // 普通匹配 progressText 为 null → 默认文案。
+                            Text(vm.lyProgressText ?: "正在匹配歌词…", style = body(14f, FontWeight.ExtraBold, artFg))
                             Text(
                                 "${track.title} · ${track.artist} · ${formatDuration(track.durationSec)}",
                                 style = body(11.5f, FontWeight.Normal, dimC),
@@ -552,14 +554,29 @@ private fun LyricsPeekCard(vm: MainViewModel, artBg: Color, artFg: Color, dimC: 
                                 maxLines = 1, overflow = TextOverflow.Ellipsis,
                             )
                         }
+                        // v1.3.x: 长耗时匹配(agent websearch,10-60 秒)提供取消——
+                        // 等待期间随时止损,不让用户干等。
+                        if (vm.lyProgressText != null) {
+                            Box(
+                                Modifier
+                                    .clip(RoundedCornerShape(999.dp))
+                                    .background(btnBg)
+                                    .clickable { vm.cancelLyricsSearch() }
+                                    .padding(horizontal = 14.dp, vertical = 8.dp),
+                            ) { Text("取消", style = body(12.5f, FontWeight.Bold, artFg)) }
+                        }
                     }
                 }
                 LyState.Failed -> {
-                    Text("未找到匹配的歌词", style = body(16f, FontWeight.ExtraBold, artFg), modifier = Modifier.padding(top = 2.dp))
-                    Text(
-                        "录音、语音类文件通常没有歌词条目，可手动导入 .lrc",
-                        style = body(12.5f, FontWeight.Normal, dimC).copy(lineHeight = 18.sp),
-                    )
+                    // v1.3.x: 匹配失败原因透传(agent websearch 的 HTTP 429/网络异常/未配置等);
+                    // 普通匹配无原因 → 默认"未找到"文案 + 录音类提示。
+                    Text(vm.lyFailReason ?: "未找到匹配的歌词", style = body(16f, FontWeight.ExtraBold, artFg), modifier = Modifier.padding(top = 2.dp))
+                    if (vm.lyFailReason == null) {
+                        Text(
+                            "录音、语音类文件通常没有歌词条目，可手动导入 .lrc",
+                            style = body(12.5f, FontWeight.Normal, dimC).copy(lineHeight = 18.sp),
+                        )
+                    }
                     Row(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                         Box(
                             Modifier

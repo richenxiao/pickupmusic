@@ -658,31 +658,56 @@ private fun ArtistPickerDialog(vm: MainViewModel) {
 private fun LyricsSourcePickerDialog(vm: MainViewModel) {
     val c = LocalOrganic.current
     if (!vm.lyricsSourcePicker) return
-    val sources = com.shiyin.music.data.lyrics.LyricsFetcher.SOURCES
+    val context = androidx.compose.ui.platform.LocalContext.current
     val curSrc = vm.currentLyrics?.source
+    // v1.3.x: 本地 .lrc 文件——SAF 选文件读文本后按当前曲目导入。target 在启动时捕获,
+    // 选文件期间切歌不会挂错歌(importLrcContent 内还有 currentId==targetId 双保险)。
+    val pickTarget = vm.player.currentId
+    val lrcPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null && pickTarget != null) {
+            try {
+                val name = uri.lastPathSegment?.substringAfterLast('/')?.substringAfterLast(':') ?: "导入.lrc"
+                val text = context.contentResolver.openInputStream(uri)?.bufferedReader()?.readText()
+                if (text != null) vm.importLrcContent(name, text, pickTarget)
+            } catch (_: Exception) { }
+        }
+    }
+    // v1.3.x: agent websearch 需 LLM+联网搜索双配置——未配置时置灰并给指引,不点了才失败。
+    val agentReady = vm.activeLlmConfig() != null && vm.tavilyApiKey.isNotBlank()
     androidx.compose.material3.AlertDialog(
         onDismissRequest = { vm.lyricsSourcePicker = false },
         containerColor = c.surface,
         title = { Text("选择歌词来源", style = body(15f, FontWeight.ExtraBold, c.text)) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                for (src in sources) {
-                    val active = src == curSrc
-                    Row(
-                        Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(12.dp))
-                            .clickable {
-                                vm.lyricsSourcePicker = false
-                                vm.rematchSource(src)
-                            }
-                            .padding(horizontal = 12.dp, vertical = 12.dp),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(src, style = body(14f, FontWeight.SemiBold, if (active) c.text else c.n600), modifier = Modifier.weight(1f))
-                        if (active) OIcon(Lucide.Check, 16.dp, c.accent)
+                // ── 在线歌词库(秒级,与自动匹配同链路) ──
+                for (src in com.shiyin.music.data.lyrics.LyricsFetcher.SOURCES) {
+                    SourcePickerRow(label = src, active = src == curSrc, enabled = true, sub = null) {
+                        vm.lyricsSourcePicker = false
+                        vm.rematchSource(src)
                     }
+                }
+                // ── Agent 联网搜索(10-60 秒,两阶段进度+可取消,见播放页预览卡) ──
+                SourcePickerRow(
+                    label = "agent websearch",
+                    active = curSrc == "agent websearch",
+                    enabled = agentReady,
+                    sub = if (agentReady) "联网搜索 + AI 生成 · 约 10-60 秒" else "需在 Agent 设置里配置大模型和联网搜索 Key",
+                ) {
+                    vm.lyricsSourcePicker = false
+                    vm.rematchWithAgentWeb()
+                }
+                // ── 本地 .lrc 文件(预览卡 Idle/Failed 态的快捷入口保留,此处为常驻入口) ──
+                SourcePickerRow(label = "本地 lrc 文件", active = false, enabled = pickTarget != null, sub = null) {
+                    vm.lyricsSourcePicker = false
+                    lrcPicker.launch(arrayOf("*/*"))
+                }
+                // ── 粘贴导入(原"导入歌词文本"根菜单行并入此处) ──
+                SourcePickerRow(label = "导入歌词文本", active = false, enabled = true, sub = null) {
+                    vm.lyricsSourcePicker = false
+                    vm.lyricsImportDialog = true
                 }
             }
         },
@@ -692,6 +717,43 @@ private fun LyricsSourcePickerDialog(vm: MainViewModel) {
             }
         },
     )
+}
+
+/** v1.3.x: 歌词来源弹窗的选项行——带激活勾、禁用置灰与一行副文案
+ *  (agent websearch 的耗时提示/未配置指引)。 */
+@Composable
+private fun SourcePickerRow(
+    label: String,
+    active: Boolean,
+    enabled: Boolean,
+    sub: String?,
+    onClick: () -> Unit,
+) {
+    val c = LocalOrganic.current
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(
+                label,
+                style = body(14f, FontWeight.SemiBold, when {
+                    !enabled -> c.n400
+                    active -> c.text
+                    else -> c.n600
+                }),
+            )
+            if (sub != null) {
+                Text(sub, style = body(10.5f, FontWeight.Normal, if (enabled) c.n500 else c.n400), modifier = Modifier.padding(top = 1.dp))
+            }
+        }
+        if (active) OIcon(Lucide.Check, 16.dp, c.accent)
+    }
 }
 
 /** Bug4d fix: render the lyrics-import paste dialog at top level so it works
@@ -1051,10 +1113,8 @@ private fun PlayerMenuSheetContent(vm: MainViewModel) {
                     vm.pMenuView = null
                     vm.lyricsSourcePicker = true
                 }
-                SheetActionRow(Lucide.Plus, "导入歌词文本") {
-                    vm.pMenuView = null
-                    vm.lyricsImportDialog = true
-                }
+                // v1.3.x: "导入歌词文本"根菜单行移除——并入"歌词来源"弹窗第五项(粘贴弹窗
+                // 本体保留,只挪入口)。
                 // v5.2 隐藏曲:播放页菜单也提供同样开关,方便在听的时候即时跳过。
                 if (vm.isHidden(track.id)) {
                     SheetActionRow(Icons.Filled.Visibility, "恢复播放", tint = c.a700) {
