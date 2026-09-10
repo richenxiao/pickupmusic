@@ -191,6 +191,12 @@ fun LyricsMorphOverlay(vm: MainViewModel, morph: LyricsMorphState) {
             .graphicsLayer {
                 val b: Rect = morph.cardBounds ?: return@graphicsLayer
                 val pp = morph.progress.value
+                // bug② 修复:缩放原点钉在图层左上 (0,0)。translation 补偿公式
+                // (卡片左上角位置)按左上锚推导,而 Compose graphicsLayer 默认
+                // transformOrigin 是图层中心 (0.5,0.5)——不钉左上,收起时内容
+                // 围绕屏幕中心"瘪缩"、平移补偿与缩放错位错切,且收完一帧与卡片
+                // 不重合(设计文档 §3.3 的重合前提是左上原点)。
+                transformOrigin = androidx.compose.ui.graphics.TransformOrigin(0f, 0f)
                 scaleX = lerp01(b.width / size.width, 1f, pp)
                 scaleY = lerp01(b.height / size.height, 1f, pp)
                 translationX = lerp01(b.left, 0f, pp)
