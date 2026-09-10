@@ -134,34 +134,58 @@ fun LyricsMorphOverlay(vm: MainViewModel, morph: LyricsMorphState) {
     Box(
         Modifier
             .fillMaxSize()
-            // ── P3-① 指针闸门(§3.5 主防御,必须做)──
+            // ── P3-① 指针闸门(§3.5 主防御;bug③ 修复:整条手势流持续判定)──
             // 播放 sheet 的 anchoredDraggable 会对"sheet 正文任意位置"的下拉 1:1 跟手
             // (§1.2 结构性行为),nestedScroll pre 派发它先看到——靠 nestedScroll 防不
-            // 住。必须在指针层拦截:过 touch slop 后判主轴,垂直向下且(列表到顶或
-            // 起点在 chrome 区)→ 从该事件起消费整条手势流,事件根本到不了
-            // LazyColumn 和 sheet 的 drag 检测;其余(向上/水平/列表未到顶向下)不
-            // 消费,正常派发。chrome 区=顶栏/底栏(非列表区),由 LyricsScreen 经
-            // VM 透传"该 y 是否 chrome"判定——简单版:y 在列表区外即 chrome。
+            // 住。必须在指针层拦截:过 touch slop 后逐帧判主轴,一旦出现"垂直向下且
+            // (列表到顶或位置在 chrome 区)"→ 从该事件起消费整条手势流,事件根本到
+            // 不了 LazyColumn 和 sheet 的 drag 检测。原版过 slop 只判一次、不满足即
+            // 整流放行——打开歌词本列表预滚到锚行(中部),下拉先被 LazyColumn 回滚
+            // 消费、滚到顶后继续下拉时闸门早已退出,sheet 的拖拽检测在上游截走整页
+            // 掉首页;故改为整条流持续判定(见内层注释)。其余(向上/水平)不消费,
+            // 正常派发。chrome 区=顶栏/底栏(非列表区),由 LyricsScreen 经 VM 透传
+            // "该 y 是否 chrome"判定——简单版:y 在列表区外即 chrome。
             .pointerInput(Unit) {
                 // 速度追踪:松手甩动判定用(velocityTracker 在 awaitEachGesture 内
                 // 跨事件累计,松手时 calculateVelocity)
                 val tracker = androidx.compose.ui.input.pointer.util.VelocityTracker()
                 awaitEachGesture {
-                    val down = awaitFirstDown(requireUnconsumed = false)
+                    val down = awaitFirstDown(
+                        requireUnconsumed = false,
+                        pass = androidx.compose.ui.input.pointer.PointerEventPass.Initial,
+                    )
                     var dragging = false
                     var lastY = down.position.y
                     while (true) {
-                        val event = awaitPointerEvent()
+                        val event = awaitPointerEvent(androidx.compose.ui.input.pointer.PointerEventPass.Initial)
                         val change = event.changes.firstOrNull() ?: break
                         tracker.addPosition(change.uptimeMillis, change.position)
                         if (!dragging) {
-                            // 过 slop 前不消费(down/移动都放行,点击/长按/滚动不受扰)
+                            // bug③ 修复(两层):
+                            // A. 监听改 Initial pass——父节点先于子节点收事件,此处消费
+                            //    才能真正拦在 LazyColumn/sheet 之前。原 Main pass 子先
+                            //    父后,父层 consume 晚于列表,闸门形同虚设;且松手 fling
+                            //    速度经 nestedScroll 的 post-fling 上漏给 sheet 的
+                            //    anchoredDraggable(守卫只拦 pre 拦不住 post)→ 在顶快
+                            //    甩也整页掉首页。Initial 抢先消费后列表的滚动手势检测
+                            //    直接取消,不再产生任何 nestedScroll 派发,单一路径喂 morph。
+                            // B. 过 slop 后整条手势流持续判定(原实现判一次不满足即
+                            //    break 放行——打开歌词本列表预滚到锚行中部,"拉到顶再
+                            //    继续下拉"这条最常见手势的整条流早退出了闸门)。
+                            //    判定:向下且(当前位置在 chrome 区 或 列表已到顶)→
+                            //    立即接管;向上 → break 退出放行(普通列表滚动);向下
+                            //    但未到顶 → 继续监听本流(delta 未消费照常派发,列表
+                            //    正常回滚),滚到顶后下一事件即接管。
                             val dy = change.position.y - down.position.y
                             if (kotlin.math.abs(dy) > viewConfiguration.touchSlop) {
                                 val isDown = dy > 0f
-                                val inChrome = vm.lyricsListTopPx != null && (lastY < vm.lyricsListTopPx!! || lastY > vm.lyricsListBottomPx!!)
+                                val inChrome = vm.lyricsListTopPx != null && (change.position.y < vm.lyricsListTopPx!! || change.position.y > vm.lyricsListBottomPx!!)
                                 val atTop = vm.lyricsListAtTop
-                                if (isDown && (inChrome || atTop)) dragging = true else break
+                                if (isDown && (inChrome || atTop)) {
+                                    dragging = true
+                                } else if (!isDown) {
+                                    break
+                                }
                             }
                             lastY = change.position.y
                         }
