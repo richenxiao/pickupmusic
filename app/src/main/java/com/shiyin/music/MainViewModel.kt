@@ -296,6 +296,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     // 时把"播动画→销毁"流程注入这里,两条退出路径共用。
     var lyricsExitRequest by mutableStateOf<(() -> Unit)?>(null)
     fun requestLyricsExit() { lyricsExitRequest?.invoke() ?: run { lyricsOn = false; lySheet = false } }
+    // v1.3.x bug① 修复:播放页"带动画退出"的请求回调。RootBackHandler 的
+    // playerOpen 兜底分支(歌词关着时的系统返回)原本直接置 playerOpen=false
+    // 瞬间消失;sheet 返回回调改穿透(shouldDismissOnBackPress=false)后该分支
+    // 成为系统手势关播放页的主路径,必须播 sheet 下滑动画。sheetState 在 AppRoot
+    // 组合作用域,BackHandler 拿不到——AppRoot 把 sheetState.hide() 注入这里,
+    // hide 完成→currentValue=Hidden→既有 hotfix-3 LaunchedEffect 置
+    // playerOpen=false 收尾(同 onDismissRequest 既有收尾链,零新状态机)。
+    // 注入方为空(播放 sheet 未组合)时兜底直接关,防手势空窗。
+    var playerExitRequest by mutableStateOf<(() -> Unit)?>(null)
+    fun requestPlayerExit() { playerExitRequest?.invoke() ?: run { playerOpen = false; sleepMenu = false } }
     var lyricsImportDialog by mutableStateOf(false)
     var lyricsSourcePicker by mutableStateOf(false)
     var sleepMenu by mutableStateOf(false)

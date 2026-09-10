@@ -399,6 +399,9 @@ fun AppRoot(vm: MainViewModel) {
             val sheetState = androidx.compose.material3.rememberModalBottomSheetState(
                 skipPartiallyExpanded = true,
             )
+            // v1.3.x bug① 修复:hide 请求的协程作用域(sheet 内容注入的
+            // playerExitRequest 用;lyricsOn 时 overlay 的 scope 已卸载,这里常驻)。
+            val scope2 = androidx.compose.runtime.rememberCoroutineScope()
             var sheetHasBeenVisible by androidx.compose.runtime.remember { mutableStateOf(false) }
             androidx.compose.runtime.LaunchedEffect(sheetState.currentValue, sheetState.isVisible) {
                 if (sheetState.isVisible) sheetHasBeenVisible = true
@@ -430,6 +433,16 @@ fun AppRoot(vm: MainViewModel) {
                 // only chrome at the very top — the user explicitly didn't
                 // want an extra drag-strip above that row.
                 dragHandle = null,
+                // v1.3.x bug① 修复(诊断报告路径①):关掉 material3 在 sheet 窗口注册的
+                // 返回回调。开 enableOnBackInvokedCallback 后系统手势先命中它→
+                // material 自己把 sheet hide→hotfix-3 置 playerOpen=false→整页掉首页,
+                // RootBackHandler 的 lyricsOn 分支永远轮不到。关掉后手势由 content 内
+                // 新增的 BackHandler(注册在 sheet Dialog 窗口的 dispatcher)接住逐级
+                // 分派:歌词开→收起动画;歌词关→requestPlayerExit 播下滑动画(不再瞬
+                // 间消失)。RootBackHandler(主 Activity 窗口)保留作 sheet 外层安全网。
+                properties = androidx.compose.material3.ModalBottomSheetProperties(
+                    shouldDismissOnBackPress = false,
+                ),
                 // scrim transparent so the underlying tab content is visible
                 // while the sheet slides down (matches Spotify's behaviour).
                 scrimColor = Color.Transparent,
@@ -446,6 +459,36 @@ fun AppRoot(vm: MainViewModel) {
                 // the gesture — the internal verticalScroll wins on
                 // up-scroll which is what we want for the lyrics view.
             ) {
+                // v1.3.x bug① 修复:RootBackHandler(主窗口)拿不到本组合作用域的
+                // sheetState,注入 hide 请求——歌词关着时系统手势关播放页改播下滑动画
+                // (不再瞬间消失),hide 完成由既有 hotfix-3(currentValue==Hidden→
+                // playerOpen=false)收尾。同 LyricsMorphOverlay 注入 lyricsExitRequest
+                // 模式;sheet 卸载时清空,VM 侧兜底直接关,防 requestPlayerExit 空窗口。
+                androidx.compose.runtime.SideEffect {
+                    vm.playerExitRequest = { scope2.launch { sheetState.hide() } }
+                }
+                androidx.compose.runtime.DisposableEffect(Unit) {
+                    onDispose { if (vm.playerExitRequest != null) vm.playerExitRequest = null }
+                }
+                // v1.3.x bug① 修复(诊断报告路径①):sheet 窗口内的返回分派器。本
+                // BackHandler 组合在 ModalBottomSheet 的 content 里=注册在 sheet
+                // Dialog 窗口的 ComponentDialog dispatcher 上——shouldDismissOnBackPress
+                // =false 关掉 material 窗口回调后,系统手势(焦点在 sheet 窗口)由此
+                // 接住(API33+ 经 androidx 桥接注册到 dialog window 的
+                // OnBackInvokedDispatcher;旧路径 legacy 兜底同样进 ComponentDialog
+                // 的 dispatcher),逐级分派同 onDismissRequest 既有链:歌词开→收起
+                // morph 动画;菜单/睡眠面板→只关面板;否则→requestPlayerExit 播
+                // hide 下滑动画。注意 RootBackHandler 在主 Activity 窗口,焦点在
+                // sheet Dialog 时收不到手势——不能只靠它,必须在此处接管。队列
+                // (qSheetOpen)是独立窗口、自带返回处理,不入此链。
+                BackHandler {
+                    when {
+                        vm.lyricsOn -> vm.requestLyricsExit()
+                        vm.pMenuView != null -> vm.pMenuView = if (vm.pMenuView == "timer-custom") "timer" else if (vm.pMenuView == "timer" || vm.pMenuView == "speed") "settings" else if (vm.pMenuView == "settings") "root" else null
+                        vm.sleepMenu -> vm.sleepMenu = false
+                        else -> vm.requestPlayerExit()
+                    }
+                }
                 // v5.2: 二级 overlay（三点菜单 / 播放队列 / 歌词本）必须和 PlayerScreen
                 // 在同一个 popup 窗口里——ModalBottomSheet 是独立 Popup，原先这些 overlay
                 // 留在主合成树会被它压在下面、点不到且渲染在“第二面”。移进 content 后它们
@@ -852,7 +895,13 @@ private fun RootBackHandler(vm: MainViewModel) {
             // 到 0 才置 lyricsOn=false,同"动画完再销毁"模式)。
             vm.lyricsOn -> vm.requestLyricsExit()
             vm.sleepMenu -> vm.sleepMenu = false
-            vm.playerOpen -> vm.playerOpen = false
+            // v1.3.x bug① 修复(与 sheet 的 shouldDismissOnBackPress=false 同一改动):
+            // 歌词关着时的系统返回关播放页,现在走 requestPlayerExit——sheetState.hide()
+            // 播下滑动画,hotfix-3(currentValue==Hidden)收尾置 playerOpen=false。
+            // 原来直接置 false 是因为 sheet 窗口自己的返回回调抢走了手势、这里只作
+            // 罕见兜底;返回回调穿透后这里成为主路径,必须补回动画,否则"播放页退出
+            // 瞬间消失"只是换了个地方错。
+            vm.playerOpen -> vm.requestPlayerExit()
             vm.artistMerge -> vm.artistMerge = false
             vm.settingsOpen -> {
                 if (vm.folderKey != null) {
