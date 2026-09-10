@@ -62,6 +62,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.shiyin.music.MainViewModel
 import com.shiyin.music.data.formatDuration
+import com.shiyin.music.ui.components.DialogAction
+import com.shiyin.music.ui.components.DialogActionsRow
 import com.shiyin.music.ui.components.OIcon
 import com.shiyin.music.ui.components.RubySegment
 import com.shiyin.music.ui.components.RubyText
@@ -595,7 +597,8 @@ fun LyricsScreen(vm: MainViewModel) {
                     }
                 },
                 confirmButton = {
-                    androidx.compose.material3.TextButton(onClick = { pickerLine = null }) { Text("取消") }
+                    // 暗色弹窗:secondary 用前景色(取色 fg)——主题灰在深底上不可读。
+                    DialogActionsRow(listOf(DialogAction("取消") { pickerLine = null }), secondaryColor = artFg)
                 },
             )
         }
@@ -684,17 +687,22 @@ fun LyricsScreen(vm: MainViewModel) {
                     }
                 },
                 confirmButton = {
-                    androidx.compose.material3.TextButton(onClick = {
-                        if (batch && occurrences.size > 1) {
-                            vm.saveReadingOverrideBatch(occurrences, surface, input)
-                        } else {
-                            vm.saveReadingOverrideAt(lineIdx, charStart, surface, input)
-                        }
-                        editing = null
-                    }) { Text("保存") }
-                },
-                dismissButton = {
-                    androidx.compose.material3.TextButton(onClick = { editing = null }) { Text("取消") }
+                    // 暗色弹窗:主操作用前景色、取消用 dim——与 dialogScheme 同源。
+                    DialogActionsRow(
+                        listOf(
+                            DialogAction("取消") { editing = null },
+                            DialogAction("保存", emphasized = true) {
+                                if (batch && occurrences.size > 1) {
+                                    vm.saveReadingOverrideBatch(occurrences, surface, input)
+                                } else {
+                                    vm.saveReadingOverrideAt(lineIdx, charStart, surface, input)
+                                }
+                                editing = null
+                            },
+                        ),
+                        emphasizedColor = artFg,
+                        secondaryColor = dimC,
+                    )
                 },
             )
         }

@@ -1136,3 +1136,49 @@ fun PasswordField(
         ),
     )
 }
+
+// ── v1.3.x: 弹窗底部按钮行 ─────────────────────────────────────────────────
+
+/** 弹窗底部动作项。[emphasized]=主操作(确认/保存,强调色加粗);默认次操作(取消类,中性色)。 */
+class DialogAction(
+    val label: String,
+    val emphasized: Boolean = false,
+    val enabled: Boolean = true,
+    val onClick: () -> Unit,
+)
+
+/**
+ * v1.3.x: 所有 AlertDialog 底部按钮的统一排布——单槽位右对齐横排,结构上保证永不竖排。
+ * 取代 M3 的 confirmButton/dismissButton 双槽位:其内部 FlowRow 在长文案(如
+ * "应用已识别部分")/窄空间/大字号下会把两键折成上下两行("取消/保存一上一下"的根源),
+ * 高内容弹窗还会把按钮挤出可视区。用法:confirmButton = { DialogActionsRow(listOf(...)) },
+ * dismissButton 不再传。两个颜色参数仅供深色弹窗覆盖(歌词页的暗色对话框)。
+ */
+@Composable
+fun DialogActionsRow(
+    actions: List<DialogAction>,
+    emphasizedColor: Color? = null,
+    secondaryColor: Color? = null,
+) {
+    val c = LocalOrganic.current
+    val emph = emphasizedColor ?: c.accent
+    val sec = secondaryColor ?: c.n600
+    Row(
+        Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.End),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        for (a in actions) {
+            androidx.compose.material3.TextButton(onClick = a.onClick, enabled = a.enabled) {
+                // 禁用态统一半透明(取代各弹窗手调 n400/n500 灰)——TextButton 只挡点击,
+                // 自定色文本不会自动变灰,须显式降透明度。
+                val color = (if (a.emphasized) emph else sec).copy(alpha = if (a.enabled) 1f else 0.45f)
+                Text(
+                    a.label,
+                    style = if (a.emphasized) body(14f, FontWeight.Bold, color)
+                            else body(14f, FontWeight.Normal, color),
+                )
+            }
+        }
+    }
+}

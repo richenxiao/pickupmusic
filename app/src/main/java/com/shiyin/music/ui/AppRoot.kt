@@ -108,6 +108,8 @@ import com.shiyin.music.data.Track
 import com.shiyin.music.data.formatDuration
 import com.shiyin.music.ui.components.ArtCache
 import com.shiyin.music.ui.components.CoverArt
+import com.shiyin.music.ui.components.DialogAction
+import com.shiyin.music.ui.components.DialogActionsRow
 import com.shiyin.music.ui.components.FavIcon
 import com.shiyin.music.ui.components.OIcon
 import com.shiyin.music.ui.components.OrganicSwitch
@@ -644,14 +646,12 @@ fun AppRoot(vm: MainViewModel) {
                     }
                 },
                 confirmButton = {
-                    androidx.compose.material3.TextButton(onClick = { vm.commitPendingOrder() }) {
-                        Text("应用", style = body(14f, FontWeight.Bold, c.accent))
-                    }
-                },
-                dismissButton = {
-                    androidx.compose.material3.TextButton(onClick = { vm.cancelPendingOrder() }) {
-                        Text("取消", style = body(14f, FontWeight.Normal, c.n600))
-                    }
+                    DialogActionsRow(
+                        listOf(
+                            DialogAction("取消") { vm.cancelPendingOrder() },
+                            DialogAction("应用", emphasized = true) { vm.commitPendingOrder() },
+                        )
+                    )
                 },
             )
         }
@@ -690,9 +690,7 @@ private fun ArtistPickerDialog(vm: MainViewModel) {
             }
         },
         confirmButton = {
-            androidx.compose.material3.TextButton(onClick = { vm.artistPickerFor = null }) {
-                Text("取消", style = body(14f, FontWeight.Normal, c.n600))
-            }
+            DialogActionsRow(listOf(DialogAction("取消") { vm.artistPickerFor = null }))
         },
     )
 }
@@ -717,7 +715,7 @@ private fun LyricsSourcePickerDialog(vm: MainViewModel) {
             } catch (_: Exception) { }
         }
     }
-    // v1.3.x: agent websearch 需 LLM+联网搜索双配置——未配置时置灰并给指引,不点了才失败。
+    // v1.3.x: agent websearch 需 LLM+联网搜索双配置——未配置时置灰(选项副文案已按用户要求移除)。
     val agentReady = vm.activeLlmConfig() != null && vm.tavilyApiKey.isNotBlank()
     androidx.compose.material3.AlertDialog(
         onDismissRequest = { vm.lyricsSourcePicker = false },
@@ -727,7 +725,7 @@ private fun LyricsSourcePickerDialog(vm: MainViewModel) {
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 // ── 在线歌词库(秒级,与自动匹配同链路) ──
                 for (src in com.shiyin.music.data.lyrics.LyricsFetcher.SOURCES) {
-                    SourcePickerRow(label = src, active = src == curSrc, enabled = true, sub = null) {
+                    SourcePickerRow(label = src, active = src == curSrc, enabled = true) {
                         vm.lyricsSourcePicker = false
                         vm.rematchSource(src)
                     }
@@ -737,39 +735,35 @@ private fun LyricsSourcePickerDialog(vm: MainViewModel) {
                     label = "agent websearch",
                     active = curSrc == "agent websearch",
                     enabled = agentReady,
-                    sub = if (agentReady) "联网搜索 + AI 生成 · 约 10-60 秒" else "需在 Agent 设置里配置大模型和联网搜索 Key",
                 ) {
                     vm.lyricsSourcePicker = false
                     vm.rematchWithAgentWeb()
                 }
                 // ── 本地 .lrc 文件(预览卡 Idle/Failed 态的快捷入口保留,此处为常驻入口) ──
-                SourcePickerRow(label = "本地 lrc 文件", active = false, enabled = pickTarget != null, sub = null) {
+                SourcePickerRow(label = "本地 lrc 文件", active = false, enabled = pickTarget != null) {
                     vm.lyricsSourcePicker = false
                     lrcPicker.launch(arrayOf("*/*"))
                 }
                 // ── 粘贴导入(原"导入歌词文本"根菜单行并入此处) ──
-                SourcePickerRow(label = "导入歌词文本", active = false, enabled = true, sub = null) {
+                SourcePickerRow(label = "导入歌词文本", active = false, enabled = true) {
                     vm.lyricsSourcePicker = false
                     vm.lyricsImportDialog = true
                 }
             }
         },
         confirmButton = {
-            androidx.compose.material3.TextButton(onClick = { vm.lyricsSourcePicker = false }) {
-                Text("取消", style = body(14f, FontWeight.Normal, c.n600))
-            }
+            DialogActionsRow(listOf(DialogAction("取消") { vm.lyricsSourcePicker = false }))
         },
     )
 }
 
-/** v1.3.x: 歌词来源弹窗的选项行——带激活勾、禁用置灰与一行副文案
- *  (agent websearch 的耗时提示/未配置指引)。 */
+/** v1.3.x: 歌词来源弹窗的选项行——激活项浅橙高亮底+强调色文字+勾(选择效果),
+ *  禁用置灰;零水平内边距,行内容与弹窗标题左对齐。 */
 @Composable
 private fun SourcePickerRow(
     label: String,
     active: Boolean,
     enabled: Boolean,
-    sub: String?,
     onClick: () -> Unit,
 ) {
     val c = LocalOrganic.current
@@ -777,24 +771,21 @@ private fun SourcePickerRow(
         Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(12.dp))
+            .background(if (active) c.a100 else Color.Transparent)
             .clickable(enabled = enabled, onClick = onClick)
-            .padding(horizontal = 12.dp, vertical = 10.dp),
+            .padding(vertical = 10.dp),
         horizontalArrangement = Arrangement.spacedBy(12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Column(Modifier.weight(1f)) {
-            Text(
-                label,
-                style = body(14f, FontWeight.SemiBold, when {
-                    !enabled -> c.n400
-                    active -> c.text
-                    else -> c.n600
-                }),
-            )
-            if (sub != null) {
-                Text(sub, style = body(10.5f, FontWeight.Normal, if (enabled) c.n500 else c.n400), modifier = Modifier.padding(top = 1.dp))
-            }
-        }
+        Text(
+            label,
+            style = body(14f, FontWeight.SemiBold, when {
+                !enabled -> c.n400
+                active -> c.a700
+                else -> c.n600
+            }),
+            modifier = Modifier.weight(1f),
+        )
         if (active) OIcon(Lucide.Check, 16.dp, c.accent)
     }
 }
@@ -846,15 +837,15 @@ private fun LyricsImportDialog(vm: MainViewModel) {
             }
         },
         confirmButton = {
-            androidx.compose.material3.TextButton(onClick = {
-                if (importText.isNotBlank()) vm.importLrcContent("手动导入", importText, track.id)
-                vm.lyricsImportDialog = false
-            }) { Text("导入", style = body(14f, FontWeight.Bold, onColor)) }
-        },
-        dismissButton = {
-            androidx.compose.material3.TextButton(onClick = { vm.lyricsImportDialog = false }) {
-                Text("取消", style = body(14f, FontWeight.Normal, onSurfaceVariant))
-            }
+            DialogActionsRow(
+                listOf(
+                    DialogAction("取消") { vm.lyricsImportDialog = false },
+                    DialogAction("导入", emphasized = true) {
+                        if (importText.isNotBlank()) vm.importLrcContent("手动导入", importText, track.id)
+                        vm.lyricsImportDialog = false
+                    },
+                )
+            )
         },
     )
 }
@@ -1152,7 +1143,8 @@ private fun PlayerMenuSheetContent(vm: MainViewModel) {
                 SheetActionRow(Lucide.Settings, "播放页设置", trailing = {
                     OIcon(Lucide.ChevronRight, 16.dp, c.n500)
                 }) { vm.pMenuView = "settings" }
-                SheetActionRow(Lucide.ListPlus, "歌词来源", trailing = {
+                // v1.3.x: 图标 Captions(歌词/字幕语义)——原 ListPlus 与"保存到歌单"撞图标。
+                SheetActionRow(Lucide.Captions, "歌词来源", trailing = {
                     Text(
                         vm.currentLyrics?.source ?: "未匹配",
                         style = body(12.5f, FontWeight.SemiBold, c.n500),
@@ -1951,18 +1943,18 @@ private fun BoxScope.BatchMoveSheet(vm: MainViewModel) {
                     )
                 },
                 confirmButton = {
-                    androidx.compose.material3.TextButton(onClick = {
-                        if (newName.isNotBlank()) {
-                            vm.albumBatchMoveSheet = false
-                            showNewAlbumDialog = false
-                            vm.batchAssignToNewAlbum(newName.trim(), firstTrack.artist)
-                        }
-                    }) { Text("创建并迁移", style = body(14f, FontWeight.Bold, c.accent)) }
-                },
-                dismissButton = {
-                    androidx.compose.material3.TextButton(onClick = { showNewAlbumDialog = false }) {
-                        Text("取消", style = body(14f, FontWeight.Normal, c.n600))
-                    }
+                    DialogActionsRow(
+                        listOf(
+                            DialogAction("取消") { showNewAlbumDialog = false },
+                            DialogAction("创建并迁移", emphasized = true) {
+                                if (newName.isNotBlank()) {
+                                    vm.albumBatchMoveSheet = false
+                                    showNewAlbumDialog = false
+                                    vm.batchAssignToNewAlbum(newName.trim(), firstTrack.artist)
+                                }
+                            },
+                        )
+                    )
                 },
             )
         }
@@ -2216,9 +2208,7 @@ private fun DateDropdown(
                     }
                 },
                 confirmButton = {
-                    androidx.compose.material3.TextButton(onClick = { open = false }) {
-                        Text("取消", style = body(13f, FontWeight.Normal, c.n600))
-                    }
+                    DialogActionsRow(listOf(DialogAction("取消") { open = false }))
                 },
             )
         }
@@ -2272,7 +2262,14 @@ private fun AlbumEditDialogs(vm: MainViewModel, trackEditFor: Long?, onTrackEdit
                     containerColor = c.surface,
                     title = { Text("修改专辑信息", style = body(15f, FontWeight.ExtraBold, c.text)) },
                     text = {
-                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        // v1.3.x: 内容高(名称/歌手/类型/日期),加滚动上限——避免 text 区
+                        // 过高把按钮挤出可视区("设置超过按钮界面")。
+                        Column(
+                            Modifier
+                                .heightIn(max = 420.dp)
+                                .verticalScroll(rememberScrollState()),
+                            verticalArrangement = Arrangement.spacedBy(10.dp),
+                        ) {
                             OutlinedTextField(
                                 value = name,
                                 onValueChange = { name = it },
@@ -2337,29 +2334,29 @@ private fun AlbumEditDialogs(vm: MainViewModel, trackEditFor: Long?, onTrackEdit
                         }
                     },
                     confirmButton = {
-                        androidx.compose.material3.TextButton(onClick = {
-                            vm.albumEditInfo = false
-                            // v1.2.2: 有共享 albumId → 走专辑级保存(含类型/重匹配);
-                            // 无(合集 albumKey 非 aid:) → 只改歌手(整组单曲级)。
-                            android.util.Log.d("ArtistEdit", "dialog save: albumKey=${vm.albumKey} albumId=$albumId effAlbumId=$effAlbumId name=${name.trim()} artist=${artist.trim()}")
-                            if (albumId != null) {
-                                vm.saveAlbumInfo(albumId, name.trim(), artist.trim(), type)
-                                vm.rematchPromptFor = "album:$albumId"
-                                // v1.3.5: 日期一并保存(全 0 → 空串=清除)
-                                if (effAlbumId > 0) {
-                                    val iso = if (dateY > 0 && dateM > 0 && dateD > 0)
-                                        "%04d-%02d-%02d".format(dateY, dateM, dateD) else ""
-                                    if (iso != savedDate) vm.saveAlbumReleaseDate(effAlbumId, iso)
-                                }
-                            } else {
-                                vm.setAlbumArtist(vm.albumKey!!, artist.trim())
-                            }
-                        }) { Text("保存", style = body(14f, FontWeight.SemiBold, c.a700)) }
-                    },
-                    dismissButton = {
-                        androidx.compose.material3.TextButton(onClick = { vm.albumEditInfo = false }) {
-                            Text("取消", style = body(14f, FontWeight.Normal, c.n600))
-                        }
+                        DialogActionsRow(
+                            listOf(
+                                DialogAction("取消") { vm.albumEditInfo = false },
+                                DialogAction("保存", emphasized = true) {
+                                    vm.albumEditInfo = false
+                                    // v1.2.2: 有共享 albumId → 走专辑级保存(含类型/重匹配);
+                                    // 无(合集 albumKey 非 aid:) → 只改歌手(整组单曲级)。
+                                    android.util.Log.d("ArtistEdit", "dialog save: albumKey=${vm.albumKey} albumId=$albumId effAlbumId=$effAlbumId name=${name.trim()} artist=${artist.trim()}")
+                                    if (albumId != null) {
+                                        vm.saveAlbumInfo(albumId, name.trim(), artist.trim(), type)
+                                        vm.rematchPromptFor = "album:$albumId"
+                                        // v1.3.5: 日期一并保存(全 0 → 空串=清除)
+                                        if (effAlbumId > 0) {
+                                            val iso = if (dateY > 0 && dateM > 0 && dateD > 0)
+                                                "%04d-%02d-%02d".format(dateY, dateM, dateD) else ""
+                                            if (iso != savedDate) vm.saveAlbumReleaseDate(effAlbumId, iso)
+                                        }
+                                    } else {
+                                        vm.setAlbumArtist(vm.albumKey!!, artist.trim())
+                                    }
+                                },
+                            )
+                        )
                     },
                 )
             }
@@ -2457,11 +2454,28 @@ private fun AlbumEditDialogs(vm: MainViewModel, trackEditFor: Long?, onTrackEdit
                         }
                     }
                 },
-                // 「下一批」固定在 confirmButton(不随网格滚动),多图时不必下拉找。
+                // 「下一批」固定在按钮行右端(不随网格滚动),多图时不必下拉找。
                 confirmButton = {
+                    // v1.3.x: 四键统一横排右对齐——原 confirm/dismiss 双槽位会把
+                    // "下一批"折到 Row(选相册/恢复默认/取消) 的上一行/下一行。
+                    val acts = mutableListOf(
+                        DialogAction("选相册") {
+                            vm.albumCoverEdit = false
+                            picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                        },
+                        DialogAction("恢复默认") {
+                            vm.albumCoverEdit = false
+                            vm.clearAlbumCover(effAlbumId)
+                        },
+                        DialogAction("取消") { vm.albumCoverEdit = false },
+                    )
                     if (first != null && !candidatesLoading && candidates.isNotEmpty() && candHasMore) {
-                        androidx.compose.material3.TextButton(
-                            onClick = {
+                        acts.add(
+                            DialogAction(
+                                if (candLoadingMore) "加载中…" else "下一批",
+                                emphasized = true,
+                                enabled = !candLoadingMore,
+                            ) {
                                 candScope.launch {
                                     candLoadingMore = true
                                     val nb = candBatch + 1
@@ -2474,23 +2488,10 @@ private fun AlbumEditDialogs(vm: MainViewModel, trackEditFor: Long?, onTrackEdit
                                     candHasMore = r.size >= 8 && newOnes.isNotEmpty()
                                     candLoadingMore = false
                                 }
-                            },
-                            enabled = !candLoadingMore,
-                        ) { Text(if (candLoadingMore) "加载中…" else "下一批", style = body(13f, FontWeight.SemiBold, c.a700)) }
+                            }
+                        )
                     }
-                },
-                dismissButton = {
-                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                        androidx.compose.material3.TextButton(onClick = {
-                            vm.albumCoverEdit = false
-                            picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-                        }) { Text("选相册", style = body(14f, FontWeight.SemiBold, c.a700)) }
-                        androidx.compose.material3.TextButton(onClick = {
-                            vm.albumCoverEdit = false
-                            vm.clearAlbumCover(effAlbumId)
-                        }) { Text("恢复默认", style = body(14f, FontWeight.Normal, c.n600)) }
-                        androidx.compose.material3.TextButton(onClick = { vm.albumCoverEdit = false }) { Text("取消", style = body(14f, FontWeight.Normal, c.n600)) }
-                    }
+                    DialogActionsRow(acts)
                 },
             )
         }
@@ -2539,16 +2540,16 @@ private fun AlbumEditDialogs(vm: MainViewModel, trackEditFor: Long?, onTrackEdit
                 }
             },
             confirmButton = {
-                androidx.compose.material3.TextButton(onClick = {
-                    vm.saveTrackInfo(editTrack.id, title.trim(), artist.trim(), note.trim())
-                    vm.rematchPromptFor = "track:${editTrack.id}"
-                    onTrackEditDismiss()
-                }) { Text("保存", style = body(14f, FontWeight.SemiBold, c.a700)) }
-            },
-            dismissButton = {
-                androidx.compose.material3.TextButton(onClick = onTrackEditDismiss) {
-                    Text("取消", style = body(14f, FontWeight.Normal, c.n600))
-                }
+                DialogActionsRow(
+                    listOf(
+                        DialogAction("取消") { onTrackEditDismiss() },
+                        DialogAction("保存", emphasized = true) {
+                            vm.saveTrackInfo(editTrack.id, title.trim(), artist.trim(), note.trim())
+                            vm.rematchPromptFor = "track:${editTrack.id}"
+                            onTrackEditDismiss()
+                        },
+                    )
+                )
             },
         )
     }
@@ -2562,14 +2563,12 @@ private fun AlbumEditDialogs(vm: MainViewModel, trackEditFor: Long?, onTrackEdit
             title = { Text("是否重新匹配资源？", style = body(15f, FontWeight.ExtraBold, c.text)) },
             text = { Text("使用修改后的内容重新搜索封面与歌词等资源。选择「否」则仅保存修改内容。", style = body(13f, FontWeight.Normal, c.n600)) },
             confirmButton = {
-                androidx.compose.material3.TextButton(onClick = { vm.confirmRematch(rematchTarget, true) }) {
-                    Text("是", style = body(14f, FontWeight.SemiBold, c.a700))
-                }
-            },
-            dismissButton = {
-                androidx.compose.material3.TextButton(onClick = { vm.confirmRematch(rematchTarget, false) }) {
-                    Text("否", style = body(14f, FontWeight.Normal, c.n600))
-                }
+                DialogActionsRow(
+                    listOf(
+                        DialogAction("否") { vm.confirmRematch(rematchTarget, false) },
+                        DialogAction("是", emphasized = true) { vm.confirmRematch(rematchTarget, true) },
+                    )
+                )
             },
         )
     }

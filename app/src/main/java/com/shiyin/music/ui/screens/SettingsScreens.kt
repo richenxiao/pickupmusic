@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -53,6 +54,8 @@ import com.shiyin.music.data.Track
 import com.shiyin.music.data.formatDuration
 import com.shiyin.music.data.formatSizeMb
 import com.shiyin.music.ui.components.EqBars
+import com.shiyin.music.ui.components.DialogAction
+import com.shiyin.music.ui.components.DialogActionsRow
 import com.shiyin.music.ui.components.OIcon
 import com.shiyin.music.ui.components.OrganicSwitch
 import com.shiyin.music.ui.components.PasswordField
@@ -1231,16 +1234,9 @@ private fun SourceKeyDialog(title: String, current: String, onDismiss: () -> Uni
             )
         },
         confirmButton = {
-            if (dirty) {
-                androidx.compose.material3.TextButton(onClick = { onSave(input.trim()) }) {
-                    Text("保存", style = body(14f, FontWeight.Bold, c.accent))
-                }
-            }
-        },
-        dismissButton = {
-            androidx.compose.material3.TextButton(onClick = onDismiss) {
-                Text(if (dirty) "取消" else "关闭", style = body(14f, FontWeight.Normal, c.n600))
-            }
+            val acts = mutableListOf(DialogAction(if (dirty) "取消" else "关闭") { onDismiss() })
+            if (dirty) acts.add(DialogAction("保存", emphasized = true) { onSave(input.trim()) })
+            DialogActionsRow(acts)
         },
     )
 }
@@ -1258,7 +1254,13 @@ private fun AddCustomSourceDialog(vm: MainViewModel, onDismiss: () -> Unit) {
         containerColor = c.surface,
         title = { Text("添加自定义源", style = heading(18)) },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            // v1.3.x: 描述+三输入框较高,加滚动上限防按钮被挤出可视区。
+            Column(
+                Modifier
+                    .heightIn(max = 360.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
                 Text(
                     "URL 里用 {name} 表示歌手名(自动 URL 编码)。响应为 JSON 时自动提取其中的图片链接;URL 以 .jpg/.png 等图片扩展名结尾则视为直连图片。需要鉴权的 API 可填 Key:URL 里写 {key} 表示 Key 位置,不写则自动以 Bearer 头附带。",
                     style = body(11.5f, FontWeight.Normal, c.n600).copy(lineHeight = 16.sp),
@@ -1289,15 +1291,15 @@ private fun AddCustomSourceDialog(vm: MainViewModel, onDismiss: () -> Unit) {
             }
         },
         confirmButton = {
-            androidx.compose.material3.TextButton(
-                enabled = valid,
-                onClick = { vm.addCustomImageSource(name, tpl, apiKey); onDismiss() },
-            ) { Text("添加", style = body(14f, FontWeight.Bold, if (valid) c.accent else c.n500)) }
-        },
-        dismissButton = {
-            androidx.compose.material3.TextButton(onClick = onDismiss) {
-                Text("取消", style = body(14f, FontWeight.Normal, c.n600))
-            }
+            DialogActionsRow(
+                listOf(
+                    DialogAction("取消") { onDismiss() },
+                    DialogAction("添加", emphasized = true, enabled = valid) {
+                        vm.addCustomImageSource(name, tpl, apiKey)
+                        onDismiss()
+                    },
+                )
+            )
         },
     )
 }
@@ -1334,17 +1336,15 @@ private fun DeepSeekKeyDialog(vm: MainViewModel, onDismiss: () -> Unit) {
             }
         },
         confirmButton = {
-            androidx.compose.material3.TextButton(onClick = {
-                vm.setDeepSeekKey(input.trim())
-                onDismiss()
-            }) {
-                Text("保存", style = body(14f, FontWeight.Bold, c.accent))
-            }
-        },
-        dismissButton = {
-            androidx.compose.material3.TextButton(onClick = onDismiss) {
-                Text("取消", style = body(14f, FontWeight.Normal, c.n600))
-            }
+            DialogActionsRow(
+                listOf(
+                    DialogAction("取消") { onDismiss() },
+                    DialogAction("保存", emphasized = true) {
+                        vm.setDeepSeekKey(input.trim())
+                        onDismiss()
+                    },
+                )
+            )
         },
     )
 }

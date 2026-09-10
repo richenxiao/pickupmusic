@@ -93,6 +93,8 @@ import com.shiyin.music.data.Track
 import com.shiyin.music.data.formatDuration
 import com.shiyin.music.ui.components.CoverArt
 import com.shiyin.music.ui.components.CoverArtMosaic
+import com.shiyin.music.ui.components.DialogAction
+import com.shiyin.music.ui.components.DialogActionsRow
 import com.shiyin.music.ui.components.EqBars
 import com.shiyin.music.ui.components.OIcon
 import com.shiyin.music.ui.components.PillButton
@@ -776,15 +778,15 @@ private fun PlaylistDetail(vm: MainViewModel, pid: String) {
                 )
             },
             confirmButton = {
-                androidx.compose.material3.TextButton(onClick = {
-                    if (newName.isNotBlank()) vm.renamePlaylist(pid, newName)
-                    vm.plRenameFor = null
-                }) { Text("确认", style = body(14f, FontWeight.Bold, c.accent)) }
-            },
-            dismissButton = {
-                androidx.compose.material3.TextButton(onClick = { vm.plRenameFor = null }) {
-                    Text("取消", style = body(14f, FontWeight.Normal, c.n600))
-                }
+                DialogActionsRow(
+                    listOf(
+                        DialogAction("取消") { vm.plRenameFor = null },
+                        DialogAction("确认", emphasized = true) {
+                            if (newName.isNotBlank()) vm.renamePlaylist(pid, newName)
+                            vm.plRenameFor = null
+                        },
+                    )
+                )
             },
         )
     }
@@ -843,9 +845,7 @@ private fun PlaylistDetail(vm: MainViewModel, pid: String) {
                 }
             },
             confirmButton = {
-                androidx.compose.material3.TextButton(onClick = { vm.plCoverPickerFor = null }) {
-                    Text("取消", style = body(14f, FontWeight.Normal, c.n600))
-                }
+                DialogActionsRow(listOf(DialogAction("取消") { vm.plCoverPickerFor = null }))
             },
         )
     }
@@ -860,15 +860,15 @@ private fun PlaylistDetail(vm: MainViewModel, pid: String) {
                 Text("确定删除「${pl.name}」吗？此操作不可撤销，但歌曲本身不会被删除。", style = body(14f, FontWeight.Normal, c.n600))
             },
             confirmButton = {
-                androidx.compose.material3.TextButton(onClick = {
-                    vm.deletePlaylist(pid)
-                    vm.plDeleteFor = null
-                }) { Text("删除", style = body(14f, FontWeight.Bold, c.a700)) }
-            },
-            dismissButton = {
-                androidx.compose.material3.TextButton(onClick = { vm.plDeleteFor = null }) {
-                    Text("取消", style = body(14f, FontWeight.Normal, c.n600))
-                }
+                DialogActionsRow(
+                    listOf(
+                        DialogAction("取消") { vm.plDeleteFor = null },
+                        DialogAction("删除", emphasized = true) {
+                            vm.deletePlaylist(pid)
+                            vm.plDeleteFor = null
+                        },
+                    )
+                )
             },
         )
     }
@@ -1212,23 +1212,21 @@ private fun AlbumDetail(vm: MainViewModel, key: String) {
                 }
             },
             confirmButton = {
-                androidx.compose.material3.TextButton(onClick = {
-                    vm.applyAlbumOrderText(key, txt)
-                    // v4.5: 全匹配成功 → apply 已落库，关框；有未匹配被暂存 → 关框
-                    // 会让“取消返回修改”回不去文本，所以留框等确认窗决断。
-                    if (vm.pendingOrder == null) vm.albumEditText = false
-                }) { Text("应用", style = body(14f, FontWeight.Bold, c.accent)) }
-            },
-            dismissButton = {
-                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    androidx.compose.material3.TextButton(onClick = {
-                        clipboard.setText(androidx.compose.ui.text.AnnotatedString(currentList))
-                        vm.showToast("已复制当前列表，可粘贴给 AI 再返回排序", null)
-                    }) { Text("复制", style = body(14f, FontWeight.SemiBold, c.a700)) }
-                    androidx.compose.material3.TextButton(onClick = { vm.albumEditText = false }) {
-                        Text("取消", style = body(14f, FontWeight.Normal, c.n600))
-                    }
-                }
+                DialogActionsRow(
+                    listOf(
+                        DialogAction("复制") {
+                            clipboard.setText(androidx.compose.ui.text.AnnotatedString(currentList))
+                            vm.showToast("已复制当前列表，可粘贴给 AI 再返回排序", null)
+                        },
+                        DialogAction("取消") { vm.albumEditText = false },
+                        DialogAction("应用", emphasized = true) {
+                            vm.applyAlbumOrderText(key, txt)
+                            // v4.5: 全匹配成功 → apply 已落库，关框；有未匹配被暂存 → 关框
+                            // 会让“取消返回修改”回不去文本，所以留框等确认窗决断。
+                            if (vm.pendingOrder == null) vm.albumEditText = false
+                        },
+                    )
+                )
             },
         )
     }
@@ -1261,16 +1259,18 @@ private fun AlbumDetail(vm: MainViewModel, key: String) {
                 }
             },
             confirmButton = {
-                androidx.compose.material3.TextButton(onClick = {
-                    vm.commitPendingOrder()
-                    vm.albumEditText = false
-                }) { Text("应用已识别部分", style = body(14f, FontWeight.Bold, c.accent)) }
-            },
-            dismissButton = {
-                androidx.compose.material3.TextButton(onClick = {
-                    // 丢弃预览；保留 albumEditText=true 让用户继续改文本。
-                    vm.cancelPendingOrder()
-                }) { Text("取消返回修改", style = body(14f, FontWeight.Normal, c.n600)) }
+                DialogActionsRow(
+                    listOf(
+                        DialogAction("取消返回修改") {
+                            // 丢弃预览；保留 albumEditText=true 让用户继续改文本。
+                            vm.cancelPendingOrder()
+                        },
+                        DialogAction("应用已识别部分", emphasized = true) {
+                            vm.commitPendingOrder()
+                            vm.albumEditText = false
+                        },
+                    )
+                )
             },
         )
     }
@@ -1857,14 +1857,15 @@ private fun ArtistPhotoPickerDialog(vm: MainViewModel, name: String) {
             }
         },
         confirmButton = {
-            androidx.compose.material3.TextButton(onClick = { vm.clearArtistImageOverride(name); vm.artistPhotoPickerFor = null }) {
-                Text("恢复自动", style = body(14f, FontWeight.Normal, c.n600))
-            }
-        },
-        dismissButton = {
-            androidx.compose.material3.TextButton(onClick = { vm.artistPhotoPickerFor = null }) {
-                Text("取消", style = body(14f, FontWeight.Normal, c.n600))
-            }
+            DialogActionsRow(
+                listOf(
+                    DialogAction("取消") { vm.artistPhotoPickerFor = null },
+                    DialogAction("恢复自动", emphasized = true) {
+                        vm.clearArtistImageOverride(name)
+                        vm.artistPhotoPickerFor = null
+                    },
+                )
+            )
         },
     )
 }
@@ -1914,24 +1915,20 @@ private fun ArtistMergeDialog(vm: MainViewModel, name: String) {
             }
         },
         confirmButton = {
-            androidx.compose.material3.TextButton(
-                onClick = {
-                    selected.forEach { vm.mergeArtist(it, name) }
-                    selected = emptySet()
-                    vm.artistMerge = false
-                },
-                enabled = selected.isNotEmpty(),
-            ) {
-                Text(
-                    if (selected.isNotEmpty()) "完成（${selected.size}）" else "完成",
-                    style = body(14f, FontWeight.Bold, if (selected.isNotEmpty()) c.accent else c.n400),
+            DialogActionsRow(
+                listOf(
+                    DialogAction("取消") { vm.artistMerge = false },
+                    DialogAction(
+                        if (selected.isNotEmpty()) "完成（${selected.size}）" else "完成",
+                        emphasized = true,
+                        enabled = selected.isNotEmpty(),
+                    ) {
+                        selected.forEach { vm.mergeArtist(it, name) }
+                        selected = emptySet()
+                        vm.artistMerge = false
+                    },
                 )
-            }
-        },
-        dismissButton = {
-            androidx.compose.material3.TextButton(onClick = { vm.artistMerge = false }) {
-                Text("取消", style = body(14f, FontWeight.Normal, c.n600))
-            }
+            )
         },
     )
 }
