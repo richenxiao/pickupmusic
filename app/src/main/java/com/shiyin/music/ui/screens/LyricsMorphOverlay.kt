@@ -239,6 +239,15 @@ fun LyricsMorphOverlay(vm: MainViewModel, morph: LyricsMorphState) {
                 // 兜底场景(§3.6-5 Activity 重建)行为不变:null 早退=无形变全屏。
                 val pp = morph.progress.value
                 val b: Rect = morph.cardBounds ?: return@graphicsLayer
+                // C3: 容器落点交叉淡化——p∈[0,0.08] 容器 alpha 0→1。收起末段容器
+                // 渐透明,PlayerScreen 卡片内容(1f-fracRange(mp,0,0.05))同步渐显,
+                // 两者交叉淡化 ~80ms,消除"返回本身就有的卡片"(系统启动动画隐喻:
+                // app 打开后图标位置变空,动画回到位置才显示图标)。展开首段反向
+                // 同理:容器从透明淡入,卡片同步淡出。两个 alpha 之和恒>0.4,无空帧。
+                // 不依赖 lyricsOn 离散切换——alpha 是 progress 连续纯函数,打断弹回
+                // 时自动回退。overlay 卸载(lyricsOn=false)发生在 p=0 后某帧,但此时
+                // 容器已 alpha=0 不可见,卸载无感知。
+                alpha = fracRange(pp, 0f, 0.08f)
                 // bug② 修复(59fffa2):缩放原点钉在图层左上 (0,0)。translation 补偿公式
                 // (卡片左上角位置)按左上锚推导,而 Compose graphicsLayer 默认
                 // transformOrigin 是图层中心 (0.5,0.5)——不钉左上,收起时内容

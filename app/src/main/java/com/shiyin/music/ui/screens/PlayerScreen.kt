@@ -491,6 +491,16 @@ private fun LyricsPeekCard(vm: MainViewModel, artBg: Color, artFg: Color, dimC: 
             .shadowMd(RoundedCornerShape(28.dp))
             .clip(RoundedCornerShape(28.dp))
             .background(artBg)
+            // C3: 歌词本打开期间隐藏卡片内容(系统启动动画隐喻:app 打开后图标位置
+            // 变空,直到动画回到位置才显示图标)。alpha 是 progress 的连续纯函数(非
+            // 二值开关),与 overlay 容器 alpha(fracRange(pp,0,0.08))交叉淡化,消除
+            // "同帧切换"风险。mp=0 alpha=1(可见); mp≥0.05 alpha=0(隐藏)。两个 alpha
+            // 之和恒>0.4,无空帧闪烁。收起中途打断(弹回)时 alpha 跟 progress 自动回退。
+            // 放在 .background 之后:背景(artBg)不受 alpha 影响,卡片矩形始终在位
+            // 作占位;只内容(HeaderRow/Preview/Pill)被淡化。
+            .graphicsLayer {
+                alpha = 1f - (vm.lyricsMorphProgress.floatValue / 0.05f).coerceIn(0f, 1f)
+            }
             // v1.3.x morph P0(设计文档 §3.3-2):卡片 window 坐标 Rect 持续上报——
             // morph overlay 展开起点/收起终点取卡片实时位置(播放页滚动、切歌后
             // bounds 变化都实时跟随)。P0 只上报无消费者,行为零变化。
