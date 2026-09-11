@@ -275,10 +275,29 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     // 状态订阅(overlay 用 snapshotFlow 轮询读,避免 Rect 相等性缺失导致的
     // 无效重组)。
     var lyricsCardBounds: androidx.compose.ui.geometry.Rect? = null
-    // v1.3.x morph P2(§3.3-5):morph progress 透传——PlayerScreen 内容淡出
-    // (alpha 1→0.3)由它驱动。overlay 每帧写入(Animatable.floatState),
-    // PlayerScreen 延迟读(graphicsLayer 块内),不触发重组。
-    val lyricsMorphProgress = androidx.compose.runtime.mutableFloatStateOf(0f)
+    // v1.3.x 状态收敛:progress 真源由 overlay 内 remember 上提为 VM 常驻单例——
+    // PlayerScreen(dim/卡片 alpha)、LyricsScreen(跟行暂停)、overlay 全部直接读
+    // vm.morph.progress.value;删除 lyricsMorphProgress 镜像、lyricsMorphDrag/
+    // lyricsExitRequest 回调注入、phase 枚举(销毁门改调用方收尾,见 collapseLyrics)。
+    val morph = com.shiyin.music.ui.components.LyricsMorphState(viewModelScope)
+    /** 收起收尾统一入口(返回键/系统手势/下拉闸门共用):collapse() suspend 到
+     *  p==0 才返回,此时才卸载 overlay。中途被新拖拽打断时 snapTo 经 Animatable
+     *  内部 mutex 取消 animateTo → 协程取消异常 → 本行不执行,overlay 存活。 */
+    fun collapseLyrics(velocityPx: Float = 0f) {
+        viewModelScope.launch {
+            morph.collapse(lyricsCardBounds, velocityPx)
+            lyricsOn = false
+            lySheet = false
+        }
+    }
+    /** 强制关闭(无动画):切歌空歌词/删歌词/关全部 overlay 等场景。snapTo(0)
+     *  经 mutex 取消可能在跑的 open/collapse 动画,并把 progress 归 0(播放页
+     *  dim/卡片 alpha 跟着归位,不残留半淡出状态)。 */
+    fun closeLyricsInstant() {
+        lyricsOn = false
+        lySheet = false
+        viewModelScope.launch { morph.progress.snapTo(0f) }
+    }
     // v1.3.x morph P3(§3.5-4):手势协同状态——指针闸门判"起点是否 chrome 区
     // (列表区外)"与"列表是否已在顶"。LyricsScreen 写入(列表 bounds 随布局
     // 更新 + canScrollBackward 派生),overlay 的 pointerInput 读。普通 field,
@@ -286,16 +305,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     var lyricsListTopPx: Float? = null
     var lyricsListBottomPx: Float? = null
     var lyricsListAtTop: Boolean = true
-    // P3:守卫喂拖拽的回调——overlay 注入 morph.onDrag 封装,LyricsScreen 的
-    // nestedScroll 守卫调用。与 lyricsExitRequest 同注入模式(SideEffect+清空)。
-    var lyricsMorphDrag: ((Float) -> Unit)? = null
-    // v1.3.x 歌词本四项体验④:左上角返回键的退出请求回调。歌词本 Dialog 的退出
-    // 动画状态机(MutableTransitionState)在 AppRoot 层,按钮拿不到——原直接置
-    // lyricsOn=false 会瞬间销毁 Dialog、跳过下拉动画,与物理返回键(dismissOnBackPress
-    // → onDismissRequest → 播动画→动画完再置 false)行为不一致。AppRoot 组装 Dialog
-    // 时把"播动画→销毁"流程注入这里,两条退出路径共用。
-    var lyricsExitRequest by mutableStateOf<(() -> Unit)?>(null)
-    fun requestLyricsExit() { lyricsExitRequest?.invoke() ?: run { lyricsOn = false; lySheet = false } }
+    /** 退出请求(左上角返回键/系统返回统一入口):走带动画的 collapse。 */
+    fun requestLyricsExit() { collapseLyrics() }
     // v1.3.x bug① 修复:播放页"带动画退出"的请求回调。RootBackHandler 的
     // playerOpen 兜底分支(歌词关着时的系统返回)原本直接置 playerOpen=false
     // 瞬间消失;sheet 返回回调改穿透(shouldDismissOnBackPress=false)后该分支
@@ -2344,7 +2355,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 if (cur != null && cur in removed) {
                     player.stopAndClear()
                     playerOpen = false
-                    lyricsOn = false
+                    closeLyricsInstant()
                 } else {
                     resyncQueue()
                 }
@@ -2903,8 +2914,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun deleteLyrics() {
         val cur = currentLyrics ?: return
         currentLyrics = null
-        lySheet = false
-        lyricsOn = false
+        closeLyricsInstant()
         lyState = LyState.Idle
         triedAuto -= cur.mediaId
         viewModelScope.launch(Dispatchers.IO) {
@@ -3347,7 +3357,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     // ── v1.1/v1.7 navigation from player & row menus ───────────────────────
     private fun closeOverlays() {
-        playerOpen = false; lyricsOn = false; lySheet = false
+        playerOpen = false; closeLyricsInstant()
         pMenuView = null; qSheetOpen = false; qEdit = false; trackMenuFor = null
     }
 

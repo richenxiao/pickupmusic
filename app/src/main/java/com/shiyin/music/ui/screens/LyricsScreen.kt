@@ -251,7 +251,7 @@ fun LyricsScreen(vm: MainViewModel) {
         // v1.3.x morph P2(§3.4-5 跟行暂停):morph 进行中(progress<0.95)跳过,
         // 避免动画中途列表自己滚(锚行已由上条预滚对齐)。
         LaunchedEffect(activeI) {
-            if (vm.lyricsMorphProgress.floatValue in 0.001f..0.949f) return@LaunchedEffect
+            if (vm.morph.progress.value in 0.001f..0.949f) return@LaunchedEffect
             if (activeI >= 0) {
                 val info = listState.layoutInfo
                 val viewport = info.viewportSize.height
@@ -296,7 +296,7 @@ fun LyricsScreen(vm: MainViewModel) {
                     override fun onPreScroll(available: androidx.compose.ui.geometry.Offset, source: androidx.compose.ui.input.nestedscroll.NestedScrollSource): androidx.compose.ui.geometry.Offset {
                         // 只拦"列表在顶+向下"——其余(向上滚/未到顶)全放行
                         if (available.y > 0f && !listState.canScrollBackward) {
-                            vm.lyricsMorphDrag?.invoke(available.y)
+                            vm.morph.onDrag(available.y)
                             return available
                         }
                         return androidx.compose.ui.geometry.Offset.Zero

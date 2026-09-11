@@ -15,14 +15,11 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.SideEffect
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Rect
@@ -89,29 +86,12 @@ fun LyricsMorphOverlay(vm: MainViewModel, morph: LyricsMorphState) {
         snapshot = PreviewSnapshot(lines, activeI, peekStart, ly?.sourceLabel, 1f)
         morph.open(vm.lyricsCardBounds)
     }
-    // ── 销毁:收起完成(§3.6-4 phase 门)──
-    LaunchedEffect(Unit) {
-        snapshotFlow { morph.phase == LyricsMorphState.Phase.Closing && !morph.isRunning && morph.progress.value == 0f }
-            .collect { done -> if (done) { vm.lyricsOn = false; vm.lySheet = false } }
-    }
-    // P3:守卫(LyricsScreen nestedScroll)喂拖拽共用 morph.onDrag——
-    // 屏高从 LocalConfiguration 取(onDrag 内部另有卡顶/屏高20%下限保护)。
-    val screenH = androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp *
+    // 状态收敛:phase 枚举销毁门 + snapshotFlow 监听已删除(收起收尾在
+    // MainViewModel.collapseLyrics 内做 caller-side disposal);镜像归零已删除
+    // (progress 由 VM 常驻持有,不存在卸载残留)。
+    // 状态收敛:屏高写到 morph 状态(onDrag/collapse 的 px→progress 换算共用除数)。
+    morph.screenH = androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp *
         androidx.compose.ui.platform.LocalDensity.current.density
-    SideEffect {
-        vm.lyricsExitRequest = { scope.launch { morph.collapse(vm.lyricsCardBounds) } }
-        vm.lyricsMorphDrag = { delta -> morph.onDrag(delta, screenH) }
-    }
-    DisposableEffect(Unit) {
-        onDispose {
-            if (vm.lyricsExitRequest != null) vm.lyricsExitRequest = null
-            if (vm.lyricsMorphDrag != null) vm.lyricsMorphDrag = null
-            // P4 边界:progress 透传值必须随卸载归零——否则下次打开歌词本时
-            // LyricsScreen 跟行暂停判定(0.001..0.949 区间)读到残留值会误判
-            // "morph 进行中"而永久停跳跟行。
-            vm.lyricsMorphProgress.floatValue = 0f
-        }
-    }
 
     val cornerBase = with(density) { 28.dp.toPx() }
     val track = vm.trackById(vm.player.currentId)
@@ -123,8 +103,8 @@ fun LyricsMorphOverlay(vm: MainViewModel, morph: LyricsMorphState) {
 
     // ── P2-② 分层透明度(progress 纯函数,非独立动画)──
     val p = morph.progress.value
-    // P2(§3.3-5):progress 透传给 PlayerScreen 内容淡出(它 graphicsLayer 延迟读)
-    vm.lyricsMorphProgress.floatValue = p
+    // 状态收敛:镜像写入已删——PlayerScreen(dim/卡片 alpha)与 LyricsScreen(跟行
+    // 暂停)直接读 vm.morph.progress.value,不再经 lyricsMorphProgress 透传。
     val previewAlpha = 1f - fracRange(p, LyricsMorphSpec.PREVIEW_FADE_OUT_START, LyricsMorphSpec.PREVIEW_FADE_OUT_END)
     val listAlpha = fracRange(p, LyricsMorphSpec.LIST_FADE_IN_START, LyricsMorphSpec.LIST_FADE_IN_END)
 
@@ -198,7 +178,7 @@ fun LyricsMorphOverlay(vm: MainViewModel, morph: LyricsMorphState) {
                         }
                         if (dragging) {
                             // 整条手势流全消费:列表/sheet 都收不到
-                            morph.onDrag(change.position.y - lastY, size.height.toFloat())
+                            morph.onDrag(change.position.y - lastY)
                             lastY = change.position.y
                             change.consume()
                         } else if (blocking) {
@@ -210,14 +190,17 @@ fun LyricsMorphOverlay(vm: MainViewModel, morph: LyricsMorphState) {
                             }
                             lastY = change.position.y
                         }
-                        if (!event.changes.any { it.pressed }) {
+                            if (!event.changes.any { it.pressed }) {
                             // 松手:拖拽距离/速度判定(§3.5-3)
                             if (dragging) {
                                 val velocity = tracker.calculateVelocity().y
                                 val dd = (1f - morph.progress.value) * (morph.cardBounds?.top ?: 1f)
                                 val thresholdPx = 120.dp.toPx()
                                 if (dd > thresholdPx || velocity > 2200f) {
-                                    scope.launch { morph.collapse(vm.lyricsCardBounds, velocity) }
+                                    // 状态收敛:caller-side disposal——collapse() suspend
+                                    // 到 p==0 后 VM 内才置 lyricsOn=false;中途新拖拽的
+                                    // snapTo 会取消本协程(Animatable mutex),不打断收尾。
+                                    vm.collapseLyrics(velocity)
                                 } else {
                                     scope.launch { morph.progress.animateTo(1f, com.shiyin.music.ui.components.LyricsMorphSpec.collapseSpring) }
                                 }

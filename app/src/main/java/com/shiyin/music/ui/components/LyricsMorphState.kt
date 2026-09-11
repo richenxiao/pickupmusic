@@ -19,9 +19,12 @@ import kotlinx.coroutines.launch
  * 原规格的 web 参数(stiffness 120-150/damping 12-16/mass 1)换算 ζ≈0.49-0.65,
  * 与此同区间——语义一致,数值按 Compose API 归位。
  *
- * phase 完成-防误判门(设计文档 §3.6-4):只看 progress==0 && !isRunning 会把
- * open() 起点 snapTo(0) 那一帧误判成"收起完成"——销毁条件必须
- * phase==Closing && progress==0 && !isRunning。
+ * v1.3.x 状态收敛(状态源四合一):本类由 MainViewModel 持有(viewModelScope),
+ * 跨打开/关闭周期常驻——不再每次打开 remember 新建。phase 枚举与 snapshotFlow
+ * 销毁门删除:收起收尾改调用方模式(MainViewModel.collapseLyrics 里 collapse()
+ * 返回后置 lyricsOn=false);新拖拽的 snapTo 经 Animatable 内部 mutator mutex
+ * 取消正在跑的 animateTo,collapse 协程以取消异常终止、收尾代码不执行——
+ * 打断弹回场景天然正确,不需要 phase 判向。
  */
 object LyricsMorphSpec {
     val expandSpring = spring<Float>(dampingRatio = 0.75f, stiffness = 380f)
@@ -39,41 +42,46 @@ object LyricsMorphSpec {
 
 class LyricsMorphState(private val scope: CoroutineScope) {
 
-    enum class Phase { Opening, Opened, Closing }
-
     /** 0f=卡片,1f=全屏。唯一驱动源,所有视觉是它的纯函数。 */
     val progress = Animatable(0f)
 
     /** 卡片 window 坐标 Rect(onGloballyPositioned 持续上报,VM 透传)。 */
     var cardBounds: Rect? = null
 
-    var phase: Phase by mutableStateOf(Phase.Opened)
-        private set
+    /** 状态收敛:屏高(px),overlay 组合时写入;onDrag/collapse 的 px→progress
+     *  换算共用同一除数(卡片顶到屏顶,下限屏高 20%)。 */
+    var screenH: Float = 0f
 
     val isRunning: Boolean get() = progress.isRunning
 
-    /** 展开:snapTo(0) → 弹簧到 1。入口先置 Opening 防 §3.6-4 起点误判。
+    /** 展开:snapTo(0) → 弹簧到 1。
      *  cardBounds==null(首帧未测得即被点击/Activity 重建)按 §3.6-5 兜底:
      *  直接 snapTo(1f) 稳态全屏(无形变)——重建场景这正是期望行为(不播动画),
      *  极端时序宁可无动画不可渲染 0×0 图层闪帧。 */
     suspend fun open(card: Rect?) {
-        phase = Phase.Opening
         cardBounds = card
         if (card == null) {
             progress.snapTo(1f)
-            phase = Phase.Opened
             return
         }
         progress.snapTo(0f)
         progress.animateTo(1f, LyricsMorphSpec.expandSpring)
-        phase = Phase.Opened
     }
 
-    /** 收起:弹簧到 0(velocity 可选——拖拽松手的甩动速度传入衔接)。 */
-    suspend fun collapse(card: Rect?, velocity: Float = 0f) {
-        phase = Phase.Closing
+    /** 收起:弹簧到 0。
+     *  速度单位修复(实测根因:现象③"松手有时正常有时闪回直接关闭"、现象④
+     *  "小幅度松手闪一下就结束"):松手速度来自 VelocityTracker,单位 px/s;
+     *  progress 值域 [0,1]。原实现把 px/s 原样当 progress/s 喂弹簧的
+     *  initialVelocity(8349 px/s 在 [0,1] 值域里是天文数字,弹簧 1-2 帧内冲到
+     *  终点=闪一下直接结束,且快慢手不手感)。换算 px/s → progress/s 用与
+     *  onDrag 相同的除数(卡片顶到屏顶 dd),松手速度物理连续:手指 V px/s
+     *  → progress 以 V/dd 每秒起步,衔接无顿挫。 */
+    suspend fun collapse(card: Rect?, velocityPx: Float = 0f) {
         cardBounds = card
-        progress.animateTo(0f, LyricsMorphSpec.collapseSpring, velocity)
+        val b = cardBounds
+        val dd = if (b != null) b.top.coerceAtLeast(screenH * 0.2f) else screenH * 0.2f
+        val progressVelocity = if (dd > 0f) velocityPx / dd else 0f
+        progress.animateTo(0f, LyricsMorphSpec.collapseSpring, progressVelocity)
     }
 
     /**
@@ -83,7 +91,7 @@ class LyricsMorphState(private val scope: CoroutineScope) {
      * 滚到极端位置时拖拽过敏)。p_new = 1 - (d + delta)/D,clamp [0,1]。
      * 变向对称(正负 delta 都进同一式),实时响应。
      */
-    fun onDrag(deltaPx: Float, screenH: Float) {
+    fun onDrag(deltaPx: Float) {
         val b = cardBounds ?: return
         val dd = b.top.coerceAtLeast(screenH * 0.2f)  // 1:1 映射分母(卡片顶到屏顶)
         val cur = (1f - progress.value) * dd           // 已下拉量(容器顶边位移)

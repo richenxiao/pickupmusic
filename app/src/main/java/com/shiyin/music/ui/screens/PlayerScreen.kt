@@ -143,7 +143,7 @@ fun PlayerScreen(vm: MainViewModel) {
             // 1→0.3(只淡出不滑出,§4 偏差5)。graphicsLayer 块内延迟读 VM 透传的
             // progress,不触发重组;progress==0(歌词本关)恒为 alpha 1。
             .graphicsLayer {
-                val mp = vm.lyricsMorphProgress.floatValue
+                val mp = vm.morph.progress.value
                 alpha = 1f - 0.7f * ((mp / LyricsMorphSpec.PLAYER_DIM_END).coerceIn(0f, 1f))
             }
             .background(c.bg)
@@ -499,7 +499,7 @@ private fun LyricsPeekCard(vm: MainViewModel, artBg: Color, artFg: Color, dimC: 
             // 放在 .background 之后:背景(artBg)不受 alpha 影响,卡片矩形始终在位
             // 作占位;只内容(HeaderRow/Preview/Pill)被淡化。
             .graphicsLayer {
-                alpha = 1f - (vm.lyricsMorphProgress.floatValue / 0.05f).coerceIn(0f, 1f)
+                alpha = 1f - (vm.morph.progress.value / 0.05f).coerceIn(0f, 1f)
             }
             // v1.3.x morph P0(设计文档 §3.3-2):卡片 window 坐标 Rect 持续上报——
             // morph overlay 展开起点/收起终点取卡片实时位置(播放页滚动、切歌后

@@ -208,8 +208,7 @@ fun AppRoot(vm: MainViewModel) {
         // fullscreen lyric sheet is open — close it instead of a blank page.
         LaunchedEffect(vm.lyricsOn, vm.currentLyrics) {
             if (vm.lyricsOn && vm.currentLyrics?.parsed?.isEmpty != false) {
-                vm.lyricsOn = false
-                vm.lySheet = false
+                vm.closeLyricsInstant()
             }
         }
 
@@ -509,9 +508,10 @@ fun AppRoot(vm: MainViewModel) {
                     // 在 LyricsMorphOverlay 内(单一 progress 驱动)。lyricsOn=false 时
                     // 整层不组合,零常驻开销。
                     if (vm.lyricsOn) {
-                        val morphScope = androidx.compose.runtime.rememberCoroutineScope()
-                        val morph = androidx.compose.runtime.remember { com.shiyin.music.ui.components.LyricsMorphState(morphScope) }
-                        com.shiyin.music.ui.screens.LyricsMorphOverlay(vm, morph)
+                        // v1.3.x 状态收敛:morph 状态由 VM 常驻持有(跨开关周期),
+                        // 不再每次打开 remember 新建——cardBounds/progress 不再从
+                        // null/0 重新起步,首帧死层/闪屏类时序坑从结构上消失。
+                        com.shiyin.music.ui.screens.LyricsMorphOverlay(vm, vm.morph)
                     }
                 }
             }
