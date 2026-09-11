@@ -239,15 +239,31 @@ fun LyricsMorphOverlay(vm: MainViewModel, morph: LyricsMorphState) {
                 // 兜底场景(§3.6-5 Activity 重建)行为不变:null 早退=无形变全屏。
                 val pp = morph.progress.value
                 val b: Rect = morph.cardBounds ?: return@graphicsLayer
-                // bug② 修复(59fffa2):缩放原点钉在图层左上 (0,0)。translation 补偿公式
-                // (卡片左上角位置)按左上锚推导,而 Compose graphicsLayer 默认
-                // transformOrigin 是图层中心 (0.5,0.5)——不钉左上,收起时内容
-                // 围绕屏幕中心"瘪缩"、平移补偿与缩放错位错切,且收完一帧与卡片
-                // 不重合(设计文档 §3.3 的重合前提是左上原点)。
+                // ── 收起质感(方案 A):等比主段 + 末段精确对齐,fracRange 软过渡 ──
+                // 归因(用户排查点1):卡片扁条(1096×359)与全屏竖屏(1264×2780)宽高比差
+                // 6.7 倍。原 X 用宽比 0.867、Y 用高比 0.129 各缩各的→过程压扁变形。
+                // 系统启动动画丝滑感来自等比 scale(X=Y)。但全程等比无法在终点精确
+                // 等于卡片矩形(等比缩到卡片高度则宽只有 163px,差 6.7 倍)。
+                // 方案:p∈[1.0→0.1] 主段走等比(视觉主导,高度比 0.129 作目标,丝滑无变形);
+                //      p∈[0.1→0.0] 末段软过渡到精确对齐(X 拉到卡片宽比 0.867),终点精确
+                //      落在卡片矩形上。blend=fracRange(pp,0,0.1):pp>0.1 为 0(纯等比),
+                //      pp<0.1 从 0→1(渐变到精确),pp=0 为 1(完全精确)。两段之间无硬切点。
+                //      末段 ≈80ms(弹簧收尾)+ 内容已淡出(commit 4 提前窗口),不可感知。
                 transformOrigin = androidx.compose.ui.graphics.TransformOrigin(0f, 0f)
-                scaleX = lerp01(b.width / size.width, 1f, pp)
-                scaleY = lerp01(b.height / size.height, 1f, pp)
-                translationX = lerp01(b.left, 0f, pp)
+                val targetH = b.height / size.height   // 0.129 等比目标(高度主导)
+                val sEq = lerp01(targetH, 1f, pp)        // 等比主段值(X=Y 同值)
+                val sAlignX = lerp01(b.width / size.width, 1f, pp)   // 精确对齐 X(0.867→1)
+                val sAlignY = lerp01(b.height / size.height, 1f, pp) // 精确对齐 Y(=sEq,高比)
+                val blend = fracRange(pp, 0f, 0.1f)      // 0=纯等比 1=精确对齐
+                scaleX = lerp01(sEq, sAlignX, blend)
+                scaleY = lerp01(sEq, sAlignY, blend)     // sEq==sAlignY 故 scaleY 全程=sEq 不变
+                // translation:等比段容器是窄竖条,居中到卡片水平中心;精确段用卡片左上。
+                // 等比段 translationX = 卡片中心 - 缩放后宽度/2(左上锚,缩放后左边在 0)
+                val scaledWEq = size.width * sEq
+                val cardCenterX = b.left + b.width / 2f
+                val txEq = cardCenterX - scaledWEq / 2f
+                val txAlign = b.left
+                translationX = lerp01(txEq, txAlign, blend)
                 translationY = lerp01(b.top, 0f, pp)
                 shape = RoundedCornerShape(lerp01(cornerBase, 0f, pp))
                 clip = true
