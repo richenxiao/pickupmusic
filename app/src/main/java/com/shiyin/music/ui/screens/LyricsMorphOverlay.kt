@@ -228,9 +228,18 @@ fun LyricsMorphOverlay(vm: MainViewModel, morph: LyricsMorphState) {
                 }
             }
             .graphicsLayer {
-                val b: Rect = morph.cardBounds ?: return@graphicsLayer
+                // bug② 死层修复(探针 v2 真机锁定):progress 必须在 cardBounds 判空
+                // 之前读取。graphicsLayer 块只在"块内读过的可观察状态"变化时重录;首帧
+                // 图层录制时 open() 尚未执行、cardBounds 还是 null,若先判空早退,块内
+                // 一个状态都没读(cardBounds 是普通 var 非快照状态)→ 图层零依赖 →
+                // 之后动画逐帧写 progress 也不会重录 → 容器形变(缩放/平移/圆角/裁剪)
+                // 整段不执行。这正是 59fffa2 transformOrigin 装机"毫无变化"的根因:
+                // 那行在死代码路径上。先读 progress:动画每帧失效图层重录,此时 bounds
+                // 已由 open()/collapse() 置位,变换全程生效。bounds 持续为 null 的
+                // 兜底场景(§3.6-5 Activity 重建)行为不变:null 早退=无形变全屏。
                 val pp = morph.progress.value
-                // bug② 修复:缩放原点钉在图层左上 (0,0)。translation 补偿公式
+                val b: Rect = morph.cardBounds ?: return@graphicsLayer
+                // bug② 修复(59fffa2):缩放原点钉在图层左上 (0,0)。translation 补偿公式
                 // (卡片左上角位置)按左上锚推导,而 Compose graphicsLayer 默认
                 // transformOrigin 是图层中心 (0.5,0.5)——不钉左上,收起时内容
                 // 围绕屏幕中心"瘪缩"、平移补偿与缩放错位错切,且收完一帧与卡片
