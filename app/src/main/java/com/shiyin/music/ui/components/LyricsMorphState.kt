@@ -1,13 +1,18 @@
 package com.shiyin.music.ui.components
 
+import android.view.Choreographer
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.spring
+import androidx.compose.runtime.MonotonicFrameClock
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.geometry.Rect
+import kotlin.coroutines.resume
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
 
 /**
  * v1.3.x morph 过渡 P1(设计文档 §3.2):歌词本↔卡片共享元素 morph 的单一
@@ -42,7 +47,26 @@ object LyricsMorphSpec {
 
 class LyricsMorphState(private val scope: CoroutineScope) {
 
-    /** 0f=卡片,1f=全屏。唯一驱动源,所有视觉是它的纯函数。 */
+    /** 帧时钟修复(实测崩溃):viewModelScope=Main.immediate 不带 MonotonicFrameClock,
+     *  animateTo 内部 withFrameNanos 抛 IllegalStateException——所有退出路径
+     *  (返回键/系统手势/下拉松手)一退就崩。此处内建 Choreographer 帧时钟,与
+     *  Recomposer(AndroidUiDispatcher)同源同帧对齐;open/collapse 经 withFrameClock
+     *  挂入,任何调用方作用域(VM/组合)都安全。 */
+    private object UiFrameClock : MonotonicFrameClock {
+        override suspend fun <R> withFrameNanos(onFrame: (Long) -> R): R =
+            suspendCancellableCoroutine { cont ->
+                val choreographer = Choreographer.getInstance()
+                val callback = Choreographer.FrameCallback { frameTimeNanos ->
+                    // 协程已取消时帧回调仍可能到达;isActive 防二次 resume 抛异常。
+                    if (cont.isActive) cont.resume(onFrame(frameTimeNanos))
+                }
+                choreographer.postFrameCallback(callback)
+                cont.invokeOnCancellation { choreographer.removeFrameCallback(callback) }
+            }
+    }
+
+    private suspend fun <T> withFrameClock(block: suspend () -> T): T =
+        withContext(UiFrameClock) { block() }    /** 0f=卡片,1f=全屏。唯一驱动源,所有视觉是它的纯函数。 */
     val progress = Animatable(0f)
 
     /** 卡片 window 坐标 Rect(onGloballyPositioned 持续上报,VM 透传)。 */
@@ -65,7 +89,7 @@ class LyricsMorphState(private val scope: CoroutineScope) {
             return
         }
         progress.snapTo(0f)
-        progress.animateTo(1f, LyricsMorphSpec.expandSpring)
+        withFrameClock { progress.animateTo(1f, LyricsMorphSpec.expandSpring) }
     }
 
     /** 收起:弹簧到 0。
@@ -81,7 +105,7 @@ class LyricsMorphState(private val scope: CoroutineScope) {
         val b = cardBounds
         val dd = if (b != null) b.top.coerceAtLeast(screenH * 0.2f) else screenH * 0.2f
         val progressVelocity = if (dd > 0f) velocityPx / dd else 0f
-        progress.animateTo(0f, LyricsMorphSpec.collapseSpring, progressVelocity)
+        withFrameClock { progress.animateTo(0f, LyricsMorphSpec.collapseSpring, progressVelocity) }
     }
 
     /**
