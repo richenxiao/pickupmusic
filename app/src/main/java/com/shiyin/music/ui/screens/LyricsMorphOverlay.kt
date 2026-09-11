@@ -239,15 +239,26 @@ fun LyricsMorphOverlay(vm: MainViewModel, morph: LyricsMorphState) {
                 // 兜底场景(§3.6-5 Activity 重建)行为不变:null 早退=无形变全屏。
                 val pp = morph.progress.value
                 val b: Rect = morph.cardBounds ?: return@graphicsLayer
-                // bug② 修复(59fffa2):缩放原点钉在图层左上 (0,0)。translation 补偿公式
-                // (卡片左上角位置)按左上锚推导,而 Compose graphicsLayer 默认
-                // transformOrigin 是图层中心 (0.5,0.5)——不钉左上,收起时内容
-                // 围绕屏幕中心"瘪缩"、平移补偿与缩放错位错切,且收完一帧与卡片
-                // 不重合(设计文档 §3.3 的重合前提是左上原点)。
+                // bug② 修复(59fffa2)+ 收起质感(commit 3:等比缩放):
+                // 原 scaleX/scaleY 各用宽比/高比(0.867/0.129)→ X 几乎不缩、Y 剧烈
+                // 压缩,视觉是"压扁"而非"整体缩小"。系统启动动画的丝滑感来自等比
+                // scale(X=Y 同值)+ 中心锚点 + 内容 crossfade。此处取高比(视觉主导)
+                // 作等比目标,宽方向多出的偏移由 translationX 居中补偿 + 内容层交叉
+                // 淡化吸收——收起到 p≈0 时容器是一个小竖条滑向卡片中心,内容已淡出、
+                // 卡片在其后像素重合,不再追求"容器精确等于卡片矩形"(那是扁条宽高比
+                // 的几何不可能,正是压缩感根源)。
+                val targetScale = b.height / size.height
+                val s = lerp01(targetScale, 1f, pp)
                 transformOrigin = androidx.compose.ui.graphics.TransformOrigin(0f, 0f)
-                scaleX = lerp01(b.width / size.width, 1f, pp)
-                scaleY = lerp01(b.height / size.height, 1f, pp)
-                translationX = lerp01(b.left, 0f, pp)
+                scaleX = s
+                scaleY = s
+                // 等比缩放后宽度方向的居中补偿:收起时容器缩成窄竖条,要平移到卡片
+                // 水平中心(卡片 left+width/2 - 缩放后宽度/2)。左上锚下 translationX
+                // = 目标左边 - (缩放后宽度 - 原宽度)*0(左上锚原点=图层左上,缩放后左边
+                // 仍在 0)。故 translationX = 卡片水平中心 - 缩放后宽度/2。
+                val scaledW = size.width * s
+                val cardCenterX = b.left + b.width / 2f
+                translationX = lerp01(cardCenterX - scaledW / 2f, 0f, pp)
                 translationY = lerp01(b.top, 0f, pp)
                 shape = RoundedCornerShape(lerp01(cornerBase, 0f, pp))
                 clip = true
