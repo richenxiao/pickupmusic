@@ -424,7 +424,7 @@ fun AppRoot(vm: MainViewModel) {
                     when {
                         vm.lyricsOn -> vm.requestLyricsExit()
                         vm.qSheetOpen -> { vm.qSheetOpen = false; vm.qEdit = false }
-                        vm.pMenuView != null -> vm.pMenuView = if (vm.pMenuView == "timer-custom") "timer" else if (vm.pMenuView == "timer" || vm.pMenuView == "speed") "settings" else if (vm.pMenuView == "settings") "root" else null
+                        vm.pMenuView != null -> vm.pMenuView = if (vm.pMenuView == "timer-custom") "timer" else if (vm.pMenuView == "timer" || vm.pMenuView == "speed") "root" else null
                         else -> { vm.playerOpen = false; vm.sleepMenu = false }
                     }
                 },
@@ -485,7 +485,7 @@ fun AppRoot(vm: MainViewModel) {
                 BackHandler {
                     when {
                         vm.lyricsOn -> vm.requestLyricsExit()
-                        vm.pMenuView != null -> vm.pMenuView = if (vm.pMenuView == "timer-custom") "timer" else if (vm.pMenuView == "timer" || vm.pMenuView == "speed") "settings" else if (vm.pMenuView == "settings") "root" else null
+                        vm.pMenuView != null -> vm.pMenuView = if (vm.pMenuView == "timer-custom") "timer" else if (vm.pMenuView == "timer" || vm.pMenuView == "speed") "root" else null
                         vm.sleepMenu -> vm.sleepMenu = false
                         else -> vm.requestPlayerExit()
                     }
@@ -876,9 +876,8 @@ private fun RootBackHandler(vm: MainViewModel) {
             vm.albumMoveFor != null -> vm.albumMoveFor = null
             vm.trackMenuFor != null -> vm.trackMenuFor = null
             vm.pMenuView == "timer-custom" -> vm.pMenuView = "timer"
-            vm.pMenuView == "timer" -> vm.pMenuView = "settings"
-            vm.pMenuView == "speed" -> vm.pMenuView = "settings"
-            vm.pMenuView == "settings" -> vm.pMenuView = "root"
+            vm.pMenuView == "timer" -> vm.pMenuView = "root"
+            vm.pMenuView == "speed" -> vm.pMenuView = "root"
             vm.pMenuView != null -> vm.pMenuView = null
             vm.qSheetOpen -> { vm.qSheetOpen = false; vm.qEdit = false }
             vm.lySheet -> vm.lySheet = false
@@ -1127,7 +1126,7 @@ private fun PlayerMenuSheetContent(vm: MainViewModel) {
     val track = vm.trackById(vm.player.currentId)
     if (track == null) return
     Column(Modifier.navigationBarsPadding().padding(start = 10.dp, end = 10.dp, top = 16.dp, bottom = 10.dp)) {
-            if (vm.pMenuView != "timer" && vm.pMenuView != "timer-custom" && vm.pMenuView != "speed" && vm.pMenuView != "settings") {
+            if (vm.pMenuView != "timer" && vm.pMenuView != "timer-custom" && vm.pMenuView != "speed") {
                 SheetSongHeader(track)
                 SheetActionRow(Lucide.ListPlus, "保存到歌单") {
                     vm.pMenuView = null
@@ -1137,12 +1136,24 @@ private fun PlayerMenuSheetContent(vm: MainViewModel) {
                     SheetActionRow(Lucide.Disc, "查看专辑") { vm.goAlbumOf(track.id, highlight = false) }
                 }
                 SheetActionRow(Lucide.User, "查看歌手") { vm.goArtistOf(track.id) }
-                // v1.3.x: "打开歌词"入口移除——歌词预览卡整卡可点即达歌词本;无歌词时预览卡
-                // 的 Idle/Failed 态自带"在线匹配/导入"按钮,原行的兜底重匹配职责已被覆盖。
-                // 原位替换为"播放页设置"子页入口(收编睡眠定时/播放速度+镜像播放相关开关)。
-                SheetActionRow(Lucide.Settings, "播放页设置", trailing = {
-                    OIcon(Lucide.ChevronRight, 16.dp, c.n500)
-                }) { vm.pMenuView = "settings" }
+                // v1.3.x: "播放页设置"子页入口移除(用户 2026-09 拍板)——睡眠定时/
+                // 播放速度直接放根菜单(带状态尾注,点击进各自子页);无缝播放/
+                // 自动匹配歌词只留在系统设置页,不再在播放页镜像。
+                SheetActionRow(
+                    Lucide.Clock, "睡眠定时",
+                    trailing = {
+                        Text(vm.player.sleepStatusText(), style = body(12.5f, FontWeight.SemiBold, c.n500))
+                        OIcon(Lucide.ChevronRight, 16.dp, c.n500)
+                    },
+                ) { vm.pMenuView = "timer" }
+                SheetActionRow(
+                    Icons.Filled.Speed, "播放速度",
+                    trailing = {
+                        val spd = if (vm.playbackSpeed == 1.0f) "正常" else "%.2f×".format(vm.playbackSpeed)
+                        Text(spd, style = body(12.5f, FontWeight.SemiBold, c.n500))
+                        OIcon(Lucide.ChevronRight, 16.dp, c.n500)
+                    },
+                ) { vm.pMenuView = "speed" }
                 // v1.3.x: 图标 Captions(歌词/字幕语义)——原 ListPlus 与"保存到歌单"撞图标。
                 SheetActionRow(Lucide.Captions, "歌词来源", trailing = {
                     Text(
@@ -1448,50 +1459,6 @@ private fun PlayerMenuSheetContent(vm: MainViewModel) {
                         }
                         OIcon(Lucide.Settings, 16.dp, c.n400)
                     }
-                }
-            } else if (vm.pMenuView == "settings") {
-                // v1.3.x: 播放页设置子页——原根菜单的睡眠定时/播放速度收编进来,再镜像
-                // 两个播放相关全局开关(无缝播放/自动匹配歌词)。镜像与全局设置页共用
-                // 同一 DataStore 值,两处入口改的是同一份数据,谁改都即时生效。
-                Column {
-                    Row(
-                        Modifier
-                            .fillMaxWidth()
-                            .padding(start = 4.dp, end = 4.dp, bottom = 10.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Box(
-                            Modifier.size(34.dp).clip(CircleShape).clickable { vm.pMenuView = "root" },
-                            contentAlignment = Alignment.Center,
-                        ) { OIcon(Lucide.ChevronLeft, 17.dp, c.text) }
-                        Text("播放页设置", style = body(15f, FontWeight.ExtraBold, c.text))
-                    }
-                    Box(Modifier.fillMaxWidth().height(1.dp).background(c.divider))
-                    Spacer(Modifier.height(6.dp))
-                    SheetActionRow(
-                        Lucide.Clock, "睡眠定时",
-                        trailing = {
-                            Text(vm.player.sleepStatusText(), style = body(12.5f, FontWeight.SemiBold, c.n500))
-                            OIcon(Lucide.ChevronRight, 16.dp, c.n500)
-                        },
-                    ) { vm.pMenuView = "timer" }
-                    SheetActionRow(
-                        Icons.Filled.Speed, "播放速度",
-                        trailing = {
-                            val spd = if (vm.playbackSpeed == 1.0f) "正常" else "%.2f×".format(vm.playbackSpeed)
-                            Text(spd, style = body(12.5f, FontWeight.SemiBold, c.n500))
-                            OIcon(Lucide.ChevronRight, 16.dp, c.n500)
-                        },
-                    ) { vm.pMenuView = "speed" }
-                    // 无缝播放/自动匹配歌词:与全局设置页同一份数据的镜像入口(行点击与
-                    // 开关都能切换,行为与设置页 SettingRow 一致)。
-                    SheetActionRow(Lucide.Infinity, "无缝播放", trailing = {
-                        OrganicSwitch(vm.gapless) { vm.setGapless(!vm.gapless) }
-                    }) { vm.setGapless(!vm.gapless) }
-                    SheetActionRow(Lucide.Mic, "自动匹配歌词", trailing = {
-                        OrganicSwitch(vm.autoMatch) { vm.setAutoMatch(!vm.autoMatch) }
-                    }) { vm.setAutoMatch(!vm.autoMatch) }
                 }
             }
         }
