@@ -982,7 +982,13 @@ private fun MiniPlayer(vm: MainViewModel, track: Track) {
             Column(
                 Modifier
                     .weight(1f)
-                    .clickable { vm.playerOpen = true },
+                    // v1.3.x 需求5:去掉点击涟漪/按压反馈(用户嫌不好看)。
+                    // indication=null 不影响 clickable 行为本身(仍打开播放页)。
+                    // 同 LyricsScreen 图标按钮的去涟漪写法。
+                    .clickable(
+                        interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                        indication = null,
+                    ) { vm.playerOpen = true },
             ) {
                 Text(track.title, style = body(13.5f, FontWeight.Bold, c.text), maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text(track.artist, style = body(11.5f, FontWeight.Normal, c.n600), maxLines = 1)
