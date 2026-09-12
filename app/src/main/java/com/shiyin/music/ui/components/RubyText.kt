@@ -33,6 +33,9 @@ import androidx.compose.ui.unit.sp
  * 存取用，使同一 surface 在歌里多次出现、读法不同时可分别设——如「何」有的なに
  * 有的なん）。RubyText 渲染不读此字段。
  */
+// v1.3.x 跟行滚动卡顿排查:@Immutable 同 LrcParser.kt 批注(segmentsByLine 的
+// List<List<RubySegment>> 嵌套链最深处,RubyText 组件参数稳定化最后一环)。
+@androidx.compose.runtime.Immutable
 data class RubySegment(val surface: String, val reading: String?, val startOffset: Int = 0)
 
 /**

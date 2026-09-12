@@ -1,7 +1,16 @@
 package com.shiyin.music.data.lyrics
 
+// v1.3.x 跟行滚动卡顿排查(用户点名根因):LyricLine/ParsedLyrics 全 val +
+// 不可变字段(Long?/String/List),但 Kotlin List 接口在 Compose 稳定性推断
+// 里默认不稳定(无法保证非 MutableList)——LyricsScreen 组合级读 lines 传给
+// LazyColumn items,父级每次重组(vm.player.positionMs 每 300ms ticker 写)
+// 整列 item lambda 不能跳过,26sp 全部重组合重测量(滚动/跟行卡顿)。
+// @Immutable 是"承诺"而非验证,此处字段全不可变,承诺成立。LoadedLyrics
+// (MainViewModel)同批处理。
+@androidx.compose.runtime.Immutable
 data class LyricLine(val timeMs: Long?, val text: String)
 
+@androidx.compose.runtime.Immutable
 data class ParsedLyrics(
     val lines: List<LyricLine>,
     val synced: Boolean,

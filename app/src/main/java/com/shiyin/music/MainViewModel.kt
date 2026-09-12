@@ -53,6 +53,9 @@ enum class LyricsKind { Embedded, Sidecar, Online, Imported }
 
 data class ToastData(val text: String, val changeTargetId: Long?)
 
+// v1.3.x 跟行滚动卡顿排查:@Immutable 同 LrcParser.kt 批注(parsed 为唯一
+// 不稳定字段,标注后整链稳定,vm.currentLyrics 相同实例时 LyricsScreen 可跳过)。
+@androidx.compose.runtime.Immutable
 data class LoadedLyrics(
     val mediaId: Long,
     val raw: String,
