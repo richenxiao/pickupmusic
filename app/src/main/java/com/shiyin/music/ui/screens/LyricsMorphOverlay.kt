@@ -45,17 +45,28 @@ import kotlinx.coroutines.launch
  *   的真卡片(C3 alpha 交叉淡化)承担,不存在中段"结构切换"(现象②)。
  *   首帧 null bounds:alpha=0(不可见),不再 early-return 默认值(=全屏可见=
  *   现象①根因)。LyricsScreen 组合延迟到 p>0.35(淡入窗前),消除组合期闪现。
+ *
+ * v1.3.x 预组合(帧率收尾):组合门从纯 lyricsOn 扩为 lyricsOn||预热。预热态
+ *   (interactive=false)提前挂载同一实例——隐形+整页零命中测试(触摸穿透),
+ *   首组合/测量/预滚/取色/振假名 pipeline 全部在静止播放页完成;点卡翻
+ *   interactive=true 即刻开动画,打开帧零突发。预热没赶上走现场组合 fallback。
  */
 @Composable
-fun LyricsMorphOverlay(vm: MainViewModel, morph: LyricsMorphState) {
+fun LyricsMorphOverlay(vm: MainViewModel, morph: LyricsMorphState, interactive: Boolean = true) {
     val scope = rememberCoroutineScope()
     val density = LocalDensity.current
 
-    // open() 在 overlay 首次组合时由 LaunchedEffect 启动;withFrameNanos 延 1 帧
-    // 让首组合(LyricsScreen 突发,~40ms)先落地:突发落在 frame 0(窗口 alpha=0
-    // 不可见、动画未启动),读作 tap 延迟而非动画中段卡顿;frame 1 才开 animateTo。
-    LaunchedEffect(Unit) {
-        androidx.compose.runtime.withFrameNanos { }
+    // v1.3.x 预组合(morph 帧率收尾):overlay 可在预热期(interactive=false)提前
+    // 挂载——隐形(progress=0 时两层 alpha 本来就是 0)+ 可穿透(interactive=false
+    // 时整页零命中测试,LyricsScreen 的全部 pointerInput/clickable 条件不挂)。
+    // tap 翻 interactive=true 才启动 open。预热挂载把首组合/测量/预滚/取色/
+    // 振假名 pipeline 全搬到静止播放页,打开帧零突发 → 预热过的挂载不再要
+    // withFrameNanos 1 帧延迟(frame 0 即动画首帧);全新挂载(预热没赶上的
+    // fallback)保留 1 帧隔离突发,行为与旧版一致。
+    val wasPrewarm = remember { !interactive }
+    LaunchedEffect(interactive) {
+        if (!interactive) return@LaunchedEffect
+        if (!wasPrewarm) androidx.compose.runtime.withFrameNanos { }
         morph.open(vm.lyricsCardBounds)
     }
     // 屏高写到 morph 状态(onDrag/collapse 的 px→progress 换算共用除数)。
@@ -84,7 +95,9 @@ fun LyricsMorphOverlay(vm: MainViewModel, morph: LyricsMorphState) {
     Box(
         Modifier
             .fillMaxSize()
-            .pointerInput(Unit) {
+            // v1.3.x 预组合:闸门只在 interactive(歌词本打开)时挂载——预热期整层
+            // 零命中测试,触摸穿透到播放页(卡片点照常打开、播放键/进度条不受影响)。
+            .then(if (interactive) Modifier.pointerInput(Unit) {
                 // ── P3-① 指针闸门(§3.5 主防御;bug③ 修复:整条手势流持续判定;
                 //      用户严格规则:仅顶部起手可收起)──
                 // 播放 sheet 的 anchoredDraggable 会对"sheet 正文任意位置"的下拉 1:1
@@ -149,7 +162,7 @@ fun LyricsMorphOverlay(vm: MainViewModel, morph: LyricsMorphState) {
                         }
                     }
                 }
-            }
+            } else Modifier)
     ) {
         // ── 窗口层:纯色圆角矩形,graphicsLayer 做几何形变 ──
         // 零内容:只承载 artBg 背景色块 + 圆角裁剪。文字永不进入此变换子树。
@@ -227,7 +240,7 @@ fun LyricsMorphOverlay(vm: MainViewModel, morph: LyricsMorphState) {
                         .statusBarsPadding()
                         .navigationBarsPadding()
                 ) {
-                    LyricsScreen(vm)
+                    LyricsScreen(vm, interactive)
                 }
             }
         }

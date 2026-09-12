@@ -3266,7 +3266,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     notes.joinToString("；").also { bumpFuriganaRevision() }
                 } else notes.joinToString("；").ifBlank { "无更新" }
                 // 有写入时 bump 已触发重算;纯失败(无写入)不动现有注音
-                if (wrote) showToast("振假名校验：$furiganaAssistStatus", null)
+                // v1.3.x 预组合:预热期(歌词本没开)也会跑 pipeline——成功提示只在
+                // 歌词本实际打开时弹,预热期静默入库(开本即用,不无故弹 toast)。
+                if (wrote && lyricsOn) showToast("振假名校验：$furiganaAssistStatus", null)
             }
     }
 
