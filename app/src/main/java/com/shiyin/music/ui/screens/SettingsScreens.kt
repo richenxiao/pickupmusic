@@ -73,14 +73,15 @@ fun SettingsHost(vm: MainViewModel) {
     when (vm.filesView) {
         FilesView.Root -> SettingsRoot(vm)
         FilesView.Clean -> CleanScreen(vm)
-        FilesView.Trash -> TrashScreen(vm)
+        FilesView.Trash -> CleanScreen(vm)   // v1.3.x: 回收站并入清理建议页,旧入口重定向
         FilesView.Folders -> FoldersScreen(vm)
         FilesView.FolderContent -> FolderContentScreen(vm)
-        FilesView.Ignored -> IgnoredFoldersScreen(vm)
+        FilesView.Ignored -> FoldersScreen(vm) // v1.3.x: 音频文件夹+已忽略归入同一"文件夹管理"页
         FilesView.Devices -> DevicesScreen(vm)
         FilesView.About -> AboutScreen(vm)
         FilesView.Merges -> MergesScreen(vm)
         FilesView.ImageSources -> ImageSourcesScreen(vm)
+        FilesView.LyricsBook -> LyricsBookScreen(vm)
     }
 }
 
@@ -189,27 +190,18 @@ private fun SettingsRoot(vm: MainViewModel) {
                 .background(c.surface)
                 .padding(horizontal = 16.dp, vertical = 6.dp),
         ) {
+            // v1.3.x 设置重组:回收站并入清理建议页(页顶统一入口),这里不再单列。
             CardEntryRow(
                 Lucide.Brush, c.a700, "清理建议",
-                "${vm.cleanCount()} 个可清理 · ${formatSizeMb(vm.cleanSizeBytes())}",
+                "${vm.cleanCount()} 个可清理 · ${formatSizeMb(vm.cleanSizeBytes())} · 回收站 ${vm.trashMirror.size} 个",
                 divider = true,
             ) { vm.openClean() }
+            // v1.3.x 设置重组:音频文件夹+已忽略的文件夹归入新"文件夹管理"页。
             CardEntryRow(
-                Lucide.Trash, c.n700, "回收站",
-                "${vm.trashMirror.size} 个文件",
-                divider = true,
-            ) { vm.filesView = FilesView.Trash }
-            CardEntryRow(
-                Lucide.Folder, c.n700, "音频文件夹",
-                "${vm.foldersMap().size} 个文件夹 · 忽略或删除整个文件夹",
+                Lucide.Folder, c.n700, "文件夹管理",
+                "${vm.foldersMap().size} 个文件夹 · ${vm.ignored.size} 个已忽略",
                 divider = true,
             ) { vm.filesView = FilesView.Folders }
-            // v2.0: 已忽略 → card entry inside 文件管理 (no longer standalone)
-            CardEntryRow(
-                Lucide.EyeOff, c.n700, "已忽略的文件夹",
-                if (vm.ignored.isEmpty()) "暂无" else "${vm.ignored.size} 个文件夹",
-                divider = true,
-            ) { vm.filesView = FilesView.Ignored }
             // v2.0: 重新扫描 moved from 通用 into 文件管理
             CardEntryRow(
                 Lucide.RotateCcw, c.n700, "重新扫描音频",
@@ -268,6 +260,7 @@ private fun SettingsRoot(vm: MainViewModel) {
             }
             // v1.2.0 阶段三：修正数据备份/恢复。导出含专辑/曲目/歌手/振假名等
             // 全部人工修正，导入覆盖同主键。换机/重装前备份，避免重新扫描后丢失修正。
+            // v1.3.x: 行下方的字段清单说明文字去掉(用户拍板)。
             Row(
                 Modifier.fillMaxWidth().padding(vertical = 13.dp),
                 horizontalArrangement = Arrangement.spacedBy(13.dp),
@@ -276,10 +269,6 @@ private fun SettingsRoot(vm: MainViewModel) {
                 OIcon(Lucide.Shield, 19.dp, c.n700)
                 Column(Modifier.weight(1f)) {
                     Text("备份我的修正数据", style = body(15f, FontWeight.SemiBold, c.text))
-                    Text(
-                        "专辑名·艺术家·封面·隐藏·迁专辑·歌手合并·振假名注音",
-                        style = body(11.5f, FontWeight.Normal, c.n600),
-                    )
                     if (backupMsg != null) {
                         Text(backupMsg!!, style = body(11f, FontWeight.Normal, c.a700))
                     }
@@ -303,45 +292,57 @@ private fun SettingsRoot(vm: MainViewModel) {
                     ) { Text("恢复", style = body(12.5f, FontWeight.Bold, c.text)) }
                 }
             }
+            // v1.3.x: 睡眠定时可编辑——整行点击弹窗(时长档位/本曲结束/关闭),
+            // 复用播放菜单同套 PlayerController 接口;不再只读展示。
+            var sleepEditOpen by remember { mutableStateOf(false) }
             Row(
                 Modifier
                     .fillMaxWidth()
+                    .clickable { sleepEditOpen = true }
                     .padding(vertical = 13.dp),
                 horizontalArrangement = Arrangement.spacedBy(13.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 OIcon(Lucide.Clock, 19.dp, c.n700)
                 Text("睡眠定时", style = body(15f, FontWeight.SemiBold, c.text), modifier = Modifier.weight(1f))
-                Box(
-                    Modifier
-                        .clip(RoundedCornerShape(999.dp))
-                        .background(c.n100)
-                        .padding(horizontal = 10.dp, vertical = 3.dp)
-                ) {
-                    Text(
-                        vm.player.sleepStatusText(),
-                        style = body(12.5f, FontWeight.Normal, c.n800),
-                    )
-                }
+                Text(
+                    vm.player.sleepStatusText(),
+                    style = body(12.5f, FontWeight.Normal, c.n600),
+                )
+                OIcon(Lucide.ChevronRight, 18.dp, c.n500)
             }
-        }
-
-        // v1.2.1: 写真源配置(API key + 源开关)入口
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .shadowSm(RoundedCornerShape(28.dp))
-                .clip(RoundedCornerShape(28.dp))
-                .background(c.surface)
-                .clickable { vm.filesView = FilesView.ImageSources }
-                .padding(horizontal = 16.dp, vertical = 13.dp),
-            horizontalArrangement = Arrangement.spacedBy(13.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            OIcon(Lucide.User, 19.dp, c.n700)
-            Text("写真源", style = body(15f, FontWeight.SemiBold, c.text), modifier = Modifier.weight(1f))
-            Text("配置 · ${vm.disabledImageSources.size} 关", style = body(12.5f, FontWeight.Normal, c.n600))
-            OIcon(Lucide.ChevronRight, 18.dp, c.n500)
+            if (sleepEditOpen) SleepTimerEditDialog(vm) { sleepEditOpen = false }
+            // v1.3.x: 写真源从独立卡片并入通用栏(设计语言统一,一张卡一段落;
+            // 入口语义不变)。歌词本设置同段新增(见下)。
+            Box(Modifier.fillMaxWidth().height(1.dp).background(c.divider))
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .clickable { vm.filesView = FilesView.ImageSources }
+                    .padding(vertical = 13.dp),
+                horizontalArrangement = Arrangement.spacedBy(13.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                OIcon(Lucide.User, 19.dp, c.n700)
+                Text("写真源", style = body(15f, FontWeight.SemiBold, c.text), modifier = Modifier.weight(1f))
+                Text("配置 · ${vm.disabledImageSources.size} 关", style = body(12.5f, FontWeight.Normal, c.n600))
+                OIcon(Lucide.ChevronRight, 18.dp, c.n500)
+            }
+            // v1.3.x: 歌词本设置(振假名默认开关/自动校验/歌词颜色)入口。
+            Box(Modifier.fillMaxWidth().height(1.dp).background(c.divider))
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .clickable { vm.filesView = FilesView.LyricsBook }
+                    .padding(vertical = 13.dp),
+                horizontalArrangement = Arrangement.spacedBy(13.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                OIcon(Lucide.Captions, 19.dp, c.n700)
+                Text("歌词本", style = body(15f, FontWeight.SemiBold, c.text), modifier = Modifier.weight(1f))
+                Text("振假名 · 歌词颜色", style = body(12.5f, FontWeight.Normal, c.n600))
+                OIcon(Lucide.ChevronRight, 18.dp, c.n500)
+            }
         }
 
         // v1.5: about entry
@@ -374,6 +375,118 @@ private fun formatCacheSize(bytes: Long?): String {
     return "%.1f MB".format(b / (1024.0 * 1024.0))
 }
 
+/**
+ * v1.3.x: 设置页睡眠定时编辑弹窗——档位选择(15/30/60 分)、本曲结束后、
+ * 关闭。复用播放菜单同一套 PlayerController 接口,两处改的是同一状态。
+ */
+@Composable
+private fun SleepTimerEditDialog(vm: MainViewModel, onDismiss: () -> Unit) {
+    val c = LocalOrganic.current
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = c.surface,
+        title = { Text("睡眠定时", style = heading(18)) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Row(
+                    Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp))
+                        .clickable { vm.player.setSleepEndOfTrack(); onDismiss() }
+                        .padding(horizontal = 10.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text("本曲结束后暂停", style = body(14.5f, FontWeight.Normal, c.text), modifier = Modifier.weight(1f))
+                    if (vm.player.sleepMode == 2) OIcon(Lucide.CheckBold, 16.dp, c.accent)
+                }
+                for (min in listOf(15, 30, 60)) {
+                    Row(
+                        Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp))
+                            .clickable { vm.player.setSleepTimer(min); onDismiss() }
+                            .padding(horizontal = 10.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text("$min 分钟后停止", style = body(14.5f, FontWeight.Normal, c.text), modifier = Modifier.weight(1f))
+                        if (vm.player.sleepChosenMin == min && vm.player.sleepLeftSec > 0) {
+                            OIcon(Lucide.CheckBold, 16.dp, c.accent)
+                        }
+                    }
+                }
+                Row(
+                    Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp))
+                        .clickable { vm.player.setSleepTimer(0); onDismiss() }
+                        .padding(horizontal = 10.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text("关闭定时", style = body(14.5f, FontWeight.Normal, c.a700), modifier = Modifier.weight(1f))
+                }
+            }
+        },
+        confirmButton = {
+            DialogActionsRow(listOf(DialogAction("关闭") { onDismiss() }))
+        },
+    )
+}
+
+// ── v1.3.x 歌词本设置子页(振假名默认开关/自动校验/歌词颜色) ──────────────────
+// 三个设置都只影响全屏歌词本页:振假名两项仅对日语歌生效(hasKana 判定,
+// 中英文歌开关不可见、永不触发联网校验);歌词颜色 default=跟随封面取色。
+@Composable
+private fun LyricsBookScreen(vm: MainViewModel) {
+    val c = LocalOrganic.current
+    Column(
+        Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 20.dp)
+            .padding(top = 22.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        SubPageHeader("歌词本") { vm.filesView = FilesView.Root }
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .shadowSm(RoundedCornerShape(28.dp))
+                .clip(RoundedCornerShape(28.dp))
+                .background(c.surface)
+                .padding(horizontal = 16.dp, vertical = 6.dp),
+        ) {
+            SettingRow(Lucide.Captions, "日语歌默认开振假名", "打开日语歌的歌词本时自动显示振假名标注", divider = true) {
+                OrganicSwitch(vm.furiganaDefaultOn) { vm.setFuriganaDefaultOn(!vm.furiganaDefaultOn) }
+            }
+            SettingRow(Lucide.Shield, "日语歌自动校验振假名", "开启标注时联网对照权威歌词站,自动补全缺漏注音", divider = true) {
+                OrganicSwitch(vm.furiganaAutoVerify) { vm.setFuriganaAutoVerify(!vm.furiganaAutoVerify) }
+            }
+            // 歌词颜色三档:默认(跟随封面)/白色/黑色。当前档高亮,点击即切换。
+            Row(
+                Modifier.fillMaxWidth().padding(vertical = 13.dp),
+                horizontalArrangement = Arrangement.spacedBy(13.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                OIcon(Lucide.Brush, 19.dp, c.n700)
+                Text("歌词颜色", style = body(15f, FontWeight.SemiBold, c.text), modifier = Modifier.weight(1f))
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    for ((mode, label) in listOf("default" to "跟随封面", "white" to "白色", "black" to "黑色")) {
+                        val active = vm.lyricsColorMode == mode
+                        Box(
+                            Modifier
+                                .clip(RoundedCornerShape(999.dp))
+                                .background(if (active) c.accent else c.n100)
+                                .clickable { vm.setLyricsColorMode(mode) }
+                                .padding(horizontal = 11.dp, vertical = 6.dp),
+                        ) {
+                            Text(label, style = body(12f, FontWeight.Bold, if (active) Color.White else c.text))
+                        }
+                    }
+                }
+            }
+        }
+        Text(
+            "振假名相关设置仅对日语歌生效：中文、英文歌曲不会显示开关，也不会联网获取注音。",
+            style = body(12.5f, FontWeight.Normal, c.n500).copy(lineHeight = 18.sp),
+        )
+        Box(Modifier.height(114.dp))
+    }
+}
+
 @Composable
 private fun SettingRow(
     icon: ImageVector,
@@ -402,7 +515,8 @@ private fun SettingRow(
     if (divider) Box(Modifier.fillMaxWidth().height(1.dp).background(c.divider))
 }
 
-// ── v1.4 audio folders subpage ─────────────────────────────────────────────
+// ── v1.4 audio folders subpage · v1.3.x 合并已忽略 = 「文件夹管理」页 ────────
+// 音频文件夹与已忽略的文件夹归入同一页(两段),不再分两个子页来回跳。
 @Composable
 private fun FoldersScreen(vm: MainViewModel) {
     val c = LocalOrganic.current
@@ -414,7 +528,10 @@ private fun FoldersScreen(vm: MainViewModel) {
             .padding(top = 22.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        SubPageHeader("音频文件夹") { vm.filesView = FilesView.Root }
+        SubPageHeader("文件夹管理") { vm.filesView = FilesView.Root }
+
+        // ── 段1: 音频文件夹 ──
+        SectionLabel("音频文件夹 · ${vm.foldersMap().size}")
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             for ((path, ts) in vm.foldersMap()) {
                 Row(
@@ -460,88 +577,53 @@ private fun FoldersScreen(vm: MainViewModel) {
                 }
             }
         }
-        Text(
-            "忽略的文件夹不再出现在音乐库，可随时恢复；删除的文件先进入回收站。",
-            style = body(12.5f, FontWeight.Normal, c.n500).copy(lineHeight = 18.sp),
-        )
-        Box(Modifier.height(114.dp))
-    }
-}
 
-// ── v2.0: ignored folders subpage (replaces the old standalone section) ─────
-@Composable
-private fun IgnoredFoldersScreen(vm: MainViewModel) {
-    val c = LocalOrganic.current
-    Column(
-        Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(horizontal = 20.dp)
-            .padding(top = 22.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
-    ) {
-        SubPageHeader("已忽略的文件夹") { vm.filesView = FilesView.Root }
-        if (vm.ignored.isEmpty()) {
-            Column(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 48.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(14.dp),
-            ) {
-                Box(
-                    Modifier
-                        .size(72.dp)
-                        .clip(CircleShape)
-                        .background(c.n200),
-                    contentAlignment = Alignment.Center,
-                ) { OIcon(Lucide.EyeOff, 30.dp, c.n500) }
+        // ── 段2: 已忽略的文件夹 ──
+        SectionLabel("已忽略 · ${vm.ignored.size}")
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            if (vm.ignored.isEmpty()) {
                 Text(
-                    "暂无忽略的文件夹。\n在「音频文件夹」页点击眼睛图标可忽略它。",
-                    style = body(14f, FontWeight.Normal, c.n600).copy(lineHeight = 22.sp),
-                    textAlign = TextAlign.Center,
+                    "暂无忽略的文件夹。在上方列表点眼睛图标可忽略它。",
+                    style = body(12.5f, FontWeight.Normal, c.n500).copy(lineHeight = 18.sp),
                 )
             }
-        } else {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                for (path in vm.ignored) {
-                    Row(
+            for (path in vm.ignored) {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .shadowSm(RoundedCornerShape(28.dp))
+                        .clip(RoundedCornerShape(28.dp))
+                        .background(c.surface)
+                        .padding(horizontal = 16.dp, vertical = 14.dp),
+                    horizontalArrangement = Arrangement.spacedBy(13.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Box(
                         Modifier
-                            .fillMaxWidth()
-                            .shadowSm(RoundedCornerShape(28.dp))
-                            .clip(RoundedCornerShape(28.dp))
-                            .background(c.surface)
-                            .padding(horizontal = 16.dp, vertical = 14.dp),
-                        horizontalArrangement = Arrangement.spacedBy(13.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Box(
-                            Modifier
-                                .size(44.dp)
-                                .clip(RoundedCornerShape(14.dp))
-                                .background(c.n200),
-                            contentAlignment = Alignment.Center,
-                        ) { OIcon(Lucide.EyeOff, 19.dp, c.n600) }
-                        Column(Modifier.weight(1f)) {
-                            Text(path, style = body(15f, FontWeight.SemiBold, c.text), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            Text(
-                                "已忽略",
-                                style = body(12.5f, FontWeight.Normal, c.n500),
-                                modifier = Modifier.padding(top = 2.dp),
-                            )
-                        }
-                        PillButton(
-                            "恢复扫描",
-                            onClick = { vm.restoreFolder(path) },
-                            bg = null, textColor = c.text, borderColor = c.divider,
-                            fontSize = 12.5f, padH = 14.dp, padV = 7.dp,
+                            .size(44.dp)
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(c.n200),
+                        contentAlignment = Alignment.Center,
+                    ) { OIcon(Lucide.EyeOff, 19.dp, c.n600) }
+                    Column(Modifier.weight(1f)) {
+                        Text(path, style = body(15f, FontWeight.SemiBold, c.text), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(
+                            "已忽略",
+                            style = body(12.5f, FontWeight.Normal, c.n500),
+                            modifier = Modifier.padding(top = 2.dp),
                         )
                     }
+                    PillButton(
+                        "恢复扫描",
+                        onClick = { vm.restoreFolder(path) },
+                        bg = null, textColor = c.text, borderColor = c.divider,
+                        fontSize = 12.5f, padH = 14.dp, padV = 7.dp,
+                    )
                 }
             }
         }
         Text(
-            "恢复后文件夹里的音频会重新出现在音乐库中。",
+            "忽略的文件夹不再出现在音乐库，可随时恢复；删除的文件先进入回收站（见清理建议页）。",
             style = body(12.5f, FontWeight.Normal, c.n500).copy(lineHeight = 18.sp),
         )
         Box(Modifier.height(114.dp))
@@ -942,9 +1024,11 @@ private fun AboutScreen(vm: MainViewModel) {
     }
 }
 
-// ── clean suggestions ──────────────────────────────────────────────────────
+// ── clean suggestions · v1.3.x 回收站并入页顶 ───────────────────────────────
+// 页序:回收站(顶) → 重复文件 → 超短音频 → 移入回收站按钮。
 @Composable
 private fun CleanScreen(vm: MainViewModel) {
+    val c = LocalOrganic.current
     val dups = vm.dupGroups().flatten()
     val shorts = vm.shortTracks()
     val selIds = vm.sel.filterValues { it }.keys
@@ -958,6 +1042,72 @@ private fun CleanScreen(vm: MainViewModel) {
         item {
             SubPageHeader("清理建议") { vm.filesView = FilesView.Root; vm.sel = emptyMap() }
         }
+        // ── 回收站段(并入;原独立 TrashScreen)──
+        item { SectionLabel("回收站 · ${vm.trashMirror.size} 个文件") }
+        if (vm.trashMirror.isEmpty()) {
+            item {
+                Text(
+                    "回收站是空的。删除的文件会先进入回收站，可随时恢复或彻底清空。",
+                    style = body(12.5f, FontWeight.Normal, c.n500).copy(lineHeight = 18.sp),
+                )
+            }
+        } else {
+            items(vm.trashMirror, key = { "t${it.mediaId}" }) { e ->
+                Column {
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 4.dp, vertical = 10.dp),
+                        horizontalArrangement = Arrangement.spacedBy(13.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Box(
+                            Modifier
+                                .size(42.dp)
+                                .clip(RoundedCornerShape(13.dp))
+                                .background(c.n200),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(
+                                e.title.firstOrNull()?.uppercase() ?: "♪",
+                                fontFamily = Caprasimo,
+                                style = body(17f, FontWeight.Normal, c.n600).copy(fontFamily = Caprasimo),
+                            )
+                        }
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                e.title,
+                                style = body(14.5f, FontWeight.SemiBold, c.n600).copy(textDecoration = TextDecoration.LineThrough),
+                                maxLines = 1, overflow = TextOverflow.Ellipsis,
+                            )
+                            Text(
+                                "${e.folder} · ${formatSizeMb(e.sizeBytes)}",
+                                style = body(12.5f, FontWeight.Normal, c.n500),
+                                modifier = Modifier.padding(top = 2.dp),
+                                maxLines = 1,
+                            )
+                        }
+                        PillButton(
+                            "恢复",
+                            onClick = { vm.requestRestore(listOf(e.mediaId)) },
+                            bg = null, textColor = c.text, borderColor = c.divider,
+                            fontSize = 12.5f, padH = 14.dp, padV = 7.dp,
+                            icon = Lucide.RotateCcw, iconSize = 13.dp,
+                        )
+                    }
+                    Box(Modifier.fillMaxWidth().height(1.dp).background(c.divider))
+                }
+            }
+            item {
+                PillButton(
+                    "彻底清空回收站（释放 ${formatSizeMb(vm.trashMirror.sumOf { it.sizeBytes })}）",
+                    onClick = { vm.requestEmptyTrash() },
+                    modifier = Modifier.fillMaxWidth(),
+                    bg = null, textColor = c.a700, fontSize = 14f, padV = 13.dp,
+                )
+            }
+        }
+        // ── 重复文件段 ──
         item { SectionLabel("重复文件") }
         items(dups, key = { "d${it.id}" }) { t -> CheckRow(vm, t, "${t.artist} · ${t.folder}") }
         item { SectionLabel("超短音频（30 秒以内）") }
@@ -1007,95 +1157,7 @@ private fun CheckRow(vm: MainViewModel, t: Track, sub: String) {
 }
 
 // ── trash ──────────────────────────────────────────────────────────────────
-@Composable
-private fun TrashScreen(vm: MainViewModel) {
-    val c = LocalOrganic.current
-    val rows = vm.trashMirror
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 22.dp, bottom = 130.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
-    ) {
-        item {
-            SubPageHeader("回收站") { vm.filesView = FilesView.Root }
-        }
-        if (rows.isEmpty()) {
-            item {
-                Column(
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 56.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(14.dp),
-                ) {
-                    Box(
-                        Modifier
-                            .size(72.dp)
-                            .clip(CircleShape)
-                            .background(c.n200),
-                        contentAlignment = Alignment.Center,
-                    ) { OIcon(Lucide.Trash, 30.dp, c.n500) }
-                    Text("回收站是空的", style = body(14f, FontWeight.Normal, c.n600))
-                }
-            }
-        } else {
-            items(rows, key = { it.mediaId }) { e ->
-                Column {
-                    Row(
-                        Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 4.dp, vertical = 10.dp),
-                        horizontalArrangement = Arrangement.spacedBy(13.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Box(
-                            Modifier
-                                .size(42.dp)
-                                .clip(RoundedCornerShape(13.dp))
-                                .background(c.n200),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Text(
-                                e.title.firstOrNull()?.uppercase() ?: "♪",
-                                fontFamily = Caprasimo,
-                                style = body(17f, FontWeight.Normal, c.n600).copy(fontFamily = Caprasimo),
-                            )
-                        }
-                        Column(Modifier.weight(1f)) {
-                            Text(
-                                e.title,
-                                style = body(14.5f, FontWeight.SemiBold, c.n600).copy(textDecoration = TextDecoration.LineThrough),
-                                maxLines = 1, overflow = TextOverflow.Ellipsis,
-                            )
-                            Text(
-                                "${e.folder} · ${formatSizeMb(e.sizeBytes)}",
-                                style = body(12.5f, FontWeight.Normal, c.n500),
-                                modifier = Modifier.padding(top = 2.dp),
-                                maxLines = 1,
-                            )
-                        }
-                        PillButton(
-                            "恢复",
-                            onClick = { vm.requestRestore(listOf(e.mediaId)) },
-                            bg = null, textColor = c.text, borderColor = c.divider,
-                            fontSize = 12.5f, padH = 14.dp, padV = 7.dp,
-                            icon = Lucide.RotateCcw, iconSize = 13.dp,
-                        )
-                    }
-                    Box(Modifier.fillMaxWidth().height(1.dp).background(c.divider))
-                }
-            }
-            item {
-                PillButton(
-                    "彻底清空回收站（释放 ${formatSizeMb(rows.sumOf { it.sizeBytes })}）",
-                    onClick = { vm.requestEmptyTrash() },
-                    modifier = Modifier.fillMaxWidth(),
-                    bg = null, textColor = c.a700, fontSize = 14f, padV = 13.dp,
-                )
-            }
-        }
-    }
-}
+// v1.3.x: 独立回收站子页删除——回收站段并入 CleanScreen 页顶(用户拍板合并)。
 
 // ── v1.2.1 写真源配置子页 · v1.3.2 重排:两段式(内置源 / 自定义源)。
 //      需 Key 的源(Fanart/Last.fm)与用户自建 URL 源统一归入「自定义源」(置底),
@@ -1167,11 +1229,14 @@ private fun ImageSourcesScreen(vm: MainViewModel) {
                             Text("已配置", style = body(10f, FontWeight.Bold, c.s700))
                         }
                     }
-                    PillButton(
-                        "修改键", onClick = { keyDialogFor = key },
-                        bg = null, textColor = c.accent, borderColor = c.divider,
-                        fontSize = 12f, padH = 12.dp, padV = 6.dp,
-                    )
+                    // v1.3.x: 纯文字"修改键"按钮换成笔图标(与自定义源的删除图标同一
+                    // 设计语言:30dp 圆形触区+描边图标);点击弹原来的 Key 填写窗。
+                    Box(
+                        Modifier.size(30.dp).clip(CircleShape).clickable { keyDialogFor = key },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        OIcon(Lucide.Pencil, 15.dp, if (savedKey.isBlank()) c.n500 else c.accent)
+                    }
                     androidx.compose.material3.Switch(
                         checked = enabled,
                         onCheckedChange = { vm.setImageSourceEnabled(key, it) },
