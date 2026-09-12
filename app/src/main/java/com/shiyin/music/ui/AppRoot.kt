@@ -349,18 +349,19 @@ fun AppRoot(vm: MainViewModel) {
                     .statusBarsPadding()
                     .padding(20.dp),
             ) {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Row(verticalAlignment = Alignment.Bottom, modifier = Modifier.padding(bottom = 12.dp)) {
+                Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                    Row(verticalAlignment = Alignment.Bottom, modifier = Modifier.padding(bottom = 16.dp)) {
                         Text("拾音", style = heading(24))
                         Text("PickUpMusic", style = body(13f, FontWeight.Normal, c.n500), modifier = Modifier.padding(start = 0.dp, bottom = 3.dp))
                     }
                     // v4: sidebar restructured — 5 items, no file-management here.
-                    // v1.3.0: Agent 移到"关于我们"上方,图标换 Sparkles(AI 语义)。
+                    // v1.3.x: Agent 提到"设置"前面(AI 是高频入口,不该排在最后),
+                    // 图标 Sparkles(AI 语义)。条目间距 8→16dp(用户连续两轮要求加大)。
                     SidebarItem(Lucide.History, "最近播放") { vm.sidebarOpen = false; vm.recentOpen = true; vm.settingsOpen = false }
                     SidebarItem(Lucide.BarChart, "收听统计") { vm.sidebarOpen = false; vm.statsOpen = true; vm.settingsOpen = false }
                     SidebarItem(Lucide.Bell, "你的更新") { vm.sidebarOpen = false; vm.updatesOpen = true; vm.settingsOpen = false }
-                    SidebarItem(Lucide.Settings, "设置") { vm.sidebarOpen = false; vm.settingsOpen = true; vm.filesView = com.shiyin.music.FilesView.Root; vm.recentOpen = false; vm.statsOpen = false; vm.updatesOpen = false; vm.cleanEntry = false }
                     SidebarItem(Lucide.Sparkles, "Agent") { vm.sidebarOpen = false; vm.agentOpen = true }
+                    SidebarItem(Lucide.Settings, "设置") { vm.sidebarOpen = false; vm.settingsOpen = true; vm.filesView = com.shiyin.music.FilesView.Root; vm.recentOpen = false; vm.statsOpen = false; vm.updatesOpen = false; vm.cleanEntry = false }
                     SidebarItem(Lucide.CircleInfo, "关于我们") { vm.sidebarOpen = false; vm.settingsOpen = true; vm.filesView = com.shiyin.music.FilesView.About }
                 }
             }
