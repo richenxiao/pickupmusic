@@ -72,15 +72,14 @@ fun LyricsMorphOverlay(vm: MainViewModel, morph: LyricsMorphState) {
         androidx.compose.ui.graphics.Color(it.first)
     } ?: com.shiyin.music.ui.components.coverPalette(track?.paletteIndex ?: 0).first
 
-    // 帧率优化(唯一组合级订阅消除):原 val p = morph.progress.value 是组合
-    // 级读——动画每帧重组整个 overlay(两层 graphicsLayer 修饰链重建 +
-    // LyricsScreen(vm) 每帧全跑,vm 不稳定 remember 全部失效重执行)。
-    // 改 snapshotFlow 一次性门:progress 首次越过 0.35 时翻转 listReady,
-    // 之后整个 overlay 组合不再订阅 progress——逐帧动画只剩 graphicsLayer
-    // 延迟读重录(窗口层/内容层/锚行位移),每帧重组次数 0。
+    // 帧率优化(唯一组合级订阅消除)+ 突发挪位:原 p>0.35 门把 LyricsScreen
+    // 首组合开销(LazyColumn+26sp 测量+振假名 pipeline 起步)落在动画中段
+    // =实测 3 个 Slow UI 帧之一。改起始组合:突发落在窗口还贴卡片(p≈0)、
+    // 内容 alpha=0 的不可见区,读作"首帧略迟"而非"中段卡顿"。组合零订阅
+    // progress 不变,逐帧动画只剩 graphicsLayer 延迟读重录。
     var listReady by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) {
-        snapshotFlow { morph.progress.value > 0.35f }
+        snapshotFlow { morph.progress.value > 0f }
             .filter { it }
             .first()
         listReady = true
