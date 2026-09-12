@@ -259,12 +259,10 @@ fun LyricsScreen(vm: MainViewModel) {
         // spec 统一 240ms FastOutSlowIn——与行高/振假名动画同节奏;不可见行
         // (seek 大跳)保留 animateScrollToItem。item.offset 即该行顶部当前在
         // 视口中的位置,滚动差 = offset − (视口半高−60),正值向上滚。
-        // v1.3.x morph P2(§3.4-5 跟行暂停):morph 进行中跳过,避免动画中途
-        // 列表自己滚(锚行已由上条预滚对齐)。方案A(等比窗口缩放)暂停窗
-        // 0.10..0.70:内容淡入窗为 [0.15,0.35],两端各放宽(下端 0.10 早于
-        // 淡入防尾帧自滚;上端 0.70 覆盖展开末段+弹回可见区)。
+        // v1.3.x morph P2(§3.4-5 跟行暂停):morph 进行中(progress<0.95)跳过,
+        // 避免动画中途列表自己滚(锚行已由上条预滚对齐)。
         LaunchedEffect(activeI) {
-            if (vm.morph.progress.value in 0.10f..0.70f) return@LaunchedEffect
+            if (vm.morph.progress.value in 0.001f..0.949f) return@LaunchedEffect
             if (activeI >= 0) {
                 val info = listState.layoutInfo
                 val viewport = info.viewportSize.height
