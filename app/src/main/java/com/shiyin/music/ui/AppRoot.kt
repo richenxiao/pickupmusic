@@ -27,6 +27,7 @@ import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.positionChange
+import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.rememberCoroutineScope
@@ -972,6 +973,38 @@ private fun MiniPlayer(vm: MainViewModel, track: Track) {
         Row(
             Modifier
                 .fillMaxWidth()
+                // v1.3.x 需求4:迷你播放条左右滑切歌(参考 Spotify)。水平手势
+                // 与条内任何内容零冲突(无水平滚动子),点按 vs 拖动由 slop 分离,
+                // 不需要歌词本指针闸门那套嵌套滚动防御。判定:onDragEnd 时
+                // 总位移>40dp 或释放速度>1200dp/s 才切;未达阈值静默忽略
+                // (内容不跟手,无回弹可言)。左滑=下一首,右滑=上一首,语义
+                // 直接复用按钮的 next()/prev()(循环/随机/回绕全在内)。
+                .pointerInput(Unit) {
+                    var totalX = 0f
+                    val tracker = androidx.compose.ui.input.pointer.util.VelocityTracker()
+                    detectHorizontalDragGestures(
+                        onDragStart = {
+                            totalX = 0f
+                            tracker.resetTracking()
+                        },
+                        onDragEnd = {
+                            val v = tracker.calculateVelocity().x
+                            val thresholdPx = 40.dp.toPx()
+                            val velocityPx = 1200.dp.toPx()
+                            when {
+                                totalX < -thresholdPx || v < -velocityPx -> vm.player.next()
+                                totalX > thresholdPx || v > velocityPx -> vm.player.prev()
+                            }
+                        },
+                        onHorizontalDrag = { change, dragAmount ->
+                            totalX += dragAmount
+                            if (change.positionChanged()) {
+                                tracker.addPosition(change.uptimeMillis, change.position)
+                                change.consume()
+                            }
+                        },
+                    )
+                }
                 .padding(start = 10.dp, end = 10.dp, top = 8.dp, bottom = 10.dp),
             horizontalArrangement = Arrangement.spacedBy(11.dp),
             verticalAlignment = Alignment.CenterVertically,
