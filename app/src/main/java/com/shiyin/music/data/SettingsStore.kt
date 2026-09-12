@@ -42,6 +42,14 @@ class SettingsStore(private val context: Context) {
     /** v1.3.2: 自定义写真源(JSON,见 CustomImageSourceCodec)。 */
     private val keyCustomImageSources = stringPreferencesKey("custom_image_sources")
 
+    // ── v1.3.x 歌词本设置(设置·歌词本页;写入后 init flow 同步到 VM)────────────
+    /** 日语歌默认开振假名标注(0=关,默认 1=开)。 */
+    private val keyFuriganaDefaultOn = booleanPreferencesKey("furigana_default_on")
+    /** 日语歌自动跑振假名校验(UtaTen+LLM 三层;默认开)。中英文歌永不触发。 */
+    private val keyFuriganaAutoVerify = booleanPreferencesKey("furigana_auto_verify")
+    /** 歌词本歌词颜色:"default"(跟随封面,现状) / "white" / "black"。 */
+    private val keyLyricsColorMode = stringPreferencesKey("lyrics_color_mode")
+
     data class Settings(
         val dark: Boolean,
         val gapless: Boolean,
@@ -60,6 +68,12 @@ class SettingsStore(private val context: Context) {
         val lastfmApiKey: String,
         val disabledImageSources: Set<String>,
         val customImageSources: List<com.shiyin.music.data.image.CustomImageSourceDef>,
+        /** v1.3.x 歌词本:日语歌默认开振假名(默认 true)。 */
+        val furiganaDefaultOn: Boolean,
+        /** v1.3.x 歌词本:日语歌自动跑振假名校验(默认 true)。 */
+        val furiganaAutoVerify: Boolean,
+        /** v1.3.x 歌词本:歌词颜色 "default"(跟随封面)/"white"/"black"。 */
+        val lyricsColorMode: String,
     )
 
     val flow: Flow<Settings> = context.dataStore.data.map { p ->
@@ -81,6 +95,9 @@ class SettingsStore(private val context: Context) {
             lastfmApiKey = p[keyLastfmApiKey] ?: "",
             disabledImageSources = p[keyDisabledImageSources] ?: emptySet(),
             customImageSources = com.shiyin.music.data.image.CustomImageSourceCodec.decode(p[keyCustomImageSources] ?: ""),
+            furiganaDefaultOn = p[keyFuriganaDefaultOn] ?: true,
+            furiganaAutoVerify = p[keyFuriganaAutoVerify] ?: true,
+            lyricsColorMode = (p[keyLyricsColorMode] ?: "default").let { if (it in listOf("default", "white", "black")) it else "default" },
         )
     }
 
@@ -114,6 +131,12 @@ class SettingsStore(private val context: Context) {
     /** v1.3.2: 保存全部自定义写真源(JSON,见 CustomImageSourceCodec)。 */
     suspend fun setCustomImageSources(v: List<com.shiyin.music.data.image.CustomImageSourceDef>) =
         context.dataStore.edit { it[keyCustomImageSources] = com.shiyin.music.data.image.CustomImageSourceCodec.encode(v) }
+
+    /** v1.3.x 歌词本设置写入(见字段注释;lyricsColorMode 只收 default/white/black)。 */
+    suspend fun setFuriganaDefaultOn(v: Boolean) = context.dataStore.edit { it[keyFuriganaDefaultOn] = v }
+    suspend fun setFuriganaAutoVerify(v: Boolean) = context.dataStore.edit { it[keyFuriganaAutoVerify] = v }
+    suspend fun setLyricsColorMode(mode: String) =
+        context.dataStore.edit { it[keyLyricsColorMode] = if (mode in listOf("white", "black")) mode else "default" }
 
     suspend fun pushRecent(id: Long) = context.dataStore.edit { p ->
         val cur = (p[keyRecent] ?: "").split(",").mapNotNull { it.toLongOrNull() }

@@ -295,4 +295,7 @@ object Lucide {
 
     // v4.3: bluetooth icon for BT-audio device indication
     val Bluetooth by lazy { stroke("bluetooth", "m7 7 10 10-5 5V2l5 5L7 17") }
+
+    /** v1.3.x 写真源"修改键"按钮(统一图标设计语言,替代纯文字按钮)。Lucide "pencil"。 */
+    val Pencil by lazy { stroke("pencil", "M21.174 6.812a1 1 0 0 0-3.986-3.987L3.642 16.374a3 3 0 0 0-.748 1.5l-.403 2.124a1 1 0 0 0 1.165 1.165l2.124-.403a3 3 0 0 0 1.5-.748Z", "m15 5 4 4") }
 }

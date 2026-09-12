@@ -47,7 +47,7 @@ import java.util.Locale
 
 enum class Tab { Home, Search, Library }
 enum class ObStage { Perm, Scan, Done }
-enum class FilesView { Root, Clean, Trash, Folders, FolderContent, Ignored, Devices, About, Merges, ImageSources }
+enum class FilesView { Root, Clean, Trash, Folders, FolderContent, Ignored, Devices, About, Merges, ImageSources, LyricsBook }
 enum class LyState { Idle, Searching, Failed }
 enum class LyricsKind { Embedded, Sidecar, Online, Imported }
 
@@ -183,6 +183,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     // v2: 播放速度调节（全局持久化）
     var playbackSpeed by mutableStateOf(1.0f); private set
     var retroSpeedMode by mutableStateOf(true); private set
+    // ── v1.3.x 歌词本设置(设置·歌词本页)────────────────────────────────────
+    /** 日语歌打开歌词本时默认开启振假名标注(默认 true)。 */
+    var furiganaDefaultOn by mutableStateOf(true); private set
+    /** 日语歌开振假名时自动跑三层校验 UtaTen+LLM(默认 true)。中英文歌永不触发。 */
+    var furiganaAutoVerify by mutableStateOf(true); private set
+    /** 歌词本歌词颜色:"default"=跟随封面取色(现状)/"white"/"black"。 */
+    var lyricsColorMode by mutableStateOf("default"); private set
 
     // ── UI state (mirrors the prototype's state machine) ────────────────────
     var isOnboarding by mutableStateOf(true)
@@ -424,6 +431,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 autoSaveRecognition = s.autoSaveRecognition
                 playbackSpeed = s.playbackSpeed
                 retroSpeedMode = s.retroSpeedMode
+                // v1.3.x 歌词本设置同步
+                furiganaDefaultOn = s.furiganaDefaultOn
+                furiganaAutoVerify = s.furiganaAutoVerify
+                lyricsColorMode = s.lyricsColorMode
                 // v1.2.1: 写真源运行时配置同步到 ImageSourceConfig(源读取它,即时生效)
                 fanartApiKey = s.fanartApiKey
                 lastfmApiKey = s.lastfmApiKey
@@ -2417,6 +2428,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch { settingsStore.setRetroSpeedMode(v) }
     }
     fun setDeepSeekKey(v: String) = viewModelScope.launch { settingsStore.setDeepSeekKey(v) }
+    // ── v1.3.x 歌词本设置 toggles ───────────────────────────────────────────
+    fun setFuriganaDefaultOn(v: Boolean) = viewModelScope.launch { settingsStore.setFuriganaDefaultOn(v) }
+    fun setFuriganaAutoVerify(v: Boolean) = viewModelScope.launch { settingsStore.setFuriganaAutoVerify(v) }
+    fun setLyricsColorMode(mode: String) = viewModelScope.launch { settingsStore.setLyricsColorMode(mode) }
     /** v1.2.2 Agent: Tavily 联网搜索 key 设置。 */
     fun setTavilyKey(v: String) = viewModelScope.launch { settingsStore.setTavilyKey(v) }
     /** v1.2.2 Agent: 保存全部 LLM 提供商配置。 */
@@ -2901,14 +2916,18 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** v1.1+: 统计自动识别缓存占用（自动保存的歌词字节数 + 封面缓存行数*估算）。 */
+    /** v1.1+: 统计自动识别缓存占用。v1.3.x 修正:封面不再按"行数×30KB"估算
+     *  (与真实占用偏差大,用户发现显示大小不对)——改为直接统计封面磁盘缓存目录
+     *  (filesDir/cover_cache,CoverDiskCache 实际字节,含全部 bucket)+ 自动保存
+     *  歌词的真实 UTF-8 字节数。 */
     fun refreshRecognitionCacheSize() {
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 val autoLyrics = savedLyricsMap.values.filter { it.autoSaved == 1 }
                     .sumOf { it.lyrics.toByteArray(Charsets.UTF_8).size }
-                val coverRows = dao.albumArtCacheCount()
-                recognitionCacheBytes = (autoLyrics + coverRows * 30 * 1024).toLong()
+                val coverDir = java.io.File(getApplication<Application>().filesDir, "cover_cache")
+                val coverBytes = coverDir.listFiles()?.sumOf { it.length() } ?: 0L
+                recognitionCacheBytes = autoLyrics + coverBytes
             } catch (_: Exception) { recognitionCacheBytes = 0L }
         }
     }

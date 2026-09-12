@@ -90,8 +90,25 @@ fun LyricsScreen(vm: MainViewModel) {
     val raw = rememberCoverPalette(track)
     val fallbackPair = coverPalette(track.paletteIndex)
     val isResolved = raw != fallbackPair
-    val artBg = if (isResolved) raw.first else Color(0xFF2A2A2E)
-    val LyricText = if (isResolved) raw.second else Color.White
+    // v1.3.x 歌词本设置:歌词颜色手动档(white/black)——只覆盖文字色,背景仍取
+    // 封面色保住页面情绪;但为保住 4.5:1 量级的对比度,白字撞上亮度过高的封面时
+    // 按系数压暗背景、黑字撞上过暗封面时提亮(都保色相,不换灰底)。default=
+    // 完全跟随封面取色(现状不动,fg 本身已按对比度自适应)。
+    val lyricsMode = vm.lyricsColorMode
+    val artBgRaw = if (isResolved) raw.first else Color(0xFF2A2A2E)
+    fun bgLum(c: Color): Float = 0.299f * c.red + 0.587f * c.green + 0.114f * c.blue
+    val artBg = when (lyricsMode) {
+        "white" -> if (bgLum(artBgRaw) > 0.35f)
+            Color(artBgRaw.red * 0.3f, artBgRaw.green * 0.3f, artBgRaw.blue * 0.3f) else artBgRaw
+        "black" -> if (bgLum(artBgRaw) < 0.55f)
+            Color(0.45f + artBgRaw.red * 0.55f, 0.45f + artBgRaw.green * 0.55f, 0.45f + artBgRaw.blue * 0.55f) else artBgRaw
+        else -> artBgRaw
+    }
+    val LyricText = when (lyricsMode) {
+        "white" -> Color.White
+        "black" -> Color(0xFF1A1A1E)
+        else -> if (isResolved) raw.second else Color.White
+    }
     androidx.compose.runtime.LaunchedEffect(track.id, isResolved) {
         android.util.Log.d("PaletteTrace", "LyricsScreen track=${track.id} albumId=${track.albumId} resolved=$isResolved artBg=$artBg fg=$LyricText")
     }
@@ -117,13 +134,15 @@ fun LyricsScreen(vm: MainViewModel) {
     val unsynced = !ly.parsed.synced
 
     // v1.1.0: 振假名（furigana）。仅对日文歌词生效——以「是否存在平/片假名」
-    // 判定（中文无假名，可区分）。开关默认关闭，只影响本全屏页，不影响播放页
-    // 迷你预览条。分词在后台线程 eagerly 进行（Kuromoji 冷启动 ~0.5s），开关
-    // 切换不重复分词，只切换渲染分支。
+    // 判定（中文无假名，可区分）。开关只影响本全屏页，不影响播放页迷你预览条。
+    // 分词在后台线程 eagerly 进行（Kuromoji 冷启动 ~0.5s），开关切换不重复分词，
+    // 只切换渲染分支。
+    // v1.3.x 歌词本设置:日语歌默认开启(设置·歌词本,默认 true);每首日语歌
+    // 进歌词本各自判定(切歌回来不保留上一首的手动开关)。
     val hasKana = remember(lines) {
         lines.any { line -> line.text.any { ch -> ch.code in 0x3040..0x30FF } }
     }
-    var furiganaOn by remember { mutableStateOf(false) }
+    var furiganaOn by remember { mutableStateOf(hasKana && vm.furiganaDefaultOn) }
     // V1.1: 跑准确率流水线（Song Override>纠错表>JMdict>Kuromoji>No Reading）。
     // key 含 furiganaRevision，保存/删除 Song Override 后 bump 即重算该曲。
     val segmentsByLine by produceState<List<List<RubySegment>>?>(initialValue = null, ly, vm.furiganaRevision) {
@@ -136,8 +155,13 @@ fun LyricsScreen(vm: MainViewModel) {
     // 每曲每版本只自动跑一次(evidence 表缓存判重);结果经 furiganaRevision 触发上面的
     // produceState 重算,注音自动刷新。失败各自降级并写 furiganaAssistStatus,调整
     // 弹层里可见并可手动重跑。切歌(ly 变)后对新曲再判一次。
+    // v1.3.x 歌词本设置:furiganaAutoVerify 开关(默认 true)管自动校验;hasKana
+    // 已确保只有日语歌进这里——中英文歌(hasKana=false)振假名开关根本不显示,
+    // 也不会触发联网校验(用户反馈中英文歌也被自动获取振假名,根因是旧代码只靠
+    // furiganaOn 判定,而 furiganaOn 在中英文歌上默认 false 但用户可能误触开启;
+    // 现在双条件 + 开关只对日语歌可见,语义收紧)。
     LaunchedEffect(furiganaOn, ly) {
-        if (furiganaOn && hasKana) vm.ensureFuriganaEvidence()
+        if (furiganaOn && hasKana && vm.furiganaAutoVerify) vm.ensureFuriganaEvidence()
     }
     // V1.1: 长按编辑 Song Override 入口（最小可用）
     var pickerLine by remember { mutableStateOf<Int?>(null) }
