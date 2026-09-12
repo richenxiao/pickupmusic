@@ -76,8 +76,15 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+/**
+ * v1.3.x 预组合(morph 帧率收尾):interactive=false 时整页零命中测试——所有
+ * pointerInput/clickable 条件挂载、LazyColumn userScrollEnabled 关。overlay 可
+ * 在预热期以隐形(progress=0 时两层 alpha 本来就是 0)+可穿透状态提前挂载,
+ * 把首组合/双窗口测量/预滚/取色/振假名 pipeline 全部搬到静止的播放页完成,
+ * 点卡打开时零首组合突发。默认 true = 现有行为不变。
+ */
 @Composable
-fun LyricsScreen(vm: MainViewModel) {
+fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
     val track = vm.trackById(vm.player.currentId) ?: return
     val ly = vm.currentLyrics ?: return
     // v3.3: adaptive-contrast tint. The extractor returns the cover's main
@@ -215,10 +222,10 @@ fun LyricsScreen(vm: MainViewModel) {
                 Modifier
                     .size(38.dp)
                     .clip(CircleShape)
-                    .clickable(
+                    .then(if (interactive) Modifier.clickable(
                         interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
                         indication = null,
-                    ) { vm.requestLyricsExit() },
+                    ) { vm.requestLyricsExit() } else Modifier),
                 contentAlignment = Alignment.CenterStart,
             ) { OIcon(Lucide.ChevronDownBold, 23.dp, artFg) }
             Column(
@@ -250,10 +257,10 @@ fun LyricsScreen(vm: MainViewModel) {
                     Modifier
                         .size(38.dp)
                         .clip(CircleShape)
-                        .clickable(
+                        .then(if (interactive) Modifier.clickable(
                             interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
                             indication = null,
-                        ) { vm.lySheet = !vm.lySheet },
+                        ) { vm.lySheet = !vm.lySheet } else Modifier),
                     contentAlignment = Alignment.CenterEnd,
                 ) { OIcon(Lucide.SlidersBold, 19.dp, artFg) }
             }
@@ -270,11 +277,23 @@ fun LyricsScreen(vm: MainViewModel) {
             // 当前播放行(与跟行同公式无动画版)——morph 交叉淡化区间里预览当前行
             // 与列表该行位置对齐,锚行视觉位移 ≤8dp。旧"切歌回顶"语义由 morph
             // 时代替:overlay 每次进入都是新组合,每次都滚到 activeI。
+            // v1.3.x 预组合:预热期也跑这条(把双窗口测量+预滚搬到隐形期)。
             if (activeI >= 0) {
                 val viewport = listState.layoutInfo.viewportSize.height
                 listState.scrollToItem(activeI, scrollOffset = -(viewport / 2 - 60))
             } else {
                 listState.scrollToItem(0)
+            }
+        }
+        // v1.3.x 预组合:打开瞬间(interactive false→true)补一次无动画归位——
+        // 预热期列表停在挂载时的行,用户停几秒后打开时 activeI 可能已推进数行;
+        // 在 frame 0(content alpha=0,fracRange(0,.40,.65))做掉,不可见。全新
+        // 挂载路径(fallback)与上条 track.id 预滚同目标,第二次 scrollToItem 无
+        // 触发位移=无开销。
+        LaunchedEffect(interactive) {
+            if (interactive && activeI >= 0) {
+                val viewport = listState.layoutInfo.viewportSize.height
+                listState.scrollToItem(activeI, scrollOffset = -(viewport / 2 - 60))
             }
         }
         // v1.3.x 滚动流畅度(用户反馈"逐行切换僵硬、帧率低,想要振假名切换那种
@@ -285,7 +304,10 @@ fun LyricsScreen(vm: MainViewModel) {
         // 视口中的位置,滚动差 = offset − (视口半高−60),正值向上滚。
         // v1.3.x morph P2(§3.4-5 跟行暂停):morph 进行中(progress<0.95)跳过,
         // 避免动画中途列表自己滚(锚行已由上条预滚对齐)。
+        // v1.3.x 预组合:预热期(!interactive)不跟行——隐形滚动白费,打开时由
+        // LaunchedEffect(interactive) 补位。
         LaunchedEffect(activeI) {
+            if (!interactive) return@LaunchedEffect
             if (vm.morph.progress.value in 0.001f..0.949f) return@LaunchedEffect
             if (activeI >= 0) {
                 val info = listState.layoutInfo
@@ -340,6 +362,10 @@ fun LyricsScreen(vm: MainViewModel) {
         ) {
         LazyColumn(
             state = listState,
+            // v1.3.x 预组合:预热期(!interactive)关用户滚动——零命中测试(滚动手势
+            // 不进列表,触摸穿透到播放页卡片/按钮)。userScrollEnabled=false 时
+            // LazyList 不挂 scrollable 修饰符(源码 .then(if(userScrollEnabled))。
+            userScrollEnabled = interactive,
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 22.dp),
@@ -350,7 +376,7 @@ fun LyricsScreen(vm: MainViewModel) {
                     Modifier
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(8.dp))
-                        .combinedClickable(
+                        .then(if (interactive) Modifier.combinedClickable(
                             onClick = {
                                 val target = line.timeMs?.let { (it - ly.offsetMs).coerceAtLeast(0) }
                                     ?: (i.toLong() * durMs / lines.size.coerceAtLeast(1))
@@ -360,7 +386,7 @@ fun LyricsScreen(vm: MainViewModel) {
                                 // V1.1: 长按带振假名的行 → 打开该行注音段选择器（编辑 Song Override）
                                 if (furiganaOn && hasKana && segmentsByLine != null) pickerLine = i
                             },
-                        )
+                        ) else Modifier)
                         .padding(vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
@@ -419,7 +445,7 @@ fun LyricsScreen(vm: MainViewModel) {
                                 .size(32.dp)
                                 .clip(CircleShape)
                                 .background(btnBg)
-                                .clickable { vm.syncLyricLine(i) },
+                                .then(if (interactive) Modifier.clickable { vm.syncLyricLine(i) } else Modifier),
                             contentAlignment = Alignment.Center,
                         ) {
                             OIcon(Lucide.Clock, 14.dp, dimC)
@@ -460,7 +486,7 @@ fun LyricsScreen(vm: MainViewModel) {
                 Modifier
                     .fillMaxWidth()
                     .height(18.dp)
-                    .pointerInput(durMs) {
+                    .then(if (interactive) Modifier.pointerInput(durMs) {
                         awaitEachGesture {
                             awaitFirstDown(requireUnconsumed = false)
                             do {
@@ -474,7 +500,7 @@ fun LyricsScreen(vm: MainViewModel) {
                             scrubFraction?.let { vm.player.seekToFraction(it) }
                             scrubFraction = null
                         }
-                    },
+                    } else Modifier),
                 contentAlignment = Alignment.CenterStart,
             ) {
                 Box(
@@ -526,10 +552,10 @@ fun LyricsScreen(vm: MainViewModel) {
                             .size(38.dp)
                             .clip(CircleShape)
                             .background(if (furiganaOn) artFg else androidx.compose.ui.graphics.Color.Transparent)
-                            .clickable(
+                            .then(if (interactive) Modifier.clickable(
                                 interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
                                 indication = null,
-                            ) { furiganaOn = !furiganaOn },
+                            ) { furiganaOn = !furiganaOn } else Modifier),
                         contentAlignment = Alignment.Center,
                     ) {
                         Text(
@@ -554,7 +580,7 @@ fun LyricsScreen(vm: MainViewModel) {
                         .shadowMd(CircleShape)
                         .clip(CircleShape)
                         .background(artFg)
-                        .clickable { vm.player.toggle() },
+                        .then(if (interactive) Modifier.clickable { vm.player.toggle() } else Modifier),
                     contentAlignment = Alignment.Center,
                 ) {
                     OIcon(
