@@ -102,7 +102,18 @@ fun LyricsScreen(vm: MainViewModel) {
     val safeBg = artBg // bg colour, named for backward-compat with the button/dialog uses below
     val lines = ly.parsed.lines
     val durMs = if (vm.player.durationMs > 0) vm.player.durationMs else track.durationMs
-    val activeI = ly.parsed.activeIndex(vm.player.positionMs, durMs, ly.offsetMs)
+    // v1.3.x 跟行滚动卡顿修复(重组风暴根因):positionMs 是组合级读——
+    // PlayerController ticker 每 300ms 写一次,整个 LyricsScreen 函数体
+    // (头行/按钮/列表容器/渐隐层/底栏/全部可见行)每 300ms 全量重组,
+    // 26sp 大字全部重测——滚动/跟行的周期性卡顿源。derivedStateOf 惰性
+    // 派生:读点订阅的是派生结果 activeI(只在行推进时变,每 2-5s 一次),
+    // 不是 ticker 原始值——300ms 重组风暴消失;行推进时行高亮/跟行滚动
+    // 照常更新(本来就要更新)。
+    val activeI by remember(ly, durMs) {
+        androidx.compose.runtime.derivedStateOf {
+            ly.parsed.activeIndex(vm.player.positionMs, durMs, ly.offsetMs)
+        }
+    }
     val unsynced = !ly.parsed.synced
 
     // v1.1.0: 振假名（furigana）。仅对日文歌词生效——以「是否存在平/片假名」
