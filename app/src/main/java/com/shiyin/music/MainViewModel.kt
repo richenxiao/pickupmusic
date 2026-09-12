@@ -3463,7 +3463,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
         player.addToQueueNext(t)
         trackMenuFor = null
-        showToast("已加入播放队列", id)
+        // v1.3.x 误弹修复:原 showToast(...,id) 携带 changeTargetId——toast 右侧
+        // 会出现「更改」按钮,点击会打开"保存到歌单"弹窗(SaveToPlaylistSheet)。
+        // 加队列后跳歌单选择毫无语义(用户报告"加到播放列表错误弹出也加入歌单
+        // 弹窗")。该按钮只该在收藏场景(误触后想改收藏目标)出现;加队列场景去掉。
+        showToast("已加入播放队列", null)
     }
 
     // ── v2.0 playback devices (real routing via DeviceRouter) ────────────────
