@@ -16,10 +16,12 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.layout.heightIn
@@ -88,7 +90,13 @@ fun SettingsHost(vm: MainViewModel) {
 @Composable
 private fun SectionLabel(text: String) {
     val c = LocalOrganic.current
-    Text(text, style = body(14f, FontWeight.Bold, c.n700))
+    // v1.3.x 设计打磨:眉题化——12.5 ExtraBold + 1.2sp 字距。小而疏的标签只做
+    // 分组节奏标记,视觉重量全部留给卡片与页面标题(Caprasimo 只出现在标题,
+    // 角色分工干净)。色保 n700:12.5sp 小字下 n600 对比度不足。
+    Text(
+        text,
+        style = body(12.5f, FontWeight.ExtraBold, c.n700).copy(letterSpacing = 1.2.sp),
+    )
 }
 
 @Composable
@@ -191,9 +199,10 @@ private fun SettingsRoot(vm: MainViewModel) {
                 .padding(horizontal = 16.dp, vertical = 6.dp),
         ) {
             // v1.3.x 设置重组:回收站并入清理建议页(页顶统一入口),这里不再单列。
+            // 副文案短排列(可清理·回收站·体积),maxLines=1 不再省略号截断。
             CardEntryRow(
                 Lucide.Brush, c.a700, "清理建议",
-                "${vm.cleanCount()} 个可清理 · ${formatSizeMb(vm.cleanSizeBytes())} · 回收站 ${vm.trashMirror.size} 个",
+                "${vm.cleanCount()} 个可清理 · 回收站 ${vm.trashMirror.size} · ${formatSizeMb(vm.cleanSizeBytes())}",
                 divider = true,
             ) { vm.openClean() }
             // v1.3.x 设置重组:音频文件夹+已忽略的文件夹归入新"文件夹管理"页。
@@ -294,55 +303,27 @@ private fun SettingsRoot(vm: MainViewModel) {
             }
             // v1.3.x: 睡眠定时可编辑——整行点击弹窗(时长档位/本曲结束/关闭),
             // 复用播放菜单同套 PlayerController 接口;不再只读展示。
+            // v1.3.x 设计打磨:本卡三行(睡眠定时/写真源/歌词本)统一走 CardEntryRow,
+            // 消掉此前手写 Row 与卡片行的漂移(padding/字号/箭头逐像素一致)。
             var sleepEditOpen by remember { mutableStateOf(false) }
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .clickable { sleepEditOpen = true }
-                    .padding(vertical = 13.dp),
-                horizontalArrangement = Arrangement.spacedBy(13.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                OIcon(Lucide.Clock, 19.dp, c.n700)
-                Text("睡眠定时", style = body(15f, FontWeight.SemiBold, c.text), modifier = Modifier.weight(1f))
-                Text(
-                    vm.player.sleepStatusText(),
-                    style = body(12.5f, FontWeight.Normal, c.n600),
-                )
-                OIcon(Lucide.ChevronRight, 18.dp, c.n500)
-            }
+            CardEntryRow(
+                Lucide.Clock, c.n700, "睡眠定时",
+                null, divider = true, trailingText = vm.player.sleepStatusText(),
+            ) { sleepEditOpen = true }
             if (sleepEditOpen) SleepTimerEditDialog(vm) { sleepEditOpen = false }
             // v1.3.x: 写真源从独立卡片并入通用栏(设计语言统一,一张卡一段落;
             // 入口语义不变)。歌词本设置同段新增(见下)。
-            Box(Modifier.fillMaxWidth().height(1.dp).background(c.divider))
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .clickable { vm.filesView = FilesView.ImageSources }
-                    .padding(vertical = 13.dp),
-                horizontalArrangement = Arrangement.spacedBy(13.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                OIcon(Lucide.User, 19.dp, c.n700)
-                Text("写真源", style = body(15f, FontWeight.SemiBold, c.text), modifier = Modifier.weight(1f))
-                Text("配置 · ${vm.disabledImageSources.size} 关", style = body(12.5f, FontWeight.Normal, c.n600))
-                OIcon(Lucide.ChevronRight, 18.dp, c.n500)
-            }
+            CardEntryRow(
+                Lucide.User, c.n700, "写真源",
+                "配置 · ${vm.disabledImageSources.size} 关",
+                divider = true,
+            ) { vm.filesView = FilesView.ImageSources }
             // v1.3.x: 歌词本设置(振假名默认开关/自动校验/歌词颜色)入口。
-            Box(Modifier.fillMaxWidth().height(1.dp).background(c.divider))
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .clickable { vm.filesView = FilesView.LyricsBook }
-                    .padding(vertical = 13.dp),
-                horizontalArrangement = Arrangement.spacedBy(13.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                OIcon(Lucide.Captions, 19.dp, c.n700)
-                Text("歌词本", style = body(15f, FontWeight.SemiBold, c.text), modifier = Modifier.weight(1f))
-                Text("振假名 · 歌词颜色", style = body(12.5f, FontWeight.Normal, c.n600))
-                OIcon(Lucide.ChevronRight, 18.dp, c.n500)
-            }
+            CardEntryRow(
+                Lucide.Captions, c.n700, "歌词本",
+                "振假名 · 歌词颜色",
+                divider = false,
+            ) { vm.filesView = FilesView.LyricsBook }
         }
 
         // v1.5: about entry
@@ -455,7 +436,10 @@ private fun LyricsBookScreen(vm: MainViewModel) {
             SettingRow(Lucide.Shield, "日语歌自动校验振假名", "开启标注时联网对照权威歌词站,自动补全缺漏注音", divider = true) {
                 OrganicSwitch(vm.furiganaAutoVerify) { vm.setFuriganaAutoVerify(!vm.furiganaAutoVerify) }
             }
-            // 歌词颜色三档:默认(跟随封面)/白色/黑色。当前档高亮,点击即切换。
+            // 歌词颜色三档:默认(跟随封面)/白色/黑色。
+            // v1.3.x 设计打磨:文字 pill 换色样 swatch——选颜色的控件直接展示颜色
+            // 本身(白=白圆、黑=黑圆、跟随封面=黑白双色对拼),选中态 accent 描边环。
+            // 色样自带白/黑底描边(n300)保证在任何卡面(浅/深主题)上都看得见。
             Row(
                 Modifier.fillMaxWidth().padding(vertical = 13.dp),
                 horizontalArrangement = Arrangement.spacedBy(13.dp),
@@ -463,17 +447,36 @@ private fun LyricsBookScreen(vm: MainViewModel) {
             ) {
                 OIcon(Lucide.Brush, 19.dp, c.n700)
                 Text("歌词颜色", style = body(15f, FontWeight.SemiBold, c.text), modifier = Modifier.weight(1f))
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    for ((mode, label) in listOf("default" to "跟随封面", "white" to "白色", "black" to "黑色")) {
+                Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                    for ((mode, label, showWhite) in listOf(
+                        Triple("default", "跟随封面", false),
+                        Triple("white", "白色", true),
+                        Triple("black", "黑色", false),
+                    )) {
                         val active = vm.lyricsColorMode == mode
-                        Box(
-                            Modifier
-                                .clip(RoundedCornerShape(999.dp))
-                                .background(if (active) c.accent else c.n100)
-                                .clickable { vm.setLyricsColorMode(mode) }
-                                .padding(horizontal = 11.dp, vertical = 6.dp),
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(4.dp),
+                            modifier = Modifier.clip(RoundedCornerShape(8.dp)).clickable { vm.setLyricsColorMode(mode) }.padding(2.dp),
                         ) {
-                            Text(label, style = body(12f, FontWeight.Bold, if (active) Color.White else c.text))
+                            Box(
+                                Modifier
+                                    .size(26.dp)
+                                    .clip(CircleShape)
+                                    .border(2.5.dp, if (active) c.accent else c.n300, CircleShape)
+                                    .padding(2.dp)
+                                    .clip(CircleShape),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                if (mode == "default") {
+                                    // 跟随封面:左白右黑对拼,示意"文字色随封面明暗切换"
+                                    Box(Modifier.fillMaxHeight().width(10.dp).clip(CircleShape).background(Color.White))
+                                    Box(Modifier.fillMaxHeight().width(10.dp).clip(CircleShape).background(Color(0xFF1A1A1E)))
+                                } else {
+                                    Box(Modifier.fillMaxSize().clip(CircleShape).background(if (showWhite) Color.White else Color(0xFF1A1A1E)))
+                                }
+                            }
+                            Text(label, style = body(11f, if (active) FontWeight.ExtraBold else FontWeight.Normal, if (active) c.text else c.n600))
                         }
                     }
                 }
@@ -582,10 +585,28 @@ private fun FoldersScreen(vm: MainViewModel) {
         SectionLabel("已忽略 · ${vm.ignored.size}")
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             if (vm.ignored.isEmpty()) {
-                Text(
-                    "暂无忽略的文件夹。在上方列表点眼睛图标可忽略它。",
-                    style = body(12.5f, FontWeight.Normal, c.n500).copy(lineHeight = 18.sp),
-                )
+                // 空态用全 app 统一模式(圆+图标+引导),合并页时降级成的单行文字
+                // 在设计打磨轮恢复。
+                Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 28.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Box(
+                        Modifier
+                            .size(64.dp)
+                            .clip(CircleShape)
+                            .background(c.n200),
+                        contentAlignment = Alignment.Center,
+                    ) { OIcon(Lucide.EyeOff, 26.dp, c.n500) }
+                    Text(
+                        "暂无忽略的文件夹\n在上方列表点眼睛图标可忽略它",
+                        style = body(13f, FontWeight.Normal, c.n600).copy(lineHeight = 20.sp),
+                        textAlign = TextAlign.Center,
+                    )
+                }
             }
             for (path in vm.ignored) {
                 Row(
