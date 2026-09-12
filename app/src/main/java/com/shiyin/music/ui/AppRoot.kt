@@ -665,6 +665,13 @@ private fun ArtistPickerDialog(vm: MainViewModel) {
     val c = LocalOrganic.current
     val artists = vm.artistPickerFor
     if (artists == null || artists.isEmpty()) return
+    // v1.3.x 头像修复(用户报告:多作者选择弹窗头像框没识别到写真):原实现
+    // 每行只有通用 User 图标,没接头像链路。歌手页同款两步:fetchArtistAvatar
+    // 触发解析(override→cache→Discogs 自动源,cache 命中不触网)+ artistImage
+    // 取 URL + rememberCandidateArt 出位图。URL 未就绪/无写真时回退 User 图标。
+    androidx.compose.runtime.LaunchedEffect(artists) {
+        for (name in artists) vm.fetchArtistAvatar(name)
+    }
     androidx.compose.material3.AlertDialog(
         onDismissRequest = { vm.artistPickerFor = null },
         containerColor = c.surface,
@@ -674,6 +681,10 @@ private fun ArtistPickerDialog(vm: MainViewModel) {
                 Text("这首歌曲有多位歌手，请选择要查看的歌手：", style = body(13f, FontWeight.Normal, c.n600))
                 Spacer(Modifier.height(8.dp))
                 for (name in artists) {
+                    val avatarUrl = vm.artistImage(name)
+                    val avatarBmp = com.shiyin.music.ui.components.rememberCandidateArt(
+                        avatarUrl.ifBlank { null }, 40.dp,
+                    )
                     Row(
                         Modifier
                             .fillMaxWidth()
@@ -683,7 +694,18 @@ private fun ArtistPickerDialog(vm: MainViewModel) {
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
-                        OIcon(Lucide.User, 18.dp, c.text)
+                        if (avatarBmp != null) {
+                            androidx.compose.foundation.Image(
+                                bitmap = avatarBmp,
+                                contentDescription = name,
+                                modifier = Modifier
+                                    .size(34.dp)
+                                    .clip(CircleShape),
+                                contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+                            )
+                        } else {
+                            OIcon(Lucide.User, 18.dp, c.text)
+                        }
                         Text(name, style = body(14f, FontWeight.SemiBold, c.text))
                     }
                 }
