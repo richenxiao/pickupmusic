@@ -114,7 +114,9 @@ fun PlayerScreen(vm: MainViewModel) {
     }
 
     val durMs = if (vm.player.durationMs > 0) vm.player.durationMs else track.durationMs
-    val pct = if (durMs > 0) (vm.player.positionMs.toFloat() / durMs).coerceIn(0f, 1f) else 0f
+    // v1.3.x 帧率:pct 读 positionMs,原写在函数体顶层→整播放页每 300ms 重组
+    // (morph 动画期间叠加=Slow UI 帧)。移进下方 Column 内容层(进度条消费点),
+    // 重组作用域收窄到滚动内容 lambda;cover/transport 等可跳过子节点不重跑。
 
     // v5.2 Bug6: the pull-down-to-dismiss gesture is now owned by the
     // ModalBottomSheet wrapper (AppRoot) via Material3's Swipeable
@@ -308,6 +310,7 @@ fun PlayerScreen(vm: MainViewModel) {
             // commit 一次 seekToFraction。scrub 期间忽略播放器 ticker 写回的
             // positionMs,避免滑块被每帧拉回播放位置。
             var scrubFraction by remember { mutableStateOf<Float?>(null) }
+            val pct = if (durMs > 0) (vm.player.positionMs.toFloat() / durMs).coerceIn(0f, 1f) else 0f
             val shownPct = scrubFraction ?: pct
             val shownPosMs = (scrubFraction?.let { it * durMs } ?: vm.player.positionMs).toLong()
             Box(
