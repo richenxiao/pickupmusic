@@ -737,11 +737,23 @@ fun rememberCoverPalette(track: Track?): Pair<Color, Color> {
     val c = LocalOrganic.current
     val fallback = coverPalette(track?.paletteIndex ?: 0)
     if (track == null) return fallback
+    // v1.3.x 闪白修复(歌词本打开时黑字歌词先白后黑):原 initial=fallback——
+    // rememberCoverPalette 的同步路径不查内存色缓存,首帧总是 generative 兜底,
+    // 取色异步落定后才翻转真实色。浅色封面(黑字)的歌:首帧白字→翻转黑字=
+    // "变白闪一下再变回黑色";深色封面(白字)兜底同色无感。歌词本内容层
+    // 淡入窗 [0.40,0.65] 正好罩住翻转时刻,闪到可见。
+    // 修:initial 同步读 ArtCache.colorFor(播放页显示封面时即写入的内存 Map,
+    // 主线程同步读零成本)——首帧即真实色,未解析窗口直接消失。缓存空
+    // (冷启动极端时序)才由 produceState 轮询兜底,行为不变。
+    val cachedPair = ArtCache.colorFor(track.albumId)
+    val initial = if (cachedPair != null) {
+        Color(cachedPair.first) to Color(cachedPair.second)
+    } else fallback
     // Snapshot the in-memory color cache. ArtCache.colorFor updates when a
     // cover finishes loading, but reading here only re-composes when `track`
     // changes — so we also subscribe to the art load via an effect that polls.
     val context = LocalContext.current
-    val state = produceState<Pair<Color, Color>>(fallback, track.id) {
+    val state = produceState<Pair<Color, Color>>(initial, track.id) {
         // Prime: load art at a small size to trigger extraction if needed.
         ArtCache.load(context, track, 384)
         // Poll the color cache briefly, since extraction lands asynchronously
