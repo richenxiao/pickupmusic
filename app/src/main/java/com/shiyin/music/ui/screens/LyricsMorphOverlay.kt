@@ -15,7 +15,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Rect
@@ -27,8 +26,6 @@ import androidx.compose.ui.unit.dp
 import com.shiyin.music.MainViewModel
 import com.shiyin.music.ui.components.LyricsMorphSpec
 import com.shiyin.music.ui.components.LyricsMorphState
-import kotlinx.coroutines.flow.filter
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 /**
@@ -54,9 +51,13 @@ fun LyricsMorphOverlay(vm: MainViewModel, morph: LyricsMorphState) {
     val scope = rememberCoroutineScope()
     val density = LocalDensity.current
 
-    // open() 在 overlay 首次组合时由 LaunchedEffect 启动(suspend → animateTo 跑完
-    // 才返回;收起收尾由 VM.collapseLyrics 在 collapse() 返回后做 caller-side)。
-    LaunchedEffect(Unit) { morph.open(vm.lyricsCardBounds) }
+    // open() 在 overlay 首次组合时由 LaunchedEffect 启动;withFrameNanos 延 1 帧
+    // 让首组合(LyricsScreen 突发,~40ms)先落地:突发落在 frame 0(窗口 alpha=0
+    // 不可见、动画未启动),读作 tap 延迟而非动画中段卡顿;frame 1 才开 animateTo。
+    LaunchedEffect(Unit) {
+        androidx.compose.runtime.withFrameNanos { }
+        morph.open(vm.lyricsCardBounds)
+    }
     // 屏高写到 morph 状态(onDrag/collapse 的 px→progress 换算共用除数)。
     morph.screenH = androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp *
         androidx.compose.ui.platform.LocalDensity.current.density
@@ -72,18 +73,13 @@ fun LyricsMorphOverlay(vm: MainViewModel, morph: LyricsMorphState) {
         androidx.compose.ui.graphics.Color(it.first)
     } ?: com.shiyin.music.ui.components.coverPalette(track?.paletteIndex ?: 0).first
 
-    // 帧率优化(唯一组合级订阅消除)+ 突发挪位:原 p>0.35 门把 LyricsScreen
-    // 首组合开销(LazyColumn+26sp 测量+振假名 pipeline 起步)落在动画中段
-    // =实测 3 个 Slow UI 帧之一。改起始组合:突发落在窗口还贴卡片(p≈0)、
-    // 内容 alpha=0 的不可见区,读作"首帧略迟"而非"中段卡顿"。组合零订阅
-    // progress 不变,逐帧动画只剩 graphicsLayer 延迟读重录。
-    var listReady by remember { mutableStateOf(false) }
-    LaunchedEffect(Unit) {
-        snapshotFlow { morph.progress.value > 0f }
-            .filter { it }
-            .first()
-        listReady = true
-    }
+    // 帧率优化(组合零订阅)+ 突发隔离:listReady 立即 true(无 snapshotFlow
+    // 门),LyricsScreen 在 overlay 首组合(frame 0)就组合——突发落在窗口
+    // alpha=0 不可见、动画(withFrameNanos 延 1 帧)未启动的独立帧,读作 tap
+    // 延迟而非动画中段卡顿。原 p>0.35 门把突发落在动画 35% 处=实测中段
+    // Slow UI 帧;改起始+延迟开动画让突发与动画不抢帧。组合零订阅 progress
+    // 不变(无 progress 读点),逐帧动画只剩 graphicsLayer 延迟读重录。
+    var listReady by remember { mutableStateOf(true) }
 
     Box(
         Modifier
