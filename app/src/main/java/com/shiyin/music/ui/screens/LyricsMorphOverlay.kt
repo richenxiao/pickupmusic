@@ -15,6 +15,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Rect
@@ -26,7 +27,8 @@ import androidx.compose.ui.unit.dp
 import com.shiyin.music.MainViewModel
 import com.shiyin.music.ui.components.LyricsMorphSpec
 import com.shiyin.music.ui.components.LyricsMorphState
-import com.shiyin.music.ui.components.rememberCoverPalette
+import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 /**
@@ -61,13 +63,28 @@ fun LyricsMorphOverlay(vm: MainViewModel, morph: LyricsMorphState) {
 
     val cornerBase = with(density) { 28.dp.toPx() }
     val track = vm.trackById(vm.player.currentId)
-    val artBg = rememberCoverPalette(track).first
+    // 帧率优化(重组源定位):原 rememberCoverPalette 每次打开 overlay 都起
+    // produceState 轮询(异步加载+取色);PlayerScreen 已对同一 track 算过并
+    // 写入 ArtCache 同步缓存——直接读同一缓存条目,与播放页背景严格同色,
+    // 组合期零协程、零轮询。极端时序(缓存未就绪)回退静态调色板,窗口层
+    // 背景色在 p<0.08 淡入窗内肉眼不可分辨差异。
+    val artBg = com.shiyin.music.ui.components.ArtCache.colorFor(track?.albumId ?: -1L)?.let {
+        androidx.compose.ui.graphics.Color(it.first)
+    } ?: com.shiyin.music.ui.components.coverPalette(track?.paletteIndex ?: 0).first
 
-    val p = morph.progress.value
-    // LyricsScreen 组合延迟:首次 p>0.35 时置位,本 overlay 生命周期内不复位
-    // (防阈值振荡闪现)。淡入窗(0.40)前不可见,预滚发生在 alpha=0 区间内。
+    // 帧率优化(唯一组合级订阅消除):原 val p = morph.progress.value 是组合
+    // 级读——动画每帧重组整个 overlay(两层 graphicsLayer 修饰链重建 +
+    // LyricsScreen(vm) 每帧全跑,vm 不稳定 remember 全部失效重执行)。
+    // 改 snapshotFlow 一次性门:progress 首次越过 0.35 时翻转 listReady,
+    // 之后整个 overlay 组合不再订阅 progress——逐帧动画只剩 graphicsLayer
+    // 延迟读重录(窗口层/内容层/锚行位移),每帧重组次数 0。
     var listReady by remember { mutableStateOf(false) }
-    if (p > 0.35f) listReady = true
+    LaunchedEffect(Unit) {
+        snapshotFlow { morph.progress.value > 0.35f }
+            .filter { it }
+            .first()
+        listReady = true
+    }
 
     Box(
         Modifier
