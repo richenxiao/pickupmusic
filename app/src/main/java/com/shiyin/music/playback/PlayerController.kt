@@ -335,6 +335,23 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
 
     data class QueueEntry(val id: Long, val index: Int, val isManual: Boolean)
 
+    /** v1.3.x 需求4:当前曲的相邻曲 id(尊重 shuffle 顺序与循环模式)。
+     *  next 的语义与 next() 方法一致(seekToNextMediaItem,Media3 内部处理
+     *  shuffle/循环下的"下一首是谁");prev 同 seekToPrevious。供迷你播放条
+     *  滑动切歌与封面预加载共用的预测入口——预加载目标必须与手势/按钮实际
+     *  切到的曲一致,否则预了也白预。队尾/队首在 REPEAT_MODE_OFF 下 Media3
+     *  返回自身(next() 方法的自定义回绕到第 0 首在这里看不到——预加载
+     *  miss 一次,无功能影响,只少一次命中)。 */
+    fun nextTrackId(): Long? = controller?.let { c ->
+        val i = c.nextMediaItemIndex
+        if (i >= 0 && i < c.mediaItemCount) c.getMediaItemAt(i).mediaId.toLongOrNull() else null
+    }
+
+    fun prevTrackId(): Long? = controller?.let { c ->
+        val i = c.previousMediaItemIndex
+        if (i >= 0 && i < c.mediaItemCount) c.getMediaItemAt(i).mediaId.toLongOrNull() else null
+    }
+
     /** Circular upcoming list after the current item (manual items lead). */
     fun upcomingEntries(): List<QueueEntry> {
         val c = controller ?: return emptyList()

@@ -332,6 +332,34 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val saved = searchPrefs.getString("terms", "") ?: ""
         searchHistory = if (saved.isBlank()) emptyList() else saved.split("\n")
     }
+    init {
+        // v1.3.x 需求4:封面预加载——切歌后后台预取相邻两首(nextTrackId/
+        // prevTrackId 尊重 shuffle 顺序与循环模式,与 next()/prev() 实际切到
+        // 的曲一致)到 ArtCache 内存 LruCache(播放页 1024 桶),滑动/按钮切歌
+        // 时直接命中,消除"不同专辑封面空白 1-2 帧"。同专辑跳过(当前曲的
+        // 1024 桶位图播放页正在显示,必然已缓存)。IO 线程,不碰 UI。快速连
+        // 滑预加载没跑完则回退现场解码路径(=现状,不更差)。
+        viewModelScope.launch {
+            androidx.compose.runtime.snapshotFlow { player.currentId }
+                .collect { id ->
+                    if (id == null) return@collect
+                    val cur = trackById(id) ?: return@collect
+                    val neighbors = listOfNotNull(player.nextTrackId(), player.prevTrackId())
+                        .mapNotNull { trackById(it) }
+                        .filter { it.albumId != cur.albumId }  // 同专辑跳过
+                        .distinct()
+                    for (t in neighbors) {
+                        launch(Dispatchers.IO) {
+                            runCatching {
+                                com.shiyin.music.ui.components.ArtCache.load(
+                                    getApplication<Application>(), t, 1024,
+                                )
+                            }
+                        }
+                    }
+                }
+        }
+    }
     fun commitSearch() {
         val term = q.trim()
         if (term.isBlank()) return
