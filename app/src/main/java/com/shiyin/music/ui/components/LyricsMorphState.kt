@@ -93,18 +93,19 @@ class LyricsMorphState(private val scope: CoroutineScope) {
     }
 
     /** 收起:弹簧到 0。
-     *  速度单位修复(实测根因:现象③"松手有时正常有时闪回直接关闭"、现象④
-     *  "小幅度松手闪一下就结束"):松手速度来自 VelocityTracker,单位 px/s;
-     *  progress 值域 [0,1]。原实现把 px/s 原样当 progress/s 喂弹簧的
-     *  initialVelocity(8349 px/s 在 [0,1] 值域里是天文数字,弹簧 1-2 帧内冲到
-     *  终点=闪一下直接结束,且快慢手不手感)。换算 px/s → progress/s 用与
-     *  onDrag 相同的除数(卡片顶到屏顶 dd),松手速度物理连续:手指 V px/s
-     *  → progress 以 V/dd 每秒起步,衔接无顿挫。 */
+     *  速度单位+符号修复(实测根因:现象③"松手有时正常有时闪回"、现象④"小幅度
+     *  松手闪一下就结束"):松手速度来自 VelocityTracker,单位 px/s;progress 值域 [0,1]。
+     *  原实现把 px/s 原样当 progress/s 喂弹簧(8349 px/s 在 [0,1] 值域天文数字,弹簧
+     *  1-2 帧冲终点=闪一下直接结束)——量级 bug,旧 commit 除以 dd 修了量级,但符号
+     *  仍反:下拉收起时 velocity.y>0(向下为正),而 onDrag 自己的映射 p=1-(cur+delta)/dd
+     *  对 delta>0 给出 dp/dt=-V/dd(下拉→progress 减小)。所以收起初速度应是 -V/dd,
+     *  旧代码 +V/dd 让弹簧先把 progress 往开的方向推(快甩时弹回 ~10-40% 再收=现象③
+     *  "有时闪回";慢甩量级小不可见=读作"有时正常")。符号取负,松手物理连续。 */
     suspend fun collapse(card: Rect?, velocityPx: Float = 0f) {
         cardBounds = card
         val b = cardBounds
         val dd = if (b != null) b.top.coerceAtLeast(screenH * 0.2f) else screenH * 0.2f
-        val progressVelocity = if (dd > 0f) velocityPx / dd else 0f
+        val progressVelocity = if (dd > 0f) -velocityPx / dd else 0f
         withFrameClock { progress.animateTo(0f, LyricsMorphSpec.collapseSpring, progressVelocity) }
     }
 

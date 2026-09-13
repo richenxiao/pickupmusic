@@ -150,13 +150,26 @@ fun LyricsMorphOverlay(vm: MainViewModel, morph: LyricsMorphState, interactive: 
                         if (!event.changes.any { it.pressed }) {
                             if (dragging) {
                                 val velocity = tracker.calculateVelocity().y
-                                val dd = (1f - morph.progress.value) * (morph.cardBounds?.top ?: 1f)
+                                // v1.3.x code-review:与 onDrag/collapse 同一除数——
+                                // b.top 下限 screenH*0.2(卡片高位时不致低估剩余拉距,
+                                // threshold 误判回弹);null 兜底同 collapse 用 screenH*0.2
+                                // 而非 1f(原 1f 使 null 时 dd≤1 永不达阈值→永不阈值收起)。
+                                val D = (morph.cardBounds?.top ?: morph.screenH * 0.2f)
+                                    .coerceAtLeast(morph.screenH * 0.2f)
+                                val dd = (1f - morph.progress.value) * D
                                 val thresholdPx = 120.dp.toPx()
                                 if (dd > thresholdPx || velocity > 2200f) {
                                     vm.collapseLyrics(velocity)
                                 } else {
                                     scope.launch { morph.progress.animateTo(1f, LyricsMorphSpec.collapseSpring) }
                                 }
+                            } else if (blocking && morph.progress.value < 0.999f) {
+                                // v1.3.x code-review:中部起手滚到顶的 1 帧窗口里
+                                // nestedScroll 守卫喂了 morph.onDrag(progress 微降),blocking
+                                // 接管后消费不再喂;松手时 dragging=false 原无收尾路径 → 卡在
+                                // ~0.96(顶栏偏下、dim 不退)。补 settle 回开(中部起手永不收起,
+                                // 弹回开是规则正确方向)。
+                                scope.launch { morph.progress.animateTo(1f, LyricsMorphSpec.collapseSpring) }
                             }
                             break
                         }
