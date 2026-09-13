@@ -268,12 +268,12 @@ fun AppRoot(vm: MainViewModel) {
                         }
                     else Modifier
                 )
-            Box(gestureBox.background(c.bg)) {
-                    // v1.3.x:不透明 c.bg 背景板——AnimatedContent 交叉淡化(fadeIn 250
-                    // + fadeOut 150)半透明期透底色;window 底色资源跟系统模式,不跟 app
-                    // 的 vm.darkTheme 开关 → app 深色+系统浅色时透出亮 cream=每进/退一
-                    // 页闪光。背景板跟 Compose Organic 主题(c.bg),始终与内容同色,无对比
-                    // 即无闪光。window 底色仍由 values-night/themes.xml 兜底系统深色。
+            Box(gestureBox) {
+                    // v1.3.x:转场不再用交叉淡化(fadeIn+fadeOut)——半透明期透出下层
+                    // 底色,深色模式下 flash 白光(用户:"设置页进/退闪光")。改为
+                    // slideIn/outHorizontally + 无透明度:内容全程不透明、横向平移,
+                    // 底层任何颜色都不可能透出,从结构上根除闪光。内容始终满不透明,
+                    // 也不依赖窗口底色/背景板那一堆兜底。
                     val contentKey = when {
                         vm.agentOpen -> "agent"
                         vm.settingsOpen -> "settings:${vm.filesView}"
@@ -284,7 +284,15 @@ fun AppRoot(vm: MainViewModel) {
                     }
                     AnimatedContent(
                         targetState = contentKey,
-                        transitionSpec = { fadeIn(tween(250)) togetherWith fadeOut(tween(150)) },
+                        // v1.3.x:纯 slide、零透明度(slideIn/OutHorizontally 不带 fade)。
+                        // 内容全程不透明横向平移——底层颜色绝无可透,闪光结构根除。
+                        // slideIn/Out 方向对称:新内容从右轻入、旧内容往左退出。
+                        transitionSpec = {
+                            androidx.compose.animation.slideInHorizontally(tween(250)) { it / 3 }
+                                .togetherWith(
+                                    androidx.compose.animation.slideOutHorizontally(tween(180)) { -it / 3 },
+                                )
+                        },
                         label = "screen",
                     ) { key ->
                         // v1.2.0 #6: 非歌手页加 statusBarsPadding(内容回到状态栏下);歌手页由 LibraryScreen 内部
