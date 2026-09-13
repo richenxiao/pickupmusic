@@ -251,7 +251,8 @@ private fun SettingsRoot(vm: MainViewModel) {
                 horizontalArrangement = Arrangement.spacedBy(13.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                OIcon(Lucide.Folder, 19.dp, c.n700)
+                // v1.3.x:识别缓存用 Database(存储/数据库语义),与文件夹管理(Folder)去重
+                OIcon(Lucide.Database, 19.dp, c.n700)
                 Column(Modifier.weight(1f)) {
                     Text("识别缓存", style = body(15f, FontWeight.SemiBold, c.text))
                     Text(
