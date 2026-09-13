@@ -80,9 +80,15 @@ fun LyricsMorphOverlay(vm: MainViewModel, morph: LyricsMorphState, interactive: 
     // 写入 ArtCache 同步缓存——直接读同一缓存条目,与播放页背景严格同色,
     // 组合期零协程、零轮询。极端时序(缓存未就绪)回退静态调色板,窗口层
     // 背景色在 p<0.08 淡入窗内肉眼不可分辨差异。
-    val artBg = com.shiyin.music.ui.components.ArtCache.colorFor(track?.albumId ?: -1L)?.let {
-        androidx.compose.ui.graphics.Color(it.first)
-    } ?: com.shiyin.music.ui.components.coverPalette(track?.paletteIndex ?: 0).first
+    // v1.3.x code-review(F9):窗口层色经 adjustedLyricsBg 与 LyricsScreen 同源——
+    // 白/黑档时 LyricsScreen 会压暗/提亮背景,窗口层若仍用原色,展开动画中段
+    // (p 0.08→0.65)窗口色与最终歌词页背景跳变。两处共用 helper,全程同色。
+    val artBg = adjustedLyricsBg(
+        com.shiyin.music.ui.components.ArtCache.colorFor(track?.albumId ?: -1L)?.let {
+            androidx.compose.ui.graphics.Color(it.first)
+        } ?: com.shiyin.music.ui.components.coverPalette(track?.paletteIndex ?: 0).first,
+        vm.lyricsColorMode,
+    )
 
     // 帧率优化(组合零订阅)+ 突发隔离:listReady 立即 true(无 snapshotFlow
     // 门),LyricsScreen 在 overlay 首组合(frame 0)就组合——突发落在窗口

@@ -83,6 +83,19 @@ import kotlinx.coroutines.withContext
  * 把首组合/双窗口测量/预滚/取色/振假名 pipeline 全部搬到静止的播放页完成,
  * 点卡打开时零首组合突发。默认 true = 现有行为不变。
  */
+
+/** v1.3.x 歌词本设置:白/黑档手动色撞亮度过高/过低封面时按系数保色相压暗/提亮
+ *  (保住 4.5:1 量级对比度)。default=原色不动。LyricsScreen 与 morph overlay 窗口层
+ *  共用——展开动画中段窗口色与最终歌词页背景同色,无跳变(code-review F9)。 */
+internal fun adjustedLyricsBg(rawBg: Color, mode: String): Color {
+    val lum = 0.299f * rawBg.red + 0.587f * rawBg.green + 0.114f * rawBg.blue
+    return when (mode) {
+        "white" -> if (lum > 0.35f) Color(rawBg.red * 0.3f, rawBg.green * 0.3f, rawBg.blue * 0.3f) else rawBg
+        "black" -> if (lum < 0.55f) Color(0.45f + rawBg.red * 0.55f, 0.45f + rawBg.green * 0.55f, 0.45f + rawBg.blue * 0.55f) else rawBg
+        else -> rawBg
+    }
+}
+
 @Composable
 fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
     val track = vm.trackById(vm.player.currentId) ?: return
@@ -101,16 +114,11 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
     // 封面色保住页面情绪;但为保住 4.5:1 量级的对比度,白字撞上亮度过高的封面时
     // 按系数压暗背景、黑字撞上过暗封面时提亮(都保色相,不换灰底)。default=
     // 完全跟随封面取色(现状不动,fg 本身已按对比度自适应)。
+    // v1.3.x code-review(F9):adjustedLyricsBg 与 morph overlay 窗口层共用,
+    // 展开动画中段窗口色与最终歌词页背景同色,无白/黑档专属跳变。
     val lyricsMode = vm.lyricsColorMode
     val artBgRaw = if (isResolved) raw.first else Color(0xFF2A2A2E)
-    fun bgLum(c: Color): Float = 0.299f * c.red + 0.587f * c.green + 0.114f * c.blue
-    val artBg = when (lyricsMode) {
-        "white" -> if (bgLum(artBgRaw) > 0.35f)
-            Color(artBgRaw.red * 0.3f, artBgRaw.green * 0.3f, artBgRaw.blue * 0.3f) else artBgRaw
-        "black" -> if (bgLum(artBgRaw) < 0.55f)
-            Color(0.45f + artBgRaw.red * 0.55f, 0.45f + artBgRaw.green * 0.55f, 0.45f + artBgRaw.blue * 0.55f) else artBgRaw
-        else -> artBgRaw
-    }
+    val artBg = adjustedLyricsBg(artBgRaw, lyricsMode)
     val LyricText = when (lyricsMode) {
         "white" -> Color.White
         "black" -> Color(0xFF1A1A1E)
@@ -146,10 +154,13 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
     // 只切换渲染分支。
     // v1.3.x 歌词本设置:日语歌默认开启(设置·歌词本,默认 true);每首日语歌
     // 进歌词本各自判定(切歌回来不保留上一首的手动开关)。
+    // v1.3.x code-review(F6):remember 按 track.id 重置——预组合让 overlay 跨曲
+    // 常驻(lyricsOn||prewarm 门),无 key 时 furiganaOn 跨曲保留:歌 A 关掉振假名
+    // 后切到日语歌 B 仍 false(B 应默认开却没开)。key track.id 每曲重置回默认。
     val hasKana = remember(lines) {
         lines.any { line -> line.text.any { ch -> ch.code in 0x3040..0x30FF } }
     }
-    var furiganaOn by remember { mutableStateOf(hasKana && vm.furiganaDefaultOn) }
+    var furiganaOn by remember(track.id) { mutableStateOf(hasKana && vm.furiganaDefaultOn) }
     // V1.1: 跑准确率流水线（Song Override>纠错表>JMdict>Kuromoji>No Reading）。
     // key 含 furiganaRevision，保存/删除 Song Override 后 bump 即重算该曲。
     val segmentsByLine by produceState<List<List<RubySegment>>?>(initialValue = null, ly, vm.furiganaRevision) {
@@ -167,8 +178,14 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
     // 也不会触发联网校验(用户反馈中英文歌也被自动获取振假名,根因是旧代码只靠
     // furiganaOn 判定,而 furiganaOn 在中英文歌上默认 false 但用户可能误触开启;
     // 现在双条件 + 开关只对日语歌可见,语义收紧)。
-    LaunchedEffect(furiganaOn, ly) {
-        if (furiganaOn && hasKana && vm.furiganaAutoVerify) vm.ensureFuriganaEvidence()
+    // v1.3.x code-review(F2):网络/LLM pipeline 限歌词本实际打开才跑。预热期
+    // 只跑本地分词 produceState(那才是 RubyText 换装突发的来源,已隐形期处理掉);
+    // 预热期烧 UtaTen/LLM 配额与"完全本地"立场冲突,且设置页文案写的是"打开
+    // 歌词本时"。加 vm.lyricsOn 门:打开才跑,关着不烧;打开后 evidence 到达
+    // 只 bump furiganaRevision 触发 produceState 重算(RubyText 已挂,只更新读法,
+    // 不再是 Text→RubyText 换装突发)。
+    LaunchedEffect(furiganaOn, ly, vm.lyricsOn) {
+        if (furiganaOn && hasKana && vm.furiganaAutoVerify && vm.lyricsOn) vm.ensureFuriganaEvidence()
     }
     // V1.1: 长按编辑 Song Override 入口（最小可用）
     var pickerLine by remember { mutableStateOf<Int?>(null) }
@@ -475,13 +492,17 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
             verticalArrangement = Arrangement.spacedBy(8.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            val pct = if (durMs > 0) (vm.player.positionMs.toFloat() / durMs).coerceIn(0f, 1f) else 0f
+            // v1.3.x code-review(F12,预组合):预热期(!interactive)短路 positionMs 读——
+            // 300ms ticker 不再订阅底栏 lambda,隐形期零抖动;打开后才订阅实时进度。
+            // 短路语义:interactive=false 时 && 不求值 positionMs → 无状态订阅。
+            val pct = if (interactive && durMs > 0) (vm.player.positionMs.toFloat() / durMs).coerceIn(0f, 1f) else 0f
             // v5.3: 进度条支持拖动 scrub(与 PlayerScreen 同一逻辑)。原只有
             // detectTapGestures 点按跳转,按住拖动无响应。按下/拖动期间 scrubFraction
             // 覆盖到手指位置,抬手时 commit 一次 seek,期间忽略 ticker 写回。
             var scrubFraction by remember { mutableStateOf<Float?>(null) }
             val shownPct = scrubFraction ?: pct
-            val shownPosMs = (scrubFraction?.let { it * durMs } ?: vm.player.positionMs).toLong()
+            // v1.3.x code-review(F12):同上,预热期短路 positionMs(scrubFraction 为 null 时才读)。
+            val shownPosMs = (scrubFraction?.let { it * durMs } ?: if (interactive) vm.player.positionMs else 0L).toLong()
             Box(
                 Modifier
                     .fillMaxWidth()
