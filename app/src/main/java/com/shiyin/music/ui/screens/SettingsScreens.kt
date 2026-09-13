@@ -319,8 +319,10 @@ private fun SettingsRoot(vm: MainViewModel) {
                 divider = true,
             ) { vm.filesView = FilesView.ImageSources }
             // v1.3.x: 歌词本设置(振假名默认开关/自动校验/歌词颜色)入口。
+            // v1.3.x 图标审计:歌词本入口用 Library(书本=歌词本,未占用);振假名默认
+            // 行保留 Captions(注音语义),两处不再撞图标。
             CardEntryRow(
-                Lucide.Captions, c.n700, "歌词本",
+                Lucide.Library, c.n700, "歌词本",
                 "振假名 · 歌词颜色",
                 divider = false,
             ) { vm.filesView = FilesView.LyricsBook }
@@ -448,7 +450,9 @@ private fun LyricsBookScreen(vm: MainViewModel) {
                 horizontalArrangement = Arrangement.spacedBy(13.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                OIcon(Lucide.Brush, 19.dp, c.n700)
+                // v1.3.x 图标审计:歌词颜色用 CircleFilled(色样圆,行内已有三色样
+                // 呼应;原 Brush 与清理建议重复)。清理建议保留 Brush(清洁刷)。
+                OIcon(Lucide.CircleFilled, 19.dp, c.n700)
                 Text("歌词颜色", style = body(15f, FontWeight.SemiBold, c.text), modifier = Modifier.weight(1f))
                 Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                     for ((mode, label, showWhite) in listOf(
