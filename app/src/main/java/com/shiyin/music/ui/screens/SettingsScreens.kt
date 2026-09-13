@@ -430,10 +430,13 @@ private fun LyricsBookScreen(vm: MainViewModel) {
                 .background(c.surface)
                 .padding(horizontal = 16.dp, vertical = 6.dp),
         ) {
-            SettingRow(Lucide.Captions, "日语歌默认开振假名", "打开日语歌的歌词本时自动显示振假名标注", divider = true) {
+            // v1.3.x:图标与内容对齐——振假名默认开用 Captions(字幕/注音语义),
+            // 自动校验用 RefreshCw(重跑校验流水线,原 Shield 是"防护"不符不上"校验")。
+            // 去掉副文案(注释):三行都单行,图标与文字同行居中,不再错位。
+            SettingRow(Lucide.Captions, "日语歌默认开振假名", null, divider = true) {
                 OrganicSwitch(vm.furiganaDefaultOn) { vm.setFuriganaDefaultOn(!vm.furiganaDefaultOn) }
             }
-            SettingRow(Lucide.Shield, "日语歌自动校验振假名", "开启标注时联网对照权威歌词站,自动补全缺漏注音", divider = true) {
+            SettingRow(Lucide.RefreshCw, "日语歌自动校验振假名", null, divider = true) {
                 OrganicSwitch(vm.furiganaAutoVerify) { vm.setFuriganaAutoVerify(!vm.furiganaAutoVerify) }
             }
             // 歌词颜色三档:默认(跟随封面)/白色/黑色。
