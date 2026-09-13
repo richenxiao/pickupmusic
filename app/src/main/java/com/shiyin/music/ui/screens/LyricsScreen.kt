@@ -83,18 +83,6 @@ import kotlinx.coroutines.withContext
  * 点卡打开时零首组合突发。默认 true = 现有行为不变。
  */
 
-/** v1.3.x 歌词本设置:白/黑档手动色撞亮度过高/过低封面时按系数保色相压暗/提亮
- *  (保住 4.5:1 量级对比度)。default=原色不动。LyricsScreen 与 morph overlay 窗口层
- *  共用——展开动画中段窗口色与最终歌词页背景同色,无跳变(code-review F9)。 */
-internal fun adjustedLyricsBg(rawBg: Color, mode: String): Color {
-    val lum = 0.299f * rawBg.red + 0.587f * rawBg.green + 0.114f * rawBg.blue
-    return when (mode) {
-        "white" -> if (lum > 0.35f) Color(rawBg.red * 0.3f, rawBg.green * 0.3f, rawBg.blue * 0.3f) else rawBg
-        "black" -> if (lum < 0.55f) Color(0.45f + rawBg.red * 0.55f, 0.45f + rawBg.green * 0.55f, 0.45f + rawBg.blue * 0.55f) else rawBg
-        else -> rawBg
-    }
-}
-
 @Composable
 fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
     val track = vm.trackById(vm.player.currentId) ?: return
@@ -109,15 +97,11 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
     val raw = rememberCoverPalette(track)
     val fallbackPair = coverPalette(track.paletteIndex)
     val isResolved = raw != fallbackPair
-    // v1.3.x 歌词本设置:歌词颜色手动档(white/black)——只覆盖文字色,背景仍取
-    // 封面色保住页面情绪;但为保住 4.5:1 量级的对比度,白字撞上亮度过高的封面时
-    // 按系数压暗背景、黑字撞上过暗封面时提亮(都保色相,不换灰底)。default=
-    // 完全跟随封面取色(现状不动,fg 本身已按对比度自适应)。
-    // v1.3.x code-review(F9):adjustedLyricsBg 与 morph overlay 窗口层共用,
-    // 展开动画中段窗口色与最终歌词页背景同色,无白/黑档专属跳变。
+    // v1.3.x 歌词本设置:歌词颜色手动档(white/black)只覆盖文字色——背景恒为
+    // 封面取色(用户明确:只变歌词颜色,不变背景)。default=跟随封面(bg+自适应 fg)。
     val lyricsMode = vm.lyricsColorMode
     val artBgRaw = if (isResolved) raw.first else Color(0xFF2A2A2E)
-    val artBg = adjustedLyricsBg(artBgRaw, lyricsMode)
+    val artBg = artBgRaw
     val LyricText = when (lyricsMode) {
         "white" -> Color.White
         "black" -> Color(0xFF1A1A1E)
