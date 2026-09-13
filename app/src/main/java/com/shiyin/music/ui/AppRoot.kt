@@ -269,11 +269,11 @@ fun AppRoot(vm: MainViewModel) {
                     else Modifier
                 )
             Box(gestureBox) {
-                    // v1.3.x:转场不再用交叉淡化(fadeIn+fadeOut)——半透明期透出下层
-                    // 底色,深色模式下 flash 白光(用户:"设置页进/退闪光")。改为
-                    // slideIn/outHorizontally + 无透明度:内容全程不透明、横向平移,
-                    // 底层任何颜色都不可能透出,从结构上根除闪光。内容始终满不透明,
-                    // 也不依赖窗口底色/背景板那一堆兜底。
+                    // v1.3.x:恢复原版交叉淡化转场(fadeIn+fadeOut)——slide 转场被
+                    // 用户否决("切换途中错误渲染前一页元素"),换回淡入淡出。窗口底色
+                    // 已由 values-night/themes.xml 覆盖深色、AppRoot 根 Box 铺 c.bg,
+                    // fade 半透明期透出的是与主题同色的 c.bg(或同主题的 window 底),
+                    // 不再透亮白窗口底。
                     val contentKey = when {
                         vm.agentOpen -> "agent"
                         vm.settingsOpen -> "settings:${vm.filesView}"
@@ -284,20 +284,16 @@ fun AppRoot(vm: MainViewModel) {
                     }
                     AnimatedContent(
                         targetState = contentKey,
-                        // v1.3.x:纯 slide、零透明度(slideIn/OutHorizontally 不带 fade)。
-                        // 内容全程不透明横向平移——底层颜色绝无可透,闪光结构根除。
-                        // slideIn/Out 方向对称:新内容从右轻入、旧内容往左退出。
-                        transitionSpec = {
-                            androidx.compose.animation.slideInHorizontally(tween(250)) { it / 3 }
-                                .togetherWith(
-                                    androidx.compose.animation.slideOutHorizontally(tween(180)) { -it / 3 },
-                                )
-                        },
+                        transitionSpec = { fadeIn(tween(250)) togetherWith fadeOut(tween(150)) },
                         label = "screen",
                     ) { key ->
                         // v1.2.0 #6: 非歌手页加 statusBarsPadding(内容回到状态栏下);歌手页由 LibraryScreen 内部
                         // 处理(ArtistDetail 不加→写真 y=0)。解耦:歌手页不受这些页高度影响。
-                        val pad = Modifier.fillMaxSize().statusBarsPadding()
+                        // v1.3.x:每页内容铺不透明 c.bg——交叉淡化时(fadeIn/fadeOut 半透明
+                        // 期)新旧页元素在半透明下重叠错叠(用户:"切换途中错误渲染前一页元素")。
+                        // 统一不透明背景让每页自成一个不透明平面,fade 透出的是同色 c.bg,
+                        // 前景元素不再跨页交叉。
+                        val pad = Modifier.fillMaxSize().statusBarsPadding().background(c.bg)
                         when {
                             key == "agent" -> Box(pad) { com.shiyin.music.ui.screens.AgentScreen(vm) }
                             key.startsWith("settings") -> Box(pad) { SettingsHost(vm) }
