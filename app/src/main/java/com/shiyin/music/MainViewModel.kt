@@ -3029,8 +3029,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     // 「作詞・作曲：」「作詞/作曲：」(・与 / 分隔)与 編曲 简繁、作編曲——旧模式
     // ^作詞 后紧跟 \s*[:：] 匹配不到 ・/ 作词的复合行,人名仍被注音(正是本功能
     // 要消灭的现象);③清重复项(作詞 出现两次)。
+    // v1.3.x code-review(F4):分隔符改可选 [/:：·・]?——补「作詞作曲：」(无分隔符
+    // 拼接,J-pop 极常见格式)。原模式分隔符必填,作詞 后紧跟 作曲(非分隔符)→
+    // 内层组 0 次,然后 \s*[:：] 撞 作曲 的 作 失配,整行判非元数据 → 人名仍被注音。
     private val METADATA_LINE_RX = Regex(
-        """(?i)^(作词|作詞|作曲|编曲|編曲|作編曲|编曲|编词|填词|填詞|作詞|lyrics?|words?|music)(\s*[/:：·・]\s*(作词|作詞|作曲|编曲|編曲|作編曲|编词|填词|填詞))*\s*[:：]"""
+        """(?i)^(?:作词|作詞|作曲|编曲|編曲|作編曲|编词|填词|填詞|lyrics?|words?|music)(?:\s*[/:：·・]?\s*(?:作词|作詞|作曲|编曲|編曲|作編曲|编词|填词|填詞|lyrics?|words?|music))*\s*[:：]"""
     )
 
     // ── v1.3.x: 振假名三层增强(UtaTen 自动对照 + LLM 缺口兜底) ─────────────────
@@ -3063,6 +3066,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     /** UI 可见的增强状态(null=无进行中/无结论;""=正在跑;非空=结论文案)。 */
     var furiganaAssistStatus by mutableStateOf<String?>(null); private set
+
+    /** v1.3.x code-review(F7):切歌时清上一首的校验状态——furiganaAssistStatus 是
+     *  单字段不按曲隔离,旧值残留在新歌的调整弹层里(尤其新歌非日语不跑 verify、
+     *  或新歌 verify 还没跑完时,弹层显示的是上一首的结论)。LyricsScreen 用
+     *  LaunchedEffect(ly.mediaId) 调本方法清,ensure 跑完再写新值。 */
+    fun clearFuriganaAssistStatus() { furiganaAssistStatus = null }
 
     /** DB 重试 1 次的写入:失败抛出由调用方归类。 */
     private suspend fun upsertEvidenceRetry(rows: List<com.shiyin.music.data.db.ExternalReadingEvidenceEntity>) {

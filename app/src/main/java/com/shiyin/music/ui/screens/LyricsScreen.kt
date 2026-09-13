@@ -12,7 +12,6 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -187,6 +186,9 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
     LaunchedEffect(furiganaOn, ly, vm.lyricsOn) {
         if (furiganaOn && hasKana && vm.furiganaAutoVerify && vm.lyricsOn) vm.ensureFuriganaEvidence()
     }
+    // v1.3.x code-review(F7):切歌清上一首的校验状态(单字段不按曲隔离,旧值
+    // 残留新歌弹层)。key 用 mediaId 稳定——offset 微调 copy 不触发清。
+    LaunchedEffect(ly.mediaId) { vm.clearFuriganaAssistStatus() }
     // V1.1: 长按编辑 Song Override 入口（最小可用）
     var pickerLine by remember { mutableStateOf<Int?>(null) }
     // (lineIndex, segment, currentReading)：按出现位置存，同 surface 多次出现可分别设
@@ -633,6 +635,7 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
             onOpenSourcePicker = { vm.lyricsSourcePicker = true },
             onRefetchFurigana = { vm.ensureFuriganaEvidence(force = true) },
             furiganaAssistStatus = vm.furiganaAssistStatus,
+            showFuriganaVerify = hasKana,
             onSave = { vm.saveLyrics() },
             onDelete = { vm.deleteLyrics() },
         )
@@ -825,6 +828,9 @@ private fun LyricsAdjustSheet(
     onOpenSourcePicker: () -> Unit,
     onRefetchFurigana: () -> Unit,
     furiganaAssistStatus: String?,
+    // v1.3.x code-review(F5):振假名校验行只对日语歌(hasKana)显示——中英文歌
+    // 点重新校验会把汉字段当空缺喂 LLM(烧 token 写无效 evidence 行)。
+    showFuriganaVerify: Boolean,
     onSave: () -> Unit,
     onDelete: () -> Unit,
 ) {
@@ -925,7 +931,9 @@ private fun LyricsAdjustSheet(
                 // 已自动跑过一次;这里显示结果状态 + 手动"重新校验"(force,逐层重跑,
                 // UtaTen 失败换网络窗口/LLM 失败换 Key 后用得上)。旧"外部假名校验(实验)"
                 // 单层按钮由本入口取代(同一 evidence 表,旧缓存数据继续有效)。
-                Row(Modifier.fillMaxWidth()) {
+                // v1.3.x code-review(F5):仅日语歌(showFuriganaVerify=hasKana)显示——
+                // 中英文歌点重新校验会把汉字段当空缺喂 LLM 烧 token 写无效行。
+                if (showFuriganaVerify) Row(Modifier.fillMaxWidth()) {
                     val status = furiganaAssistStatus
                     val running = status == ""
                     val label = when {
