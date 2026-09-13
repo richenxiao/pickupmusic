@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.Shiyin" parent="android:Theme.Material.Light.NoActionBar">
+        <!-- v1.3.x:深色模式窗口底色跟主题(DarkOrganic.bg #211d18)。原 values/themes.xml
+             硬编码亮 cream #f5ead8——Compose 内容已是深色,但 AnimatedContent 交叉淡化
+             (fadeIn 250 + fadeOut 150)半透明期透出亮窗口底,每进/退一个页都闪光。
+             夜间覆盖为深色,窗口底与内容同色,无对比即无闪光。 -->
+        <item name="android:windowBackground">#211d18</item>
+        <item name="android:windowDrawsSystemBarBackgrounds">true</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <!-- 深色底,状态栏图标用浅色(在深底上可见) -->
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+</resources>

@@ -268,7 +268,12 @@ fun AppRoot(vm: MainViewModel) {
                         }
                     else Modifier
                 )
-            Box(gestureBox) {
+            Box(gestureBox.background(c.bg)) {
+                    // v1.3.x:不透明 c.bg 背景板——AnimatedContent 交叉淡化(fadeIn 250
+                    // + fadeOut 150)半透明期透底色;window 底色资源跟系统模式,不跟 app
+                    // 的 vm.darkTheme 开关 → app 深色+系统浅色时透出亮 cream=每进/退一
+                    // 页闪光。背景板跟 Compose Organic 主题(c.bg),始终与内容同色,无对比
+                    // 即无闪光。window 底色仍由 values-night/themes.xml 兜底系统深色。
                     val contentKey = when {
                         vm.agentOpen -> "agent"
                         vm.settingsOpen -> "settings:${vm.filesView}"
@@ -498,20 +503,6 @@ fun AppRoot(vm: MainViewModel) {
                 // 盖在 PlayerScreen 之上、可正常打开。Box(fillMaxHeight) 让 overlay 的
                 // fillMaxSize/scrim 对齐整页。
                 Box(Modifier.fillMaxHeight()) {
-                    // v1.3.x 预组合(morph 帧率收尾):歌词本 overlay 在播放页落定后
-                    // ~700ms 以预热态挂载(interactive=false:隐形——progress=0 时两层
-                    // alpha 本来就是 0;零命中测试——整页 pointerInput/clickable 条件
-                    // 不挂,触摸穿透到卡片/按钮),把首组合/双窗口测量/预滚/取色/
-                    // 振假名 pipeline 搬到静止的播放页完成,点卡打开零突发。歌词变更
-                    // (切歌/重匹配)先摘除、700ms 再重挂,突发避开封面 crossfade;窗口期
-                    // 点卡走现场组合 fallback(行为与旧版一致)。播放页关→本作用域销毁,
-                    // 预热态随之清除,不留常驻开销。
-                    var lyricsPrewarm by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
-                    androidx.compose.runtime.LaunchedEffect(vm.currentLyrics) {
-                        lyricsPrewarm = false
-                        kotlinx.coroutines.delay(700)
-                        if (vm.currentLyrics?.parsed?.isEmpty == false) lyricsPrewarm = true
-                    }
                     PlayerScreen(vm)
                     // v1.3.3: PlayerMenuSheet / QueueSheet 从这里迁出——原先它们与
                     // PlayerScreen 同窗口叠加，拖拽经 sheet 根的 anchoredDraggable、
@@ -521,14 +512,20 @@ fun AppRoot(vm: MainViewModel) {
                     // 落在各自 window 上，只收弹层、播放页不动。
                     // v1.3.x morph P1(设计文档 §3.1):歌词本从独立 Dialog 改为同窗口
                     // overlay——后组居上盖在 PlayerScreen 之上;容器形变/进出动画全部
-                    // 在 LyricsMorphOverlay 内(单一 progress 驱动)。v1.3.x 预组合:
-                    // 组合门从纯 lyricsOn 扩为 lyricsOn||预热——预热态(interactive=false)
-                    // 挂载但不参与交互;预热没赶上时 lyricsOn 现场组合,fallback 同旧版。
-                    if (vm.lyricsOn || lyricsPrewarm) {
+                    // 在 LyricsMorphOverlay 内(单一 progress 驱动)。lyricsOn=false 时
+                    // 整层不组合,零常驻开销。
+                    //
+                    // v1.3.x 预组合(预热挂载)已回退:实测退出歌词本后预热态 overlay 仍
+                    // 挂载、触摸被拦截 → 点卡片进不去。赌的"interactive=false 整页零命中
+                    // 测试"站不住(LazyColumn userScrollEnabled=false 仍参与命中,或另有
+                    // pointerInput 残留)。改回纯 lyricsOn 门:打开即现场组合(fallback 路径,
+                    // 1 帧延迟隔离突发),功能可用优先于帧率优化。interactive 参数化与 morph/
+                    // 振假名修复保留,预热后续重新评估(需先把命中测试穿透在装机验证坐实)。
+                    if (vm.lyricsOn) {
                         // v1.3.x 状态收敛:morph 状态由 VM 常驻持有(跨开关周期),
                         // 不再每次打开 remember 新建——cardBounds/progress 不再从
                         // null/0 重新起步,首帧死层/闪屏类时序坑从结构上消失。
-                        com.shiyin.music.ui.screens.LyricsMorphOverlay(vm, vm.morph, interactive = vm.lyricsOn)
+                        com.shiyin.music.ui.screens.LyricsMorphOverlay(vm, vm.morph, interactive = true)
                     }
                 }
             }
