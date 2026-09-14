@@ -162,13 +162,14 @@ fun AgentScreen(vm: MainViewModel) {
             }
             if (vm.agentMessages.isEmpty()) {
                 item {
-                    Column(Modifier.fillMaxWidth().padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                    // v1.3.x:空态提示居中占满消息区(fillParentMaxHeight),去掉
+                    // "例如:…"示例语——只留一句主提示,不罗列填空式话术。
+                    Column(
+                        Modifier.fillParentMaxHeight().fillMaxWidth(),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center,
+                    ) {
                         Text("告诉 Agent 你想做什么", style = heading(18))
-                        Spacer(Modifier.height(8.dp))
-                        Text(
-                            "例如:\n「帮我把这张专辑排成正确顺序」\n「这个专辑歌手名识别反了,帮我查一下」\n「给当前这首歌找歌词」",
-                            style = body(13f, FontWeight.Normal, c.n600), textAlign = TextAlign.Center,
-                        )
                     }
                 }
             }
