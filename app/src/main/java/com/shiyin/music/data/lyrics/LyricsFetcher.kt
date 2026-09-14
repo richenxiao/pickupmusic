@@ -16,7 +16,11 @@ import kotlin.math.abs
 object LyricsFetcher {
     val SOURCES = listOf("LRCLIB", "网易云音乐")
     private const val UA = "Shiyin/1.0 (Android local music player)"
-    private const val DURATION_TOLERANCE_SEC = 2
+    // v1.3.x 2s→5s:±2s 把"搜到正确歌曲"误判为无结果(用户实测网易云明明有歌词却报
+    // 无——本地 tag/VBR 头时长与官方曲库录制时长差 3-5s 是常态:intro 差异、首段静音、
+    // ms→s 截断舍入再吃 ±1s)。放宽后:搜到正确歌曲不再被时长门否决。5s 仍显著低于
+    // live/广播剪辑/混音版与原版的典型时长差(≥8s),不会误配到错误版本。
+    private const val DURATION_TOLERANCE_SEC = 5
 
     /** Returns raw lyric text (LRC or plain) or null when no match. */
     suspend fun fetch(source: String, title: String, artist: String, album: String, durationSec: Long): String? =
@@ -107,11 +111,49 @@ object LyricsFetcher {
         }
         if (bestId < 0) return null
         if (durationSec > 0 && bestDiff > DURATION_TOLERANCE_SEC) return null
+        // v1.3.x yrc:部分新歌歌词只有逐字格式(yrc 字段),旧 lv=1 的 lrc 为空串——
+        // 客户端展示的滚动歌词来自 yrc,只读 lrc 会把"明明有歌词"误报为无结果
+        // (实测:《虎头奔》揽佬SKAI ISYOURGOD id=2080172427)。yv=1/yrv=1 请求 yrc,
+        // lrc 空时解析 yrc 转标准 LRC。
         val lyricBody = http(
-            "https://music.163.com/api/song/lyric?id=$bestId&lv=1&kv=-1&tv=-1",
+            "https://music.163.com/api/song/lyric?id=$bestId&lv=1&kv=-1&tv=-1&yv=1&yrv=1",
             referer = "https://music.163.com",
         ) ?: return null
-        val lrc = JSONObject(lyricBody).optJSONObject("lrc")?.optString("lyric")
-        return lrc?.takeIf { it.isNotBlank() }
+        val obj = JSONObject(lyricBody)
+        val lrc = obj.optJSONObject("lrc")?.optString("lyric")?.takeIf { it.isNotBlank() }
+        if (lrc != null) return lrc
+        val yrc = obj.optJSONObject("yrc")?.optString("lyric")?.takeIf { it.isNotBlank() } ?: return null
+        return yrcToLrc(yrc) ?: return null
+    }
+
+    /**
+     * v1.3.x: 网易云逐字歌词(yrc)转标准 LRC。
+     * yrc 行格式: [行起始ms,行持续ms](字起始ms,字持续ms,0)字(字起始ms,字持续ms,0)字…
+     * 行头 [start,dur] 是行时间轴,后续每个 (start,dur,0) 后跟该字文本(可含空格)。
+     * 转换: 取行起始 ms 作为 LRC 时间戳,把行内所有 (…) 标记剥掉、字文本顺序拼接。
+     */
+    private fun yrcToLrc(yrc: String): String? {
+        val out = StringBuilder()
+        val lineTag = Regex("""^\[(\d+),(\d+)\]""")
+        val wordTag = Regex("""\((\d+),(\d+),\d+\)""")
+        var anyLine = false
+        for (line in yrc.lines()) {
+            val trimmed = line.trim()
+            if (trimmed.isEmpty()) continue
+            val m = lineTag.find(trimmed) ?: continue
+            val startMs = m.groupValues[1].toLong()
+            // 剥行头后按 (start,dur,0) 标记切分,标记间的文本就是字内容
+            val rest = trimmed.substring(m.range.last + 1)
+            val text = wordTag.replace(rest, "").trim()
+            if (text.isEmpty()) continue
+            val min = startMs / 60_000
+            val sec = (startMs % 60_000) / 1000
+            val cs = (startMs % 1000) / 10
+            out.append('[').append(min).append(':')
+                .append(if (sec < 10) "0$sec" else "$sec").append('.')
+                .append(if (cs < 10) "0$cs" else "$cs").append(']').append(text).append('\n')
+            anyLine = true
+        }
+        return if (anyLine) out.toString() else null
     }
 }
