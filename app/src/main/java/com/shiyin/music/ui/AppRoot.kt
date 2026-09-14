@@ -296,7 +296,13 @@ fun AppRoot(vm: MainViewModel) {
                         val pad = Modifier.fillMaxSize().statusBarsPadding().background(c.bg)
                         when {
                             key == "agent" -> Box(pad) { com.shiyin.music.ui.screens.AgentScreen(vm) }
-                            key.startsWith("settings") -> Box(pad) { SettingsHost(vm) }
+                            key.startsWith("settings") -> {
+                                // view 由 key 快照解析,不读实时 vm.filesView:转场期间
+                                // 旧层(settings:旧view)保留旧页面渐隐,不跟着 filesView
+                                // 改写成新页面——与其他路由(一 key 一组件)结构对齐。
+                                val fv = com.shiyin.music.FilesView.valueOf(key.removePrefix("settings:"))
+                                Box(pad) { SettingsHost(vm, fv) }
+                            }
                             key == "recent" -> Box(pad) { com.shiyin.music.ui.screens.RecentPlaysScreen(vm) }
                             key == "stats" -> Box(pad) { com.shiyin.music.ui.screens.ListeningStatsScreen(vm) }
                             key == "updates" -> Box(pad) { com.shiyin.music.ui.screens.YourUpdatesScreen(vm) }

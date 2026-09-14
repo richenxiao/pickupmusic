@@ -71,8 +71,10 @@ import com.shiyin.music.ui.theme.Caprasimo
 import com.shiyin.music.ui.theme.LocalOrganic
 
 @Composable
-fun SettingsHost(vm: MainViewModel) {
-    when (vm.filesView) {
+fun SettingsHost(vm: MainViewModel, view: FilesView) {
+    // view 来自 AnimatedContent 的 settings:* key 快照(见 AppRoot),不是实时 vm.filesView
+    // ——转场期间旧层持有的旧 view 不随 vm.filesView 一起重组,各自渲染各自页面。
+    when (view) {
         FilesView.Root -> SettingsRoot(vm)
         FilesView.Clean -> CleanScreen(vm)
         FilesView.Trash -> CleanScreen(vm)   // v1.3.x: 回收站并入清理建议页,旧入口重定向
