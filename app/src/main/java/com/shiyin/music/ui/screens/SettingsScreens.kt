@@ -433,13 +433,14 @@ private fun LyricsBookScreen(vm: MainViewModel) {
                 .background(c.surface)
                 .padding(horizontal = 16.dp, vertical = 6.dp),
         ) {
-            // v1.3.x:图标与内容对齐——振假名默认开用 Captions(字幕/注音语义),
-            // 自动校验用 RefreshCw(重跑校验流水线,原 Shield 是"防护"不符不上"校验")。
-            // 去掉副文案(注释):三行都单行,图标与文字同行居中,不再错位。
-            SettingRow(Lucide.Captions, "日语歌默认开振假名", null, divider = true) {
+            // v1.3.x:图标语义贴合——振假名默认开用"ア"(片假名,furigana 本体,与
+            // 歌词页 あ 开关联动但设置页用片假名区分);自动校验收敛到 Check
+            // (验证通过语义,原 RefreshCw 是"重跑"不合"校验")。
+            // 单行布局:图标与文字同行居中,不再错位。
+            SettingRowGlyph(glyph = "ア", "日语歌默认开振假名", divider = true) {
                 OrganicSwitch(vm.furiganaDefaultOn) { vm.setFuriganaDefaultOn(!vm.furiganaDefaultOn) }
             }
-            SettingRow(Lucide.RefreshCw, "日语歌自动校验振假名", null, divider = true) {
+            SettingRow(Lucide.Check, "日语歌自动校验振假名", null, divider = true) {
                 OrganicSwitch(vm.furiganaAutoVerify) { vm.setFuriganaAutoVerify(!vm.furiganaAutoVerify) }
             }
             // 歌词颜色三档:默认(跟随封面)/白色/黑色。
@@ -467,6 +468,17 @@ private fun LyricsBookScreen(vm: MainViewModel) {
                             verticalArrangement = Arrangement.spacedBy(4.dp),
                             modifier = Modifier.clip(RoundedCornerShape(8.dp)).clickable { vm.setLyricsColorMode(mode) }.padding(2.dp),
                         ) {
+                            val content: @Composable () -> Unit = if (mode == "default") {
+                                // 跟随封面:左白右黑对拼,示意"文字色随封面明暗切换"
+                                {
+                                    Row(Modifier.fillMaxSize()) {
+                                        Box(Modifier.weight(1f).fillMaxHeight().background(Color.White))
+                                        Box(Modifier.weight(1f).fillMaxHeight().background(Color(0xFF1A1A1E)))
+                                    }
+                                }
+                            } else {
+                                { Box(Modifier.fillMaxSize().background(if (showWhite) Color.White else Color(0xFF1A1A1E))) }
+                            }
                             Box(
                                 Modifier
                                     .size(26.dp)
@@ -474,26 +486,13 @@ private fun LyricsBookScreen(vm: MainViewModel) {
                                     .border(2.5.dp, if (active) c.accent else c.n300, CircleShape)
                                     .padding(2.dp)
                                     .clip(CircleShape),
-                                contentAlignment = Alignment.Center,
-                            ) {
-                                if (mode == "default") {
-                                    // 跟随封面:左白右黑对拼,示意"文字色随封面明暗切换"
-                                    Box(Modifier.fillMaxHeight().width(10.dp).clip(CircleShape).background(Color.White))
-                                    Box(Modifier.fillMaxHeight().width(10.dp).clip(CircleShape).background(Color(0xFF1A1A1E)))
-                                } else {
-                                    Box(Modifier.fillMaxSize().clip(CircleShape).background(if (showWhite) Color.White else Color(0xFF1A1A1E)))
-                                }
-                            }
+                            ) { content() }
                             Text(label, style = body(11f, if (active) FontWeight.ExtraBold else FontWeight.Normal, if (active) c.text else c.n600))
                         }
                     }
                 }
             }
         }
-        Text(
-            "振假名相关设置仅对日语歌生效：中文、英文歌曲不会显示开关，也不会联网获取注音。",
-            style = body(12.5f, FontWeight.Normal, c.n500).copy(lineHeight = 18.sp),
-        )
         Box(Modifier.height(114.dp))
     }
 }
@@ -521,6 +520,31 @@ private fun SettingRow(
                 Text(sub, style = body(12.5f, FontWeight.Normal, c.n600), modifier = Modifier.padding(top = 2.dp))
             }
         }
+        trailing()
+    }
+    if (divider) Box(Modifier.fillMaxWidth().height(1.dp).background(c.divider))
+}
+
+/** [SettingRow] 的字符变体:图标位渲染文字字符(如振假名"ア"),与图标行视觉等重。 */
+@Composable
+private fun SettingRowGlyph(
+    glyph: String,
+    title: String,
+    divider: Boolean,
+    trailing: @Composable () -> Unit,
+) {
+    val c = LocalOrganic.current
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(vertical = 13.dp),
+        horizontalArrangement = Arrangement.spacedBy(13.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(Modifier.size(19.dp), contentAlignment = Alignment.Center) {
+            Text(glyph, style = body(17f, FontWeight.ExtraBold, c.n700))
+        }
+        Text(title, style = body(15f, FontWeight.SemiBold, c.text), modifier = Modifier.weight(1f))
         trailing()
     }
     if (divider) Box(Modifier.fillMaxWidth().height(1.dp).background(c.divider))
