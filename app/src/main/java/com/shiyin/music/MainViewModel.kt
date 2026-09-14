@@ -27,6 +27,7 @@ import com.shiyin.music.data.db.PlaylistEntity
 import com.shiyin.music.data.db.PlaylistTrackEntity
 import com.shiyin.music.data.db.SavedLyricEntity
 import com.shiyin.music.data.db.TrashedTrackEntity
+import com.shiyin.music.data.lyrics.LlmLyricsGuard
 import com.shiyin.music.data.lyrics.LrcParser
 import com.shiyin.music.data.lyrics.LyricsFetcher
 import com.shiyin.music.data.lyrics.ParsedLyrics
@@ -2759,6 +2760,21 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 val raw = resp.content?.trim()?.takeIf { it.isNotBlank() } ?: run {
                     lyFailReason = "模型没有返回歌词内容"
+                    lyState = LyState.Failed
+                    return@launch
+                }
+                // v1.3.x 输出校验①拒绝语:模型拒绝回答("抱歉我无法提供歌词,因版权…")
+                // 时整段是一句话,直接当歌词导入就成了"AI 把道歉信显示成歌词"——
+                // 识别到拒绝模式按失败处理,原因透传给用户。
+                if (LlmLyricsGuard.isRefusal(raw)) {
+                    lyFailReason = "模型拒绝了请求(${LlmLyricsGuard.refusalSummary(raw)})"
+                    lyState = LyState.Failed
+                    return@launch
+                }
+                // 输出校验②歌词形态:真正歌词是多行短行结构;模型的解释性长段落
+                // (无时间戳、行数少、行长)不满足形态——拒绝,不再误导入。
+                if (!LlmLyricsGuard.looksLikeLyrics(raw)) {
+                    lyFailReason = "模型输出的内容不是歌词形态"
                     lyState = LyState.Failed
                     return@launch
                 }
