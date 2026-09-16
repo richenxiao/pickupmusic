@@ -144,8 +144,18 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
                 endOfTrackFadeStarted = false
             }
             if (id != null) {
-                manualQueue.removeAll { it.id == id }
-                startTracking(id)
+                // v1.3.4: replaceMediaItem(封面推送/队列微调)同样会以 PLAYLIST_CHANGED
+                // 触发 transition,且 media3 对"内容相同"的替换不做抑制——无条件
+                // startTracking 会与封面推送互为因果成死环(实测 78 次/秒,伴随封面抖动)。
+                // 同 id 且 reason=PLAYLIST_CHANGED 即该次自触发替换,跳过:封面已推无需重推,
+                // 播放计数也无需重启(同一首同一 session 内)。playQueue 起播时的重复触发
+                // 同样被本守卫吸收,playQueue 末尾自有直调 startTracking,不会漏计。
+                val isSelfReplace = reason == Player.MEDIA_ITEM_TRANSITION_REASON_PLAYLIST_CHANGED &&
+                    id == currentId
+                if (!isSelfReplace) {
+                    manualQueue.removeAll { it.id == id }
+                    startTracking(id)
+                }
             } else {
                 // v1.3.3b review#B5: 过渡到 null(移除当前项/清空队列)——id!=null 分支的
                 // startTracking 会先 finalize 上一 session,id==null 直接跳过会让当前
