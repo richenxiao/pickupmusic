@@ -1838,8 +1838,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                         file,
                     )
                 } catch (_: Exception) { /* FileProvider 失败则仅用 artworkData 兜底 */ }
-                player.updateArtworkData(bytes, forMediaId = id, artworkUri = artworkUri)
-            } catch (_: Exception) { }
+                // v1.3.4: MediaController 只能在创建它的线程(主线程)上调用。本协程跑在
+                // Dispatchers.IO,直调会抛 IllegalStateException 并被下面的 catch 静默吞掉
+                // ——封面推送实际从未生效(系统控制台/灵动岛因此一直空白)。切回主线程再推。
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    player.updateArtworkData(bytes, forMediaId = id, artworkUri = artworkUri)
+                }
+            } catch (e: Exception) {
+                // 不静默吞异常:推送失败必须留痕,否则这类"封面没上系统栏"的问题无从排查。
+                android.util.Log.w("MediaArt", "cover push failed #$id: ${e.javaClass.simpleName}")
+            }
         }
     }
 
