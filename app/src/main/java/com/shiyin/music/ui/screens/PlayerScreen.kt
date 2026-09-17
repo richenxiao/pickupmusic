@@ -113,7 +113,9 @@ fun PlayerScreen(vm: MainViewModel) {
         if (vm.playerOpen) vm.loadLyricsFor(track.id)
     }
 
-    val durMs = if (vm.player.durationMs > 0) vm.player.durationMs else track.durationMs
+    // v22: 显示坐标 —— 拆分模式下进度条/时间要显示"当前这首"的区间，而不是整轨文件
+    // （45 分钟）。非拆分模式下 displayDurationMs() 就是 player.durationMs，行为不变。
+    val durMs = if (vm.player.displayDurationMs() > 0) vm.player.displayDurationMs() else track.durationMs
     // v1.3.x 帧率:pct 读 positionMs,原写在函数体顶层→整播放页每 300ms 重组
     // (morph 动画期间叠加=Slow UI 帧)。移进下方 Column 内容层(进度条消费点),
     // 重组作用域收窄到滚动内容 lambda;cover/transport 等可跳过子节点不重跑。
@@ -310,9 +312,9 @@ fun PlayerScreen(vm: MainViewModel) {
             // commit 一次 seekToFraction。scrub 期间忽略播放器 ticker 写回的
             // positionMs,避免滑块被每帧拉回播放位置。
             var scrubFraction by remember { mutableStateOf<Float?>(null) }
-            val pct = if (durMs > 0) (vm.player.positionMs.toFloat() / durMs).coerceIn(0f, 1f) else 0f
+            val pct = if (durMs > 0) (vm.player.displayPositionMs().toFloat() / durMs).coerceIn(0f, 1f) else 0f
             val shownPct = scrubFraction ?: pct
-            val shownPosMs = (scrubFraction?.let { it * durMs } ?: vm.player.positionMs).toLong()
+            val shownPosMs = (scrubFraction?.let { it * durMs } ?: vm.player.displayPositionMs()).toLong()
             Box(
                 Modifier
                     .fillMaxWidth()
@@ -329,7 +331,9 @@ fun PlayerScreen(vm: MainViewModel) {
                                 }
                             } while (event.changes.any { it.pressed })
                             // 抬手:提交一次 seek 并结束 scrub,bar 回到播放器真实位置。
-                            scrubFraction?.let { vm.player.seekToFraction(it) }
+                            // v22: 用显示坐标提交 —— 拆分模式下把"当前曲目内的比例"映射
+                            // 回整轨文件坐标，否则拖进度条会跳到错误的位置。
+                            scrubFraction?.let { vm.player.seekToDisplayFraction(it) }
                             scrubFraction = null
                         }
                     },

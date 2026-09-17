@@ -36,6 +36,31 @@ internal class PlaySessionTracker {
         const val COUNT_THRESHOLD_MS = 30_000L
         /** 单拍累加上限:超过视为 seek 大跳而非自然播放,不累加。2s/拍 ≈ 6x 速上限。 */
         const val MAX_SAMPLE_DELTA_MS = 2_000L
+        /** v22: 短曲兜底阈值只在「曲目时长 ≤ 此值」时启用,> 此值的曲目行为逐字不变。 */
+        const val SHORT_TRACK_MAX_MS = 60_000L
+        /** v22: 短曲兜底的下限 —— 避免"刚点开就算一次播放"。 */
+        const val SHORT_TRACK_MIN_MS = 5_000L
+
+        /**
+         * v22: 有效播放阈值。
+         *
+         * 专辑整轨拆出来的 intro / outro / interlude 常常只有十几二十秒，用固定 30 秒
+         * 会导致它们**永远不可能被计数**（既有缺口，普通短曲也一样）。用户定调：这类
+         * 过渡曲**要计数**，只是不作为热度评判标准（热度排除在 ViewModel 的 heatCountFor）。
+         *
+         * 因此对 ≤60 秒的短曲改用「半程」阈值：
+         * ```
+         *   时长 > 60s（含全部正常歌曲、2–5 分钟的拆分单曲） → 恒为 30s（行为不变）
+         *   30s 的 intro   → 15s
+         *   15s 的 interlude → 7.5s
+         *   5s 的 skit      → 5s（下限）
+         * ```
+         * `durationMs <= 0`（时长未知）时保守回落到 30s。
+         */
+        fun thresholdFor(durationMs: Long): Long =
+            if (durationMs in 1..SHORT_TRACK_MAX_MS) {
+                minOf(COUNT_THRESHOLD_MS, maxOf(SHORT_TRACK_MIN_MS, durationMs / 2))
+            } else COUNT_THRESHOLD_MS
     }
 
     /** 自增的 Session 标识,每个 Session 唯一,用于日志/调试,不参与计数判断。 */
@@ -48,6 +73,8 @@ internal class PlaySessionTracker {
         var counted: Boolean,
         var lastPosMs: Long,
         var rowId: Long = 0L, // v1.2.1: 对应 play_event 行的主键 id,由 onTrackStarted 插入后回填。按行 id 定位 markCounted/finalize,避免"按 mediaId 最新行"子查询写错行。
+        /** v22: 本 Session 的计数阈值（短曲兜底后可能小于 30s）。 */
+        val thresholdMs: Long = COUNT_THRESHOLD_MS,
     )
 
     /** 当前活跃 Session,null 表示尚未 start(未在播放任何曲目)。 */
@@ -71,7 +98,7 @@ internal class PlaySessionTracker {
      * (无论新旧 mediaId 是否相同 —— 这保证单曲循环"同 mediaId 新一轮"也能 finalize 上一轮、
      * 重置 counted,使新一轮可独立计数)。返回新 Session 的 id。
      */
-    fun start(mediaId: Long): Long {
+    fun start(mediaId: Long, durationMs: Long = 0L): Long {
         endCurrent()
         val sid = nextSessionId++
         current = Session(
@@ -80,6 +107,7 @@ internal class PlaySessionTracker {
             accumMs = 0L,
             counted = false,
             lastPosMs = 0L,
+            thresholdMs = thresholdFor(durationMs),
         )
         return sid
     }
@@ -100,7 +128,7 @@ internal class PlaySessionTracker {
             val delta = pos - s.lastPosMs
             if (delta in 1..MAX_SAMPLE_DELTA_MS) {
                 s.accumMs += delta
-                if (!s.counted && s.accumMs >= COUNT_THRESHOLD_MS) {
+                if (!s.counted && s.accumMs >= s.thresholdMs) {
                     s.counted = true
                     justCounted = true
                     onCounted?.invoke(s.rowId, s.mediaId)

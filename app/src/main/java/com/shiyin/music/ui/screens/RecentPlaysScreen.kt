@@ -64,7 +64,8 @@ fun RecentPlaysScreen(vm: MainViewModel) {
         val cal = java.util.Calendar.getInstance().apply { timeInMillis = ev.playedAt }
         "%d-%02d-%02d".format(cal.get(java.util.Calendar.YEAR), cal.get(java.util.Calendar.MONTH) + 1, cal.get(java.util.Calendar.DAY_OF_MONTH))
     }
-    val lib = vm.lib().associateBy { it.id }
+    // v22: 用 vm.trackById（含 lib() 全部曲目 + 「完整专辑」容器曲目）。
+    // 旧实现直接查 lib() 映射 —— 容器不在 lib() 里，专辑播放会整条被 continue 静默丢掉。
 
     Column(Modifier.fillMaxSize().background(c.bg)) {
         // header
@@ -106,11 +107,14 @@ fun RecentPlaysScreen(vm: MainViewModel) {
                 }
                 // Group by album
                 val byAlbum = dayEvents.groupBy { ev ->
-                    lib[ev.mediaId]?.let { t -> t.album to t.albumId } ?: ("--" to 0L)
+                    vm.trackById(ev.mediaId)?.let { t -> t.album to t.albumId } ?: ("--" to 0L)
                 }
                 for ((albumKey, albumEvents) in byAlbum) {
-                    val track = lib[albumEvents.first().mediaId]
+                    val first = albumEvents.first()
+                    val track = vm.trackById(first.mediaId)
                     if (track == null) continue
+                    // v22: 这次播放是不是「完整专辑」整轨会话（容器 id）。
+                    val isAlbumPlay = vm.isAlbumContainer(first.mediaId)
                     item {
                         Row(
                             Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).clickable {
@@ -123,9 +127,12 @@ fun RecentPlaysScreen(vm: MainViewModel) {
                             com.shiyin.music.ui.components.CoverArt(track, 48.dp)
                             Column(Modifier.weight(1f)) {
                                 Text(track.title, style = body(14f, FontWeight.SemiBold, c.text), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                Text(track.artist, style = body(12f, FontWeight.Normal, c.n500), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Text(
+                                    if (isAlbumPlay) "完整专辑 · ${track.artist}" else track.artist,
+                                    style = body(12f, FontWeight.Normal, c.n500), maxLines = 1, overflow = TextOverflow.Ellipsis,
+                                )
                             }
-                            Text(formatDuration(albumEvents.first().durationSec.toLong()), style = body(11f, FontWeight.Normal, c.n400))
+                            Text(formatDuration(first.durationSec.toLong()), style = body(11f, FontWeight.Normal, c.n400))
                         }
                     }
                 }

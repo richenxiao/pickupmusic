@@ -155,6 +155,7 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
                 if (!isSelfReplace) {
                     manualQueue.removeAll { it.id == id }
                     startTracking(id)
+                    alignToSplitStartIfNeeded()
                 }
             } else {
                 // v1.3.3b review#B5: 过渡到 null(移除当前项/清空队列)——id!=null 分支的
@@ -219,6 +220,9 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
         scope.launch {
             while (isActive) {
                 controller?.let { c ->
+                    // v22: 先检查拆分区间边界 —— 越过时无缝换 mediaId（引擎层零动作）。
+                    // 放在取 positionMs 之前，使这一拍的统计采样落在新曲目的 session 上。
+                    checkVirtualBoundary()
                     positionMs = c.currentPosition.coerceAtLeast(0)
                     val dur = c.duration
                     if (dur > 0) durationMs = dur
@@ -226,12 +230,17 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
                     playTracker.sample(positionMs, c.playWhenReady, c.playbackState == Player.STATE_READY)
                     // v5.2: end-of-track sleep mode — kick the fade once we're
                     // inside the last ~20% (clamped 6..20s) of the track.
-                    if (sleepMode == 2 && !endOfTrackFadeStarted && dur > 0) {
-                        val fadeMs = (dur * 0.2f).toLong().coerceIn(6000L, 20000L)
-                        if (positionMs >= dur - fadeMs) {
-                            endOfTrackFadeStarted = true
-                            sleepFading = true
-                            fadeOutAndPause(fadeMs)
+                    // v22: 拆分模式下"本曲结束"指的是**当前虚拟曲目**的终点，不是整轨
+                    // 文件末尾 —— 用显示坐标（虚拟区间内）而不是文件坐标。
+                    if (sleepMode == 2 && !endOfTrackFadeStarted) {
+                        val vDur = displayDurationMs()
+                        if (vDur > 0) {
+                            val fadeMs = (vDur * 0.2f).toLong().coerceIn(6000L, 20000L)
+                            if (displayPositionMs() >= vDur - fadeMs) {
+                                endOfTrackFadeStarted = true
+                                sleepFading = true
+                                fadeOutAndPause(fadeMs)
+                            }
                         }
                     }
                 }
@@ -243,9 +252,14 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
     /** v1.2.1: 新曲目开始播放时调用——tracker.start 会先 finalize 当前 session(回填
      *  上一首/上一轮 playedSec),再为新曲开新 session。单曲循环"同 mediaId 新一轮"也
      *  走这里:上一轮被 finalize、counted 重置,第二轮可独立计数。返回 session id,
-     *  onTrackStarted 带 (mediaId, sessionId) 让 VM 插行后回填 rowId。 */
+     *  onTrackStarted 带 (mediaId, sessionId) 让 VM 插行后回填 rowId。
+     *
+     *  v22: 带上曲目时长 —— 拆分出来的 intro/outro 常常只有十几二十秒，固定 30 秒阈值
+     *  会让它们永远不可能被计数。tracker 对 ≤60s 的短曲改用「半程」阈值。
+     *  时长从 [durationById] 取（buildItem 时登记）：不能用 controller.duration ——
+     *  拆分模式下那是**整轨文件**的时长，不是当前这首的。 */
     private fun startTracking(id: Long) {
-        val sid = playTracker.start(id)
+        val sid = playTracker.start(id, durationById[id] ?: 0L)
         onTrackStarted?.invoke(id, sid)
     }
 
@@ -261,22 +275,88 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
         playTracker.finalize()
     }
 
-    private fun buildItem(t: Track): MediaItem = MediaItem.Builder()
-        .setMediaId(t.id.toString())
-        .setUri(t.uri)
-        .setMediaMetadata(
-            MediaMetadata.Builder()
-                .setTitle(t.title)
-                .setArtist(t.artist)
-                .setAlbumTitle(t.album)
-                .setArtworkUri(
-                    ContentUris.withAppendedId(
-                        android.net.Uri.parse("content://media/external/audio/albumart"), t.albumId,
-                    )
+    // ── v22: 整轨拆分 —— 无缝虚拟切歌 ────────────────────────────────────────
+
+    /** 当前条目的拆分信息（普通曲目 / 容器模式返回 null）。 */
+    private fun currentCarry(): PlanCarry? = SplitCarry.read(controller?.currentMediaItem)
+
+    /**
+     * 进入一个拆分单曲条目时，把播放位置对齐到它的区间起点。
+     *
+     * 为什么需要：队列里同一个整轨文件可能出现多次（歌单里同时有第 1 首和第 5 首），
+     * 而 `setMediaItems(items, index, startPositionMs)` 的起始位置只作用于**首个**条目 ——
+     * 后续条目会从 uri 的 0 开始播，落进错误的曲目区间。
+     *
+     * 无缝边界切换时位置本就在新曲区间内 → 这里不会触发 seek，因此不影响无缝性。
+     */
+    private fun alignToSplitStartIfNeeded() {
+        val c = controller ?: return
+        val carry = currentCarry() ?: return
+        val t = carry.current ?: return
+        val pos = c.currentPosition
+        if (pos < t.startMs || pos >= t.endMs) {
+            c.seekTo(t.startMs.coerceAtLeast(0L))
+        }
+    }
+
+    /**
+     * v22: 每拍检查是否越过了拆分单曲的区间边界。
+     *
+     * 越过时**只做一次 replaceMediaItem**（换 mediaId + 标题/歌手，uri 与
+     * LocalConfiguration 不变）：
+     * - 引擎层不 seek、不 reload、不重建 MediaSource → 音频流完全连续，无卡顿无爆音；
+     * - Media3 会以 reason=PLAYLIST_CHANGED 触发 onMediaItemTransition，而 mediaId 变了，
+     *   于是既有的 `isSelfReplace` 守卫放行 → `startTracking(newId)` 自动完成
+     *   「上一首 finalize 回填 playedSec + 新一首插 play_event」，统计口径无需另写逻辑。
+     *
+     * 位置下标**纯由 positionMs 派生**，所以用户拖进度条跨越边界、通知栏 seek、蓝牙
+     * 耳机切歌等任何来源的位置变化都会自洽归位。
+     */
+    private fun checkVirtualBoundary() {
+        val c = controller ?: return
+        val item = c.currentMediaItem ?: return
+        val carry = SplitCarry.read(item) ?: return
+        val k = carry.plan.indexAt(c.currentPosition)
+        if (k < 0 || k == carry.index) return
+        val next = carry.plan.tracks.getOrNull(k) ?: return
+        c.replaceMediaItem(c.currentMediaItemIndex, SplitCarry.itemFor(item, carry.copy(index = k)))
+        // 元数据里已带标题，这里只兜住 durationById（短曲阈值要用分段时长）。
+        durationById[next.id] = next.durationMs
+    }
+
+    /** v22: mediaId → 该曲目时长。buildItem 时登记，供 startTracking 取短曲阈值。
+     *  必须走这里而不是 controller.duration：拆分模式下后者是整轨文件的时长。 */
+    private val durationById = HashMap<Long, Long>()
+
+    /**
+     * v22: VM 注入的拆分方案提供者 —— 给定一个**拆分单曲**曲目，返回它的方案与下标；
+     * 普通曲目与「完整专辑」容器返回 null。
+     *
+     * 由曲目本身就能判断走哪种模式（见 SplitIds）：拆分单曲的 id 落在 TRACK 段、
+     * 容器的 id 落在 CONTAINER 段 —— 因此不需要为 playQueue / syncQueue /
+     * addToQueueNext 各加一个参数，所有既有调用点原样可用。
+     */
+    var planProvider: ((Track) -> PlanCarry?)? = null
+
+    private fun buildItem(t: Track): MediaItem {
+        durationById[t.id] = t.durationMs
+        val mb = MediaMetadata.Builder()
+            .setTitle(t.title)
+            .setArtist(t.artist)
+            .setAlbumTitle(t.album)
+            .setArtworkUri(
+                ContentUris.withAppendedId(
+                    android.net.Uri.parse("content://media/external/audio/albumart"), t.albumId,
                 )
-                .build()
-        )
-        .build()
+            )
+        // v22: 拆分单曲带上方案（含各曲起点/终点/曲名），供边界无缝切歌与通知栏切歌。
+        planProvider?.invoke(t)?.let { SplitCarry.put(mb, it) }
+        return MediaItem.Builder()
+            .setMediaId(t.id.toString())
+            .setUri(t.uri)
+            .setMediaMetadata(mb.build())
+            .build()
+    }
 
     /** v2.0: push album art bitmap data to the current MediaItem's metadata so
      *  the system MediaSession (notification pill, lock screen, quick settings)
@@ -317,7 +397,9 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
             repeatMode = Player.REPEAT_MODE_ALL
             c.repeatMode = Player.REPEAT_MODE_ALL
         }
-        c.setMediaItems(tracks.map(::buildItem), index, 0L)
+        // v22: 拆分单曲从它自己的区间起点开始播（整轨文件坐标）。
+        val startPos = planProvider?.invoke(tracks[index])?.let { SplitCarry.startMsOf(it) } ?: 0L
+        c.setMediaItems(tracks.map(::buildItem), index, startPos)
         // Pending manual-queue items survive a context switch (v1.7 semantics).
         manualQueue.removeAll { it.id == startId }
         manualQueue.forEachIndexed { i, t -> c.addMediaItem(index + 1 + i, buildItem(t)) }
@@ -513,6 +595,22 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
     fun next() {
         gapJob?.cancel()
         val c = controller ?: return
+        // v22: 拆分模式下「下一首」是**同一个整轨文件里的下一首**，而不是下一个队列
+        // 条目（整个队列可能只有一个容器条目）。两次调用在同一主线程块内完成，ticker
+        // 无法插入其间；且这是用户主动操作，seek 是可接受的。
+        val carry = currentCarry()
+        val item = c.currentMediaItem
+        if (carry != null && item != null) {
+            val nextIdx = carry.index + 1
+            if (nextIdx < carry.plan.tracks.size) {
+                val nc = carry.copy(index = nextIdx)
+                c.replaceMediaItem(c.currentMediaItemIndex, SplitCarry.itemFor(item, nc))
+                c.seekTo(SplitCarry.startMsOf(nc))
+                c.play()
+                return
+            }
+            // 已经是本条目最后一首 → 落到下面的常规"下一个队列条目"逻辑
+        }
         if (c.hasNextMediaItem()) {
             c.seekToNextMediaItem()
         } else if (c.mediaItemCount > 0) {
@@ -524,7 +622,60 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
 
     fun prev() {
         gapJob?.cancel()
-        controller?.seekToPrevious()
+        val c = controller ?: return
+        val carry = currentCarry()
+        val item = c.currentMediaItem
+        if (carry != null && item != null) {
+            val cur = carry.current
+            // 与 setMaxSeekToPreviousPositionMs(4000) 的既有语义一致：
+            // 本曲已播过 3 秒以上 → 回本曲开头；否则 → 上一首的起点。
+            if (cur != null && c.currentPosition - cur.startMs > 3000L) {
+                c.seekTo(cur.startMs)
+                c.play()
+                return
+            }
+            val prevIdx = (carry.index - 1).coerceAtLeast(0)
+            if (prevIdx != carry.index) {
+                c.replaceMediaItem(c.currentMediaItemIndex, SplitCarry.itemFor(item, carry.copy(index = prevIdx)))
+            }
+            c.seekTo(SplitCarry.startMsOf(carry.copy(index = prevIdx)))
+            c.play()
+            return
+        }
+        c.seekToPrevious()
+    }
+
+    // ── v22: 显示坐标 ────────────────────────────────────────────────────────
+    // 拆分模式下 player.positionMs / durationMs 是**整轨文件**的坐标（可能 45 分钟），
+    // 而播放页进度条、迷你条、时间文字都该显示"当前这首"的坐标。下面三个函数是 UI
+    // 唯一该用的入口；歌词本不需要改（歌词按整轨文件的绝对时间戳存，跨边界继续走反而
+    // 更自然）。
+
+    /** 当前虚拟曲目的起点（整轨文件坐标）；非拆分模式为 0。 */
+    val virtualStartMs: Long get() = currentCarry()?.current?.startMs ?: 0L
+
+    /** 当前虚拟曲目的时长；非拆分模式为 0。 */
+    val virtualDurationMs: Long get() = currentCarry()?.current?.durationMs ?: 0L
+
+    /** 进度条/时间显示用的位置（相对当前曲目）。 */
+    fun displayPositionMs(): Long =
+        if (virtualDurationMs > 0L) (positionMs - virtualStartMs).coerceAtLeast(0L) else positionMs
+
+    /** 进度条/时间显示用的时长。 */
+    fun displayDurationMs(): Long =
+        if (virtualDurationMs > 0L) virtualDurationMs else durationMs
+
+    /** 拖进度条：把"当前曲目内的比例"映射回整轨文件坐标。 */
+    fun seekToDisplayFraction(fraction: Float) {
+        val c = controller ?: return
+        val t = currentCarry()?.current
+        if (t == null) {
+            seekToFraction(fraction)
+            return
+        }
+        val f = fraction.coerceIn(0f, 1f)
+        c.seekTo(t.startMs + ((t.endMs - t.startMs) * f).toLong())
+        c.play()
     }
 
     fun seekToFraction(fraction: Float) {

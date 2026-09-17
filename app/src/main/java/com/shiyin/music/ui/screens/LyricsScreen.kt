@@ -481,14 +481,18 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
             // v1.3.x code-review(F12,预组合):预热期(!interactive)短路 positionMs 读——
             // 300ms ticker 不再订阅底栏 lambda,隐形期零抖动;打开后才订阅实时进度。
             // 短路语义:interactive=false 时 && 不求值 positionMs → 无状态订阅。
-            val pct = if (interactive && durMs > 0) (vm.player.positionMs.toFloat() / durMs).coerceIn(0f, 1f) else 0f
+            // v22: 进度环/拖动用**显示坐标**（拆分模式下是当前这首的区间），
+            // 而 activeIndex 仍用整轨文件坐标 —— 歌词是按文件绝对时间戳存的，
+            // 跨拆分边界继续走反而更自然。两者互不影响。
+            val dispDurMs = vm.player.displayDurationMs().takeIf { it > 0 } ?: durMs
+            val pct = if (interactive && dispDurMs > 0) (vm.player.displayPositionMs().toFloat() / dispDurMs).coerceIn(0f, 1f) else 0f
             // v5.3: 进度条支持拖动 scrub(与 PlayerScreen 同一逻辑)。原只有
             // detectTapGestures 点按跳转,按住拖动无响应。按下/拖动期间 scrubFraction
             // 覆盖到手指位置,抬手时 commit 一次 seek,期间忽略 ticker 写回。
             var scrubFraction by remember { mutableStateOf<Float?>(null) }
             val shownPct = scrubFraction ?: pct
             // v1.3.x code-review(F12):同上,预热期短路 positionMs(scrubFraction 为 null 时才读)。
-            val shownPosMs = (scrubFraction?.let { it * durMs } ?: if (interactive) vm.player.positionMs else 0L).toLong()
+            val shownPosMs = (scrubFraction?.let { it * dispDurMs } ?: if (interactive) vm.player.displayPositionMs() else 0L).toLong()
             Box(
                 Modifier
                     .fillMaxWidth()
@@ -504,7 +508,7 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
                                     change.consume()
                                 }
                             } while (event.changes.any { it.pressed })
-                            scrubFraction?.let { vm.player.seekToFraction(it) }
+                            scrubFraction?.let { vm.player.seekToDisplayFraction(it) }
                             scrubFraction = null
                         }
                     } else Modifier),

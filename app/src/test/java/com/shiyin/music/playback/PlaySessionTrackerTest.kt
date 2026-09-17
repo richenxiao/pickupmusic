@@ -263,4 +263,46 @@ class PlaySessionTrackerTest {
             t.sample(pos = pos, isPlaying = isPlaying, stateReady = stateReady)
         }
     }
+
+    // ── 11. v22: 短曲(过渡曲)阈值兜底 ─────────────────────────────────────
+    // 专辑整轨拆出来的 intro/outro 常常只有十几二十秒，固定 30 秒阈值会让它们
+    // **永远不可能被计数**。用户定调：这类过渡曲要计数，只是不作为热度评判标准。
+
+    @Test fun thresholdFor_longTrack_keepsThirtySeconds() {
+        // > 60s 的曲目行为逐字不变
+        assertEquals(30_000L, PlaySessionTracker.thresholdFor(0L))          // 时长未知 → 保守 30s
+        assertEquals(30_000L, PlaySessionTracker.thresholdFor(60_001L))
+        assertEquals(30_000L, PlaySessionTracker.thresholdFor(180_000L))
+        assertEquals(30_000L, PlaySessionTracker.thresholdFor(600_000L))
+    }
+
+    @Test fun thresholdFor_shortTrack_usesHalfLength() {
+        assertEquals(15_000L, PlaySessionTracker.thresholdFor(30_000L))     // 30s 的 intro
+        assertEquals(7_500L, PlaySessionTracker.thresholdFor(15_000L))      // 15s 的 interlude
+        assertEquals(30_000L, PlaySessionTracker.thresholdFor(60_000L))     // 边界含 60s → min(30s, 30s)
+        assertEquals(5_000L, PlaySessionTracker.thresholdFor(9_000L))       // 下限 5s
+        assertEquals(5_000L, PlaySessionTracker.thresholdFor(5_000L))
+        assertEquals(5_000L, PlaySessionTracker.thresholdFor(1_000L))       // 再短也不低于 5s
+    }
+
+    @Test fun shortTrack_countedAtHalfway() {
+        val c = CountRecorder(); val f = FinRecorder(); val t = newTracker(c, f)
+        // 30 秒的 intro：听满 15 秒即计一次
+        t.start(99L, durationMs = 30_000L)
+        playMs(t, 14_700, isPlaying = true, stateReady = true, perTick = TICK)
+        assertEquals("未到半程不计", 0, c.counted.size)
+        playMs(t, 600, isPlaying = true, stateReady = true, perTick = TICK, startFrom = 14_700)
+        assertEquals("过半程计 1 次", 1, c.counted.size)
+        assertEquals(99L, c.counted[0])
+    }
+
+    @Test fun normalTrack_durationParamDoesNotChangeBehaviour() {
+        val c = CountRecorder(); val t = newTracker(c, FinRecorder())
+        // 4 分钟的普通歌：阈值仍是 30 秒
+        t.start(7L, durationMs = 240_000L)
+        playMs(t, 29_900, isPlaying = true, stateReady = true, perTick = TICK)
+        assertEquals("29.9s 未满 30s 不计", 0, c.counted.size)
+        playMs(t, 200, isPlaying = true, stateReady = true, perTick = TICK, startFrom = 29_900)
+        assertEquals("满 30s 计 1 次", 1, c.counted.size)
+    }
 }
