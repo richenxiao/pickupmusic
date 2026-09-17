@@ -11,6 +11,8 @@ import com.shiyin.music.data.db.ReadingOverrideEntity as RO
 import com.shiyin.music.data.db.ExternalReadingEvidenceEntity as ERE
 import com.shiyin.music.data.db.ArtistImageCacheEntity as AIC
 import com.shiyin.music.data.db.ArtistImageOverrideEntity as AIOV
+import com.shiyin.music.data.db.AlbumSplitEntity as ASP
+import com.shiyin.music.data.db.SplitTrackEntity as STK
 
 /**
  * v1.2.0 阶段三：用户修正数据的导出/导入。
@@ -47,6 +49,12 @@ internal class BackupManager(private val dao: ShiyinDao) {
         // v1.2.0 #6: 歌手写真——用户手选 override 是永久资产；cache 成功行随附避免重抓。
         val artistImageCache: List<AIC>,
         val artistImageOverride: List<AIOV>,
+        // v22: 专辑整轨拆分为单曲。不可由重新扫描重建（用户录入的时间轴），必须随备份走。
+        // split_track 连自增 id 一起导出：对外合成 mediaId = TRACK_BASE + id，而收藏/
+        // 歌单/歌词都按这个 id 存，id 一变这些引用全断。导入用 REPLACE 保留原 id。
+        // 跨设备时 sourceMediaId 必然失效，由 lib() 用 sourcePath 兜底重解析。
+        val albumSplit: List<ASP> = emptyList(),
+        val splitTrack: List<STK> = emptyList(),
     )
 
     /** 导出全部修正数据为 JSON 字符串。调用方负责写入 SAF/文件。 */
@@ -63,6 +71,8 @@ internal class BackupManager(private val dao: ShiyinDao) {
             externalReadingEvidence = dao.allExternalReadingEvidence(),
             artistImageCache = dao.allArtistImageCacheSuccess(),
             artistImageOverride = dao.allArtistImageOverride(),
+            albumSplit = dao.allAlbumSplits(),
+            splitTrack = dao.allSplitTracks(),
         )
         return Gson().toJson(data)
     }
@@ -111,6 +121,13 @@ internal class BackupManager(private val dao: ShiyinDao) {
         val imgOverride = data.artistImageOverride.orEmpty()
         if (imgCache.isNotEmpty()) dao.upsertAllArtistImageCache(imgCache)
         if (imgOverride.isNotEmpty()) dao.upsertAllArtistImageOverride(imgOverride)
+        // v22: 拆分方案。orEmpty 兼容旧备份（无这两个字段→null→空，跳过）。
+        // 先 album_split 再 split_track（方案先行，孤儿行也不会被 lib() 展开）。
+        // split_track 保留原自增 id（REPLACE）→ 合成 mediaId 不变 → 收藏/歌单/歌词引用不断。
+        val splits = data.albumSplit.orEmpty()
+        val splitTracks = data.splitTrack.orEmpty()
+        if (splits.isNotEmpty()) dao.upsertAllAlbumSplit(splits)
+        if (splitTracks.isNotEmpty()) dao.insertSplitTracks(splitTracks)
         return ImportStats(
             albumOverride = data.albumOverride.size,
             albumInfoOverride = data.albumInfoOverride.size,
@@ -122,6 +139,8 @@ internal class BackupManager(private val dao: ShiyinDao) {
             externalReadingEvidence = data.externalReadingEvidence.size,
             artistImageCache = imgCache.size,
             artistImageOverride = imgOverride.size,
+            albumSplit = splits.size,
+            splitTrack = splitTracks.size,
         )
     }
 
@@ -143,11 +162,15 @@ internal class BackupManager(private val dao: ShiyinDao) {
         val externalReadingEvidence: Int,
         val artistImageCache: Int,
         val artistImageOverride: Int,
+        // v22: 拆分方案 / 拆分曲目
+        val albumSplit: Int = 0,
+        val splitTrack: Int = 0,
     ) {
         override fun toString() =
             "专辑迁移$albumOverride / 专辑修正$albumInfoOverride / 曲目修正$trackInfoOverride / " +
             "曲目迁专辑$trackAlbumMove / 歌手$artists / 曲目-歌手$songArtist / " +
             "振假名注音$readingOverride / 外部假名$externalReadingEvidence / " +
-            "歌手写真缓存$artistImageCache / 歌手写真手选$artistImageOverride"
+            "歌手写真缓存$artistImageCache / 歌手写真手选$artistImageOverride / " +
+            "整轨拆分$albumSplit / 拆分曲目$splitTrack"
     }
 }
