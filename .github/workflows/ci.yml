@@ -1,0 +1,84 @@
+name: CI
+
+# v22: 最小 CI —— push / PR 自动编译 + 跑单测，另存一份 debug 包方便随时取用。
+#
+# 加它的直接动因：本项目曾出现「本机没装 Android SDK 就完全发现不了的编译错误」
+# （Media3 的 onPlayerCommandRequest 签名写错）。CI 机器自带 Android SDK，
+# 与开发者本机环境无关，能把这类错误挡在合并之前。
+#
+# 为什么不跑 release：release 需要签名密钥，必须放 GitHub Secrets；
+# 且本项目是本地 App、没有服务端，CD（自动发布）暂无必要。
+# 想自动发版时再单独加一个 tag 触发的 job。
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+# 同一分支连续 push 时取消上一次未跑完的，省额度也更快看到结果
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 配置 JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      # 缓存 Gradle 依赖与 wrapper，第二次起构建快很多
+      - name: 配置 Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      # 项目从 local.properties 读 sdk.dir；CI 上该文件不存在（已 gitignore），
+      # 因此这里显式写一份指向 runner 预装的 SDK，避免依赖 ANDROID_HOME 的隐式回退。
+      - name: 准备 Android SDK
+        run: |
+          set -e
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          echo "ANDROID SDK = $SDK"
+          if [ ! -d "$SDK" ]; then echo "找不到 Android SDK"; exit 1; fi
+          echo "sdk.dir=$SDK" > local.properties
+
+          # compileSdk 36 —— 确保平台与 build-tools 已安装（已装则秒过）。
+          # runner 上 cmdline-tools 的版本目录不固定，故动态查找，找不到就跳过
+          # （镜像一般已预装所需组件）。
+          SDKMANAGER="$(ls -d "$SDK"/cmdline-tools/*/bin/sdkmanager 2>/dev/null | head -1 || true)"
+          if [ -n "$SDKMANAGER" ]; then
+            yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
+            "$SDKMANAGER" "platforms;android-36" "build-tools;36.0.0" > /dev/null
+          else
+            echo "未找到 sdkmanager，跳过组件安装"
+          fi
+
+      - name: 单元测试（同时编译主源码与测试源码）
+        run: |
+          chmod +x ./gradlew
+          ./gradlew :app:testDebugUnitTest --console=plain
+
+      - name: 打 Debug 包
+        run: ./gradlew :app:assembleDebug --console=plain
+
+      # 测试失败时把报告传上来，省得翻日志
+      - name: 上传测试报告
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-report
+          path: app/build/reports/tests/testDebugUnitTest/
+          retention-days: 7
+
+      - name: 上传 Debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-debug-apk
+          path: app/build/outputs/apk/debug/*.apk
+          retention-days: 7
