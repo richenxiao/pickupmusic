@@ -993,34 +993,36 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      *
      * [startId] 被点的那首若在某段里，就用它当该段的代表 —— 它前面的成员本来也排在
      * 它前面、不会被播到。
+     *
+     * 合并规则本身在 [com.shiyin.music.data.split.SplitRunCollapse]（纯逻辑、可单测）；
+     * 这里只负责把曲目翻译成「方案位置」。
      */
     private fun collapseSplitRuns(tracks: List<Track>, startId: Long?): List<Track> {
         if (albumSplits.isEmpty() || splitTracks.isEmpty()) return tracks
-        val out = ArrayList<Track>(tracks.size)
-        var i = 0
-        while (i < tracks.size) {
-            val carry = splitCarryFor(tracks[i])
-            if (carry == null) {
-                out += tracks[i]
-                i++
-                continue
-            }
-            val src = carry.plan.sourceMediaId
-            var last = i
-            var idx = carry.index
-            while (last + 1 < tracks.size) {
-                val nx = splitCarryFor(tracks[last + 1]) ?: break
-                if (nx.plan.sourceMediaId != src || nx.index != idx + 1) break
-                last++
-                idx++
-            }
-            val rep = if (startId != null) {
-                tracks.subList(i, last + 1).firstOrNull { it.id == startId } ?: tracks[i]
-            } else tracks[i]
-            out += rep
-            i = last + 1
-        }
-        return out
+        val slots = tracks.map { splitSlotOf(it) }
+        val tapped = if (startId == null) -1 else tracks.indexOfFirst { it.id == startId }
+        return com.shiyin.music.data.split.SplitRunCollapse
+            .representativeIndices(slots, tapped)
+            .map { tracks[it] }
+    }
+
+    /**
+     * v22: 曲目在拆分方案里的位置（普通曲目返回 null）。
+     *
+     * 与 [splitCarryFor] 的区别：这里**不构造完整的 VirtualTrack 列表**（队列压缩只需要
+     * 「哪个源文件 + 第几首」两个数），避免在整库队列上做无谓的分配。
+     */
+    private fun splitSlotOf(t: Track): com.shiyin.music.data.split.SplitRunCollapse.Slot? {
+        if (!isSplitTrack(t.id)) return null
+        val rowId = t.id - com.shiyin.music.data.split.SplitIds.TRACK_BASE
+        val row = splitTracks.firstOrNull { it.id == rowId } ?: return null
+        val ordered = splitTracksBySource[row.sourceMediaId]
+            ?.filter { it.startMs != com.shiyin.music.data.split.SPLIT_START_UNKNOWN }
+            ?.sortedBy { it.ordinal }
+            ?: return null
+        val idx = ordered.indexOfFirst { it.id == rowId }
+        if (idx < 0) return null
+        return com.shiyin.music.data.split.SplitRunCollapse.Slot(row.sourceMediaId, idx)
     }
 
     // ── v22: 拆分录入 —— 两步流程的 ViewModel 侧 ────────────────────────────
@@ -2459,18 +2461,31 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /**
      * v22: 拆分专辑的队列构造。
      *
-     * 返回 (队列, 起始 id)；该专辑不是拆分专辑时返回 null，交回常规逻辑。
+     * 返回 (队列, 起始 id)；该专辑不适用拆分播放时返回 null，交回常规逻辑。
+     *
+     * ⚠️ 只在该专辑**完全由同一个整轨文件的拆分曲目组成**时接管。若专辑里混着别的
+     * 非拆分曲目（用户先拆了单文件专辑、又往这张专辑迁进了别的歌），容器模式会只播
+     * 那个整轨文件、把其他曲目整条漏掉 —— 这种情况交回常规逻辑（[collapseSplitRuns]
+     * 仍会把同一文件的连续拆分曲目合并成一条，听感依然连续）。
      */
     private fun splitAlbumQueue(key: String, startId: Long?): Pair<List<Track>, Long>? {
         val ts = albumOrder(key)
-        val row = ts.firstOrNull { isSplitTrack(it.id) }?.let { t ->
-            splitTracks.firstOrNull { it.id == t.id - com.shiyin.music.data.split.SplitIds.TRACK_BASE }
-        } ?: return null
-        val plan = splitPlanOf(row.sourceMediaId) ?: return null
+        if (ts.isEmpty()) return null
+        val srcId = splitSourceOfAlbum(key) ?: return null
+        if (ts.any { !isSplitTrack(it.id) }) return null
+        // 全部曲目必须来自同一个源文件
+        val allSameSource = ts.all { t ->
+            val row = splitTracks.firstOrNull { it.id == t.id - com.shiyin.music.data.split.SplitIds.TRACK_BASE }
+            row?.sourceMediaId == srcId
+        }
+        if (!allSameSource) return null
+        val plan = splitPlanOf(srcId) ?: return null
         val container = trackById(plan.containerId) ?: return null
-        // 无起点（或点的是容器本身）→ 完整专辑模式
+        // 无起点（专辑页「播放」/ 顶部「完整专辑」行）→ 容器模式：从头播到尾，
+        // 不触发任何单曲切换，计一次「专辑被播放次数」。
         val start = startId?.takeIf { isSplitTrack(it) }
         if (start == null) return listOf(container) to container.id
+        // 有起点（点第 N 行）→ 单曲模式：队列放那首虚拟曲目，方案随 extras 走。
         val vt = ts.firstOrNull { it.id == start } ?: return listOf(container) to container.id
         return listOf(vt) to vt.id
     }

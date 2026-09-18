@@ -66,6 +66,9 @@ fun RecentPlaysScreen(vm: MainViewModel) {
     }
     // v22: 用 vm.trackById（含 lib() 全部曲目 + 「完整专辑」容器曲目）。
     // 旧实现直接查 lib() 映射 —— 容器不在 lib() 里，专辑播放会整条被 continue 静默丢掉。
+    // 这里显式调一次 lib()：trackById 读的是 lib() 里重建的 libById，不先调一次的话，
+    // 本页若在库尚未构建时打开会全部解析不到 → 明明有播放记录却显示"暂无"。
+    vm.lib()
 
     Column(Modifier.fillMaxSize().background(c.bg)) {
         // header

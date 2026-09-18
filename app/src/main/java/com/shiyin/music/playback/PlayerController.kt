@@ -154,7 +154,9 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
                     id == currentId
                 if (!isSelfReplace) {
                     manualQueue.removeAll { it.id == id }
-                    startTracking(id)
+                    // v22: 把回调带来的 mediaItem 一起传进去 —— 它是这次切歌最权威的
+                    // 描述（含拆分方案），短曲阈值据此取分段时长。
+                    startTracking(id, mediaItem)
                     alignToSplitStartIfNeeded()
                 }
             } else {
@@ -249,17 +251,34 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
         }
     }
 
+    /**
+     * v22: 取某曲目的「有效时长」用于短曲阈值，三级回退。
+     *
+     * 拆分曲目的切换有 4 条来源 —— App 内按钮、边界自动切换、通知栏/蓝牙耳机/车机
+     * （由 PlaybackService 直接改 player）。后两者发生时 `durationById` 里根本没有新
+     * 曲目的条目（没人调过 buildItem），若回落到 0 则阈值变 30s，十几秒的 intro/outro
+     * 永远到不了阈值、**静默不计次**。
+     *
+     * 所以按可靠性从高到低取：
+     *  1. [item] —— onMediaItemTransition 回调带来的 MediaItem（最权威，任何来源都对得上）
+     *  2. 当前条目的 extras —— 方案就写在里面
+     *  3. [durationById] —— 兜底
+     */
+    private fun durationForThreshold(id: Long, item: MediaItem?): Long {
+        SplitCarry.read(item)?.current?.takeIf { it.id == id }?.let { return it.durationMs }
+        currentCarry()?.current?.takeIf { it.id == id }?.let { return it.durationMs }
+        return durationById[id] ?: 0L
+    }
+
     /** v1.2.1: 新曲目开始播放时调用——tracker.start 会先 finalize 当前 session(回填
      *  上一首/上一轮 playedSec),再为新曲开新 session。单曲循环"同 mediaId 新一轮"也
      *  走这里:上一轮被 finalize、counted 重置,第二轮可独立计数。返回 session id,
      *  onTrackStarted 带 (mediaId, sessionId) 让 VM 插行后回填 rowId。
      *
      *  v22: 带上曲目时长 —— 拆分出来的 intro/outro 常常只有十几二十秒，固定 30 秒阈值
-     *  会让它们永远不可能被计数。tracker 对 ≤60s 的短曲改用「半程」阈值。
-     *  时长从 [durationById] 取（buildItem 时登记）：不能用 controller.duration ——
-     *  拆分模式下那是**整轨文件**的时长，不是当前这首的。 */
-    private fun startTracking(id: Long) {
-        val sid = playTracker.start(id, durationById[id] ?: 0L)
+     *  会让它们永远不可能被计数。tracker 对 ≤60s 的短曲改用「半程」阈值。 */
+    private fun startTracking(id: Long, item: MediaItem? = null) {
+        val sid = playTracker.start(id, durationForThreshold(id, item))
         onTrackStarted?.invoke(id, sid)
     }
 
@@ -319,9 +338,14 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
         val k = carry.plan.indexAt(c.currentPosition)
         if (k < 0 || k == carry.index) return
         val next = carry.plan.tracks.getOrNull(k) ?: return
-        c.replaceMediaItem(c.currentMediaItemIndex, SplitCarry.itemFor(item, carry.copy(index = k)))
-        // 元数据里已带标题，这里只兜住 durationById（短曲阈值要用分段时长）。
+        // durationById 只作兜底（durationForThreshold 优先读方案里的分段时长）；
+        // 这里顺手登记，供方案被清掉后的降级路径使用。
         durationById[next.id] = next.durationMs
+        c.replaceMediaItem(c.currentMediaItemIndex, SplitCarry.itemFor(item, carry.copy(index = k)))
+        // 兜底：Media3 契约上 onMediaItemTransition 早于 onEvents（此时 currentId 还是旧值，
+        // isSelfReplace 守卫放行 → startTracking 已开好新 session）。万一这个顺序变了或被
+        // 守卫吞掉，就会出现"切了歌却没有 play_event"的统计漏洞，这里补一次。
+        if (playTracker.currentMediaId() != next.id) startTracking(next.id)
     }
 
     /** v22: mediaId → 该曲目时长。buildItem 时登记，供 startTracking 取短曲阈值。
