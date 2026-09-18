@@ -11,9 +11,11 @@
 |---|---|---|
 | 备份覆盖范围 | 只备了 **10 张「元数据修正」表**；歌单、手动导入的歌词、手动排序、**全部设置与 API Key** 一个都没备 | 🔴 高 |
 | 换机可用性 | 已备的 10 张表里有 **8 张按 `mediaId` 存**，而 mediaId 换机/重扫必变 → **恢复后全部对不上号** | 🔴 高（地基问题） |
+| 本地图片没进备份 | 歌手写真已拷进 `filesDir`（本机稳），但**图片文件不在 JSON 里** → 换机后裂图 | 🔴 高 |
+| 专辑封面用相册选图 | 只存了 picker 的 `content://` URI，且**全项目没有 `takePersistableUriPermission`** → 按官方文档，**重启手机后就可能读不出来**（与备份无关的独立 bug） | 🔴 高 |
 | 自动化 | 完全手动，靠用户想起来点「备份」 | 🟡 中 |
 | 云备份 | 现状的 SAF 导出**其实已经能存网盘**（用户选 Google Drive/OneDrive/坚果云等），但没有引导，用户不知道 | 🟡 中 |
-| Android 系统备份 | `allowBackup="true"` 已开，但**国内无 GMS 用不了**；且 25MB 上限有静默失败风险 | 🟡 中 |
+| Android 系统备份 | `allowBackup="true"` 已开，但**国内无 GMS 用不了**；25MB 超限是**整个不上云**（不是部分备份） | 🟡 中 |
 
 **一句话**：现在这个备份功能，最需要的不是"更方便地存"，而是**先把它备的东西补齐、并让它在换机后能认得出是哪首歌**。
 
@@ -184,21 +186,120 @@ MediaStore 的 _ID 是设备本地自增主键，不是文件的稳定标识。
 
 ---
 
-## 6. 需要你确认的一处事实
+## 6. 已确认的事实：本地图片是两处「备份黑洞」，其中一处还是日常 bug
 
-- **手选的本地歌手写真**：`artist_image_override` 里存的是 `url`。如果用户是从本地相册选的，这个 url 可能是 `content://` URI —— **换机后大概率失效**。需要确认选图时是否已把文件**复制进 app 私有目录**（若只是存了 URI，就得改成落盘 + 备份时带上图片文件）。
-  这个我需要看一下 `ArtistImageOverride` 的选图实现才能给准话，确认后再补进方案。
+原本这里留了个"待确认"，现已查清代码 + 官方文档，结论比预想的严重。
+
+### 6.1 歌手写真（本地选图）—— 图片文件没进备份
+
+`MainViewModel.setArtistImageFromFile()` 的实现是对的：把选中的图片**拷进 app 私有目录**
+`filesDir/artist_image_override/<歌手名>_<时间戳>.jpg`，覆盖值写成 `file://<绝对路径>`。
+（`setArtistImageFromAlbumCover()` 同理。）
+
+- ✅ 本机稳：在 `filesDir` 里，清缓存、重启都不受影响。
+- ❌ **但备份只导出了数据库里那行 URL 字符串** —— 图片文件本身不在 JSON 里。
+  换机恢复后：路径字符串还在（`/data/user/0/com.shiyin.music/files/...` 前缀是确定的），
+  但**文件不存在** → 写真变成裂图。
+
+**修法**：备份从"单个 JSON"改成 **zip**（`backup.json` + `files/artist_image_override/*.jpg`），
+导入时把图片写回 `filesDir`。手选写真一般只有几十张，体积可控（每张几百 KB）。
+或者更省事：**默认不带图片**，恢复后对失效的本地写真给出提示 + 一键重选入口。
+
+### 6.2 专辑封面（相册选图）—— 连本机都可能失效（真实 bug，与备份无关）
+
+`AppRoot` 里更换专辑封面的选图回调是：
+
+```kotlin
+val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+    if (uri != null) vm.saveAlbumCover(effAlbumId, uri.toString())   // ← 直接存 picker 的 content:// URI
+}
+```
+
+而 `saveAlbumCover` 只是把这个字符串塞进 `album_info_override.coverUri`，
+**全项目没有任何 `takePersistableUriPermission` 调用**（已 grep 确认）。
+
+Android 官方 Photo Picker 文档原文：
+
+> "By default, the system grants your app access to media files **until the device is restarted**
+> or until your app stops. If your app performs long-running work… you might need this access to
+> be persisted for a longer period of time. To do so, call the `takePersistableUriPermission()`
+> method."
+
+所以：**用户从相册选的专辑封面，重启手机后就可能读不出来了**
+（`ArtCache.decodeUri` 走 `loadThumbnail(uri)` → SecurityException → 回退 `openInputStream`
+同样失败 → 返回 null → 封面空白）。这是一个**独立于备份的真实 bug**，建议单独修：
+
+```kotlin
+// 选图回调里立刻申请持久化读权限
+context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+```
+
+更好的做法是**和歌手写真走同一条路**：把选中的图片拷进 `filesDir`，覆盖值写 `file://`。
+这样本机稳、也顺手解决了备份问题（前提是图片文件进备份）。
+
+> 注：`album_info_override.coverUri` 这个字段同时承载 `content://`（相册选图）与
+> `https://`（iTunes 候选/手填链接）两种值 —— 后者没问题（可重新下载），只有前者要修。
+
+### 6.3 结论：备份格式要从 JSON 升级为 zip
+
+综合 6.1 / 6.2：**只要用户用过"本地图片"相关的功能，纯 JSON 备份就不完整**。
+建议 v2 备份格式改为 zip 容器：
+
+```
+pickupmusic-backup-20260919-0130.zip
+├── backup.json          # 结构化数据（v2 schema）
+└── files/
+    └── artist_image_override/*.jpg
+    └── album_cover_override/*.jpg   # 6.2 改造成落盘后
+```
+
+好处：体积由 zip 顺带压缩（JSON 里的歌词文本压得动）；图片与数据一起走；
+以后要加"本地歌词 .lrc 原文件"之类的附件也不用再改格式。
 
 ---
 
-## 7. 建议的实施顺序
+## 7. 补充：Android Auto Backup 的官方口径（用于 L4）
+
+已从官方文档核实，之前方案里的说法要按下面这些修正/补全：
+
+- **配额 25 MB / 每 app 每用户**，且**超限不是"部分备份"，而是整个不上云**：
+  > "If the amount of data is over 25 MB, the system calls `onQuotaExceeded()` and
+  > **doesn't back up data to the cloud**."（系统会周期性重试，数据降回 25MB 以下才继续）
+  → 歌词一旦纳入，就有踩线风险，必须显式用规则排除大缓存。
+- **默认包含**：`getFilesDir()`、`getDatabasePath()`（含 SQLiteOpenHelper）、
+  `getExternalFilesDir()`、SharedPreferences；**默认排除** `getCacheDir()`、
+  `getCodeCacheDir()`、`getNoBackupFilesDir()`。
+  → 也就是说**封面磁盘缓存 `filesDir/cover_cache` 会被默认备份**（它不在 cache 目录里！），
+  需要显式排除。
+- **Android 12+ 用 `android:dataExtractionRules`，且 `<cloud-backup>` 与 `<device-transfer>`
+  可以分别配规则**：
+  > "This separation lets you, for example, exclude a file or directory from Google Drive
+  > backups while still transferring it during device-to-device (D2D) transfers."
+  → 正好可以用来"云备份不带图片（怕超 25MB）、换机迁移带上图片"。
+- **只保留最近一份备份**（新备份会删掉旧的）→ 不能当版本历史用。
+- **targetSdk 31+ 时 `allowBackup="false"` 在部分厂商设备上只关云备份、不关 D2D** →
+  所以"关掉 allowBackup"并不是一个干净的开关，别用它来规避问题。
+- 官方对敏感数据的建议：凭据类（我们的 API Key）建议用 **Block Store**，
+  而不是塞在 SharedPreferences/文件里。这条对我们不适用（没有服务端），
+  但说明"API Key 进备份"确实要谨慎 —— 见 B3。
+
+---
+
+## 8. 需要你确认的一处事实（已解决）
+
+~~手选的本地歌手写真 `artist_image_override` 存的是 `url`……~~ → 见 §6，已查清。
+
+---
+
+## 9. 建议的实施顺序
 
 ```
-C1  备份内容扩展 + 文件重解析键（mediaId → dataPath）+ 版本 2 格式      ← 地基，收益最大
-C2  恢复前预览 + 恢复前自动快照 + 导入结果报告                          ← 防误操作
-C3  本地自动快照（WorkManager 滚动 3 份）+ 导出后分享                   ← 防手滑
-C4  WebDAV 云备份（手动上传/下载 + 远端版本列表）                        ← "方便"的关键
-C5  dataExtractionRules（顺带让 D2D 迁移也能带上数据）                   ← 小改动
+C0  修「相册选的专辑封面重启后失效」（takePersistableUriPermission 或改落盘）  ← 独立 bug，先修
+C1  备份内容扩展 + 文件重解析键（mediaId → dataPath）+ 版本 2 格式（改 zip）  ← 地基，收益最大
+C2  恢复前预览 + 恢复前自动快照 + 导入结果报告                              ← 防误操作
+C3  本地自动快照（WorkManager 滚动 3 份）+ 导出后分享                        ← 防手滑
+C4  WebDAV 云备份（手动上传/下载 + 远端版本列表）                            ← "方便"的关键
+C5  dataExtractionRules（云备份排除大缓存/图片，D2D 迁移带上）               ← 小改动
 ```
 
-每个 commit 独立可验证；C1 完成后再谈云。
+C0 与备份无关、可独立发布；C1 完成后再谈云。
