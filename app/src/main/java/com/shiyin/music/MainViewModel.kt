@@ -2808,6 +2808,47 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * v22: 从相册选图设专辑封面 —— **先把图片落盘，再存 file:// 路径**。
+     *
+     * 修的问题：原来直接把 photo picker 返回的 `content://` URI 存进 coverUri。
+     * 系统给这种 URI 的读权限是**临时的** —— 官方 Photo Picker 文档原文：
+     * "By default, the system grants your app access to media files **until the device is
+     * restarted**"。于是用户重启手机后封面就读不出来了（ArtCache.decodeUri 的
+     * loadThumbnail 抛 SecurityException → 回退 openInputStream 也失败 → 返回 null → 裂图）。
+     *
+     * 落盘后：重启 / 清缓存都不受影响，而且图片文件能随备份一起走。
+     * 与歌手写真 [setArtistImageFromFile] 走**同一条既有范式**，不是新造的路。
+     *
+     * ⚠️ 只**读取**相册里那一张图 + 在 app 私有目录写一份副本：
+     * 不修改 / 不移动 / 不删除相册原图，也完全不碰任何音乐文件。
+     *
+     * 落库仍复用 [saveAlbumCover]，保证写入逻辑只有一份、不会写歪。
+     */
+    fun setAlbumCoverFromFile(albumId: Long, contentUri: android.net.Uri) {
+        if (albumId <= 0) return
+        viewModelScope.launch {
+            val fileUri: String? = withContext(Dispatchers.IO) {
+                runCatching {
+                    val ctx = getApplication<android.app.Application>()
+                    val dir = java.io.File(ctx.filesDir, "album_cover_override").apply { mkdirs() }
+                    // 同一张专辑只保留最新一份副本（旧副本是这次覆盖之前的，已无引用）
+                    dir.listFiles()?.filter { it.name.startsWith("album_${albumId}_") }?.forEach { it.delete() }
+                    val file = java.io.File(dir, "album_${albumId}_${System.currentTimeMillis()}.jpg")
+                    val input = ctx.contentResolver.openInputStream(contentUri)
+                        ?: return@runCatching null
+                    input.use { i -> file.outputStream().use { o -> i.copyTo(o) } }
+                    "file://${file.absolutePath}"
+                }.getOrNull()
+            }
+            if (fileUri == null) {
+                showToast("封面保存失败", null)
+                return@launch
+            }
+            saveAlbumCover(albumId, fileUri)
+        }
+    }
+
     /** Pin a custom cover for an album (uri string from the photo picker). */
     fun saveAlbumCover(albumId: Long, coverUri: String) {
         if (albumId <= 0) return

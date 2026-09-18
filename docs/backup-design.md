@@ -227,12 +227,20 @@ Android 官方 Photo Picker 文档原文：
 
 所以：**用户从相册选的专辑封面，重启手机后就可能读不出来了**
 （`ArtCache.decodeUri` 走 `loadThumbnail(uri)` → SecurityException → 回退 `openInputStream`
-同样失败 → 返回 null → 封面空白）。这是一个**独立于备份的真实 bug**，建议单独修：
+同样失败 → 返回 null → 封面空白）。
 
-```kotlin
-// 选图回调里立刻申请持久化读权限
-context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
-```
+**✅ 已修（v22）**：改成和歌手写真**同一条既有范式** —— 选图时把图片拷进
+`filesDir/album_cover_override/album_<albumId>_<ts>.jpg`，覆盖值写 `file://`：
+
+- `MainViewModel.setAlbumCoverFromFile(albumId, contentUri)`（落盘 → 复用 `saveAlbumCover` 落库）
+- `AppRoot` 的选图回调改调它（不再直接存 `uri.toString()`）
+- `ArtCache.decodeUri` 补了 `file://` 直接解码分支（`loadThumbnail` 是给 `content://` 用的，
+  对 `file://` 会抛异常再回退，每次白吃一次异常）
+- 只**读取**相册里那一张图 + 在 app 私有目录写副本：不修改/移动/删除原图，也不碰音乐文件
+
+> 已存在的旧封面（DB 里还是 `content://`）如果已经失效，**重新选一次即可** ——
+> 重选会走新的落盘路径。没有做自动迁移：读取已失效的 URI 本来就会失败，
+> 而"渲染时顺手写盘"会把文件 I/O 塞进 UI 路径，得不偿失。
 
 更好的做法是**和歌手写真走同一条路**：把选中的图片拷进 `filesDir`，覆盖值写 `file://`。
 这样本机稳、也顺手解决了备份问题（前提是图片文件进备份）。
@@ -294,7 +302,7 @@ pickupmusic-backup-20260919-0130.zip
 ## 9. 建议的实施顺序
 
 ```
-C0  修「相册选的专辑封面重启后失效」（takePersistableUriPermission 或改落盘）  ← 独立 bug，先修
+C0  ✅ 已修：相册选的专辑封面改成落盘（file://），重启不再失效
 C1  备份内容扩展 + 文件重解析键（mediaId → dataPath）+ 版本 2 格式（改 zip）  ← 地基，收益最大
 C2  恢复前预览 + 恢复前自动快照 + 导入结果报告                              ← 防误操作
 C3  本地自动快照（WorkManager 滚动 3 份）+ 导出后分享                        ← 防手滑
@@ -302,4 +310,5 @@ C4  WebDAV 云备份（手动上传/下载 + 远端版本列表）              
 C5  dataExtractionRules（云备份排除大缓存/图片，D2D 迁移带上）               ← 小改动
 ```
 
-C0 与备份无关、可独立发布；C1 完成后再谈云。
+> 用户已拍板：**C1–C4 一次做完**；API Key 进备份但提示含密钥；
+> 备份范围取 L1「必选」两档 + 统计（可选）。

@@ -2446,7 +2446,11 @@ private fun AlbumEditDialogs(vm: MainViewModel, trackEditFor: Long?, onTrackEdit
             val first = vm.albumOrder(vm.albumKey!!).firstOrNull()
             val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
                 if (uri != null) {
-                    vm.saveAlbumCover(effAlbumId, uri.toString())
+                    // v22: 改走"先落盘再存 file://"——原来直接存 picker 的 content:// URI，
+                    // 而系统给它的读权限只到**设备重启**为止（官方 Photo Picker 文档），
+                    // 于是重启后封面会裂。落盘后重启/清缓存都不受影响，也便于进备份。
+                    // 注意：只读取相册里那一张图 + 在 app 私有目录写副本，不动原图、不碰音乐文件。
+                    vm.setAlbumCoverFromFile(effAlbumId, uri)
                     vm.albumCoverEdit = false
                 }
             }

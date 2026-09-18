@@ -302,6 +302,16 @@ object ArtCache {
             // v1.2.0：用户 pin 的 http 封面走磁盘缓存（复用 downloadBitmap 的盘查+落盘）
             return downloadBitmap(context, uri.toString(), px)
         }
+        // v22: 用户手选的本地图片现在会先落盘再存 file://（见 MainViewModel.setAlbumCoverFromFile）。
+        // 直接解码即可 —— loadThumbnail 是给 content:// 用的，对 file:// 会抛异常再回退，
+        // 每次都白吃一次异常。
+        if (scheme == "file") {
+            return try {
+                android.graphics.BitmapFactory.decodeFile(uri.path)
+            } catch (_: Exception) {
+                null
+            }
+        }
         return try {
             context.contentResolver.loadThumbnail(uri, Size(px, px), null)
         } catch (_: Exception) {
