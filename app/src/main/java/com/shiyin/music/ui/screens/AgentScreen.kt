@@ -304,6 +304,16 @@ private fun AgentSettingsDialog(vm: MainViewModel, onDismiss: () -> Unit) {
                     contentAlignment = Alignment.Center,
                 ) { OIcon(Lucide.ChevronLeft, 20.dp, c.text) }
                 Text("Agent 设置", style = heading(20), modifier = Modifier.weight(1f))
+                // v22: 保存移到顶栏右上。原来挂在滚动内容的最底部 —— 改了 API Key 之后
+                // 要一路滚到底才能保存（展开「使用统计」面板时尤其明显），而且它看起来
+                // 像页面正文的一部分而不是动作按钮。顶栏固定可见，不用滚。
+                if (dirty) {
+                    TextButton(onClick = {
+                        vm.setTavilyKey(tavily.trim())
+                        vm.setLlmProviders(providers)
+                        onDismiss()
+                    }) { Text("保存", style = body(14f, FontWeight.Bold, c.accent)) }
+                }
             }
 
             Column(
@@ -391,23 +401,13 @@ private fun AgentSettingsDialog(vm: MainViewModel, onDismiss: () -> Unit) {
                 }
 
                 // ── 使用统计:Token 使用趋势面板 ──
-                // v1.3.6 重做(按用户设计稿):深色圆角数据卡片;左上标题;右上**下拉
-                // 单选框**选时间范围(当天/3天/7天/14天/30天);核心趋势图:双 Y 轴
-                // (左=Token 量,右=成本),输入/输出/缓存命中三条**平滑曲线**带半透明
-                // 面积填充,成本用**虚线**(按激活供应商价表估算);底部图例。暂不做
-                // 模型维度。所有元素随范围切换联动。
-                TokenTrendPanel(vm)
-
-                // 保存(v1.3.5: 只有编辑过(dirty)才显示——平时不挂常驻按钮)
-                if (dirty) {
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                        TextButton(onClick = {
-                            vm.setTavilyKey(tavily.trim())
-                            vm.setLlmProviders(providers)
-                            onDismiss()
-                        }) { Text("保存", style = body(14f, FontWeight.Bold, c.accent)) }
-                    }
-                }
+                // v1.3.6 重做(按用户设计稿):圆角数据卡片;左上标题;右上**下拉单选框**选
+                // 时间范围;核心趋势图:双 Y 轴(左=Token 量,右=成本估算),输入/输出/缓存命中
+                // 三条平滑曲线带半透明面积填充,成本用虚线;底部图例。
+                // v22 修正:改为包在 SettingsSection 里 —— 原来它是裸放的一张 16dp/灰底卡片，
+                // 与「联网搜索」「大模型」两段的 20dp/白底 + 段落标题完全不是一套语言，
+                // 视觉上像"大模型"段的附属物。
+                SettingsSection("使用统计") { TokenTrendPanel(vm) }
             }
         }
     }
@@ -506,19 +506,23 @@ private fun ProviderConfigCard(
         // v1.3.3: "设为当前"做成明显的实心描边按钮(非激活=橙描边橙字,激活=橙底白字),
         // 之前藏在角落不显眼。
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            // v22: 未配置时按钮本来就禁用，但原来点了没反应、看不出禁用态 —— 补降透明度。
+            val canActivate = provider.isConfigured
+            val btnAlpha = if (canActivate) 1f else 0.45f
             Box(
                 Modifier.clip(RoundedCornerShape(999.dp))
                     .then(
-                        if (isActive) Modifier.background(c.accent)
-                        else Modifier.border(width = 1.5.dp, color = c.accent, shape = RoundedCornerShape(999.dp)),
+                        if (isActive) Modifier.background(c.accent.copy(alpha = btnAlpha))
+                        else Modifier.border(width = 1.5.dp, color = c.accent.copy(alpha = btnAlpha), shape = RoundedCornerShape(999.dp)),
                     )
-                    .clickable(enabled = provider.isConfigured) { onActivate() }
+                    .clickable(enabled = canActivate) { onActivate() }
                     .padding(horizontal = 16.dp, vertical = 8.dp),
                 contentAlignment = Alignment.Center,
             ) {
                 Text(
                     if (isActive) "✓ 当前使用" else "使用该源",
-                    style = body(12f, FontWeight.Bold, if (isActive) androidx.compose.ui.graphics.Color.White else c.accent),
+                    style = body(12f, FontWeight.Bold,
+                        (if (isActive) androidx.compose.ui.graphics.Color.White else c.accent).copy(alpha = btnAlpha)),
                 )
             }
             Spacer(Modifier.weight(1f))
@@ -526,10 +530,41 @@ private fun ProviderConfigCard(
                 Text("未配置", style = body(10f, FontWeight.Normal, c.n500))
             }
             if (onDelete != null) {
+                // v22: 删除是破坏性操作 —— 原来一个 28dp 图标紧贴"未配置"文字、点了直接删，
+                // 极易误触且不可撤销。这里留出间距 + 二次确认。
+                var confirmDelete by remember { mutableStateOf(false) }
+                Spacer(Modifier.size(8.dp))
                 Box(
-                    Modifier.size(28.dp).clip(CircleShape).background(c.surface).clickable { onDelete() },
+                    Modifier.size(32.dp).clip(CircleShape).background(c.surface)
+                        .clickable { confirmDelete = true },
                     contentAlignment = Alignment.Center,
                 ) { OIcon(Lucide.Trash, 14.dp, c.n500) }
+                if (confirmDelete) {
+                    androidx.compose.material3.AlertDialog(
+                        onDismissRequest = { confirmDelete = false },
+                        containerColor = c.surface,
+                        title = {
+                            Text("删除「${provider.displayName}」？", style = body(15f, FontWeight.ExtraBold, c.text))
+                        },
+                        text = {
+                            Text(
+                                "该供应商的 API Key 与模型设置会一并删除，不可撤销。",
+                                style = body(12.5f, FontWeight.Normal, c.n600),
+                            )
+                        },
+                        confirmButton = {
+                            com.shiyin.music.ui.components.DialogActionsRow(
+                                listOf(
+                                    com.shiyin.music.ui.components.DialogAction("取消") { confirmDelete = false },
+                                    com.shiyin.music.ui.components.DialogAction("删除", emphasized = true) {
+                                        confirmDelete = false
+                                        onDelete()
+                                    },
+                                )
+                            )
+                        },
+                    )
+                }
             }
         }
         // v1.3.1: 自定义供应商显示名(点 chip 展开的就是它,允许起好认的名字如"公司代理")。
@@ -879,20 +914,28 @@ private fun TokenTrendPanel(vm: MainViewModel) {
     val outColor = c.n700
     val cacheColor = c.n500
     val costColor = c.a700
-    fun costOf(inTok: Long, outTok: Long): Double = (inTok * 0.5 + outTok * 1.5) / 1_000_000.0 * 7.2
+    // v22: 成本改走 TokenPricing。原来这里写死 `(in*0.5 + out*1.5)/1e6*7.2`，
+    // 注释却声称"按激活供应商价表估算"—— 实际没读任何价表、汇率也写死，
+    // 且**缓存命中的 token 一分钱都没算进成本**。
+    val providerKey = vm.llmActiveProvider
+    val providerName = vm.llmProviders.firstOrNull { it.key == providerKey }?.displayName ?: providerKey
+    fun costOf(inTok: Long, outTok: Long, cacheTok: Long): Double =
+        com.shiyin.music.data.ai.TokenPricing.estimateCny(providerKey, inTok, outTok, cacheTok)
     val rangeLabel = when (rangeDays) { 1 -> "当天"; 3 -> "3天"; 7 -> "7天"; 14 -> "14天"; else -> "30天" }
 
     Column(
+        // v22: 内层数据卡改用 c.bg（与供应商配置卡同一套语言）。外层段落卡片与标题
+        // 由 SettingsSection 提供，所以这里不再自带灰底与重复标题。
         Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(16.dp))
-            .background(c.n200)
+            .background(c.bg)
             .padding(14.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        // 头行:标题 + 下拉单选
+        // 头行:范围选择
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Text("Token 使用趋势", style = body(13f, FontWeight.ExtraBold, c.text))
+            Text("时间范围", style = body(11.5f, FontWeight.Normal, c.n600))
             Spacer(Modifier.weight(1f))
             var rangeOpen by remember { mutableStateOf(false) }
             Box {
@@ -930,7 +973,9 @@ private fun TokenTrendPanel(vm: MainViewModel) {
             return@Column
         }
         val data = metrics!!
-        val totalSum = data.sumOf { it.first + it.second + it.third }
+        // v22: 缓存命中是**输入 token 的子集**（prompt_tokens_details.cached_tokens），
+        // 不能与输入相加 —— 原来的 in+out+cache 属于重复计数。判断"有无数据"看输入+输出即可。
+        val totalSum = data.sumOf { it.first + it.second }
         if (totalSum == 0L) {
             Box(Modifier.fillMaxWidth().height(140.dp), contentAlignment = Alignment.Center) {
                 Text("暂无使用记录", style = body(11f, FontWeight.Normal, c.n500))
@@ -938,9 +983,41 @@ private fun TokenTrendPanel(vm: MainViewModel) {
             return@Column
         }
 
+        // v22: 本范围合计 —— 原来头部只有标题，看不出这段到底用了多少。现在把数字直接
+        // 给出来，也让"成本"这条虚线有个可对照的量。
+        val sumIn = data.sumOf { it.first }
+        val sumOut = data.sumOf { it.second }
+        val sumCache = data.sumOf { it.third }
+        val sumCost = costOf(sumIn, sumOut, sumCache)
+        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(
+                // ⚠️ 必须写 ${rangeLabel} —— Kotlin 里 CJK 字符也是合法标识符字符，
+                // "$rangeLabel合计" 会被解析成变量名 `rangeLabel合计`。
+                "${rangeLabel}合计：输入 ${shortTok(sumIn)} · 输出 ${shortTok(sumOut)}" +
+                    (if (sumCache > 0) " · 缓存命中 ${shortTok(sumCache)}" else "") +
+                    " · 成本约 ¥${trimCost(sumCost)}",
+                style = body(11f, FontWeight.Bold, c.text),
+            )
+            // 把"约 ¥x"是按什么价算的写出来，避免成本曲线变成黑箱。
+            Text(
+                "成本为估算（$providerName）：${com.shiyin.music.data.ai.TokenPricing.assumptionText(providerKey)}",
+                style = body(9.5f, FontWeight.Normal, c.n500),
+            )
+        }
+
+        // v22: 按天聚合时"当天"只有今天一个数据点，画不出趋势 —— 原来会渲染出一条退化
+        // 的空路径（图表看着是空白）。这种情况直接把上面的合计当结论，不再画图。
+        if (rangeDays <= 1) {
+            Text(
+                "「当天」按天聚合只有今天一个数据点，画不出趋势；上方合计即今日用量。",
+                style = body(10.5f, FontWeight.Normal, c.n500),
+            )
+            return@Column
+        }
+
         // ── 双 Y 轴趋势图 ──
         val maxTok = data.maxOf { maxOf(it.first, it.second, it.third) }.coerceAtLeast(1L)
-        val maxCost = data.maxOf { costOf(it.first, it.second) }.coerceAtLeast(0.01)
+        val maxCost = data.maxOf { costOf(it.first, it.second, it.third) }.coerceAtLeast(0.01)
         val xLabelStart = if (rangeDays == 1) "0时"
             else java.text.SimpleDateFormat("M/d", java.util.Locale.CHINA).format(
                 java.util.Date(System.currentTimeMillis() - (rangeDays - 1) * 86_400_000L),
@@ -995,7 +1072,7 @@ private fun TokenTrendPanel(vm: MainViewModel) {
                     drawPath(smoothPath(cachePts), cacheColor, style = Stroke(1.6.dp.toPx(), cap = StrokeCap.Round))
                 }
                 val costPts = data.mapIndexed { i, t ->
-                    Offset(i * stepX, plotH - usable * ((costOf(t.first, t.second) / maxCost).toFloat()))
+                    Offset(i * stepX, plotH - usable * ((costOf(t.first, t.second, t.third) / maxCost).toFloat()))
                 }
                 drawPath(
                     smoothPath(costPts), costColor,
@@ -1056,7 +1133,7 @@ private fun TokenTrendPanel(vm: MainViewModel) {
                         pathEffect = androidx.compose.ui.graphics.PathEffect.dashPathEffect(floatArrayOf(8f, 6f)),
                     )
                 }
-                Text("成本", style = body(9.5f, FontWeight.Bold, c.n500))
+                Text("成本（估算）", style = body(9.5f, FontWeight.Bold, c.n500))
             }
         }
     }
