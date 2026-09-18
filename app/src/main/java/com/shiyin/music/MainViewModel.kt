@@ -3683,14 +3683,49 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    // ── v1.2.0 阶段三：修正数据导出/导入 ───────────────────────────────────
-    /** 导出全部修正数据为 JSON 字符串。UI 用 SAF 拿到 OutputStream 后调用。 */
-    suspend fun exportBackup(): String = withContext(Dispatchers.IO) { backupManager.export() }
+    // ── v1.2.0 阶段三：用户数据导出/导入（v22 起范围扩到"用户资产"）────────────
 
-    /** 从 JSON 导入修正数据。返回导入统计；失败抛异常由 UI 捕获提示。 */
+    /**
+     * v22: 构建跨设备重解析用的两张"身份证"表（见 `BackupRemap`）。
+     *
+     * mediaId / albumId 都是**设备本地的自增主键**，换机必变，所以导出时必须附带
+     * 与设备无关的标识：文件路径、以及"专辑名|歌手"。
+     *
+     * 用 `tracksRaw`（物理曲目）而不是 `lib()`：拆分出来的虚拟曲目共享同一个文件，
+     * 它们的合成 id 靠 `split_track` 的自增 id 保留，不需要路径映射。
+     */
+    private fun backupIdMaps(): Pair<Map<String, String>, Map<String, String>> {
+        val pathMap = LinkedHashMap<String, String>()
+        val albumMap = LinkedHashMap<String, String>()
+        for (t in tracksRaw) {
+            if (t.dataPath.isNotBlank()) pathMap[t.id.toString()] = t.dataPath
+            if (t.albumId > 0 && t.album != NO_ALBUM) {
+                // 刻意存"专辑名|歌手"：aid 形式本身就含 id，换机后同样失效
+                albumMap[t.albumId.toString()] = "${t.album}|${t.artist}"
+            }
+        }
+        return pathMap to albumMap
+    }
+
+    /** 导出全部用户数据为 JSON 字符串。UI 用 SAF 拿到 OutputStream 后调用。 */
+    suspend fun exportBackup(): String = withContext(Dispatchers.IO) {
+        val (paths, albums) = backupIdMaps()
+        backupManager.export(paths, albums)
+    }
+
+    /** 从 JSON 导入用户数据。返回导入统计；失败抛异常由 UI 捕获提示。 */
     suspend fun importBackup(json: String): String = withContext(Dispatchers.IO) {
-        val stats = backupManager.import(json)
-        // 导入后刷新内存态，让 UI 立即反映新修正
+        // 当前库的反查表：路径 → mediaId、"专辑名|歌手" → albumId
+        val pathToId = HashMap<String, Long>()
+        val nameToAlbum = HashMap<String, Long>()
+        for (t in tracksRaw) {
+            if (t.dataPath.isNotBlank()) pathToId[t.dataPath] = t.id
+            if (t.albumId > 0 && t.album != NO_ALBUM) {
+                nameToAlbum["${t.album}|${t.artist}"] = t.albumId
+            }
+        }
+        val stats = backupManager.importWithRemap(json, pathToId, nameToAlbum)
+        // 导入后刷新内存态，让 UI 立即反映新数据
         if (!firstScanDone) { /* 未扫完不重载 */ }
         else { rescanSilently() }
         stats.toString()

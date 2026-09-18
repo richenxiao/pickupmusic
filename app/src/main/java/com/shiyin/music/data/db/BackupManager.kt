@@ -87,10 +87,26 @@ internal class BackupManager(
         val tokenUsage: List<TU> = emptyList(),
         /** DataStore 白名单设置，值带类型前缀（见 `SettingsValueCodec`）。 */
         val settings: Map<String, String> = emptyMap(),
+
+        // ── v22: 重解析键（跨设备可用的地基，见 BackupRemap）────────────────
+        /** `mediaId → 文件绝对路径`。mediaId 是设备本地自增主键，换机必变，
+         *  必须靠路径在新设备上重新找回对应的歌。 */
+        val mediaIdPaths: Map<String, String> = emptyMap(),
+        /** `albumId → "专辑名|歌手"`。**刻意存名字形式**：`aid:NNN` 本身就含 id，
+         *  换机后同样失效，不能拿它当跨设备标识。 */
+        val albumIdKeys: Map<String, String> = emptyMap(),
     )
 
-    /** 导出全部用户数据为 JSON 字符串。调用方负责写入 SAF/文件。 */
-    suspend fun export(): String {
+    /**
+     * 导出全部用户数据为 JSON 字符串。调用方负责写入 SAF/文件。
+     *
+     * @param mediaIdPaths 当前库的 `mediaId → dataPath`（见 `BackupRemap`）
+     * @param albumIdKeys 当前库的 `albumId → "专辑名|歌手"`
+     */
+    suspend fun export(
+        mediaIdPaths: Map<String, String> = emptyMap(),
+        albumIdKeys: Map<String, String> = emptyMap(),
+    ): String {
         val data = BackupData(
             exportedAt = System.currentTimeMillis(),
             albumOverride = dao.allAlbumOverride(),
@@ -114,8 +130,31 @@ internal class BackupManager(
             playEvents = dao.allPlayEvents(),
             tokenUsage = dao.allTokenUsage(),
             settings = settings?.exportBackupSettings().orEmpty(),
+            mediaIdPaths = mediaIdPaths,
+            albumIdKeys = albumIdKeys,
         )
         return Gson().toJson(data)
+    }
+
+    /**
+     * 导入前先做 id 重解析（跨设备关键步骤），再走 [import]。
+     *
+     * @param pathToMediaId 当前库：文件绝对路径 → mediaId
+     * @param nameKeyToAlbumId 当前库：`"专辑名|歌手"` → albumId
+     */
+    suspend fun importWithRemap(
+        json: String,
+        pathToMediaId: Map<String, Long>,
+        nameKeyToAlbumId: Map<String, Long>,
+    ): ImportStats {
+        val remap = BackupRemap.apply(json, pathToMediaId, nameKeyToAlbumId)
+        return import(remap.json).copy(
+            remapSkipped = remap.skipped,
+            tracksRemapped = remap.tracksRemapped,
+            tracksDropped = remap.tracksDropped,
+            albumsRemapped = remap.albumsRemapped,
+            albumsDropped = remap.albumsDropped,
+        )
     }
 
     /**
@@ -264,6 +303,14 @@ internal class BackupManager(
         val playEventsSkipped: Int = 0,
         val tokenUsage: Int = 0,
         val settings: Int = 0,
+        // v22: 重解析（跨设备）结果
+        /** 备份里没有重解析表（v1 老备份）→ 未做重映射，行为与旧版一致。 */
+        val remapSkipped: Boolean = false,
+        val tracksRemapped: Int = 0,
+        /** **因为在新设备上找不到对应文件而丢弃的行数** —— 必须如实告知用户。 */
+        val tracksDropped: Int = 0,
+        val albumsRemapped: Int = 0,
+        val albumsDropped: Int = 0,
     ) {
         override fun toString() =
             "专辑迁移$albumOverride / 专辑修正$albumInfoOverride / 曲目修正$trackInfoOverride / " +
@@ -274,6 +321,7 @@ internal class BackupManager(
             "歌单$playlists / 歌单曲目$playlistTracks / 歌词$manualLyrics / " +
             "专辑曲序$albumOrders / 歌手专辑序$artistAlbumOrders / 忽略文件夹$ignoredFolders / " +
             "播放记录$playEvents" + (if (playEventsSkipped > 0) "(跳过$playEventsSkipped)" else "") + " / " +
-            "Token用量$tokenUsage / 设置$settings"
+            "Token用量$tokenUsage / 设置$settings" +
+            (if (tracksDropped > 0 || albumsDropped > 0) " / ⚠找不到文件而跳过：曲目$tracksDropped 专辑$albumsDropped" else "")
     }
 }
