@@ -965,35 +965,13 @@ private fun AboutScreen(vm: MainViewModel) {
                 )
                 if (hasUpdate) OIcon(Lucide.ChevronRight, 13.dp, c.a700)
             }
-            // v22 文案修正:原「完全本地运行 · 不上传任何数据」是不准确的过度承诺 ——
-            // 歌词/封面/写真要联网匹配(会发出歌名·歌手·时长),Agent 更会把指令与曲库
-            // 元数据交给你自己配置的第三方大模型。改成如实说明"什么留在本地"，
-            // 与 README 隐私段的措辞对齐。
-            Row(
-                Modifier.padding(top = 6.dp),
-                horizontalArrangement = Arrangement.spacedBy(7.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                OIcon(Lucide.Shield, 14.dp, c.s700)
-                Text("音乐文件与收听记录只存本地", style = body(12.5f, FontWeight.Bold, c.s700))
-            }
-            // v1.3.x: 数据源 credit——JMdict 派生读法表随包分发须署名 EDRDG(CC BY-SA,
-            // 项目约定连续两版漏补,这次随振假名增强一起补)。UtaTen 对照属联网获取
-            // (每曲一次、有本地缓存),一并说明来源。
-            // v22 文案修正:原来只有这一行"数据源"，用户看到的是许可声明而不是功能说明。
-            // 补一行讲清楚振假名是干什么的，credit 单独成行并写明许可版本。
-            Text(
-                "振假名注音：日文歌词的汉字上方标注读音，个别标注错误可长按修正",
-                style = body(10.5f, FontWeight.Normal, c.n600),
-                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                modifier = Modifier.padding(top = 8.dp, start = 24.dp, end = 24.dp),
-            )
-            Text(
-                "读音数据来源：JMdict（© EDRDG，CC BY-SA 4.0）；部分读音参考 UtaTen 歌词站",
-                style = body(10.5f, FontWeight.Normal, c.n600),
-                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                modifier = Modifier.padding(top = 2.dp, start = 24.dp, end = 24.dp),
-            )
+            // v22 删减:去掉「完全本地运行 · 不上传任何数据」整行(用户定调 —— 这句话本身
+            // 不准确，且不想在关于页放这类宣称)，以及振假名的功能描述行。
+            // 仅保留 JMdict 的**最小归属声明**并移到页面最底部：
+            // 振假名词表是从 JMdict 派生的 CC BY-SA 4.0 数据，
+            // tools/jmdict-build/LICENSE-derivative.md 明确写了"应用内「关于」页亦须显示
+            // JMdict/EDRDG 归属与许可链接"——删掉即许可违约，故只降级不删除。
+            // v3.3: 每次更新附上更新内容清单，方便用户对照功能变化
             // v3.3: 每次更新附上更新内容清单，方便用户对照功能变化
             Column(
                 Modifier
@@ -1098,6 +1076,17 @@ private fun AboutScreen(vm: MainViewModel) {
                 }
             }
         }
+        // v22: JMdict 归属声明（最小化、置于页尾）。振假名词表派生自 JMdict（CC BY-SA 4.0），
+        // 许可要求随包分发时保留归属；点击可打开许可页查看完整条款。
+        Text(
+            "振假名词表数据来源：JMdict（© EDRDG / Jim Breen），CC BY-SA 4.0",
+            style = body(10.5f, FontWeight.Normal, c.n500),
+            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 4.dp, start = 24.dp, end = 24.dp)
+                .clickable { vm.openExternalUrl("https://www.edrdg.org/edrdg/licence.html") },
+        )
         Box(Modifier.height(114.dp))
         }
         // 赞赏页(整页):提示语 + 微信/支付宝赞赏码(各占整行,放大;点击保存到相册)
