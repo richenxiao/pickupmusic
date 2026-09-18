@@ -31,6 +31,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -896,6 +897,9 @@ private fun MergesScreen(vm: MainViewModel) {
 private fun AboutScreen(vm: MainViewModel) {
     val c = LocalOrganic.current
     var supportSheetOpen by remember { mutableStateOf(false) }
+    var updateDialogOpen by remember { mutableStateOf(false) }
+    // v22: 进页检查一次更新（6 小时内查过则直接用缓存，不打网络）
+    LaunchedEffect(Unit) { vm.checkForUpdate() }
     Box(Modifier.fillMaxSize()) {
         Column(
             Modifier
@@ -933,28 +937,62 @@ private fun AboutScreen(vm: MainViewModel) {
                 Text("拾音", style = heading(30))
                 Text("PickUpMusic", style = body(13f, FontWeight.Bold, c.n600).copy(letterSpacing = 1.5.sp))
             }
-            Box(
+            // v22: 版本号改成可点的「检查更新」入口。有更新时整块变强调色 + 「发现更新」，
+            // 点开弹层看更新内容并下载；无更新时点一下手动强制检查。
+            val hasUpdate = vm.updateAvailable()
+            Row(
                 Modifier
                     .clip(RoundedCornerShape(999.dp))
-                    .background(c.n100)
-                    .padding(horizontal = 10.dp, vertical = 3.dp)
-            ) { Text("v1.3.0", style = body(12f, FontWeight.Normal, c.n800)) }
+                    .background(if (hasUpdate) c.accent.copy(alpha = 0.12f) else c.n100)
+                    .clickable {
+                        if (hasUpdate) updateDialogOpen = true else vm.checkForUpdate(force = true)
+                    }
+                    .padding(horizontal = 12.dp, vertical = 5.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    "v${vm.currentVersion}",
+                    style = body(12f, if (hasUpdate) FontWeight.Bold else FontWeight.Normal, if (hasUpdate) c.a700 else c.n800),
+                )
+                Text(
+                    when {
+                        vm.updateChecking -> "检查中…"
+                        hasUpdate -> "发现更新"
+                        else -> "检查更新"
+                    },
+                    style = body(11.5f, if (hasUpdate) FontWeight.Bold else FontWeight.Normal, if (hasUpdate) c.a700 else c.n600),
+                )
+                if (hasUpdate) OIcon(Lucide.ChevronRight, 13.dp, c.a700)
+            }
+            // v22 文案修正:原「完全本地运行 · 不上传任何数据」是不准确的过度承诺 ——
+            // 歌词/封面/写真要联网匹配(会发出歌名·歌手·时长),Agent 更会把指令与曲库
+            // 元数据交给你自己配置的第三方大模型。改成如实说明"什么留在本地"，
+            // 与 README 隐私段的措辞对齐。
             Row(
                 Modifier.padding(top = 6.dp),
                 horizontalArrangement = Arrangement.spacedBy(7.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 OIcon(Lucide.Shield, 14.dp, c.s700)
-                Text("完全本地运行 · 不上传任何数据", style = body(12.5f, FontWeight.Bold, c.s700))
+                Text("音乐文件与收听记录只存本地", style = body(12.5f, FontWeight.Bold, c.s700))
             }
             // v1.3.x: 数据源 credit——JMdict 派生读法表随包分发须署名 EDRDG(CC BY-SA,
             // 项目约定连续两版漏补,这次随振假名增强一起补)。UtaTen 对照属联网获取
             // (每曲一次、有本地缓存),一并说明来源。
+            // v22 文案修正:原来只有这一行"数据源"，用户看到的是许可声明而不是功能说明。
+            // 补一行讲清楚振假名是干什么的，credit 单独成行并写明许可版本。
             Text(
-                "振假名注音数据源：JMdict（© EDRDG，CC BY-SA）· UtaTen 歌词站对照",
+                "振假名注音：日文歌词的汉字上方标注读音，个别标注错误可长按修正",
                 style = body(10.5f, FontWeight.Normal, c.n600),
                 textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                modifier = Modifier.padding(top = 6.dp, start = 24.dp, end = 24.dp),
+                modifier = Modifier.padding(top = 8.dp, start = 24.dp, end = 24.dp),
+            )
+            Text(
+                "读音数据来源：JMdict（© EDRDG，CC BY-SA 4.0）；部分读音参考 UtaTen 歌词站",
+                style = body(10.5f, FontWeight.Normal, c.n600),
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                modifier = Modifier.padding(top = 2.dp, start = 24.dp, end = 24.dp),
             )
             // v3.3: 每次更新附上更新内容清单，方便用户对照功能变化
             Column(
@@ -1088,6 +1126,54 @@ private fun AboutScreen(vm: MainViewModel) {
                 }
                 Box(Modifier.height(40.dp))
             }
+        }
+        // v22: 发现更新的弹层 —— 版本号 + 更新内容 + 下载 / 忽略 / 稍后。
+        // 「下载新版本」走系统浏览器/下载器（ACTION_VIEW）：不需要任何新权限，
+        // 也不会出现"应用内下载后静默安装"那种需要 REQUEST_INSTALL_PACKAGES 的重活。
+        if (updateDialogOpen) {
+            val notes = vm.updateState.notes.trim()
+            androidx.compose.material3.AlertDialog(
+                onDismissRequest = { updateDialogOpen = false },
+                containerColor = c.surface,
+                title = {
+                    Text("发现新版本 v${vm.updateState.latestVersion}", style = body(16f, FontWeight.ExtraBold, c.text))
+                },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("当前版本 v${vm.currentVersion}", style = body(12f, FontWeight.Normal, c.n600))
+                        if (notes.isNotBlank()) {
+                            Text("更新内容", style = body(12.5f, FontWeight.ExtraBold, c.text))
+                            Text(
+                                notes,
+                                style = body(12f, FontWeight.Normal, c.n700).copy(lineHeight = 18.sp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(max = 260.dp)
+                                    .verticalScroll(rememberScrollState()),
+                            )
+                        }
+                        Text(
+                            if (vm.updateState.apkUrl.isBlank())
+                                "将打开 Release 页面，下载最新 APK 后按系统提示安装"
+                            else "将下载最新 APK，完成后按系统提示安装",
+                            style = body(11.5f, FontWeight.Normal, c.n600),
+                        )
+                    }
+                },
+                confirmButton = {
+                    com.shiyin.music.ui.components.DialogActionsRow(
+                        listOf(
+                            com.shiyin.music.ui.components.DialogAction("稍后") { updateDialogOpen = false },
+                            com.shiyin.music.ui.components.DialogAction("忽略此版本") {
+                                vm.dismissUpdate(); updateDialogOpen = false
+                            },
+                            com.shiyin.music.ui.components.DialogAction("下载新版本", emphasized = true) {
+                                vm.openUpdateDownload(); updateDialogOpen = false
+                            },
+                        )
+                    )
+                },
+            )
         }
     }
 }
