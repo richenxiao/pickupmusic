@@ -203,7 +203,10 @@ private fun SettingsRoot(vm: MainViewModel) {
             // v1.3.x 设置重组:回收站并入清理建议页(页顶统一入口),这里不再单列。
             // 副文案短排列(可清理·回收站·体积),maxLines=1 不再省略号截断。
             CardEntryRow(
-                Lucide.Brush, c.a700, "清理建议",
+                // v22 缝补:原用 Brush(画笔)表示"清理",语义不搭——清理建议页里主要是
+                // 重复文件/短音频/回收站,Trash(垃圾桶)才对得上。Brush 与歌词本页的
+                // 色样图标也曾撞过,一并解开。
+                Lucide.Trash, c.a700, "清理建议",
                 "${vm.cleanCount()} 个可清理 · 回收站 ${vm.trashMirror.size} · ${formatSizeMb(vm.cleanSizeBytes())}",
                 divider = true,
             ) { vm.openClean() }
@@ -241,7 +244,10 @@ private fun SettingsRoot(vm: MainViewModel) {
             SettingRow(Lucide.Infinity, "无缝播放", "专辑连播时曲目间不留空隙", divider = true) {
                 OrganicSwitch(vm.gapless) { vm.setGapless(!vm.gapless) }
             }
-            SettingRow(Lucide.Mic, "自动匹配歌词", "无歌词时自动在线获取，确认后保存到本地", divider = true) {
+            // v22 缝补:原用 Mic(麦克风)表示"自动匹配歌词",语义不搭——麦克风是录音
+            // 输入,这里是在线抓歌词。改用 Captions(字幕/歌词),与播放菜单的
+            // 「歌词来源」同一套图标语言。
+            SettingRow(Lucide.Captions, "自动匹配歌词", "无歌词时自动在线获取，确认后保存到本地", divider = true) {
                 OrganicSwitch(vm.autoMatch) { vm.setAutoMatch(!vm.autoMatch) }
             }
             // v1.1+: 自动保存识别结果（默认开）+ 缓存占用 + 清理按钮
@@ -270,6 +276,11 @@ private fun SettingsRoot(vm: MainViewModel) {
                         .padding(horizontal = 12.dp, vertical = 7.dp),
                 ) { Text("清理缓存", style = body(12.5f, FontWeight.Bold, c.text)) }
             }
+            // v22 缝补:本卡内其余行(深色模式/无缝播放/自动匹配歌词/自动保存识别结果/
+            // 睡眠定时/写真源)都由 SettingRow·CardEntryRow 画了分隔线,唯独"识别缓存"与
+            // "备份我的修正数据"是手写 Row、漏了线——同一张卡里有的有线有的没线,很扎眼。
+            // 这里补上与 SettingRow(divider=true) 逐像素一致的那条 1dp 线。
+            Box(Modifier.fillMaxWidth().height(1.dp).background(c.divider))
             // v1.2.0 阶段三：修正数据备份/恢复。导出含专辑/曲目/歌手/振假名等
             // 全部人工修正，导入覆盖同主键。换机/重装前备份，避免重新扫描后丢失修正。
             // v1.3.x: 行下方的字段清单说明文字去掉(用户拍板)。
@@ -304,6 +315,8 @@ private fun SettingsRoot(vm: MainViewModel) {
                     ) { Text("恢复", style = body(12.5f, FontWeight.Bold, c.text)) }
                 }
             }
+            // v22 缝补:同上——手写 Row 漏的分隔线。
+            Box(Modifier.fillMaxWidth().height(1.dp).background(c.divider))
             // v1.3.x: 睡眠定时可编辑——整行点击弹窗(时长档位/本曲结束/关闭),
             // 复用播放菜单同套 PlayerController 接口;不再只读展示。
             // v1.3.x 设计打磨:本卡三行(睡眠定时/写真源/歌词本)统一走 CardEntryRow,
