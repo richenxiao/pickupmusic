@@ -41,6 +41,8 @@ class SettingsStore(private val context: Context) {
     private val keyDisabledImageSources = stringSetPreferencesKey("disabled_image_sources")
     /** v1.3.2: 自定义写真源(JSON,见 CustomImageSourceCodec)。 */
     private val keyCustomImageSources = stringPreferencesKey("custom_image_sources")
+    /** v22: 「检查更新」状态(JSON,见 UpdateStateCodec)——最近一次检查结果 + 已忽略版本。 */
+    private val keyUpdateState = stringPreferencesKey("update_state")
 
     // ── v1.3.x 歌词本设置(设置·歌词本页;写入后 init flow 同步到 VM)────────────
     /** 日语歌默认开振假名标注(0=关,默认 1=开)。 */
@@ -74,6 +76,8 @@ class SettingsStore(private val context: Context) {
         val furiganaAutoVerify: Boolean,
         /** v1.3.x 歌词本:歌词颜色 "default"(跟随封面)/"white"/"black"。 */
         val lyricsColorMode: String,
+        /** v22: 检查更新状态(最近检查结果 + 已忽略版本)。 */
+        val updateState: com.shiyin.music.data.update.UpdateState,
     )
 
     val flow: Flow<Settings> = context.dataStore.data.map { p ->
@@ -98,6 +102,7 @@ class SettingsStore(private val context: Context) {
             furiganaDefaultOn = p[keyFuriganaDefaultOn] ?: true,
             furiganaAutoVerify = p[keyFuriganaAutoVerify] ?: true,
             lyricsColorMode = (p[keyLyricsColorMode] ?: "default").let { if (it in listOf("default", "white", "black")) it else "default" },
+            updateState = com.shiyin.music.data.update.UpdateStateCodec.decode(p[keyUpdateState] ?: ""),
         )
     }
 
@@ -137,6 +142,10 @@ class SettingsStore(private val context: Context) {
     suspend fun setFuriganaAutoVerify(v: Boolean) = context.dataStore.edit { it[keyFuriganaAutoVerify] = v }
     suspend fun setLyricsColorMode(mode: String) =
         context.dataStore.edit { it[keyLyricsColorMode] = if (mode in listOf("white", "black")) mode else "default" }
+
+    /** v22: 保存检查更新状态(JSON)。 */
+    suspend fun setUpdateState(v: com.shiyin.music.data.update.UpdateState) =
+        context.dataStore.edit { it[keyUpdateState] = com.shiyin.music.data.update.UpdateStateCodec.encode(v) }
 
     suspend fun pushRecent(id: Long) = context.dataStore.edit { p ->
         val cur = (p[keyRecent] ?: "").split(",").mapNotNull { it.toLongOrNull() }

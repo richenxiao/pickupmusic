@@ -227,6 +227,95 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** 歌词本歌词颜色:"default"=跟随封面取色(现状)/"white"/"black"。 */
     var lyricsColorMode by mutableStateOf("default"); private set
 
+    // ── v22: 检查更新（本项目没有服务器，版本信息只在 GitHub Releases）────────
+    var updateState by mutableStateOf(com.shiyin.music.data.update.UpdateState()); private set
+    /** 正在检查中（关于页显示「检查中…」）。 */
+    var updateChecking by mutableStateOf(false); private set
+    /** 打开关于页时的检查节流：6 小时内查过就用缓存，不重复打网络。 */
+    private val updateCheckIntervalMs = 6L * 60 * 60 * 1000
+
+    /** 当前安装版本（取自 BuildConfig，与 build.gradle 的 versionName 同源）。 */
+    val currentVersion: String get() = BuildConfig.VERSION_NAME
+
+    /** 是否该在关于页显示「发现更新」（有更新，且不是用户已忽略的那个版本）。 */
+    fun updateAvailable(): Boolean = updateState.shouldPrompt(currentVersion)
+
+    /**
+     * 检查更新。
+     *
+     * [force] = true（用户手动点「检查更新」）忽略节流并给出结果提示；
+     * [force] = false（打开关于页）6 小时内查过就直接用缓存。
+     *
+     * 全链路失败时**只更新时间戳、不清掉上次结果** —— 可能只是这次网络不好，
+     * 把已知的"有新版本"擦掉反而更糟。
+     */
+    fun checkForUpdate(force: Boolean = false) {
+        if (updateChecking) return
+        val now = System.currentTimeMillis()
+        if (!force && now - updateState.lastCheckAt < updateCheckIntervalMs) return
+        updateChecking = true
+        appScope.launch {
+            val info = try {
+                com.shiyin.music.data.update.UpdateChecker.fetchLatest()
+            } catch (_: Exception) {
+                null
+            }
+            val next = if (info == null) {
+                updateState.copy(lastCheckAt = now)
+            } else {
+                updateState.copy(
+                    lastCheckAt = now,
+                    latestVersion = info.version,
+                    latestTag = info.tag,
+                    notes = info.notes,
+                    apkUrl = info.apkUrl,
+                    pageUrl = info.pageUrl.ifBlank { updateState.pageUrl },
+                )
+            }
+            updateState = next
+            updateChecking = false
+            settingsStore.setUpdateState(next)
+            if (force) {
+                withContext(Dispatchers.Main) {
+                    when {
+                        info == null -> showToast("检查更新失败，请检查网络后重试", null)
+                        com.shiyin.music.data.update.VersionCompare.isNewer(info.version, currentVersion) ->
+                            showToast("发现新版本 v${info.version}", null)
+                        else -> showToast("已是最新版本 v$currentVersion", null)
+                    }
+                }
+            }
+        }
+    }
+
+    /** 「忽略此版本」：同一版本不再提示，直到出现更新的版本。 */
+    fun dismissUpdate() {
+        val next = updateState.copy(dismissedVersion = updateState.latestVersion)
+        updateState = next
+        appScope.launch { settingsStore.setUpdateState(next) }
+    }
+
+    /** 「下载新版本」：优先 .apk 直链，拿不到就退回 Release 页面。 */
+    fun openUpdateDownload() {
+        val url = updateState.downloadUrl
+        if (url.isBlank()) {
+            showToast("暂时取不到下载地址，请到 GitHub Releases 查看", null)
+            return
+        }
+        openExternalUrl(url)
+    }
+
+    /** 用系统浏览器/下载器打开外链（ACTION_VIEW）。 */
+    fun openExternalUrl(url: String) {
+        try {
+            val i = android.content.Intent(android.content.Intent.ACTION_VIEW, Uri.parse(url))
+                .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+            getApplication<Application>().startActivity(i)
+        } catch (_: Exception) {
+            showToast("无法打开链接", null)
+        }
+    }
+
     // ── UI state (mirrors the prototype's state machine) ────────────────────
     var isOnboarding by mutableStateOf(true)
     var obStage by mutableStateOf(ObStage.Perm)
@@ -457,6 +546,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 onboarded = s.onboarded
                 firstScanDone = s.firstScanDone
                 recentIds = s.recentIds
+                // v22: 检查更新状态（最近一次检查结果 + 已忽略版本）
+                updateState = s.updateState
                 deepseekApiKey = s.deepseekApiKey
                 tavilyApiKey = s.tavilyApiKey
                 // v1.2.2 Agent: LLM 提供商配置 + 当前激活 provider(引擎据此选 LLM)
