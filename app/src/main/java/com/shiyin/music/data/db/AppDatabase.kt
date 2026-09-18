@@ -840,7 +840,66 @@ interface ShiyinDao {
     // 导入时 sourceMediaId 可能失效，由 BackupImporter 用 sourcePath 重解析。
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertAllAlbumSplit(list: List<AlbumSplitEntity>)
+
+    // ── v22: 备份内容扩展 —— 补上原来漏掉的用户资产 ────────────────────────
+    // 原来只备"元数据修正"，把用户最在乎的东西全漏了：歌单（含「我的喜欢」）、
+    // 手动导入的歌词、手动排序、忽略的文件夹、统计。这些一并纳入。
+
+    @Query("SELECT * FROM playlist")
+    suspend fun allPlaylists(): List<PlaylistEntity>
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertAllPlaylists(list: List<PlaylistEntity>)
+
+    @Query("SELECT * FROM playlist_track")
+    suspend fun allPlaylistTracks(): List<PlaylistTrackEntity>
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertAllPlaylistTracks(list: List<PlaylistTrackEntity>)
+
+    /** 只导出手动导入/确认过的歌词（`autoSaved = 0`）—— 自动识别的可重新识别，
+     *  没必要占备份体积；而手动导入的 lrc / 手改过的歌词**不可能靠重扫找回**。 */
+    @Query("SELECT * FROM saved_lyrics WHERE autoSaved = 0")
+    suspend fun allManualLyrics(): List<SavedLyricEntity>
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertAllLyrics(list: List<SavedLyricEntity>)
+
+    @Query("SELECT * FROM album_order")
+    suspend fun allAlbumOrders(): List<AlbumOrderEntity>
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertAllAlbumOrders(list: List<AlbumOrderEntity>)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertAllArtistAlbumOrders(list: List<ArtistAlbumOrderEntity>)
+
+    @Query("SELECT * FROM ignored_folder")
+    suspend fun allIgnoredFolders(): List<IgnoredFolderEntity>
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertAllIgnoredFolders(list: List<IgnoredFolderEntity>)
+
+    // 统计两张表的 id 是自增：导入时**清零 id 追加**（而不是 REPLACE 原 id）——
+    // 否则跨设备的自增 id 会撞上本机已有行、把别人的统计覆盖掉。
+    // 去重由 BackupManager 用 (mediaId, playedAt) / (timestamp) 键在导入前过滤，
+    // 保证同一份备份重复导入不会翻倍。
+    @Query("SELECT * FROM play_event")
+    suspend fun allPlayEvents(): List<PlayEventEntity>
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertAllPlayEvents(list: List<PlayEventEntity>)
+
+    /** 导入去重用：本机已有的 (mediaId, playedAt) 组合。 */
+    @Query("SELECT mediaId, playedAt FROM play_event")
+    suspend fun allPlayEventKeys(): List<PlayEventKey>
+
+    @Query("SELECT * FROM token_usage_log")
+    suspend fun allTokenUsage(): List<TokenUsageLogEntity>
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertAllTokenUsage(list: List<TokenUsageLogEntity>)
+
+    /** 导入去重用：本机已有的 timestamp。 */
+    @Query("SELECT timestamp FROM token_usage_log")
+    suspend fun allTokenUsageTimestamps(): List<Long>
 }
+
+/** 导入去重用的投影（play_event 的天然唯一键）。 */
+data class PlayEventKey(val mediaId: Long, val playedAt: Long)
 
 @Database(
     entities = [

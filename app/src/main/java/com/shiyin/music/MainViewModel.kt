@@ -91,8 +91,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      *  cancel,退出时 flush 的 finalizePlayEvent 会变 no-op 致 playedSec 永久丢;且 Activity 销毁后
      *  player 仍在 appScope 后台播,改用 appScope 后台播放仍被追踪。 */
     private val appScope = (app as com.shiyin.music.ShiyinApp).appScope
-    /** v1.2.0 阶段三：用户修正数据导出/导入。 */
-    private val backupManager = com.shiyin.music.data.db.BackupManager(dao)
+    /** v22: 设置也随备份走，故提到 backupManager 之前声明（原来在下面）。 */
+    val settingsStore = SettingsStore(app)
+    /** v1.2.0 阶段三：用户数据导出/导入（v22 起范围从"修正数据"扩到"用户资产"）。 */
+    private val backupManager = com.shiyin.music.data.db.BackupManager(dao, settingsStore)
     // 共享 OkHttpClient，避免每次切歌新建连接池/线程池泄漏
     private val sharedHttpClient = okhttp3.OkHttpClient.Builder()
         .connectTimeout(8, java.util.concurrent.TimeUnit.SECONDS)
@@ -109,7 +111,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     suspend fun releaseDateOf(albumId: Long): String = withContext(Dispatchers.IO) {
         if (albumId <= 0) "" else dao.albumArtCache(albumId)?.releaseDate ?: ""
     }
-    val settingsStore = SettingsStore(app)
     val player: PlayerController = (app as ShiyinApp).player
     /** v1.2.0 阶段二：tracksRaw 磁盘缓存，配合 MediaScanner.signature 实现冷启动增量扫描。 */
     private val trackCache = com.shiyin.music.data.TrackCache(app)

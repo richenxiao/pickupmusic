@@ -4,10 +4,13 @@ import android.content.Context
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.floatPreferencesKey
+import androidx.datastore.preferences.core.intPreferencesKey
+import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 
 private val Context.dataStore by preferencesDataStore(name = "settings")
@@ -146,6 +149,76 @@ class SettingsStore(private val context: Context) {
     /** v22: 保存检查更新状态(JSON)。 */
     suspend fun setUpdateState(v: com.shiyin.music.data.update.UpdateState) =
         context.dataStore.edit { it[keyUpdateState] = com.shiyin.music.data.update.UpdateStateCodec.encode(v) }
+
+    // ── v22: 设置随备份走 ────────────────────────────────────────────────────
+    // 原来备份完全不含设置 —— 用户花最多时间配的 LLM 供应商 / API Key / 写真源
+    // 换机后要从零再填一遍，这是最容易被忽略、但用户最痛的缺口。
+
+    /**
+     * 可备份的设置白名单：**只含用户配置与凭证**。
+     *
+     * 刻意排除的运行态：
+     *  - `onboarded` / `first_scan_done` —— "本机已完成初始化"的标记，带到新机会让
+     *    新机**跳过首次扫描引导**，反而像坏了
+     *  - `recent_ids` —— 最近播放的本地 mediaId，跨设备无意义
+     *  - `update_state` —— 检查更新缓存，新机自己会查
+     */
+    private val backupKeyNames = listOf(
+        "dark_theme", "gapless", "auto_match", "auto_save_recognition",
+        "playback_speed", "retro_speed_mode",
+        "furigana_default_on", "furigana_auto_verify", "lyrics_color_mode",
+        "deepseek_api_key", "tavily_api_key", "llm_providers", "llm_active_provider",
+        "fanart_api_key", "lastfm_api_key", "disabled_image_sources", "custom_image_sources",
+    )
+
+    /** 导出白名单设置（值已编码成"类型前缀 + 原文"，见 [SettingsValueCodec]）。 */
+    suspend fun exportBackupSettings(): Map<String, String> {
+        val all = context.dataStore.data.first().asMap()
+        val out = LinkedHashMap<String, String>()
+        for (name in backupKeyNames) {
+            val v = all.entries.firstOrNull { it.key.name == name }?.value ?: continue
+            SettingsValueCodec.encode(v)?.let { out[name] = it }
+        }
+        return out
+    }
+
+    /**
+     * 导入白名单设置。只写备份里**确实存在**的 key，其余保持本机不动（合并语义）。
+     * 返回成功写入的条数。
+     *
+     * 白名单外的 key 一律拒绝 —— 备份文件是可以被手工编辑的，不加这道闸就等于
+     * "任意 key 注入"。
+     */
+    suspend fun importBackupSettings(values: Map<String, String>): Int {
+        var n = 0
+        context.dataStore.edit { prefs ->
+            for ((name, encoded) in values) {
+                if (name !in backupKeyNames) continue
+                when (SettingsValueCodec.typeOf(encoded)) {
+                    SettingsValueCodec.BOOL -> SettingsValueCodec.boolOf(encoded)?.let {
+                        prefs[booleanPreferencesKey(name)] = it; n++
+                    }
+                    SettingsValueCodec.STR -> {
+                        prefs[stringPreferencesKey(name)] = SettingsValueCodec.stringOf(encoded); n++
+                    }
+                    SettingsValueCodec.FLOAT -> SettingsValueCodec.floatOf(encoded)?.let {
+                        prefs[floatPreferencesKey(name)] = it; n++
+                    }
+                    SettingsValueCodec.INT -> SettingsValueCodec.intOf(encoded)?.let {
+                        prefs[intPreferencesKey(name)] = it; n++
+                    }
+                    SettingsValueCodec.LONG -> SettingsValueCodec.longOf(encoded)?.let {
+                        prefs[longPreferencesKey(name)] = it; n++
+                    }
+                    SettingsValueCodec.STR_SET -> {
+                        prefs[stringSetPreferencesKey(name)] = SettingsValueCodec.setOf(encoded); n++
+                    }
+                    else -> Unit   // 未知类型：跳过，不写坏
+                }
+            }
+        }
+        return n
+    }
 
     suspend fun pushRecent(id: Long) = context.dataStore.edit { p ->
         val cur = (p[keyRecent] ?: "").split(",").mapNotNull { it.toLongOrNull() }

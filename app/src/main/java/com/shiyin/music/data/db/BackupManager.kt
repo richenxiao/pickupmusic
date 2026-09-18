@@ -1,6 +1,7 @@
 package com.shiyin.music.data.db
 
 import com.google.gson.Gson
+import com.shiyin.music.data.SettingsStore
 import com.shiyin.music.data.db.AlbumOverrideEntity as ALO
 import com.shiyin.music.data.db.AlbumInfoOverrideEntity as AIO
 import com.shiyin.music.data.db.TrackInfoOverrideEntity as TIO
@@ -13,29 +14,47 @@ import com.shiyin.music.data.db.ArtistImageCacheEntity as AIC
 import com.shiyin.music.data.db.ArtistImageOverrideEntity as AIOV
 import com.shiyin.music.data.db.AlbumSplitEntity as ASP
 import com.shiyin.music.data.db.SplitTrackEntity as STK
+import com.shiyin.music.data.db.PlaylistEntity as PL
+import com.shiyin.music.data.db.PlaylistTrackEntity as PLT
+import com.shiyin.music.data.db.SavedLyricEntity as SL
+import com.shiyin.music.data.db.AlbumOrderEntity as AO
+import com.shiyin.music.data.db.ArtistAlbumOrderEntity as AAO
+import com.shiyin.music.data.db.IgnoredFolderEntity as IF
+import com.shiyin.music.data.db.PlayEventEntity as PE
+import com.shiyin.music.data.db.TokenUsageLogEntity as TU
 
 /**
- * v1.2.0 阶段三：用户修正数据的导出/导入。
+ * 用户数据的导出/导入。
  *
- * 导出的"修正数据"= 用户手动编辑、不可由重新扫描重建的数据：
+ * === v1.2.0 阶段的定位（"修正数据"）===
+ * 当时只导出"用户手动编辑、不可由重新扫描重建的数据"：
  *  - album_override / album_info_override / track_info_override / track_album_move
- *    （专辑名·艺术家·封面·type 修正、单曲 title/artist/note/隐藏、单曲迁专辑）
- *  - artist（歌手合并 aliases + 头像）/ song_artist（曲目-歌手关联）
- *  - reading_override（振假名当て字）/ external_reading_evidence（外部假名 evidence）
- *  - artist_image_override（歌手手选写真，永久用户资产）/ artist_image_cache（自动源命中缓存，
- *    仅导出成功行，避免重抓；跨设备不导出失败 TTL 态以免毒到新网络）
+ *  - artist / song_artist / reading_override / external_reading_evidence
+ *  - artist_image_override / artist_image_cache（仅成功行）
  *
- * 不导出：saved_lyrics（歌词本体，量大且可重新识别）、album_art_cache（取色缓存，
- * 可重算）、play_count/play_event（播放统计，非修正）、playlist*（歌单，非修正）、
- * new_album/ignored_folder/trashed_track（运行态，非修正）。
+ * === v22 的重要修正：这个定位对用户心里的"备份"来说差得太远 ===
+ * 原来**没备**的东西恰恰是用户最在乎的：
+ *  - **歌单（含内置「我的喜欢」）** —— 用户整理最久的资产
+ *  - **手动导入/确认过的歌词**（`autoSaved = 0`）—— 这些**不可能靠"重新识别"找回**
+ *  - **专辑内手动曲序** / 歌手页专辑排序 —— 明确的人工整理成果
+ *  - **忽略的文件夹** —— 用户配置
+ *  - **全部设置与凭证（含 LLM 供应商 / API Key）** —— 换机后要从零再填一遍
+ *  - 播放统计 / Token 用量（纯统计，可关）
  *
- * artist 跨设备导入：id 是自增，跨设备会撞；按 name 去重合并（已有则合 aliases/头像，
- * 无则插入新行），song_artist 的 artistId 重映射到本地新 id。
+ * === 跨设备的核心问题：mediaId 不稳定 ===
+ * `play_event` / `playlist_track` / `saved_lyrics` / `album_order` 等都按 MediaStore
+ * 的 `_ID` 存，而换机 / 重扫后这个 id 必变。**v2 的重解析键（见 BackupRemap）负责
+ * 在导入时把旧 id 映射到新 id**，映射不到的条目丢弃并如实报告 —— 没有这一步，
+ * 恢复出来的修正会全部挂到错误的歌上。
  */
-internal class BackupManager(private val dao: ShiyinDao) {
+internal class BackupManager(
+    private val dao: ShiyinDao,
+    /** 设置也随备份走（v22）。为 null 时跳过设置部分（便于只测数据库的单元测试）。 */
+    private val settings: SettingsStore? = null,
+) {
 
     data class BackupData(
-        val version: Int = 1,
+        val version: Int = 2,
         val app: String = "com.shiyin.music",
         val exportedAt: Long,
         val albumOverride: List<ALO>,
@@ -55,9 +74,22 @@ internal class BackupManager(private val dao: ShiyinDao) {
         // 跨设备时 sourceMediaId 必然失效，由 lib() 用 sourcePath 兜底重解析。
         val albumSplit: List<ASP> = emptyList(),
         val splitTrack: List<STK> = emptyList(),
+
+        // ── v22: 备份内容扩展 ──────────────────────────────────────────────
+        val playlists: List<PL> = emptyList(),
+        val playlistTracks: List<PLT> = emptyList(),
+        /** 只含 `autoSaved = 0`（手动导入/确认）的歌词；自动识别的可重新识别，不占体积。 */
+        val manualLyrics: List<SL> = emptyList(),
+        val albumOrders: List<AO> = emptyList(),
+        val artistAlbumOrders: List<AAO> = emptyList(),
+        val ignoredFolders: List<IF> = emptyList(),
+        val playEvents: List<PE> = emptyList(),
+        val tokenUsage: List<TU> = emptyList(),
+        /** DataStore 白名单设置，值带类型前缀（见 `SettingsValueCodec`）。 */
+        val settings: Map<String, String> = emptyMap(),
     )
 
-    /** 导出全部修正数据为 JSON 字符串。调用方负责写入 SAF/文件。 */
+    /** 导出全部用户数据为 JSON 字符串。调用方负责写入 SAF/文件。 */
     suspend fun export(): String {
         val data = BackupData(
             exportedAt = System.currentTimeMillis(),
@@ -73,12 +105,25 @@ internal class BackupManager(private val dao: ShiyinDao) {
             artistImageOverride = dao.allArtistImageOverride(),
             albumSplit = dao.allAlbumSplits(),
             splitTrack = dao.allSplitTracks(),
+            playlists = dao.allPlaylists(),
+            playlistTracks = dao.allPlaylistTracks(),
+            manualLyrics = dao.allManualLyrics(),
+            albumOrders = dao.allAlbumOrders(),
+            artistAlbumOrders = dao.allArtistAlbumOrders(),
+            ignoredFolders = dao.allIgnoredFolders(),
+            playEvents = dao.allPlayEvents(),
+            tokenUsage = dao.allTokenUsage(),
+            settings = settings?.exportBackupSettings().orEmpty(),
         )
         return Gson().toJson(data)
     }
 
-    /** 从 JSON 导入。artist 按 name 合并，song_artist 重映射 id。
-     *  返回导入的各表条目数统计。 */
+    /**
+     * 从 JSON 导入。**合并语义**：同主键覆盖，其余保留（不清库）。
+     *
+     * 调用方应在此之前用 [BackupRemap] 把 mediaId / albumId 换成当前库的 id
+     * （否则这些行会挂到错误的歌上）。这里只负责写库与统计。
+     */
     suspend fun import(json: String): ImportStats {
         val data = Gson().fromJson(json, BackupData::class.java)
             ?: error("备份文件格式无法解析")
@@ -128,6 +173,38 @@ internal class BackupManager(private val dao: ShiyinDao) {
         val splitTracks = data.splitTrack.orEmpty()
         if (splits.isNotEmpty()) dao.upsertAllAlbumSplit(splits)
         if (splitTracks.isNotEmpty()) dao.insertSplitTracks(splitTracks)
+
+        // ── v22: 扩展内容 ────────────────────────────────────────────────
+        // 歌单 / 歌单曲目 / 手动歌词 / 排序 / 忽略文件夹：主键不依赖自增 id，直接 upsert。
+        val playlists = data.playlists.orEmpty()
+        val playlistTracks = data.playlistTracks.orEmpty()
+        val manualLyrics = data.manualLyrics.orEmpty()
+        val albumOrders = data.albumOrders.orEmpty()
+        val artistAlbumOrders = data.artistAlbumOrders.orEmpty()
+        val ignoredFolders = data.ignoredFolders.orEmpty()
+        if (playlists.isNotEmpty()) dao.upsertAllPlaylists(playlists)
+        if (playlistTracks.isNotEmpty()) dao.upsertAllPlaylistTracks(playlistTracks)
+        if (manualLyrics.isNotEmpty()) dao.upsertAllLyrics(manualLyrics)
+        if (albumOrders.isNotEmpty()) dao.upsertAllAlbumOrders(albumOrders)
+        if (artistAlbumOrders.isNotEmpty()) dao.upsertAllArtistAlbumOrders(artistAlbumOrders)
+        if (ignoredFolders.isNotEmpty()) dao.insertAllIgnoredFolders(ignoredFolders)
+
+        // 统计两张表的 id 是**本机自增**的：清零 id 追加，避免跨设备的 id 撞上本机已有行
+        // 把它覆盖掉。用天然唯一键去重，保证同一份备份重复导入不会翻倍。
+        val existingEventKeys = dao.allPlayEventKeys().mapTo(HashSet()) { it.mediaId to it.playedAt }
+        val newEvents = data.playEvents.orEmpty()
+            .filter { existingEventKeys.add(it.mediaId to it.playedAt) }
+            .map { it.copy(id = 0) }
+        if (newEvents.isNotEmpty()) dao.insertAllPlayEvents(newEvents)
+
+        val existingTs = dao.allTokenUsageTimestamps().toHashSet()
+        val newUsage = data.tokenUsage.orEmpty()
+            .filter { existingTs.add(it.timestamp) }
+            .map { it.copy(id = 0) }
+        if (newUsage.isNotEmpty()) dao.insertAllTokenUsage(newUsage)
+
+        val settingsWritten = settings?.importBackupSettings(data.settings.orEmpty()) ?: 0
+
         return ImportStats(
             albumOverride = data.albumOverride.size,
             albumInfoOverride = data.albumInfoOverride.size,
@@ -141,6 +218,16 @@ internal class BackupManager(private val dao: ShiyinDao) {
             artistImageOverride = imgOverride.size,
             albumSplit = splits.size,
             splitTrack = splitTracks.size,
+            playlists = playlists.size,
+            playlistTracks = playlistTracks.size,
+            manualLyrics = manualLyrics.size,
+            albumOrders = albumOrders.size,
+            artistAlbumOrders = artistAlbumOrders.size,
+            ignoredFolders = ignoredFolders.size,
+            playEvents = newEvents.size,
+            playEventsSkipped = data.playEvents.orEmpty().size - newEvents.size,
+            tokenUsage = newUsage.size,
+            settings = settingsWritten,
         )
     }
 
@@ -165,12 +252,28 @@ internal class BackupManager(private val dao: ShiyinDao) {
         // v22: 拆分方案 / 拆分曲目
         val albumSplit: Int = 0,
         val splitTrack: Int = 0,
+        // v22: 扩展内容
+        val playlists: Int = 0,
+        val playlistTracks: Int = 0,
+        val manualLyrics: Int = 0,
+        val albumOrders: Int = 0,
+        val artistAlbumOrders: Int = 0,
+        val ignoredFolders: Int = 0,
+        val playEvents: Int = 0,
+        /** 因为本机已有同一条（mediaId + 时间戳）而跳过的播放记录数。 */
+        val playEventsSkipped: Int = 0,
+        val tokenUsage: Int = 0,
+        val settings: Int = 0,
     ) {
         override fun toString() =
             "专辑迁移$albumOverride / 专辑修正$albumInfoOverride / 曲目修正$trackInfoOverride / " +
             "曲目迁专辑$trackAlbumMove / 歌手$artists / 曲目-歌手$songArtist / " +
             "振假名注音$readingOverride / 外部假名$externalReadingEvidence / " +
             "歌手写真缓存$artistImageCache / 歌手写真手选$artistImageOverride / " +
-            "整轨拆分$albumSplit / 拆分曲目$splitTrack"
+            "整轨拆分$albumSplit / 拆分曲目$splitTrack / " +
+            "歌单$playlists / 歌单曲目$playlistTracks / 歌词$manualLyrics / " +
+            "专辑曲序$albumOrders / 歌手专辑序$artistAlbumOrders / 忽略文件夹$ignoredFolders / " +
+            "播放记录$playEvents" + (if (playEventsSkipped > 0) "(跳过$playEventsSkipped)" else "") + " / " +
+            "Token用量$tokenUsage / 设置$settings"
     }
 }
