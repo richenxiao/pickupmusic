@@ -1,14 +1,21 @@
 package com.shiyin.music.ui.components
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
@@ -26,10 +33,16 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -87,20 +100,84 @@ fun BoxScope.SheetOverlay(
     }
 }
 
-/** ⊕ outline (not favorited) / accent filled circle with a check (favorited). */
+/**
+ * v22: 收藏按钮 —— **加号连续变形为勾号**（不再是两个图标交叉淡化）。
+ *
+ * 现状原来是 `CirclePlus` ↔ 实心圈+`CheckSmall` 两个图标硬切；现在用 Canvas 画
+ * 一个圆 + 两条线，几何完全取自项目自己的图标定义（见 [FavMorph]），由**同一个
+ * 动画进度**驱动端点插值，所以加号是"自己弯成勾"的：
+ *   · 横线收缩并旋转 → 勾号左边短臂
+ *   · 竖线缩短并抬起 → 勾号右边长臂
+ *   · 两条线的内侧端点一起汇到折点，加号的交叉点自然张开成勾号的折点
+ *
+ * 同一进度还驱动配色：未收藏 = 描边圈 + [idleTint] 线；已收藏 = accent 实心圈 + 背景色线。
+ * 再次点击 = 进度反向播放 —— `animateFloatAsState` 支持中途改目标值，所以**快速连点
+ * 不会错乱**，而是平滑地从当前位置反向，不需要"动画中忽略点击"。
+ *
+ * @param interactionSource 传进来即可拿到"按下"态做缩放反馈（按下轻微缩小、松手弹回）；
+ *        不传就没有按下反馈（调用方若自己在外面处理点击，把同一个 source 交给它即可）。
+ */
 @Composable
-fun FavIcon(fav: Boolean, size: Dp, idleTint: Color) {
+fun FavIcon(
+    fav: Boolean,
+    size: Dp,
+    idleTint: Color,
+    interactionSource: MutableInteractionSource? = null,
+) {
     val c = LocalOrganic.current
-    if (fav) {
-        Box(
-            Modifier
-                .size(size)
-                .clip(CircleShape)
-                .background(c.accent),
-            contentAlignment = Alignment.Center,
-        ) { OIcon(Lucide.CheckSmall, size * 0.8f, c.bg) }
-    } else {
-        OIcon(Lucide.CirclePlus, size, idleTint)
+    val p by animateFloatAsState(
+        targetValue = if (fav) 1f else 0f,
+        animationSpec = tween(durationMillis = 250, easing = FastOutSlowInEasing),
+        label = "favMorph",
+    )
+    // 按下缩放。条件式调用 @Composable 在这里是安全的：该条件对同一调用点是稳定的。
+    val pressed = if (interactionSource != null) interactionSource.collectIsPressedAsState().value else false
+    val scale by animateFloatAsState(
+        targetValue = if (pressed) 0.88f else 1f,
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioMediumBouncy,
+            stiffness = Spring.StiffnessHigh,
+        ),
+        label = "favPress",
+    )
+
+    Canvas(
+        Modifier
+            .size(size)
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+            },
+    ) {
+        val u = this.size.minDimension / 24f          // 24 = 图标 viewBox
+        val sw = FavMorph.STROKE_W * u
+        val cx = this.size.width / 2f
+        val cy = this.size.height / 2f
+
+        // 圆：未收藏描边（随进度淡出），已收藏实心（随进度淡入）
+        if (p < 1f) {
+            drawCircle(
+                color = idleTint.copy(alpha = idleTint.alpha * (1f - p)),
+                radius = FavMorph.CIRCLE_R * u - sw / 2f,
+                center = Offset(cx, cy),
+                style = Stroke(width = sw, cap = StrokeCap.Round, join = StrokeJoin.Round),
+            )
+        }
+        if (p > 0f) {
+            drawCircle(color = c.accent.copy(alpha = p), radius = FavMorph.CIRCLE_R * u, center = Offset(cx, cy))
+        }
+
+        // 线色：未收藏跟随 idleTint，已收藏在实心圈上要反色
+        val lineColor = androidx.compose.ui.graphics.lerp(idleTint, c.bg, p)
+        for (s in FavMorph.segments(p)) {
+            drawLine(
+                color = lineColor,
+                start = Offset(cx + (s.x1 - 12f) * u, cy + (s.y1 - 12f) * u),
+                end = Offset(cx + (s.x2 - 12f) * u, cy + (s.y2 - 12f) * u),
+                strokeWidth = sw,
+                cap = StrokeCap.Round,
+            )
+        }
     }
 }
 

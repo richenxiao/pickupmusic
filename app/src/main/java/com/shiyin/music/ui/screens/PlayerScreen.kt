@@ -293,16 +293,27 @@ fun PlayerScreen(vm: MainViewModel) {
                             .basicMarquee(initialDelayMillis = 6000, repeatDelayMillis = 6000),
                     )
                 }
+                // v22: 收藏按钮的「加号变勾号」动画需要一个 interactionSource 才能拿到按下态
+                // （按下轻微缩小、松手弹回）。同一个 source 同时交给点击处理与 FavIcon。
+                val favSrc = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
                 Box(
                     Modifier
                         .size(28.dp)
                         .clip(CircleShape)
                         .combinedClickable(
+                            interactionSource = favSrc,
+                            // 传 LocalIndication 保持原有的涟漪反馈不变 ——
+                            // 这个重载里 indication 是必填参数（没有默认值）。
+                            indication = androidx.compose.foundation.LocalIndication.current,
                             onClick = { vm.toggleFav(track.id) },
                             onLongClick = { vm.saveSheetFor = track.id },
                         ),
                     contentAlignment = Alignment.Center,
-                ) { com.shiyin.music.ui.components.FavIcon(vm.isFav(track.id), 26.dp, c.n500) }
+                ) {
+                    com.shiyin.music.ui.components.FavIcon(
+                        vm.isFav(track.id), 26.dp, c.n500, interactionSource = favSrc,
+                    )
+                }
             }
 
             // progress
