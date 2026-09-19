@@ -35,6 +35,14 @@
 -keep @androidx.room.Dao class * { *; }
 -keep class com.shiyin.music.data.db.** { *; }
 
+# ── v22: 检查更新状态（Gson 字段名必须保留）──
+# `UpdateState` 的**编码走 Gson 反射、解码走字面键名**（UpdateStateCodec.decode 里
+# 用 `o.str("latestVersion")` 按名字取），两侧不对称。字段名一旦被 R8 混淆，
+# 解码就永远读不到值 → 「发现更新」状态无法持久化、「忽略此版本」失效。
+# （`data.db.**` 已被上面整包保留，是因为 BackupData 同样有"Gson 写 / 字面名读"
+#   的不对称——BackupRemap 按 "mediaId" 等字面键名遍历 JSON。这里补上 update 包。）
+-keep class com.shiyin.music.data.update.** { *; }
+
 # ── Media3 / ExoPlayer / MediaSession（自带 consumer rules，补保险）──
 -keep class androidx.media3.** { *; }
 
