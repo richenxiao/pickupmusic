@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -29,8 +30,11 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -86,6 +90,173 @@ fun SettingsHost(vm: MainViewModel, view: FilesView) {
         FilesView.Merges -> MergesScreen(vm)
         FilesView.ImageSources -> ImageSourcesScreen(vm)
         FilesView.LyricsBook -> LyricsBookScreen(vm)
+        FilesView.CloudBackup -> CloudBackupScreen(vm)
+    }
+}
+
+/**
+ * v22: WebDAV 云备份页。
+ *
+ * 为什么是 WebDAV：零 SDK 依赖（就是 HTTP）、国内可用（坚果云）、
+ * 且与本项目"用户自配地址 + 凭据"的既有范式一致（写真源就是这么做的）。
+ *
+ * 凭据只存 DataStore，**刻意不进备份文件** —— 否则备份包泄露等于云盘账号泄露。
+ */
+@Composable
+private fun CloudBackupScreen(vm: MainViewModel) {
+    val c = LocalOrganic.current
+    val context = androidx.compose.ui.platform.LocalContext.current
+    // 进页时载入已保存的凭据（一次性）
+    androidx.compose.runtime.LaunchedEffect(Unit) { vm.loadWebDavConfig() }
+
+    var url by remember { mutableStateOf("") }
+    var user by remember { mutableStateOf("") }
+    var pass by remember { mutableStateOf("") }
+    var loaded by remember { mutableStateOf(false) }
+    // 凭据异步载入后回填输入框（只填一次，避免覆盖用户正在输入的内容）
+    androidx.compose.runtime.LaunchedEffect(vm.webDavUrl, vm.webDavUser, vm.webDavPassword) {
+        if (!loaded && (vm.webDavUrl.isNotEmpty() || vm.webDavUser.isNotEmpty())) {
+            url = vm.webDavUrl; user = vm.webDavUser; pass = vm.webDavPassword; loaded = true
+        }
+    }
+
+    Column(
+        Modifier.fillMaxSize().verticalScroll(rememberScrollState())
+            .padding(horizontal = 20.dp).padding(top = 22.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        SubPageHeader("云备份") { vm.filesView = FilesView.Root }
+
+        Column(
+            Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(c.surface).padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text("WebDAV 地址", style = body(13f, FontWeight.ExtraBold, c.text))
+            Text(
+                "支持坚果云（https://dav.jianguoyun.com/dav/）、Nextcloud、群晖等。" +
+                    "坚果云请用「应用密码」而不是登录密码。",
+                style = body(11.5f, FontWeight.Normal, c.n600).copy(lineHeight = 17.sp),
+            )
+            OutlinedTextField(
+                value = url, onValueChange = { url = it },
+                label = { Text("地址", style = body(12f, FontWeight.Normal, c.n600)) },
+                singleLine = true, modifier = Modifier.fillMaxWidth(),
+                textStyle = body(13f, FontWeight.Normal, c.text),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedTextColor = c.text, unfocusedTextColor = c.text, cursorColor = c.accent,
+                    focusedBorderColor = c.accent, unfocusedBorderColor = c.n400,
+                ),
+            )
+            OutlinedTextField(
+                value = user, onValueChange = { user = it },
+                label = { Text("账号", style = body(12f, FontWeight.Normal, c.n600)) },
+                singleLine = true, modifier = Modifier.fillMaxWidth(),
+                textStyle = body(13f, FontWeight.Normal, c.text),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedTextColor = c.text, unfocusedTextColor = c.text, cursorColor = c.accent,
+                    focusedBorderColor = c.accent, unfocusedBorderColor = c.n400,
+                ),
+            )
+            OutlinedTextField(
+                value = pass, onValueChange = { pass = it },
+                label = { Text("密码 / 应用密码", style = body(12f, FontWeight.Normal, c.n600)) },
+                singleLine = true, modifier = Modifier.fillMaxWidth(),
+                textStyle = body(13f, FontWeight.Normal, c.text),
+                visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedTextColor = c.text, unfocusedTextColor = c.text, cursorColor = c.accent,
+                    focusedBorderColor = c.accent, unfocusedBorderColor = c.n400,
+                ),
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Box(
+                    Modifier.clip(RoundedCornerShape(999.dp)).background(c.accent)
+                        .clickable(enabled = !vm.cloudBusy) {
+                            vm.saveWebDavConfig(url, user, pass)
+                            vm.cloudTest()
+                        }
+                        .padding(horizontal = 16.dp, vertical = 9.dp),
+                ) {
+                    Text(
+                        if (vm.cloudBusy) "处理中…" else "保存并测试连接",
+                        style = body(12.5f, FontWeight.Bold, androidx.compose.ui.graphics.Color.White),
+                    )
+                }
+                Box(
+                    Modifier.clip(RoundedCornerShape(999.dp)).background(c.n100)
+                        .clickable(enabled = !vm.cloudBusy) { vm.cloudUpload() }
+                        .padding(horizontal = 16.dp, vertical = 9.dp),
+                ) { Text("上传当前备份", style = body(12.5f, FontWeight.Bold, c.text)) }
+            }
+            vm.cloudMsg?.let {
+                Text(it, style = body(11.5f, FontWeight.Normal, c.a700).copy(lineHeight = 17.sp))
+            }
+        }
+
+        if (vm.cloudFiles.isNotEmpty()) {
+            SectionLabel("云端备份 · ${vm.cloudFiles.size} 个")
+            Column(
+                Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(c.surface).padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                for (f in vm.cloudFiles.sortedByDescending { it.name }) {
+                    Row(
+                        Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).background(c.n100)
+                            .clickable(enabled = !vm.cloudBusy) { vm.cloudRequestRestore(f.name) }
+                            .padding(horizontal = 10.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(f.name, style = body(11.5f, FontWeight.Normal, c.text), modifier = Modifier.weight(1f))
+                        Text(
+                            if (f.size > 0) "%.1f MB".format(f.size / 1024.0 / 1024.0) else "",
+                            style = body(10.5f, FontWeight.Normal, c.n500),
+                        )
+                        Spacer(Modifier.size(8.dp))
+                        Text("恢复", style = body(11.5f, FontWeight.Bold, c.accent))
+                    }
+                }
+            }
+        }
+        Box(Modifier.height(60.dp))
+    }
+
+    // v22: 云端恢复也要**先预览再写库** —— 与本地恢复同一道闸。
+    // 云端风险其实更高（远端可能是很久以前的备份、也可能是别人的），更不能下完直接覆盖。
+    vm.cloudPreview?.let { p ->
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { if (!vm.cloudBusy) vm.cloudCancelRestore() },
+            containerColor = c.surface,
+            title = {
+                Text(
+                    "从云端恢复「${vm.cloudPendingName ?: ""}」？",
+                    style = body(15f, FontWeight.ExtraBold, c.text),
+                )
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(p.summary(), style = body(12f, FontWeight.Normal, c.n700).copy(lineHeight = 18.sp))
+                    p.lossNote()?.let {
+                        Text("⚠ $it", style = body(11.5f, FontWeight.Bold, c.a700).copy(lineHeight = 17.sp))
+                    }
+                    Text(
+                        "合并恢复：同主键覆盖，其余保留。写库前会自动存一份本地快照。",
+                        style = body(11f, FontWeight.Normal, c.n600),
+                    )
+                }
+            },
+            confirmButton = {
+                com.shiyin.music.ui.components.DialogActionsRow(
+                    listOf(
+                        com.shiyin.music.ui.components.DialogAction("取消") {
+                            if (!vm.cloudBusy) vm.cloudCancelRestore()
+                        },
+                        com.shiyin.music.ui.components.DialogAction("恢复", emphasized = true) {
+                            vm.cloudConfirmRestore()
+                        },
+                    )
+                )
+            },
+        )
     }
 }
 
@@ -153,15 +324,41 @@ private fun SettingsRoot(vm: MainViewModel) {
     androidx.compose.runtime.LaunchedEffect(Unit) { vm.refreshRecognitionCacheSize() }
     // v1.2.0 阶段三：备份/恢复的提示文本（导出成功/导入统计/失败）
     var backupMsg by remember { mutableStateOf<String?>(null) }
+    // v22: 恢复前的预览与确认（原来选完文件直接覆盖写库，误点一个旧备份就冲掉当前数据）
+    var pendingRestore by remember { mutableStateOf<ByteArray?>(null) }
+    var pendingPreview by remember { mutableStateOf<com.shiyin.music.data.db.BackupPreviewer.Preview?>(null) }
+    var restoreBusy by remember { mutableStateOf(false) }
+    // v22: 最近一次导出的文件，用于「分享」
+    var lastExport by remember { mutableStateOf<java.io.File?>(null) }
+
+    fun shareFile(file: java.io.File) {
+        try {
+            val uri = androidx.core.content.FileProvider.getUriForFile(
+                context, "${context.packageName}.coverprovider", file,
+            )
+            val send = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                type = "application/zip"
+                putExtra(android.content.Intent.EXTRA_STREAM, uri)
+                addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            context.startActivity(android.content.Intent.createChooser(send, "分享备份"))
+        } catch (e: Exception) {
+            backupMsg = "分享失败：${e.message}"
+        }
+    }
+
     val exportLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.CreateDocument("application/json")
+        ActivityResultContracts.CreateDocument("application/zip")
     ) { uri: Uri? ->
         if (uri == null) return@rememberLauncherForActivityResult
         scope.launch {
             try {
-                val json = vm.exportBackup()
-                context.contentResolver.openOutputStream(uri)?.use { it.write(json.toByteArray()) }
-                backupMsg = "已备份全部修正数据"
+                val bytes = vm.exportBackupZip()
+                context.contentResolver.openOutputStream(uri)?.use { it.write(bytes) }
+                // v22: 备份里**含 API Key / 供应商配置**（用户定调：要进，否则换机最痛），
+                // 所以导出后必须明确提醒一句"含密钥"，让用户知道这个文件不能随便发。
+                backupMsg = "已备份（${"%.1f".format(bytes.size / 1024.0 / 1024.0)} MB）· " +
+                    "含密钥，请妥善保管"
             } catch (e: Exception) { backupMsg = "备份失败：${e.message}" }
         }
     }
@@ -171,11 +368,13 @@ private fun SettingsRoot(vm: MainViewModel) {
         if (uri == null) return@rememberLauncherForActivityResult
         scope.launch {
             try {
-                val json = context.contentResolver.openInputStream(uri)?.use { it.readBytes().toString(Charsets.UTF_8) }
+                val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
                     ?: error("无法读取备份文件")
-                val stats = vm.importBackup(json)
-                backupMsg = "恢复完成：$stats"
-            } catch (e: Exception) { backupMsg = "恢复失败：${e.message}" }
+                // v22: 先预览、不写库 —— 让用户看清会恢复什么、会跳过多少条
+                pendingPreview = vm.previewBackup(bytes)
+                pendingRestore = bytes
+                backupMsg = null
+            } catch (e: Exception) { backupMsg = "无法读取备份：${e.message}" }
         }
     }
     Column(
@@ -203,7 +402,10 @@ private fun SettingsRoot(vm: MainViewModel) {
             // v1.3.x 设置重组:回收站并入清理建议页(页顶统一入口),这里不再单列。
             // 副文案短排列(可清理·回收站·体积),maxLines=1 不再省略号截断。
             CardEntryRow(
-                Lucide.Brush, c.a700, "清理建议",
+                // v22 缝补:原用 Brush(画笔)表示"清理",语义不搭——清理建议页里主要是
+                // 重复文件/短音频/回收站,Trash(垃圾桶)才对得上。Brush 与歌词本页的
+                // 色样图标也曾撞过,一并解开。
+                Lucide.Trash, c.a700, "清理建议",
                 "${vm.cleanCount()} 个可清理 · 回收站 ${vm.trashMirror.size} · ${formatSizeMb(vm.cleanSizeBytes())}",
                 divider = true,
             ) { vm.openClean() }
@@ -241,7 +443,10 @@ private fun SettingsRoot(vm: MainViewModel) {
             SettingRow(Lucide.Infinity, "无缝播放", "专辑连播时曲目间不留空隙", divider = true) {
                 OrganicSwitch(vm.gapless) { vm.setGapless(!vm.gapless) }
             }
-            SettingRow(Lucide.Mic, "自动匹配歌词", "无歌词时自动在线获取，确认后保存到本地", divider = true) {
+            // v22 缝补:原用 Mic(麦克风)表示"自动匹配歌词",语义不搭——麦克风是录音
+            // 输入,这里是在线抓歌词。改用 Captions(字幕/歌词),与播放菜单的
+            // 「歌词来源」同一套图标语言。
+            SettingRow(Lucide.Captions, "自动匹配歌词", "无歌词时自动在线获取，确认后保存到本地", divider = true) {
                 OrganicSwitch(vm.autoMatch) { vm.setAutoMatch(!vm.autoMatch) }
             }
             // v1.1+: 自动保存识别结果（默认开）+ 缓存占用 + 清理按钮
@@ -270,9 +475,14 @@ private fun SettingsRoot(vm: MainViewModel) {
                         .padding(horizontal = 12.dp, vertical = 7.dp),
                 ) { Text("清理缓存", style = body(12.5f, FontWeight.Bold, c.text)) }
             }
-            // v1.2.0 阶段三：修正数据备份/恢复。导出含专辑/曲目/歌手/振假名等
-            // 全部人工修正，导入覆盖同主键。换机/重装前备份，避免重新扫描后丢失修正。
-            // v1.3.x: 行下方的字段清单说明文字去掉(用户拍板)。
+            // v22 缝补:本卡内其余行(深色模式/无缝播放/自动匹配歌词/自动保存识别结果/
+            // 睡眠定时/写真源)都由 SettingRow·CardEntryRow 画了分隔线,唯独"识别缓存"与
+            // "备份我的修正数据"是手写 Row、漏了线——同一张卡里有的有线有的没线,很扎眼。
+            // 这里补上与 SettingRow(divider=true) 逐像素一致的那条 1dp 线。
+            Box(Modifier.fillMaxWidth().height(1.dp).background(c.divider))
+            // v22: 备份范围从"修正数据"扩到**用户资产** —— 歌单（含「我的喜欢」）、
+            // 手动导入的歌词、手动曲序、忽略的文件夹、全部设置与 API Key 都进了备份包。
+            // 包格式升级为 zip（本地手选的歌手写真/专辑封面要跟着走，否则换机后是裂图）。
             Row(
                 Modifier.fillMaxWidth().padding(vertical = 13.dp),
                 horizontalArrangement = Arrangement.spacedBy(13.dp),
@@ -280,17 +490,30 @@ private fun SettingsRoot(vm: MainViewModel) {
             ) {
                 OIcon(Lucide.Shield, 19.dp, c.n700)
                 Column(Modifier.weight(1f)) {
-                    Text("备份我的修正数据", style = body(15f, FontWeight.SemiBold, c.text))
-                    if (backupMsg != null) {
-                        Text(backupMsg!!, style = body(11f, FontWeight.Normal, c.a700))
-                    }
+                    Text("备份与恢复", style = body(15f, FontWeight.SemiBold, c.text))
+                    Text(
+                        if (restoreBusy) "正在恢复…"
+                        else backupMsg ?: "歌单 · 歌词 · 排序 · 设置与密钥 · 本地图片",
+                        style = body(11f, FontWeight.Normal, if (backupMsg != null) c.a700 else c.n600),
+                    )
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (lastExport != null) {
+                        Box(
+                            Modifier.clip(RoundedCornerShape(999.dp)).background(c.n100)
+                                .clickable { lastExport?.let { shareFile(it) } }
+                                .padding(horizontal = 12.dp, vertical = 7.dp),
+                        ) { Text("分享", style = body(12.5f, FontWeight.Bold, c.text)) }
+                    }
                     Box(
                         Modifier.clip(RoundedCornerShape(999.dp)).background(c.n100)
                             .clickable {
                                 backupMsg = null
-                                exportLauncher.launch("pickupmusic-backup.json")
+                                exportLauncher.launch(
+                                    "pickupmusic-backup-" + java.text.SimpleDateFormat(
+                                        "yyyyMMdd-HHmm", java.util.Locale.CHINA,
+                                    ).format(java.util.Date()) + ".zip"
+                                )
                             }
                             .padding(horizontal = 12.dp, vertical = 7.dp),
                     ) { Text("备份", style = body(12.5f, FontWeight.Bold, c.text)) }
@@ -298,12 +521,64 @@ private fun SettingsRoot(vm: MainViewModel) {
                         Modifier.clip(RoundedCornerShape(999.dp)).background(c.n100)
                             .clickable {
                                 backupMsg = null
-                                importLauncher.launch(arrayOf("application/json"))
+                                // v22: 不过滤 MIME —— 有些文件来源会把 .zip 报成
+                                // application/octet-stream，按 application/zip 过滤会让用户
+                                // **在选择器里看不到自己的备份文件**。反正读入端
+                                // （BackupArchive.read）本来就自动识别 zip / 纯 JSON。
+                                importLauncher.launch(arrayOf("*/*"))
                             }
                             .padding(horizontal = 12.dp, vertical = 7.dp),
                     ) { Text("恢复", style = body(12.5f, FontWeight.Bold, c.text)) }
                 }
             }
+            // v22: 本地自动快照（每次启动超过 24h 自动写一份，滚动保留 3 份）——
+            // 防手滑/防误操作，与"云备份"互补。
+            val snaps = vm.listSnapshots()
+            if (snaps.isNotEmpty()) {
+                Column(
+                    Modifier.fillMaxWidth().padding(bottom = 13.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Text(
+                        "本地快照（最多保留 3 份，点一下可恢复到该时点）",
+                        style = body(11f, FontWeight.Normal, c.n600),
+                    )
+                    for (f in snaps) {
+                        Row(
+                            Modifier.fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(c.n100)
+                                .clickable {
+                                    scope.launch {
+                                        try {
+                                            pendingPreview = vm.previewBackup(f.readBytes())
+                                            pendingRestore = f.readBytes()
+                                        } catch (e: Exception) { backupMsg = "快照读取失败：${e.message}" }
+                                    }
+                                }
+                                .padding(horizontal = 10.dp, vertical = 7.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                f.name.removeSuffix(".zip") +
+                                    "（${"%.1f".format(f.length() / 1024.0 / 1024.0)} MB）",
+                                style = body(11.5f, FontWeight.Normal, c.text),
+                                modifier = Modifier.weight(1f),
+                            )
+                            Text("恢复", style = body(11.5f, FontWeight.Bold, c.accent))
+                        }
+                    }
+                }
+            }
+            // v22 缝补:同上——手写 Row 漏的分隔线。
+            Box(Modifier.fillMaxWidth().height(1.dp).background(c.divider))
+            // v22: 云备份入口（WebDAV：坚果云 / Nextcloud / 群晖）。
+            // 图标用 ArrowUpDown（上传/下载），与「备份与恢复」的 Shield 区分开。
+            CardEntryRow(
+                Lucide.ArrowUpDown, c.n700, "云备份（WebDAV）",
+                if (vm.webDavUrl.isBlank()) "未配置 · 可备份到坚果云等" else "已配置 · 上传 / 恢复",
+                divider = true,
+            ) { vm.filesView = FilesView.CloudBackup }
             // v1.3.x: 睡眠定时可编辑——整行点击弹窗(时长档位/本曲结束/关闭),
             // 复用播放菜单同套 PlayerController 接口;不再只读展示。
             // v1.3.x 设计打磨:本卡三行(睡眠定时/写真源/歌词本)统一走 CardEntryRow,
@@ -345,11 +620,79 @@ private fun SettingsRoot(vm: MainViewModel) {
         ) {
             OIcon(Lucide.CircleInfo, 19.dp, c.n700)
             Text("关于我们", style = body(15f, FontWeight.SemiBold, c.text), modifier = Modifier.weight(1f))
-            Text("拾音 v1.3.0", style = body(12.5f, FontWeight.Normal, c.n600))
+            // v22: 版本号改读 BuildConfig（原来写死 "拾音 v1.3.0"，bump 版本后这里不会跟着变）；
+            // 同时把「发现更新」透出来，不用进关于页也能看到。
+            val aboutHasUpdate = vm.updateAvailable()
+            if (aboutHasUpdate) {
+                Box(Modifier.size(6.dp).clip(CircleShape).background(c.a700))
+            }
+            Text(
+                if (aboutHasUpdate) "v${vm.currentVersion} · 发现更新" else "拾音 v${vm.currentVersion}",
+                style = body(12.5f, if (aboutHasUpdate) FontWeight.Bold else FontWeight.Normal,
+                    if (aboutHasUpdate) c.a700 else c.n600),
+            )
             OIcon(Lucide.ChevronRight, 18.dp, c.n500)
         }
 
         Box(Modifier.height(114.dp))
+    }
+
+    // v22: 恢复前确认 —— 先说清"会恢复什么、会跳过多少条"，确认后才写库；
+    // 写库前还会自动存一份快照（恢复失败或反悔都能撤回）。
+    pendingPreview?.let { p ->
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { if (!restoreBusy) { pendingPreview = null; pendingRestore = null } },
+            containerColor = c.surface,
+            title = { Text("恢复备份？", style = body(16f, FontWeight.ExtraBold, c.text)) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        p.summary(),
+                        style = body(12f, FontWeight.Normal, c.n700).copy(lineHeight = 18.sp),
+                    )
+                    p.lossNote()?.let {
+                        Text("⚠ $it", style = body(11.5f, FontWeight.Bold, c.a700).copy(lineHeight = 17.sp))
+                    }
+                    if (p.remapSkipped) {
+                        Text(
+                            "这是旧版备份（不含文件索引），将按原样恢复。",
+                            style = body(11f, FontWeight.Normal, c.n600),
+                        )
+                    }
+                    Text(
+                        "合并恢复：同主键覆盖，其余保留。写库前会自动存一份本地快照。",
+                        style = body(11f, FontWeight.Normal, c.n600),
+                    )
+                }
+            },
+            confirmButton = {
+                com.shiyin.music.ui.components.DialogActionsRow(
+                    listOf(
+                        com.shiyin.music.ui.components.DialogAction("取消") {
+                            if (!restoreBusy) { pendingPreview = null; pendingRestore = null }
+                        },
+                        com.shiyin.music.ui.components.DialogAction("恢复", emphasized = true) {
+                            val bytes = pendingRestore
+                            if (bytes != null && !restoreBusy) {
+                                restoreBusy = true
+                                scope.launch {
+                                    try {
+                                        vm.snapshotBeforeRestore()
+                                        backupMsg = "恢复完成：${vm.importBackupZip(bytes)}"
+                                    } catch (e: Exception) {
+                                        backupMsg = "恢复失败：${e.message}"
+                                    } finally {
+                                        restoreBusy = false
+                                        pendingPreview = null
+                                        pendingRestore = null
+                                    }
+                                }
+                            }
+                        },
+                    )
+                )
+            },
+        )
     }
 }
 
@@ -894,6 +1237,9 @@ private fun MergesScreen(vm: MainViewModel) {
 private fun AboutScreen(vm: MainViewModel) {
     val c = LocalOrganic.current
     var supportSheetOpen by remember { mutableStateOf(false) }
+    var updateDialogOpen by remember { mutableStateOf(false) }
+    // v22: 进页检查一次更新（6 小时内查过则直接用缓存，不打网络）
+    LaunchedEffect(Unit) { vm.checkForUpdate() }
     Box(Modifier.fillMaxSize()) {
         Column(
             Modifier
@@ -931,29 +1277,41 @@ private fun AboutScreen(vm: MainViewModel) {
                 Text("拾音", style = heading(30))
                 Text("PickUpMusic", style = body(13f, FontWeight.Bold, c.n600).copy(letterSpacing = 1.5.sp))
             }
-            Box(
+            // v22: 版本号改成可点的「检查更新」入口。有更新时整块变强调色 + 「发现更新」，
+            // 点开弹层看更新内容并下载；无更新时点一下手动强制检查。
+            val hasUpdate = vm.updateAvailable()
+            Row(
                 Modifier
                     .clip(RoundedCornerShape(999.dp))
-                    .background(c.n100)
-                    .padding(horizontal = 10.dp, vertical = 3.dp)
-            ) { Text("v1.3.0", style = body(12f, FontWeight.Normal, c.n800)) }
-            Row(
-                Modifier.padding(top = 6.dp),
-                horizontalArrangement = Arrangement.spacedBy(7.dp),
+                    .background(if (hasUpdate) c.accent.copy(alpha = 0.12f) else c.n100)
+                    .clickable {
+                        if (hasUpdate) updateDialogOpen = true else vm.checkForUpdate(force = true)
+                    }
+                    .padding(horizontal = 12.dp, vertical = 5.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                OIcon(Lucide.Shield, 14.dp, c.s700)
-                Text("完全本地运行 · 不上传任何数据", style = body(12.5f, FontWeight.Bold, c.s700))
+                Text(
+                    "v${vm.currentVersion}",
+                    style = body(12f, if (hasUpdate) FontWeight.Bold else FontWeight.Normal, if (hasUpdate) c.a700 else c.n800),
+                )
+                Text(
+                    when {
+                        vm.updateChecking -> "检查中…"
+                        hasUpdate -> "发现更新"
+                        else -> "检查更新"
+                    },
+                    style = body(11.5f, if (hasUpdate) FontWeight.Bold else FontWeight.Normal, if (hasUpdate) c.a700 else c.n600),
+                )
+                if (hasUpdate) OIcon(Lucide.ChevronRight, 13.dp, c.a700)
             }
-            // v1.3.x: 数据源 credit——JMdict 派生读法表随包分发须署名 EDRDG(CC BY-SA,
-            // 项目约定连续两版漏补,这次随振假名增强一起补)。UtaTen 对照属联网获取
-            // (每曲一次、有本地缓存),一并说明来源。
-            Text(
-                "振假名注音数据源：JMdict（© EDRDG，CC BY-SA）· UtaTen 歌词站对照",
-                style = body(10.5f, FontWeight.Normal, c.n600),
-                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                modifier = Modifier.padding(top = 6.dp, start = 24.dp, end = 24.dp),
-            )
+            // v22 删减:去掉「完全本地运行 · 不上传任何数据」整行(用户定调 —— 这句话本身
+            // 不准确，且不想在关于页放这类宣称)，以及振假名的功能描述行。
+            // 仅保留 JMdict 的**最小归属声明**并移到页面最底部：
+            // 振假名词表是从 JMdict 派生的 CC BY-SA 4.0 数据，
+            // tools/jmdict-build/LICENSE-derivative.md 明确写了"应用内「关于」页亦须显示
+            // JMdict/EDRDG 归属与许可链接"——删掉即许可违约，故只降级不删除。
+            // v3.3: 每次更新附上更新内容清单，方便用户对照功能变化
             // v3.3: 每次更新附上更新内容清单，方便用户对照功能变化
             Column(
                 Modifier
@@ -1058,6 +1416,17 @@ private fun AboutScreen(vm: MainViewModel) {
                 }
             }
         }
+        // v22: JMdict 归属声明（最小化、置于页尾）。振假名词表派生自 JMdict（CC BY-SA 4.0），
+        // 许可要求随包分发时保留归属；点击可打开许可页查看完整条款。
+        Text(
+            "振假名词表数据来源：JMdict（© EDRDG / Jim Breen），CC BY-SA 4.0",
+            style = body(10.5f, FontWeight.Normal, c.n500),
+            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 4.dp, start = 24.dp, end = 24.dp)
+                .clickable { vm.openExternalUrl("https://www.edrdg.org/edrdg/licence.html") },
+        )
         Box(Modifier.height(114.dp))
         }
         // 赞赏页(整页):提示语 + 微信/支付宝赞赏码(各占整行,放大;点击保存到相册)
@@ -1086,6 +1455,54 @@ private fun AboutScreen(vm: MainViewModel) {
                 }
                 Box(Modifier.height(40.dp))
             }
+        }
+        // v22: 发现更新的弹层 —— 版本号 + 更新内容 + 下载 / 忽略 / 稍后。
+        // 「下载新版本」走系统浏览器/下载器（ACTION_VIEW）：不需要任何新权限，
+        // 也不会出现"应用内下载后静默安装"那种需要 REQUEST_INSTALL_PACKAGES 的重活。
+        if (updateDialogOpen) {
+            val notes = vm.updateState.notes.trim()
+            androidx.compose.material3.AlertDialog(
+                onDismissRequest = { updateDialogOpen = false },
+                containerColor = c.surface,
+                title = {
+                    Text("发现新版本 v${vm.updateState.latestVersion}", style = body(16f, FontWeight.ExtraBold, c.text))
+                },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("当前版本 v${vm.currentVersion}", style = body(12f, FontWeight.Normal, c.n600))
+                        if (notes.isNotBlank()) {
+                            Text("更新内容", style = body(12.5f, FontWeight.ExtraBold, c.text))
+                            Text(
+                                notes,
+                                style = body(12f, FontWeight.Normal, c.n700).copy(lineHeight = 18.sp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(max = 260.dp)
+                                    .verticalScroll(rememberScrollState()),
+                            )
+                        }
+                        Text(
+                            if (vm.updateState.apkUrl.isBlank())
+                                "将打开 Release 页面，下载最新 APK 后按系统提示安装"
+                            else "将下载最新 APK，完成后按系统提示安装",
+                            style = body(11.5f, FontWeight.Normal, c.n600),
+                        )
+                    }
+                },
+                confirmButton = {
+                    com.shiyin.music.ui.components.DialogActionsRow(
+                        listOf(
+                            com.shiyin.music.ui.components.DialogAction("稍后") { updateDialogOpen = false },
+                            com.shiyin.music.ui.components.DialogAction("忽略此版本") {
+                                vm.dismissUpdate(); updateDialogOpen = false
+                            },
+                            com.shiyin.music.ui.components.DialogAction("下载新版本", emphasized = true) {
+                                vm.openUpdateDownload(); updateDialogOpen = false
+                            },
+                        )
+                    )
+                },
+            )
         }
     }
 }

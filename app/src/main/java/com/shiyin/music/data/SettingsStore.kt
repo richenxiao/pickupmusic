@@ -4,10 +4,13 @@ import android.content.Context
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.floatPreferencesKey
+import androidx.datastore.preferences.core.intPreferencesKey
+import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 
 private val Context.dataStore by preferencesDataStore(name = "settings")
@@ -41,6 +44,8 @@ class SettingsStore(private val context: Context) {
     private val keyDisabledImageSources = stringSetPreferencesKey("disabled_image_sources")
     /** v1.3.2: 自定义写真源(JSON,见 CustomImageSourceCodec)。 */
     private val keyCustomImageSources = stringPreferencesKey("custom_image_sources")
+    /** v22: 「检查更新」状态(JSON,见 UpdateStateCodec)——最近一次检查结果 + 已忽略版本。 */
+    private val keyUpdateState = stringPreferencesKey("update_state")
 
     // ── v1.3.x 歌词本设置(设置·歌词本页;写入后 init flow 同步到 VM)────────────
     /** 日语歌默认开振假名标注(0=关,默认 1=开)。 */
@@ -82,6 +87,8 @@ class SettingsStore(private val context: Context) {
         val translateAutoForeign: Boolean,
         /** v1.3.x 歌词本翻译:有保存译文时默认显示(默认 true)。 */
         val translateDefaultShow: Boolean,
+        /** v22: 检查更新状态(最近检查结果 + 已忽略版本)。 */
+        val updateState: com.shiyin.music.data.update.UpdateState,
     )
 
     val flow: Flow<Settings> = context.dataStore.data.map { p ->
@@ -108,6 +115,7 @@ class SettingsStore(private val context: Context) {
             lyricsColorMode = (p[keyLyricsColorMode] ?: "default").let { if (it in listOf("default", "white", "black")) it else "default" },
             translateAutoForeign = p[keyTranslateAutoForeign] ?: false,
             translateDefaultShow = p[keyTranslateDefaultShow] ?: true,
+            updateState = com.shiyin.music.data.update.UpdateStateCodec.decode(p[keyUpdateState] ?: ""),
         )
     }
 
@@ -149,6 +157,126 @@ class SettingsStore(private val context: Context) {
     suspend fun setTranslateDefaultShow(v: Boolean) = context.dataStore.edit { it[keyTranslateDefaultShow] = v }
     suspend fun setLyricsColorMode(mode: String) =
         context.dataStore.edit { it[keyLyricsColorMode] = if (mode in listOf("white", "black")) mode else "default" }
+
+    /** v22: 保存检查更新状态(JSON)。 */
+    suspend fun setUpdateState(v: com.shiyin.music.data.update.UpdateState) =
+        context.dataStore.edit { it[keyUpdateState] = com.shiyin.music.data.update.UpdateStateCodec.encode(v) }
+
+    // ── v22: 备份快照的节流时间戳（**刻意不进备份白名单** —— 它是本机运行态）──
+    private val keyLastAutoSnapshotAt = longPreferencesKey("last_auto_snapshot_at")
+
+    suspend fun lastAutoSnapshotAt(): Long = context.dataStore.data.first()[keyLastAutoSnapshotAt] ?: 0L
+
+    suspend fun setLastAutoSnapshotAt(v: Long) =
+        context.dataStore.edit { it[keyLastAutoSnapshotAt] = v }
+
+    // v22: WebDAV 云备份凭据。**刻意不进备份白名单** ——
+    // 备份包里带着云盘账号密码，等于"备份泄露 = 云盘被接管"。
+    private val keyWebDavUrl = stringPreferencesKey("webdav_url")
+    private val keyWebDavUser = stringPreferencesKey("webdav_user")
+    private val keyWebDavPassword = stringPreferencesKey("webdav_password")
+
+    suspend fun webDavConfig(): Triple<String, String, String> {
+        val p = context.dataStore.data.first()
+        return Triple(p[keyWebDavUrl] ?: "", p[keyWebDavUser] ?: "", p[keyWebDavPassword] ?: "")
+    }
+
+    suspend fun setWebDavConfig(url: String, user: String, password: String) =
+        context.dataStore.edit {
+            it[keyWebDavUrl] = url.trim()
+            it[keyWebDavUser] = user.trim()
+            it[keyWebDavPassword] = password
+        }
+
+    // ── v22: 设置随备份走 ────────────────────────────────────────────────────
+    // 原来备份完全不含设置 —— 用户花最多时间配的 LLM 供应商 / API Key / 写真源
+    // 换机后要从零再填一遍，这是最容易被忽略、但用户最痛的缺口。
+
+    /**
+     * 可备份的设置白名单：**key → 期望类型**（类型见 [SettingsValueCodec] 的前缀）。
+     *
+     * 刻意排除的运行态：
+     *  - `onboarded` / `first_scan_done` —— "本机已完成初始化"的标记，带到新机会让
+     *    新机**跳过首次扫描引导**，反而像坏了
+     *  - `recent_ids` —— 最近播放的本地 mediaId，跨设备无意义
+     *  - `update_state` —— 检查更新缓存，新机自己会查
+     *  - `webdav_*` / `last_auto_snapshot_at` —— 云盘凭据与本机运行态
+     *
+     * ⚠️ **为什么必须带期望类型**：DataStore 的 `Preferences.Key<T>` 的 equals
+     * **只看名字**（`Key<String>("dark_theme") == Key<Boolean>("dark_theme")`）。
+     * 一旦写进类型不符的值，之后 `prefs[booleanPreferencesKey("dark_theme")]` 会在取值时
+     * 抛 ClassCastException —— 而且是在 settings flow 里抛，**整条设置同步链路挂掉**。
+     * 备份文件可被手工编辑、也可能来自未来版本，所以类型不符一律跳过。
+     */
+    private val backupKeyTypes: Map<String, Char> = mapOf(
+        "dark_theme" to SettingsValueCodec.BOOL,
+        "gapless" to SettingsValueCodec.BOOL,
+        "auto_match" to SettingsValueCodec.BOOL,
+        "auto_save_recognition" to SettingsValueCodec.BOOL,
+        "playback_speed" to SettingsValueCodec.FLOAT,
+        "retro_speed_mode" to SettingsValueCodec.BOOL,
+        "furigana_default_on" to SettingsValueCodec.BOOL,
+        "furigana_auto_verify" to SettingsValueCodec.BOOL,
+        "lyrics_color_mode" to SettingsValueCodec.STR,
+        "deepseek_api_key" to SettingsValueCodec.STR,
+        "tavily_api_key" to SettingsValueCodec.STR,
+        "llm_providers" to SettingsValueCodec.STR,
+        "llm_active_provider" to SettingsValueCodec.STR,
+        "fanart_api_key" to SettingsValueCodec.STR,
+        "lastfm_api_key" to SettingsValueCodec.STR,
+        "disabled_image_sources" to SettingsValueCodec.STR_SET,
+        "custom_image_sources" to SettingsValueCodec.STR,
+    )
+
+    /** 导出白名单设置（值已编码成"类型前缀 + 原文"，见 [SettingsValueCodec]）。 */
+    suspend fun exportBackupSettings(): Map<String, String> {
+        val all = context.dataStore.data.first().asMap()
+        val out = LinkedHashMap<String, String>()
+        for (name in backupKeyTypes.keys) {
+            val v = all.entries.firstOrNull { it.key.name == name }?.value ?: continue
+            SettingsValueCodec.encode(v)?.let { out[name] = it }
+        }
+        return out
+    }
+
+    /**
+     * 导入白名单设置。只写备份里**确实存在**的 key，其余保持本机不动（合并语义）。
+     * 返回成功写入的条数。
+     *
+     * 两道闸：**不在白名单**的 key 一律拒绝（防任意 key 注入）；**类型不符**的也拒绝
+     * （防把 Key 的类型写歪导致 settings flow 抛 ClassCastException）。
+     */
+    suspend fun importBackupSettings(values: Map<String, String>): Int {
+        var n = 0
+        context.dataStore.edit { prefs ->
+            for ((name, encoded) in values) {
+                val expected = backupKeyTypes[name] ?: continue
+                if (SettingsValueCodec.typeOf(encoded) != expected) continue
+                when (expected) {
+                    SettingsValueCodec.BOOL -> SettingsValueCodec.boolOf(encoded)?.let {
+                        prefs[booleanPreferencesKey(name)] = it; n++
+                    }
+                    SettingsValueCodec.STR -> {
+                        prefs[stringPreferencesKey(name)] = SettingsValueCodec.stringOf(encoded); n++
+                    }
+                    SettingsValueCodec.FLOAT -> SettingsValueCodec.floatOf(encoded)?.let {
+                        prefs[floatPreferencesKey(name)] = it; n++
+                    }
+                    SettingsValueCodec.INT -> SettingsValueCodec.intOf(encoded)?.let {
+                        prefs[intPreferencesKey(name)] = it; n++
+                    }
+                    SettingsValueCodec.LONG -> SettingsValueCodec.longOf(encoded)?.let {
+                        prefs[longPreferencesKey(name)] = it; n++
+                    }
+                    SettingsValueCodec.STR_SET -> {
+                        prefs[stringSetPreferencesKey(name)] = SettingsValueCodec.setOf(encoded); n++
+                    }
+                    else -> Unit
+                }
+            }
+        }
+        return n
+    }
 
     suspend fun pushRecent(id: Long) = context.dataStore.edit { p ->
         val cur = (p[keyRecent] ?: "").split(",").mapNotNull { it.toLongOrNull() }

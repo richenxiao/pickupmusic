@@ -185,8 +185,9 @@ fun HomeScreen(vm: MainViewModel) {
 
         // v2: recent — grouped by album, singles as individual cards
         val recentEntries = run {
-            val byId = lib.associateBy { it.id }
-            vm.recentIds.mapNotNull { byId[it] }
+            // v22: 用 vm.trackById —— 「完整专辑」容器曲目不在 lib() 里（只进 libById），
+            // 用 lib() 映射会让专辑播放从首页「最近播放」里消失。
+            vm.recentIds.mapNotNull { vm.trackById(it) }
         }
         if (recentEntries.isNotEmpty()) {
             // Group by albumKey, dedupe albums, preserve most-recent-play order

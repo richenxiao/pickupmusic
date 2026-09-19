@@ -14,6 +14,8 @@ import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
+import com.shiyin.music.data.split.PlayKind
+import com.shiyin.music.data.split.SPLIT_START_UNKNOWN
 import kotlinx.coroutines.flow.Flow
 
 @Entity(tableName = "saved_lyrics")
@@ -251,6 +253,58 @@ data class PlayEventEntity(
     val durationSec: Int,  // track total duration at play time (kept for 最近播放 时长显示)
     val playedSec: Int = 0, // v1.2.1: actual accumulated effective play time (pause/resume sums, seeks excluded); feeds 收听统计 总时长
     val completed: Boolean = false,  // v1.2.1: true when accumulated play time reached 30s (a counted play)
+    // ── v22: 两套统计口径的数据层隔离位（专辑整轨拆分为单曲）─────────────
+    // "track" = 单曲播放会话（含拆分单曲，mediaId 是真实 id 或合成 id）
+    // "album" = 「完整专辑」整轨播放会话（mediaId 是容器合成 id）
+    // 存量行一律为 "track"，所有既有查询加 `AND kind = 'track'` 后语义逐字不变。
+    // 完整专辑播放只计入专辑播放次数，绝不产生任何单曲事件 —— 由 kind + 不相交的
+    // id 值域双重保证（见 SplitIds）。
+    val kind: String = PlayKind.TRACK,
+)
+
+// ── v22: 专辑整轨拆分为单曲 ─────────────────────────────────────────────────
+// 一条 album_split = 一个整轨文件被拆分；split_track 每行 = 一首拆分单曲。
+// 物理文件零切割：拆分单曲共享同一 uri，各自的曲目身份由合成 mediaId
+// （SplitIds.trackId(splitRowId)）承载，因此 playlist_track / play_event /
+// saved_lyrics / track_info_override 等按 mediaId 工作的表全部零 schema 改动。
+//
+// endMs 刻意**不落库**：它恒等于「下一首的 startMs」或「文件末尾」。两个字段分开
+// 存会在用户改中间某一首的起点时漂移（经典的双字段不同步 bug），故一律派生。
+@Entity(tableName = "album_split")
+data class AlbumSplitEntity(
+    /** 整轨文件的 MediaStore _ID。 */
+    @PrimaryKey val sourceMediaId: Long,
+    /** 冗余存绝对路径：MediaStore id 变化（重扫/换机）后兜底重解析。 */
+    val sourcePath: String = "",
+    /** 0 = 草稿（仍有未定时间点）；1 = 已完成。 */
+    val status: Int = STATUS_DRAFT,
+    val createdAt: Long = 0,
+    val updatedAt: Long = 0,
+) {
+    companion object {
+        const val STATUS_DRAFT = 0
+        const val STATUS_DONE = 1
+    }
+}
+
+@Entity(
+    tableName = "split_track",
+    indices = [
+        Index(value = ["sourceMediaId"]),
+        Index(value = ["sourceMediaId", "ordinal"], unique = true),
+    ],
+)
+data class SplitTrackEntity(
+    /** 自增行 id；对外曲目 id = SplitIds.trackId(id)。 */
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val sourceMediaId: Long,
+    /** 1..N，展示序号与排序依据。 */
+    val ordinal: Int,
+    /** 用户录入的曲名 —— 拆分单曲曲名的唯一来源，绝不被文件内嵌标签覆盖。 */
+    val title: String,
+    /** 起始毫秒；SPLIT_START_UNKNOWN(-1) = 未定（草稿态）。 */
+    val startMs: Long = SPLIT_START_UNKNOWN,
+    val updatedAt: Long = 0,
 )
 
 // ── v4: "你的更新" — one-shot unread reminder of newly-scanned albums ───────
@@ -489,11 +543,21 @@ interface ShiyinDao {
     // play_count
     // v1.2.1: 热度排序只数"有效播放"(累计听满 30 秒, completed=1)的次数;跳过/误触
     // (completed=0)不计入,与 Spotify 30 秒规则一致。从 play_event 聚合,历史数据可用。
-    @Query("SELECT mediaId, COUNT(*) AS count FROM play_event WHERE completed = 1 GROUP BY mediaId")
+    // v22: 再加 kind='track' —— 「完整专辑」整轨播放(kind='album')只计入专辑播放次数,
+    // 绝不能漏进单曲热度。存量行 kind 默认为 'track',语义逐字不变。
+    @Query("SELECT mediaId, COUNT(*) AS count FROM play_event WHERE completed = 1 AND kind = 'track' GROUP BY mediaId")
     fun playCountFlow(): Flow<List<PlayCountEntity>>
 
-    @Query("SELECT COUNT(*) FROM play_event WHERE mediaId = :mediaId AND completed = 1")
+    @Query("SELECT COUNT(*) FROM play_event WHERE mediaId = :mediaId AND completed = 1 AND kind = 'track'")
     suspend fun playCount(mediaId: Long): Int
+
+    // v22: 专辑级计数口径 —— 与单曲口径在数据层完全分离（kind='album'）。
+    // 只统计「播放完整专辑」入口的播放次数，mediaId 是容器合成 id。
+    @Query("SELECT mediaId, COUNT(*) AS count FROM play_event WHERE completed = 1 AND kind = 'album' GROUP BY mediaId")
+    fun albumPlayCountFlow(): Flow<List<PlayCountEntity>>
+
+    @Query("SELECT COUNT(*) FROM play_event WHERE mediaId = :mediaId AND completed = 1 AND kind = 'album'")
+    suspend fun albumPlayCount(mediaId: Long): Int
 
     // album_override
     @Query("SELECT * FROM album_override")
@@ -528,6 +592,14 @@ interface ShiyinDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertTrackInfoOverride(e: TrackInfoOverrideEntity)
 
+    /** v22: 取消拆分时清理失效合成 id 的残留（否则歌单里留下点不响的幽灵项）。 */
+    @Query("DELETE FROM track_info_override WHERE mediaId = :mediaId")
+    suspend fun deleteTrackInfoOverride(mediaId: Long)
+
+    /** v22: 把某曲从所有歌单里移除（含内置「我的喜欢」）。 */
+    @Query("DELETE FROM playlist_track WHERE mediaId = :mediaId")
+    suspend fun removeTrackFromAllPlaylists(mediaId: Long)
+
     // ── v4.3: track_album_move — 单曲迁移到正确专辑 ────────────────────────
     @Query("SELECT * FROM track_album_move")
     fun trackAlbumMoveFlow(): Flow<List<TrackAlbumMoveEntity>>
@@ -540,6 +612,44 @@ interface ShiyinDao {
 
     @Query("DELETE FROM track_album_move WHERE mediaId = :mediaId")
     suspend fun deleteTrackAlbumMove(mediaId: Long)
+
+    // ── v22: 专辑整轨拆分为单曲 ────────────────────────────────────────────
+    // 一次拆分方案 = album_split 1 行 + split_track N 行。写入走「整体替换」
+    // （先删后插，由 VM 的 db.withTransaction 包住），避免逐行 diff 的复杂度。
+    @Query("SELECT * FROM album_split")
+    fun albumSplitFlow(): Flow<List<AlbumSplitEntity>>
+
+    @Query("SELECT * FROM album_split")
+    suspend fun allAlbumSplits(): List<AlbumSplitEntity>
+
+    @Query("SELECT * FROM album_split WHERE sourceMediaId = :sourceMediaId")
+    suspend fun albumSplit(sourceMediaId: Long): AlbumSplitEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertAlbumSplit(e: AlbumSplitEntity)
+
+    @Query("DELETE FROM album_split WHERE sourceMediaId = :sourceMediaId")
+    suspend fun deleteAlbumSplit(sourceMediaId: Long)
+
+    /** 全部拆分单曲，按 (源文件, 序号) 排序 —— lib() 构建时的唯一数据源。 */
+    @Query("SELECT * FROM split_track ORDER BY sourceMediaId, ordinal")
+    fun splitTrackFlow(): Flow<List<SplitTrackEntity>>
+
+    @Query("SELECT * FROM split_track ORDER BY sourceMediaId, ordinal")
+    suspend fun allSplitTracks(): List<SplitTrackEntity>
+
+    @Query("SELECT * FROM split_track WHERE sourceMediaId = :sourceMediaId ORDER BY ordinal")
+    suspend fun splitTracksFor(sourceMediaId: Long): List<SplitTrackEntity>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertSplitTracks(list: List<SplitTrackEntity>)
+
+    @Query("DELETE FROM split_track WHERE sourceMediaId = :sourceMediaId")
+    suspend fun deleteSplitTracksFor(sourceMediaId: Long)
+
+    /** 单首拆分曲（按合成 id 反查）—— 播放/统计路径需要时用。 */
+    @Query("SELECT * FROM split_track WHERE id = :rowId")
+    suspend fun splitTrack(rowId: Long): SplitTrackEntity?
 
     // ── v1.3.3b: 歌手页专辑手动排序 ─────────────────────────────────────────
     @Query("SELECT * FROM artist_album_order")
@@ -763,7 +873,71 @@ interface ShiyinDao {
     suspend fun allLyricsTranslations(): List<LyricsTranslationEntity>
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertAllLyricsTranslations(list: List<LyricsTranslationEntity>)
+
+    // v22: 拆分方案随「用户修正数据」一起导出（不可由重新扫描重建）。
+    // 导入时 sourceMediaId 可能失效，由 BackupImporter 用 sourcePath 重解析。
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertAllAlbumSplit(list: List<AlbumSplitEntity>)
+
+    // ── v22: 备份内容扩展 —— 补上原来漏掉的用户资产 ────────────────────────
+    // 原来只备"元数据修正"，把用户最在乎的东西全漏了：歌单（含「我的喜欢」）、
+    // 手动导入的歌词、手动排序、忽略的文件夹、统计。这些一并纳入。
+
+    @Query("SELECT * FROM playlist")
+    suspend fun allPlaylists(): List<PlaylistEntity>
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertAllPlaylists(list: List<PlaylistEntity>)
+
+    @Query("SELECT * FROM playlist_track")
+    suspend fun allPlaylistTracks(): List<PlaylistTrackEntity>
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertAllPlaylistTracks(list: List<PlaylistTrackEntity>)
+
+    /** 只导出手动导入/确认过的歌词（`autoSaved = 0`）—— 自动识别的可重新识别，
+     *  没必要占备份体积；而手动导入的 lrc / 手改过的歌词**不可能靠重扫找回**。 */
+    @Query("SELECT * FROM saved_lyrics WHERE autoSaved = 0")
+    suspend fun allManualLyrics(): List<SavedLyricEntity>
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertAllLyrics(list: List<SavedLyricEntity>)
+
+    @Query("SELECT * FROM album_order")
+    suspend fun allAlbumOrders(): List<AlbumOrderEntity>
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertAllAlbumOrders(list: List<AlbumOrderEntity>)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertAllArtistAlbumOrders(list: List<ArtistAlbumOrderEntity>)
+
+    @Query("SELECT * FROM ignored_folder")
+    suspend fun allIgnoredFolders(): List<IgnoredFolderEntity>
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertAllIgnoredFolders(list: List<IgnoredFolderEntity>)
+
+    // 统计两张表的 id 是自增：导入时**清零 id 追加**（而不是 REPLACE 原 id）——
+    // 否则跨设备的自增 id 会撞上本机已有行、把别人的统计覆盖掉。
+    // 去重由 BackupManager 用 (mediaId, playedAt) / (timestamp) 键在导入前过滤，
+    // 保证同一份备份重复导入不会翻倍。
+    @Query("SELECT * FROM play_event")
+    suspend fun allPlayEvents(): List<PlayEventEntity>
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertAllPlayEvents(list: List<PlayEventEntity>)
+
+    /** 导入去重用：本机已有的 (mediaId, playedAt) 组合。 */
+    @Query("SELECT mediaId, playedAt FROM play_event")
+    suspend fun allPlayEventKeys(): List<PlayEventKey>
+
+    @Query("SELECT * FROM token_usage_log")
+    suspend fun allTokenUsage(): List<TokenUsageLogEntity>
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertAllTokenUsage(list: List<TokenUsageLogEntity>)
+
+    /** 导入去重用：本机已有的 timestamp。 */
+    @Query("SELECT timestamp FROM token_usage_log")
+    suspend fun allTokenUsageTimestamps(): List<Long>
 }
+
+/** 导入去重用的投影（play_event 的天然唯一键）。 */
+data class PlayEventKey(val mediaId: Long, val playedAt: Long)
 
 @Database(
     entities = [
@@ -792,8 +966,10 @@ interface ShiyinDao {
         ArtistAlbumOrderEntity::class,
         // v1.3.x 需求6: 歌词翻译结果（AI 档，译完即存、下次自动恢复）
         LyricsTranslationEntity::class,
+        // v22: 专辑整轨拆分为单曲（方案 + 拆分曲目）
+        AlbumSplitEntity::class, SplitTrackEntity::class,
     ],
-    version = 22,
+    version = 23,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -1164,9 +1340,51 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        // v22: 专辑整轨拆分为单曲 —— 两张新表 + play_event 的两套统计口径隔离位。
+        //
+        // ⚠️ 为什么是 22→23 而不是并进上面的 21→22：
+        // 「歌词翻译」（21→22）与「专辑拆分」（本迁移）是**两条并行开发线**，各自都把
+        // 版本号提到过 22。如果把它们并成一个 21→22，那么**已经装过翻译那版构建的设备**
+        // （DB 已是 v22、只有 lyrics_translation 表）会**跳过迁移** → 启动后一查
+        // album_split/split_track 就崩。改成 22→23 后两种情况都覆盖：
+        //   · 从 v21（正式版）升级 → 跑 21→22（翻译表）再跑 22→23（本迁移）✓
+        //   · 从翻译那版 v22 升级 → 只跑 22→23 ✓
+        //
+        // 建表 SQL 必须与 Room 由实体推导出的期望 schema 逐字对齐(列类型/NOT NULL/
+        // 主键位置/索引名),否则启动时 Room 的 identity 校验会抛 IllegalStateException。
+        // 索引名沿用 Room 的 `index_<表>_<列>[_<列>]` 约定。
+        private val MIGRATION_22_23 = object : Migration(22, 23) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS `album_split` (
+                        `sourceMediaId` INTEGER NOT NULL,
+                        `sourcePath` TEXT NOT NULL,
+                        `status` INTEGER NOT NULL,
+                        `createdAt` INTEGER NOT NULL,
+                        `updatedAt` INTEGER NOT NULL,
+                        PRIMARY KEY(`sourceMediaId`)
+                    )
+                """.trimIndent())
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS `split_track` (
+                        `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        `sourceMediaId` INTEGER NOT NULL,
+                        `ordinal` INTEGER NOT NULL,
+                        `title` TEXT NOT NULL,
+                        `startMs` INTEGER NOT NULL,
+                        `updatedAt` INTEGER NOT NULL
+                    )
+                """.trimIndent())
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_split_track_sourceMediaId` ON `split_track` (`sourceMediaId`)")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_split_track_sourceMediaId_ordinal` ON `split_track` (`sourceMediaId`, `ordinal`)")
+                // 存量行全部落 'track' → 既有查询加 AND kind='track' 后语义逐字不变。
+                db.execSQL("ALTER TABLE play_event ADD COLUMN kind TEXT NOT NULL DEFAULT 'track'")
+            }
+        }
+
         fun get(context: Context): AppDatabase = instance ?: synchronized(this) {
             instance ?: Room.databaseBuilder(context.applicationContext, AppDatabase::class.java, "shiyin.db")
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21, MIGRATION_21_22)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21, MIGRATION_21_22, MIGRATION_22_23)
                 // 不使用 fallbackToDestructiveMigration：迁移失败时宁可崩溃也不要删全库。
                 // 之前该选项导致迁移异常时删除所有用户数据（排序、专辑名、播放历史等）。
                 .addCallback(object : Callback() {

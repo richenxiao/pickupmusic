@@ -1118,6 +1118,58 @@ private fun AlbumDetail(vm: MainViewModel, key: String) {
                 }
             }
         }
+        // ── v22: 拆分专辑 —— 顶部「完整专辑」入口（不带序号）───────────────────
+        // 需求三的最终呈现形态：顶部用封面/LOGO 位代表整张专辑，而不是某首拆分单曲的
+        // 序号占位；点它从文件开头完整播到结尾，不受任何拆分区间限制，计「专辑被播放
+        // 一次」（kind='album'），绝不产生任何单曲事件。
+        if (vm.albumIsSplit(key)) {
+            item {
+                Row(
+                    Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
+                        .clickable { vm.playAlbum(key) }
+                        .padding(horizontal = 4.dp, vertical = 6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    com.shiyin.music.ui.components.CoverArt(first, 48.dp)
+                    Column(Modifier.weight(1f)) {
+                        Text("完整专辑", style = body(14f, FontWeight.SemiBold, c.text), maxLines = 1)
+                        Text(
+                            "${tracks.size} 首 · 整轨未切割",
+                            style = body(12f, FontWeight.Normal, c.n500), maxLines = 1,
+                        )
+                    }
+                    Text(formatDuration(tracks.sumOf { it.durationSec }), style = body(11f, FontWeight.Normal, c.n400))
+                    Box(
+                        Modifier.size(34.dp).clip(CircleShape).background(c.surface),
+                        contentAlignment = Alignment.Center,
+                    ) { OIcon(Lucide.Play, 15.dp, c.text) }
+                }
+            }
+            // 草稿态（有曲目还没定时间点）：给一条可点的提示条。未完成的曲目不显示在
+            // 下方列表里，避免出现时长未知的幽灵行。
+            if (vm.albumSplitIsDraft(key)) {
+                item {
+                    val src = vm.splitSourceOfAlbum(key)
+                    Row(
+                        Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp))
+                            .background(c.surface)
+                            .clickable { if (src != null) vm.openSplitEditor(src) }
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        OIcon(Lucide.Info, 15.dp, c.a700)
+                        Text(
+                            "拆分未完成 · 继续编辑",
+                            style = body(12.5f, FontWeight.Medium, c.a700),
+                            modifier = Modifier.weight(1f),
+                        )
+                        OIcon(Lucide.ChevronRight, 15.dp, c.n500)
+                    }
+                }
+            }
+        }
         itemsIndexed(tracks, key = { _, t -> t.id }) { i, t ->
             if (vm.batchMoveMode) {
                 // v5.2 #79: 批量迁移模式——左侧勾选框
@@ -1566,7 +1618,8 @@ private fun ArtistDetail(vm: MainViewModel, name: String) {
                 Column(Modifier.fillMaxWidth().background(c.bg).padding(top = 52.dp, bottom = 4.dp)) {
                     Text("热门", style = body(14f, FontWeight.Bold, c.n700), modifier = Modifier.padding(start = 16.dp, bottom = 4.dp))
                     // v1.2.0 #6: 歌曲按热度(播放次数)排序,不按识别早晚
-                    val sortedTracks = artistTracks.sortedByDescending { vm.playCountFor(it.id) }
+                    // v22: 热度口径 —— intro/outro 这类 ≤60s 的过渡曲不计入排序
+                    val sortedTracks = artistTracks.sortedByDescending { vm.heatCountFor(it.id) }
                     val displayTracks = if (sortedTracks.size > songCap) sortedTracks.take(songCap) else sortedTracks
                     displayTracks.forEachIndexed { i, t ->
                         Box(Modifier.padding(horizontal = 16.dp)) {

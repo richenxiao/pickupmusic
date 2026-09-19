@@ -185,7 +185,9 @@ fun SearchScreen(vm: MainViewModel) {
                             val owned = artistMatch in com.shiyin.music.data.MediaScanner.splitArtists(first.artist) &&
                                 com.shiyin.music.ui.screens.classifyAlbum(tracks) != com.shiyin.music.ui.screens.AlbumCategory.Compilation
                             if (!owned) return@mapNotNull null
-                            val totalPlays = tracks.sumOf { vm.playCountFor(it.id) }
+                            // v22: 热度口径 —— 过渡曲（intro/outro 等 ≤60s）不计入，
+                            // 否则短曲会把真专辑顶到前面。该值只用于排序，不展示。
+                            val heatPlays = tracks.sumOf { vm.heatCountFor(it.id) }
                             val cat = com.shiyin.music.ui.screens.classifyAlbum(tracks)
                             val typeStr = vm.albumTypeFor(first.albumId).ifBlank {
                                 when (cat) {
@@ -198,7 +200,7 @@ fun SearchScreen(vm: MainViewModel) {
                             val typeZh = when (typeStr) {
                                 "Single" -> "单曲"; "EP" -> "EP"; "Compilation" -> "合集"; else -> "专辑"
                             }
-                            TopAlbumHit(key, first, typeZh, totalPlays)
+                            TopAlbumHit(key, first, typeZh, heatPlays)
                         }
                         .sortedByDescending { it.plays }
                         .take(3)

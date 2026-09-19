@@ -283,6 +283,7 @@ fun AppRoot(vm: MainViewModel) {
                     // 不再透亮白窗口底。
                     val contentKey = when {
                         vm.agentOpen -> "agent"
+                        vm.splitEditFor != null -> "split"
                         vm.settingsOpen -> "settings:${vm.filesView}"
                         vm.recentOpen -> "recent"
                         vm.statsOpen -> "stats"
@@ -303,6 +304,8 @@ fun AppRoot(vm: MainViewModel) {
                         val pad = Modifier.fillMaxSize().statusBarsPadding().background(c.bg)
                         when {
                             key == "agent" -> Box(pad) { com.shiyin.music.ui.screens.AgentScreen(vm) }
+                            // v22: 专辑整轨拆分为单曲 —— 独立的两步录入界面
+                            key == "split" -> Box(pad) { com.shiyin.music.ui.screens.SplitEditorScreen(vm) }
                             key.startsWith("settings") -> {
                                 // view 由 key 快照解析,不读实时 vm.filesView:转场期间
                                 // 旧层(settings:旧view)保留旧页面渐隐,不跟着 filesView
@@ -909,7 +912,7 @@ private fun RootBackHandler(vm: MainViewModel) {
         enabled = vm.saveSheetFor != null || vm.albumPickerId != null || vm.albumMoveFor != null || vm.trackMenuFor != null || vm.pMenuView != null ||
             vm.qSheetOpen || vm.lySheet || vm.lyricsOn || vm.sleepMenu || vm.playerOpen ||
             vm.artistMerge || vm.albumKey != null || vm.artistKey != null || vm.folderKey != null || vm.plId != null ||
-            vm.settingsOpen || vm.recentOpen || vm.statsOpen || vm.updatesOpen || vm.agentOpen ||
+            vm.settingsOpen || vm.recentOpen || vm.statsOpen || vm.updatesOpen || vm.agentOpen || vm.splitEditFor != null ||
             vm.q.isNotEmpty() || vm.tab != Tab.Home || vm.devicePopupVisible || vm.sidebarOpen ||
             vm.albumBatchMoveSheet || vm.batchMoveMode,
     ) {
@@ -922,6 +925,7 @@ private fun RootBackHandler(vm: MainViewModel) {
             vm.statsOpen -> vm.statsOpen = false
             vm.updatesOpen -> vm.updatesOpen = false
             vm.agentOpen -> vm.agentOpen = false
+            vm.splitEditFor != null -> vm.splitCancel()
             vm.saveSheetFor != null -> vm.saveSheetFor = null
             vm.lyricsImportDialog -> vm.lyricsImportDialog = false
             vm.lyricsSourcePicker -> vm.lyricsSourcePicker = false
@@ -1002,8 +1006,9 @@ private fun MiniPlayer(vm: MainViewModel, track: Track) {
     val c = LocalOrganic.current
     // v5.2 Bug1: Activity context for SystemOutputSwitcherDialogController.showDialog
     val ctx = LocalContext.current
-    val durMs = if (vm.player.durationMs > 0) vm.player.durationMs else track.durationMs
-    val pct = if (durMs > 0) (vm.player.positionMs.toFloat() / durMs).coerceIn(0f, 1f) else 0f
+    // v22: 显示坐标 —— 拆分单曲的进度按"当前这首"算，不是整轨文件
+    val durMs = if (vm.player.displayDurationMs() > 0) vm.player.displayDurationMs() else track.durationMs
+    val pct = if (durMs > 0) (vm.player.displayPositionMs().toFloat() / durMs).coerceIn(0f, 1f) else 0f
     Box(
         Modifier
             .padding(start = 12.dp, end = 12.dp, bottom = 8.dp)
@@ -2387,6 +2392,26 @@ private fun BoxScope.AlbumMenuSheet(vm: MainViewModel) {
                 vm.batchMoveMode = true
                 vm.batchMoveSelected = emptySet()
             }
+            // ── v22: 专辑整轨拆分为单曲（放在 Agent 上面，用户指定位置）─────────
+            // 显示条件：专辑类型为「单曲」即可，不设时长门槛 —— 8 分钟串烧、45 分钟
+            // 全长整轨专辑都能用（后者只有 1 个文件，本身就被分类为单曲）。
+            if (vm.canSplitAlbum(vm.albumKey ?: "")) {
+                val src = vm.splitSourceOfAlbum(vm.albumKey ?: "")
+                val already = vm.albumIsSplit(vm.albumKey ?: "")
+                SheetActionRow(
+                    if (already) Lucide.Pencil else Lucide.ListMusic,
+                    if (already) "编辑拆分" else "专辑整轨拆分为单曲",
+                ) {
+                    vm.albumMenuOpen = false
+                    if (src != null) vm.openSplitEditor(src)
+                }
+                if (already && src != null) {
+                    SheetActionRow(Lucide.RotateCcw, "取消拆分（合并回整轨）") {
+                        vm.albumMenuOpen = false
+                        vm.removeSplit(src)
+                    }
+                }
+            }
             // v1.3.2: Agent 入口(图标与侧边栏一致)——打开对话页,Agent 打招呼 + 建议回复,
             // 不再局限于"识别排序"一种处理。
             SheetActionRow(Lucide.Sparkles, "Agent") {
@@ -2634,7 +2659,11 @@ private fun AlbumEditDialogs(vm: MainViewModel, trackEditFor: Long?, onTrackEdit
             val first = vm.albumOrder(vm.albumKey!!).firstOrNull()
             val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
                 if (uri != null) {
-                    vm.saveAlbumCover(effAlbumId, uri.toString())
+                    // v22: 改走"先落盘再存 file://"——原来直接存 picker 的 content:// URI，
+                    // 而系统给它的读权限只到**设备重启**为止（官方 Photo Picker 文档），
+                    // 于是重启后封面会裂。落盘后重启/清缓存都不受影响，也便于进备份。
+                    // 注意：只读取相册里那一张图 + 在 app 私有目录写副本，不动原图、不碰音乐文件。
+                    vm.setAlbumCoverFromFile(effAlbumId, uri)
                     vm.albumCoverEdit = false
                 }
             }

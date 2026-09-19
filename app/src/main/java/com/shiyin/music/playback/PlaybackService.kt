@@ -116,11 +116,75 @@ class PlaybackService : MediaSessionService() {
                         SessionResult(SessionResult.RESULT_SUCCESS)
                     )
                 }
+
+                /**
+                 * v22: 通知栏 / 锁屏 / 蓝牙耳机 / 车机的「上一首 / 下一首」。
+                 *
+                 * 拆分专辑播放时队列里只有一个 MediaItem（整轨文件），Media3 默认的
+                 * `seekToNextMediaItem()` 无处可去（REPEAT_MODE_ALL 下还会绕回本条目
+                 * 的 0:00），按钮形同失效。这里接管：从当前 MediaItem 的 extras 读出
+                 * 拆分方案，直接在同一文件内切到上/下一首 —— 只换 mediaId 与标题，
+                 * uri 不变，不触发重新 prepare。
+                 *
+                 * 返回值语义（Media3 约定）：非 SUCCESS 即否决该命令。因此自己处理完
+                 * 之后要返回 NOT_SUPPORTED 才能挡住默认行为；未处理（如已是本专辑最后
+                 * 一首）则返回 SUCCESS，交回默认逻辑去切下一个队列条目。
+                 */
+                override fun onPlayerCommandRequest(
+                    session: MediaSession,
+                    controller: MediaSession.ControllerInfo,
+                    @Player.Command command: Int,
+                ): Int {
+                    val forward = when (command) {
+                        Player.COMMAND_SEEK_TO_NEXT, Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM -> true
+                        Player.COMMAND_SEEK_TO_PREVIOUS, Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM -> false
+                        else -> return SessionResult.RESULT_SUCCESS
+                    }
+                    return if (handleSplitSeek(session.player, forward)) {
+                        SessionResult.RESULT_ERROR_NOT_SUPPORTED
+                    } else {
+                        SessionResult.RESULT_SUCCESS
+                    }
+                }
             })
             .build()
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = session
+
+    /**
+     * v22: 拆分专辑内的上/下一首。返回 true = 已处理（调用方应否决默认命令）。
+     *
+     * 与 PlayerController 里的同名逻辑保持一致（两处分别服务于"App 内按钮"与
+     * "系统媒体控制"两条路径，都读同一份 MediaItem.extras 里的方案）。
+     */
+    private fun handleSplitSeek(player: Player, forward: Boolean): Boolean {
+        val item = player.currentMediaItem ?: return false
+        val carry = SplitCarry.read(item) ?: return false
+        if (forward) {
+            val nextIdx = carry.index + 1
+            if (nextIdx >= carry.plan.tracks.size) return false   // 已是最后一首 → 交回默认
+            val nc = carry.copy(index = nextIdx)
+            player.replaceMediaItem(player.currentMediaItemIndex, SplitCarry.itemFor(item, nc))
+            player.seekTo(SplitCarry.startMsOf(nc))
+            player.play()
+            return true
+        }
+        val cur = carry.current
+        // 与 setMaxSeekToPreviousPositionMs(4000) 的既有语义一致：播过 3 秒回本曲开头
+        if (cur != null && player.currentPosition - cur.startMs > 3000L) {
+            player.seekTo(cur.startMs)
+            player.play()
+            return true
+        }
+        val prevIdx = (carry.index - 1).coerceAtLeast(0)
+        if (prevIdx != carry.index) {
+            player.replaceMediaItem(player.currentMediaItemIndex, SplitCarry.itemFor(item, carry.copy(index = prevIdx)))
+        }
+        player.seekTo(SplitCarry.startMsOf(carry.copy(index = prevIdx)))
+        player.play()
+        return true
+    }
 
     /** Send `MSG_SET_PREFERRED_AUDIO_DEVICE` to every audio renderer. */
     private fun applyPreferredDevice(player: Player, device: AudioDeviceInfo?) {

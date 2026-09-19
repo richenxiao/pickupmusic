@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  v22: Android 12+ 的备份 / 换机迁移规则。
+
+  背景（官方行为，已核实）：
+   - 默认会把 `filesDir` / 数据库 / SharedPreferences **全部**纳入云备份，
+     上限 **25MB / 每 app**；一旦超限会调 `onQuotaExceeded()` 并**整个 app 都不上云**
+     （不是部分备份）—— 而 `filesDir/cover_cache`（封面磁盘缓存）不在 `getCacheDir()`
+     里，**会被默认备份**，很容易把配额顶爆。
+   - 只写 `<exclude>`、不写 `<include>` 时，默认的"全备"依然生效，只是扣掉排除项。
+   - 没有 `<device-transfer>` 段时，**换机迁移（D2D）保持全量启用** —— 这正是我们要的：
+     图片与快照走 D2D 没有 25MB 限制，应该带上。
+
+  注意：本 app 自带的 zip 备份（本地 / WebDAV）才是主力方案，这里的规则只是让
+  海外用户与国产换机工具也能沾光。
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <!-- 可重建的大缓存：排除，避免顶爆 25MB 配额 -->
+        <exclude domain="file" path="cover_cache" />
+        <!-- 本地快照与导出包：体积大，且用户可自行分享 -->
+        <exclude domain="file" path="backup_snapshots" />
+        <exclude domain="file" path="crash_logs" />
+    </cloud-backup>
+</data-extraction-rules>

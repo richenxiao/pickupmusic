@@ -11,6 +11,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import androidx.room.withTransaction
 import com.shiyin.music.data.MediaScanner
 import com.shiyin.music.data.NO_ALBUM
 import com.shiyin.music.data.SettingsStore
@@ -48,7 +49,7 @@ import java.util.Locale
 
 enum class Tab { Home, Search, Library }
 enum class ObStage { Perm, Scan, Done }
-enum class FilesView { Root, Clean, Trash, Folders, FolderContent, Ignored, Devices, About, Merges, ImageSources, LyricsBook }
+enum class FilesView { Root, Clean, Trash, Folders, FolderContent, Ignored, Devices, About, Merges, ImageSources, LyricsBook, CloudBackup }
 enum class LyState { Idle, Searching, Failed }
 enum class LyricsKind { Embedded, Sidecar, Online, Imported }
 
@@ -90,8 +91,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      *  cancel,退出时 flush 的 finalizePlayEvent 会变 no-op 致 playedSec 永久丢;且 Activity 销毁后
      *  player 仍在 appScope 后台播,改用 appScope 后台播放仍被追踪。 */
     private val appScope = (app as com.shiyin.music.ShiyinApp).appScope
-    /** v1.2.0 阶段三：用户修正数据导出/导入。 */
-    private val backupManager = com.shiyin.music.data.db.BackupManager(dao)
+    /** v22: 设置也随备份走，故提到 backupManager 之前声明（原来在下面）。 */
+    val settingsStore = SettingsStore(app)
+    /** v1.2.0 阶段三：用户数据导出/导入（v22 起范围从"修正数据"扩到"用户资产"）。 */
+    private val backupManager = com.shiyin.music.data.db.BackupManager(dao, settingsStore)
     // 共享 OkHttpClient，避免每次切歌新建连接池/线程池泄漏
     private val sharedHttpClient = okhttp3.OkHttpClient.Builder()
         .connectTimeout(8, java.util.concurrent.TimeUnit.SECONDS)
@@ -108,7 +111,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     suspend fun releaseDateOf(albumId: Long): String = withContext(Dispatchers.IO) {
         if (albumId <= 0) "" else dao.albumArtCache(albumId)?.releaseDate ?: ""
     }
-    val settingsStore = SettingsStore(app)
     val player: PlayerController = (app as ShiyinApp).player
     /** v1.2.0 阶段二：tracksRaw 磁盘缓存，配合 MediaScanner.signature 实现冷启动增量扫描。 */
     private val trackCache = com.shiyin.music.data.TrackCache(app)
@@ -132,6 +134,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun artistImage(name: String): String =
         artistImages[name] ?: artistImages[resolveArtist(name)] ?: ""
     var playCounts by mutableStateOf<Map<Long, Int>>(emptyMap()); private set
+    /**
+     * v22: 「完整专辑」的播放次数（key = 容器合成 id），与单曲口径**完全分离**。
+     * 播放完整专辑只进这张表，绝不进 [playCounts]；播拆分单曲只进 [playCounts]。
+     * 数据层由 play_event.kind 保证（见 AppDatabase.playCountFlow / albumPlayCountFlow）。
+     */
+    var albumPlayCounts by mutableStateOf<Map<Long, Int>>(emptyMap()); private set
     var albumOverrides by mutableStateOf<Map<Long, AlbumOverrideEntity>>(emptyMap()); private set
     // v4.3: album-level manual edits (name/artist/cover) + single-track edits
     var albumInfoOverrides by mutableStateOf<Map<Long, com.shiyin.music.data.db.AlbumInfoOverrideEntity>>(emptyMap()); private set
@@ -144,6 +152,34 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     var albumDateRevision by mutableStateOf(0); private set
     private var albumDateCache: Map<Long, String> = emptyMap()
     fun albumDateOf(albumId: Long): String = albumDateCache[albumId] ?: ""
+
+    // ── v22: 专辑整轨拆分为单曲 ──────────────────────────────────────────────
+    /** 拆分方案（key = 整轨文件的 MediaStore id）。 */
+    var albumSplits by mutableStateOf<Map<Long, com.shiyin.music.data.db.AlbumSplitEntity>>(emptyMap()); private set
+    /** 全部拆分曲目（按 源文件, ordinal 排序）。lib() 展开的唯一数据源。 */
+    var splitTracks by mutableStateOf<List<com.shiyin.music.data.db.SplitTrackEntity>>(emptyList()); private set
+    /** 源文件 id → 该文件的拆分曲目（含草稿行）。 */
+    private var splitTracksBySource: Map<Long, List<com.shiyin.music.data.db.SplitTrackEntity>> = emptyMap()
+    /** 方案版本号，用于 lib() 缓存签名 —— 拆分内容一变必须失效缓存。 */
+    private fun splitSignature(): String {
+        val srcSig = albumSplits.entries.sortedBy { it.key }.hashCode()
+        val rowSig = splitTracks.sortedBy { it.id }.hashCode()
+        return "${albumSplits.size}|$srcSig|${splitTracks.size}|$rowSig"
+    }
+
+    // ── v22: 拆分录入编辑器状态（专辑页 → ⋮ → 专辑整轨拆分为单曲）────────────
+    /** 正在编辑的整轨文件 mediaId；null = 编辑器未打开。 */
+    var splitEditFor by mutableStateOf<Long?>(null); private set
+    /** 0 = 第一步「粘贴歌曲列表」；1 = 第二步「时间轴校准」。 */
+    var splitEditStep by mutableIntStateOf(0); private set
+    /** 粘贴框内容（编辑器直接双向绑定，故不设 private set）。 */
+    var splitPasteText by mutableStateOf("")
+    /** 解析出的曲目列表（编辑中，尚未落库）。 */
+    var splitRows by mutableStateOf<List<com.shiyin.music.data.split.SplitListParser.Row>>(emptyList()); private set
+    /** 时间戳非严格递增的行序号 —— UI 高亮提示修正，不静默丢弃。 */
+    var splitConflicts by mutableStateOf<Set<Int>>(emptySet()); private set
+    /** 粘贴解析的提示文案（空 = 无问题）。 */
+    var splitPasteError by mutableStateOf(""); private set
 
     // v1.1.0: 振假名准确率层
     val furiganaJmdict = com.shiyin.music.data.furigana.JMdictReadingDictionary()
@@ -195,6 +231,95 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     var translateAutoForeign by mutableStateOf(false); private set
     /** v1.3.x 歌词本翻译:有保存的译文时默认显示(默认 true——译完即存,进来就给看)。 */
     var translateDefaultShow by mutableStateOf(true); private set
+
+    // ── v22: 检查更新（本项目没有服务器，版本信息只在 GitHub Releases）────────
+    var updateState by mutableStateOf(com.shiyin.music.data.update.UpdateState()); private set
+    /** 正在检查中（关于页显示「检查中…」）。 */
+    var updateChecking by mutableStateOf(false); private set
+    /** 打开关于页时的检查节流：6 小时内查过就用缓存，不重复打网络。 */
+    private val updateCheckIntervalMs = 6L * 60 * 60 * 1000
+
+    /** 当前安装版本（取自 BuildConfig，与 build.gradle 的 versionName 同源）。 */
+    val currentVersion: String get() = BuildConfig.VERSION_NAME
+
+    /** 是否该在关于页显示「发现更新」（有更新，且不是用户已忽略的那个版本）。 */
+    fun updateAvailable(): Boolean = updateState.shouldPrompt(currentVersion)
+
+    /**
+     * 检查更新。
+     *
+     * [force] = true（用户手动点「检查更新」）忽略节流并给出结果提示；
+     * [force] = false（打开关于页）6 小时内查过就直接用缓存。
+     *
+     * 全链路失败时**只更新时间戳、不清掉上次结果** —— 可能只是这次网络不好，
+     * 把已知的"有新版本"擦掉反而更糟。
+     */
+    fun checkForUpdate(force: Boolean = false) {
+        if (updateChecking) return
+        val now = System.currentTimeMillis()
+        if (!force && now - updateState.lastCheckAt < updateCheckIntervalMs) return
+        updateChecking = true
+        appScope.launch {
+            val info = try {
+                com.shiyin.music.data.update.UpdateChecker.fetchLatest()
+            } catch (_: Exception) {
+                null
+            }
+            val next = if (info == null) {
+                updateState.copy(lastCheckAt = now)
+            } else {
+                updateState.copy(
+                    lastCheckAt = now,
+                    latestVersion = info.version,
+                    latestTag = info.tag,
+                    notes = info.notes,
+                    apkUrl = info.apkUrl,
+                    pageUrl = info.pageUrl.ifBlank { updateState.pageUrl },
+                )
+            }
+            updateState = next
+            updateChecking = false
+            settingsStore.setUpdateState(next)
+            if (force) {
+                withContext(Dispatchers.Main) {
+                    when {
+                        info == null -> showToast("检查更新失败，请检查网络后重试", null)
+                        com.shiyin.music.data.update.VersionCompare.isNewer(info.version, currentVersion) ->
+                            showToast("发现新版本 v${info.version}", null)
+                        else -> showToast("已是最新版本 v$currentVersion", null)
+                    }
+                }
+            }
+        }
+    }
+
+    /** 「忽略此版本」：同一版本不再提示，直到出现更新的版本。 */
+    fun dismissUpdate() {
+        val next = updateState.copy(dismissedVersion = updateState.latestVersion)
+        updateState = next
+        appScope.launch { settingsStore.setUpdateState(next) }
+    }
+
+    /** 「下载新版本」：优先 .apk 直链，拿不到就退回 Release 页面。 */
+    fun openUpdateDownload() {
+        val url = updateState.downloadUrl
+        if (url.isBlank()) {
+            showToast("暂时取不到下载地址，请到 GitHub Releases 查看", null)
+            return
+        }
+        openExternalUrl(url)
+    }
+
+    /** 用系统浏览器/下载器打开外链（ACTION_VIEW）。 */
+    fun openExternalUrl(url: String) {
+        try {
+            val i = android.content.Intent(android.content.Intent.ACTION_VIEW, Uri.parse(url))
+                .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+            getApplication<Application>().startActivity(i)
+        } catch (_: Exception) {
+            showToast("无法打开链接", null)
+        }
+    }
 
     // ── UI state (mirrors the prototype's state machine) ────────────────────
     var isOnboarding by mutableStateOf(true)
@@ -433,6 +558,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 onboarded = s.onboarded
                 firstScanDone = s.firstScanDone
                 recentIds = s.recentIds
+                // v22: 检查更新状态（最近一次检查结果 + 已忽略版本）
+                updateState = s.updateState
                 deepseekApiKey = s.deepseekApiKey
                 tavilyApiKey = s.tavilyApiKey
                 // v1.2.2 Agent: LLM 提供商配置 + 当前激活 provider(引擎据此选 LLM)
@@ -463,6 +590,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     settingsLoaded = true
                     isOnboarding = !s.onboarded
                     if (permGranted) handlePermission()
+                    // v22: 启动时补一份本地快照（距上次超 24h 才写）—— 防手滑/防误操作。
+                    // 内部有节流与 firstScanDone 检查，重复调用是廉价的 no-op。
+                    maybeAutoSnapshot()
                 }
             }
         }
@@ -483,10 +613,23 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch { dao.lyricsFlow().collect { l -> savedLyricsMap = l.associateBy { it.mediaId } } }
         viewModelScope.launch { dao.artistFlow().collect { l -> artistEntities = l.associateBy { it.name } } }
         viewModelScope.launch { dao.playCountFlow().collect { l -> playCounts = l.associate { it.mediaId to it.count } } }
+        // v22: 专辑级计数单独一条 flow（kind='album'），与单曲口径物理隔离。
+        viewModelScope.launch { dao.albumPlayCountFlow().collect { l -> albumPlayCounts = l.associate { it.mediaId to it.count } } }
         viewModelScope.launch { dao.albumOverrideFlow().collect { l -> albumOverrides = l.associateBy { it.mediaId } } }
         viewModelScope.launch { dao.albumInfoOverrideFlow().collect { l -> albumInfoOverrides = l.associateBy { it.albumId } } }
         viewModelScope.launch { dao.trackInfoOverrideFlow().collect { l -> trackInfoOverrides = l.associateBy { it.mediaId } } }
         viewModelScope.launch { dao.trackAlbumMoveFlow().collect { l -> trackAlbumMoves = l.associate { it.mediaId to it.albumId } } }
+        // v22: 专辑整轨拆分为单曲 —— 方案 + 拆分曲目。两者都进 libSignature()，
+        // 拆分内容一变 lib() 缓存立即失效（否则拆完专辑界面"没反应"）。
+        viewModelScope.launch {
+            dao.albumSplitFlow().collect { l -> albumSplits = l.associateBy { it.sourceMediaId } }
+        }
+        viewModelScope.launch {
+            dao.splitTrackFlow().collect { l ->
+                splitTracks = l
+                splitTracksBySource = l.groupBy { it.sourceMediaId }
+            }
+        }
         // v1.3.3b: 歌手页专辑手动排序 + 专辑日期缓存(一次性读全表——歌手/专辑数有限)
         viewModelScope.launch(Dispatchers.IO) {
             try {
@@ -536,6 +679,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 applyPendingRoutingFromDeviceRouter()
             }
         }
+        // v22: 拆分单曲的播放引擎桥 —— 队列构造时把方案写进 MediaItem.extras，
+        // 边界切歌与通知栏切歌都靠它（播放服务进程也能独立读，无需回调 VM）。
+        player.planProvider = { t -> splitCarryFor(t) }
         player.connect(app, { id, sid -> onTrackStarted(id, sid) }, { rowId, id -> onPlayCounted(rowId, id) }, { rowId, id, sec -> onPlayFinalized(rowId, id, sec) })
     }
 
@@ -722,6 +868,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      * so it recomputes only when one of those actually changes.
      */
     private var libCache: List<Track> = emptyList()
+    /** v22: 未做拆分展开的可见物理曲目（文件夹视图用 —— 拆分只是软件层面的划分，
+     *  不改变文件性质，所以文件夹里整轨文件仍是 1 条）。与 libCache 同签名同寿命。 */
+    private var physicalCache: List<Track> = emptyList()
     private var libSig: String = ""
 
     private fun libSignature(): String {
@@ -742,59 +891,484 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val trackInfoValues = trackInfoOverrides.entries.sortedBy { it.key }.hashCode()
         val albumMoveCount = trackAlbumMoves.size
         val albumMoveValues = trackAlbumMoves.entries.sortedBy { it.key }.hashCode()
+        // v22: 拆分方案必须进签名 —— 少了它，用户拆完专辑后 lib() 会命中旧缓存，
+        // 界面"没反应"（新增的拆分单曲不出现）。
+        val splitSig = splitSignature()
         return "${tracksRaw.size}|$first|$ignoredSorted|$trashSorted|" +
             "$aliasCount|$aliasValues|$ovCount|$ovValues|" +
             "$infoCount|$infoValues|$trackInfoCount|$trackInfoValues|" +
-            "$albumMoveCount|$albumMoveValues"
+            "$albumMoveCount|$albumMoveValues|$splitSig"
     }
 
-    /** Visible library: not trashed, not in an ignored folder, alias + split artist + album override applied. */
+    // ── v22: 拆分展开 ────────────────────────────────────────────────────────
+
+    /**
+     * 源文件 id → 该文件的拆分曲目。主键用 MediaStore id，失效时用 sourcePath 兜底
+     * 重解析（重扫 / 换机后 id 必然变，路径通常不变）。
+     */
+    private fun resolveSplitPlans(): Map<Long, List<com.shiyin.music.data.db.SplitTrackEntity>> {
+        if (albumSplits.isEmpty() || splitTracksBySource.isEmpty()) return emptyMap()
+        val rawIds = tracksRaw.mapTo(HashSet()) { it.id }
+        val byPath = tracksRaw.filter { it.dataPath.isNotEmpty() }.associateBy { it.dataPath }
+        val out = HashMap<Long, List<com.shiyin.music.data.db.SplitTrackEntity>>()
+        for ((srcId, split) in albumSplits) {
+            val rows = splitTracksBySource[srcId] ?: continue
+            val effective = if (srcId in rawIds) srcId
+                else byPath[split.sourcePath]?.id
+                ?: continue
+            out[effective] = rows
+        }
+        return out
+    }
+
+    /**
+     * 把一个整轨文件展开成 N 首拆分单曲。
+     *
+     * - 只展开**已定起始时间**的行（草稿行不显示，避免时长未知的幽灵行）。
+     * - 时长一律用**分段时长**（endMs - startMs），不是文件总长 —— 否则专辑总时长、
+     *   classifyAlbum、行内时长、进度条全错。
+     * - sizeBytes 归 0：物理文件只有一个，按文件大小算会让占用统计重复计数。
+     * - 曲名取用户录入（唯一来源），绝不被文件内嵌标签覆盖；`track_info_override`
+     *   仍可在后面覆盖它（用户在曲目菜单改名照样生效）。
+     */
+    private fun expandSplitTracks(
+        src: Track,
+        rows: List<com.shiyin.music.data.db.SplitTrackEntity>,
+    ): List<Track> {
+        val timed = rows.filter { it.startMs != com.shiyin.music.data.split.SPLIT_START_UNKNOWN }
+            .sortedBy { it.ordinal }
+        if (timed.isEmpty()) return emptyList()
+        val fileEnd = src.durationMs
+        return timed.mapIndexed { i, r ->
+            val start = r.startMs
+            val end = timed.getOrNull(i + 1)?.startMs ?: maxOf(fileEnd, start)
+            src.copy(
+                id = com.shiyin.music.data.split.SplitIds.trackId(r.id),
+                title = r.title,
+                trackNo = r.ordinal,
+                durationMs = (end - start).coerceAtLeast(0L),
+                sizeBytes = 0L,
+            )
+        }
+    }
+
+    /** 「完整专辑」容器曲目 —— 只进 libById（供 trackById 解析），不进 lib()。 */
+    private fun containerTrackOf(src: Track): Track = src.copy(
+        id = com.shiyin.music.data.split.SplitIds.containerId(src.id),
+        title = src.album.takeIf { it.isNotBlank() && it != NO_ALBUM } ?: src.title,
+        trackNo = 0,
+        sizeBytes = 0L,
+    )
+
+    /** 显示层覆盖链（别名 / 专辑覆盖 / 专辑级 / 单曲级）—— 物理、拆分、容器三类曲目共用。 */
+    private fun applyDisplayOverrides(t: Track): Track {
+        var r = t
+        val a = aliases[t.artist]
+        val resolved = if (a != null) a else t.artist
+        // v3.0: split multi-artist strings into display format
+        val split = com.shiyin.music.data.MediaScanner.splitArtists(resolved)
+        r = r.copy(artist = split.joinToString(", "))
+        val ov = albumOverrides[t.id]
+        if (ov != null) r = r.copy(album = ov.albumName)
+        // v4.3: album-level manual edits — same name/artist for the whole album
+        val an = albumInfoOverrides[r.albumId]
+        if (an != null) {
+            if (an.albumName.isNotBlank()) r = r.copy(album = an.albumName)
+            if (an.artistName.isNotBlank()) r = r.copy(artist = an.artistName)
+        }
+        // v4.3: single-track manual edits — display-only title/artist/note
+        val tn = trackInfoOverrides[t.id]
+        if (tn != null) {
+            if (tn.title.isNotBlank()) r = r.copy(title = tn.title)
+            if (tn.artist.isNotBlank()) r = r.copy(artist = tn.artist)
+        }
+        return r
+    }
+
+    /** Visible library: not trashed, not in an ignored folder, alias + split artist + album override applied.
+     *  v22: 已被拆分的整轨文件在这里被替换成 N 首拆分单曲（物理文件不再单独出现）。 */
     fun lib(): List<Track> {
         val sig = libSignature()
         if (sig == libSig) return libCache
         val trash = trashIds
-        libCache = tracksRaw
-            .filter { it.id !in trash && it.folder !in ignored }
-            .map { t ->
-                var r = t
-                // v4.3: 迁移专辑 — re-parent the track into its real album FIRST,
-                // so every downstream lookup (album-info override, album grouping,
-                // cover keying) naturally uses the moved albumId.
-                val movedAlbumId = trackAlbumMoves[t.id]?.takeIf { it > 0 && it != t.albumId }
-                if (movedAlbumId != null) r = r.copy(albumId = movedAlbumId)
-                val a = aliases[t.artist]
-                val resolved = if (a != null) a else t.artist
-                // v3.0: split multi-artist strings into display format
-                val split = com.shiyin.music.data.MediaScanner.splitArtists(resolved)
-                r = r.copy(artist = split.joinToString(", "))
-                val ov = albumOverrides[t.id]
-                if (ov != null) r = r.copy(album = ov.albumName)
-                // v4.3: album-level manual edits — same name/artist for the whole album
-                val an = albumInfoOverrides[r.albumId]
-                if (an != null) {
-                    if (an.albumName.isNotBlank()) r = r.copy(album = an.albumName)
-                    if (an.artistName.isNotBlank()) r = r.copy(artist = an.artistName)
-                }
-                // v4.3: single-track manual edits — display-only title/artist/note
-                val tn = trackInfoOverrides[t.id]
-                if (tn != null) {
-                    if (tn.title.isNotBlank()) r = r.copy(title = tn.title)
-                    if (tn.artist.isNotBlank()) r = r.copy(artist = tn.artist)
-                }
-                r
+        val splits = resolveSplitPlans()
+        val physical = ArrayList<Track>()
+        val expanded = ArrayList<Track>()
+        val containers = ArrayList<Track>()
+        for (t in tracksRaw) {
+            if (t.id in trash || t.folder in ignored) continue
+            // v4.3: 迁移专辑 — re-parent the track into its real album FIRST,
+            // so every downstream lookup (album-info override, album grouping,
+            // cover keying) naturally uses the moved albumId.
+            var r = t
+            val movedAlbumId = trackAlbumMoves[t.id]?.takeIf { it > 0 && it != t.albumId }
+            if (movedAlbumId != null) r = r.copy(albumId = movedAlbumId)
+            physical += r
+            val rows = splits[t.id]
+            if (rows == null) {
+                expanded += r
+            } else {
+                expanded += expandSplitTracks(r, rows)
+                containers += containerTrackOf(r)
             }
+        }
+        libCache = expanded.map(::applyDisplayOverrides)
+        physicalCache = physical.map(::applyDisplayOverrides)
         libSig = sig
         // trackById reads this map; rebuild alongside lib() so it stays in sync
         // and lookups stay O(1) (player-screen open, mini-player, queue sheet).
-        libById = libCache.associateBy { it.id }
+        // v22: 容器曲目也必须能解析 —— onTrackStarted 有 `trackById(id) ?: return`
+        // (MainViewModel.kt onTrackStarted)，容器 id 解析不到则整轨播放不计次。
+        libById = libCache.associateBy { it.id } +
+            containers.map(::applyDisplayOverrides).associateBy { it.id }
         return libCache
+    }
+
+    /**
+     * v22: 未展开的可见物理曲目 —— 只给「文件夹」视图用。
+     * 文件夹是文件视图，拆分是软件层面的划分、不改变文件性质，所以整轨文件在这里
+     * 仍然显示为 1 条；歌曲列表 / 专辑页 / 歌手页 / 搜索则走 lib() 展开成 N 条。
+     */
+    fun physicalTracks(): List<Track> {
+        lib()
+        return physicalCache
     }
 
     private var libById: Map<Long, Track> = emptyMap()
 
     fun trackById(id: Long?): Track? = id?.let { libById[it] }
 
+    /** v22: 是否为一首拆分单曲（合成 id）。 */
+    fun isSplitTrack(id: Long): Boolean = com.shiyin.music.data.split.SplitIds.isSplitTrackId(id)
+
+    /** v22: 是否为「完整专辑」容器（合成 id）。 */
+    fun isAlbumContainer(id: Long): Boolean = com.shiyin.music.data.split.SplitIds.isContainerId(id)
+
+    // ── v22: 拆分方案 → 播放引擎的桥 ─────────────────────────────────────────
+
+    /**
+     * 某个整轨文件的完整拆分方案（按 ordinal 排好、只含已定起始时间的曲目）。
+     * endMs 派生：下一首的 startMs；最后一首取文件末尾。
+     */
+    fun splitPlanOf(sourceMediaId: Long): com.shiyin.music.data.split.SplitPlan? {
+        val rows = splitTracksBySource[sourceMediaId]
+            ?.filter { it.startMs != com.shiyin.music.data.split.SPLIT_START_UNKNOWN }
+            ?.sortedBy { it.ordinal }
+            ?: return null
+        if (rows.isEmpty()) return null
+        val src = tracksRaw.firstOrNull { it.id == sourceMediaId } ?: return null
+        val fileEnd = src.durationMs
+        val vts = rows.mapIndexed { i, r ->
+            val end = rows.getOrNull(i + 1)?.startMs ?: maxOf(fileEnd, r.startMs)
+            val vtId = com.shiyin.music.data.split.SplitIds.trackId(r.id)
+            // 曲名/歌手取 lib() 的最终展示值（含 track_info_override 的改名），
+            // 使通知栏/锁屏标题与 App 内一致。
+            val shown = trackById(vtId)
+            com.shiyin.music.data.split.VirtualTrack(
+                id = vtId,
+                startMs = r.startMs,
+                endMs = end,
+                title = shown?.title ?: r.title,
+                artist = shown?.artist ?: src.artist,
+            )
+        }
+        return com.shiyin.music.data.split.SplitPlan(
+            containerId = com.shiyin.music.data.split.SplitIds.containerId(sourceMediaId),
+            sourceMediaId = sourceMediaId,
+            tracks = vts,
+        )
+    }
+
+    /** 合成 mediaId → 该曲目所属方案 + 它在方案里的下标（普通曲目/容器返回 null）。 */
+    private fun splitCarryFor(t: Track): com.shiyin.music.playback.PlanCarry? {
+        if (!isSplitTrack(t.id)) return null
+        val rowId = t.id - com.shiyin.music.data.split.SplitIds.TRACK_BASE
+        val row = splitTracks.firstOrNull { it.id == rowId } ?: return null
+        val plan = splitPlanOf(row.sourceMediaId) ?: return null
+        val idx = plan.tracks.indexOfFirst { it.id == t.id }
+        if (idx < 0) return null
+        return com.shiyin.music.playback.PlanCarry(plan, idx)
+    }
+
+    /**
+     * v22: 逻辑曲目列表 → 引擎队列。
+     *
+     * 同一个整轨文件的**相邻且下标连续**的拆分曲目合并成一个条目（uri 指向整轨文件、
+     * mediaId 取代表那首的合成 id、方案随 MediaItem.extras 走）。这样：
+     *  - 专辑整张 = 1 个条目 → 边界处零引擎动作，真正无缝（需求四）；
+     *  - 整库/歌单/歌手队列里相邻的拆分曲目同样合并 → 播到文件末尾后自然接下一首别的曲目；
+     *  - 不相邻（歌单里同时有第 1 首和第 5 首）→ 各自成条目，各带方案，切条目时才发生
+     *    真正的引擎切换（那本来就不是同一段连续音频）。
+     *
+     * [startId] 被点的那首若在某段里，就用它当该段的代表 —— 它前面的成员本来也排在
+     * 它前面、不会被播到。
+     *
+     * 合并规则本身在 [com.shiyin.music.data.split.SplitRunCollapse]（纯逻辑、可单测）；
+     * 这里只负责把曲目翻译成「方案位置」。
+     */
+    private fun collapseSplitRuns(tracks: List<Track>, startId: Long?): List<Track> {
+        if (albumSplits.isEmpty() || splitTracks.isEmpty()) return tracks
+        val slots = tracks.map { splitSlotOf(it) }
+        val tapped = if (startId == null) -1 else tracks.indexOfFirst { it.id == startId }
+        return com.shiyin.music.data.split.SplitRunCollapse
+            .representativeIndices(slots, tapped)
+            .map { tracks[it] }
+    }
+
+    /**
+     * v22: 曲目在拆分方案里的位置（普通曲目返回 null）。
+     *
+     * 与 [splitCarryFor] 的区别：这里**不构造完整的 VirtualTrack 列表**（队列压缩只需要
+     * 「哪个源文件 + 第几首」两个数），避免在整库队列上做无谓的分配。
+     */
+    private fun splitSlotOf(t: Track): com.shiyin.music.data.split.SplitRunCollapse.Slot? {
+        if (!isSplitTrack(t.id)) return null
+        val rowId = t.id - com.shiyin.music.data.split.SplitIds.TRACK_BASE
+        val row = splitTracks.firstOrNull { it.id == rowId } ?: return null
+        val ordered = splitTracksBySource[row.sourceMediaId]
+            ?.filter { it.startMs != com.shiyin.music.data.split.SPLIT_START_UNKNOWN }
+            ?.sortedBy { it.ordinal }
+            ?: return null
+        val idx = ordered.indexOfFirst { it.id == rowId }
+        if (idx < 0) return null
+        return com.shiyin.music.data.split.SplitRunCollapse.Slot(row.sourceMediaId, idx)
+    }
+
+    // ── v22: 拆分录入 —— 两步流程的 ViewModel 侧 ────────────────────────────
+
+    /**
+     * 打开拆分编辑器。已有方案 → 直接进第二步继续编辑；否则从粘贴列表开始。
+     *
+     * 编辑器期间用**容器模式**播放整轨文件（队列只放容器），这样：
+     *  - 进度条覆盖的是文件总时长，用户能拖到任意位置试听、打点；
+     *  - 不会因为内部区间边界触发任何单曲切换，打点时统计干干净净。
+     */
+    fun openSplitEditor(sourceMediaId: Long) {
+        val existing = splitTracksBySource[sourceMediaId]?.sortedBy { it.ordinal }.orEmpty()
+        splitRows = existing.map {
+            com.shiyin.music.data.split.SplitListParser.Row(
+                ordinal = it.ordinal,
+                title = it.title,
+                startMs = it.startMs,
+                hasTimestamp = it.startMs != com.shiyin.music.data.split.SPLIT_START_UNKNOWN,
+            )
+        }
+        splitConflicts = com.shiyin.music.data.split.SplitListParser.conflictsOf(splitRows)
+        splitPasteText = ""
+        splitPasteError = ""
+        splitEditStep = if (existing.isNotEmpty()) 1 else 0
+        splitEditFor = sourceMediaId
+        trackById(com.shiyin.music.data.split.SplitIds.containerId(sourceMediaId))?.let { container ->
+            player.setShuffle(false)
+            player.playQueue(listOf(container), container.id, null)
+        }
+    }
+
+    /** 第一步 → 解析粘贴文本，成功后进第二步。 */
+    fun splitParse() {
+        val r = com.shiyin.music.data.split.SplitListParser.parse(splitPasteText)
+        splitRows = r.rows
+        splitConflicts = r.conflicts
+        splitPasteError = when {
+            r.rows.isEmpty() -> "没有解析到任何曲目，请确认每行都含曲名"
+            !r.canSplit -> "至少需要 2 首才能拆分"
+            else -> ""
+        }
+        if (r.rows.isNotEmpty() && r.canSplit) splitEditStep = 1
+    }
+
+    fun splitBackToPaste() {
+        splitEditStep = 0
+        splitPasteText = splitRows.joinToString("\n") { r ->
+            if (r.startMs == com.shiyin.music.data.split.SPLIT_START_UNKNOWN) "${r.ordinal}. ${r.title}"
+            else "${r.ordinal}. ${com.shiyin.music.data.split.SplitListParser.format(r.startMs)} ${r.title}"
+        }
+    }
+
+    /**
+     * 设置/覆盖某行的起始时间（null = 清回未定）。
+     *
+     * 与歌词打轴的 `syncLyricLine` 同一范式：**再点即覆盖更新**，不做二次确认。
+     * endMs 不需要跟着改 —— 它是派生的（= 下一首的 startMs）。
+     */
+    fun splitSetStart(ordinal: Int, ms: Long?) {
+        val i = splitRows.indexOfFirst { it.ordinal == ordinal }
+        if (i < 0) return
+        val rows = splitRows.toMutableList()
+        rows[i] = rows[i].copy(
+            startMs = ms ?: com.shiyin.music.data.split.SPLIT_START_UNKNOWN,
+            hasTimestamp = ms != null,
+        )
+        splitRows = rows
+        splitConflicts = com.shiyin.music.data.split.SplitListParser.conflictsOf(rows)
+    }
+
+    /** 「设为当前时间」：把进度条当前播放位置赋给该行（歌词打轴的 Clock 按钮同款）。 */
+    fun splitSetStartNow(ordinal: Int) {
+        splitSetStart(ordinal, player.positionMs)
+    }
+
+    /** 第一首固定 0:00:00，UI 上禁掉它的编辑入口。 */
+    fun splitRowLocked(ordinal: Int): Boolean = ordinal == 1
+
+    fun splitCancel() {
+        splitEditFor = null
+        splitEditStep = 0
+        splitRows = emptyList()
+        splitConflicts = emptySet()
+        splitPasteError = ""
+    }
+
+    /**
+     * 保存拆分方案。
+     *
+     * [done] = true 表示用户点了「完成」（允许存在未定时间的行 —— 那些行按草稿处理、
+     * 不显示在专辑页）；false 表示「保存草稿」，随时可以回来继续编辑（歌词打轴的
+     * "允许中途保存进度"先例）。
+     */
+    fun splitSave(done: Boolean) {
+        val src = splitEditFor ?: return
+        val rows = splitRows
+        if (rows.size < 2) { showToast("至少需要 2 首才能拆分", null); return }
+        if (rows.none { it.startMs != com.shiyin.music.data.split.SPLIT_START_UNKNOWN }) {
+            showToast("还没有任何曲目设置起始时间", null); return
+        }
+        val path = tracksRaw.firstOrNull { it.id == src }?.dataPath ?: ""
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                db.withTransaction {
+                    // 保留已有行的自增 id —— 对外合成 mediaId = TRACK_BASE + id，
+                    // 收藏 / 歌单 / 歌词 / 隐藏都按它存，id 一变这些引用全断。
+                    val existing = dao.splitTracksFor(src).associateBy { it.ordinal }
+                    val now = System.currentTimeMillis()
+                    val entities = rows.mapIndexed { i, r ->
+                        val ord = i + 1
+                        com.shiyin.music.data.db.SplitTrackEntity(
+                            id = existing[ord]?.id ?: 0L,
+                            sourceMediaId = src,
+                            ordinal = ord,
+                            title = r.title,
+                            startMs = r.startMs,
+                            updatedAt = now,
+                        )
+                    }
+                    dao.deleteSplitTracksFor(src)
+                    dao.insertSplitTracks(entities)
+                    val prev = dao.albumSplit(src)
+                    dao.upsertAlbumSplit(
+                        com.shiyin.music.data.db.AlbumSplitEntity(
+                            sourceMediaId = src,
+                            sourcePath = path,
+                            status = if (done) com.shiyin.music.data.db.AlbumSplitEntity.STATUS_DONE
+                            else com.shiyin.music.data.db.AlbumSplitEntity.STATUS_DRAFT,
+                            createdAt = prev?.createdAt ?: now,
+                            updatedAt = now,
+                        )
+                    )
+                }
+                withContext(Dispatchers.Main) {
+                    showToast(
+                        if (done) "拆分完成，已按 ${rows.count { it.startMs != com.shiyin.music.data.split.SPLIT_START_UNKNOWN }} 首生成单曲"
+                        else "已保存草稿，可随时继续编辑",
+                        null,
+                    )
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) { showToast("保存失败：${e.message}", null) }
+            }
+        }
+        splitCancel()
+    }
+
+    /**
+     * 取消拆分（合并回整轨）。
+     *
+     * 顺带清理对已失效合成 id 的引用 —— 否则歌单/收藏里会留下点不响的幽灵项。
+     */
+    fun removeSplit(sourceMediaId: Long) {
+        val staleIds = splitTracksBySource[sourceMediaId].orEmpty().map {
+            com.shiyin.music.data.split.SplitIds.trackId(it.id)
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                db.withTransaction {
+                    dao.deleteSplitTracksFor(sourceMediaId)
+                    dao.deleteAlbumSplit(sourceMediaId)
+                    for (id in staleIds) {
+                        dao.removeTrackFromAllPlaylists(id)
+                        dao.deleteTrackInfoOverride(id)
+                    }
+                }
+                withContext(Dispatchers.Main) { showToast("已取消拆分，恢复为整轨文件", null) }
+            } catch (_: Exception) { }
+        }
+    }
+
+    // ── v22: 专辑页的拆分入口判定 ────────────────────────────────────────────
+
+    /** 该专辑是否已拆分（曲目里有合成 id 的拆分单曲）。 */
+    fun albumIsSplit(key: String): Boolean = albumOrder(key).any { isSplitTrack(it.id) }
+
+    /** 该专辑对应的整轨文件 mediaId（未拆分时=唯一那首；已拆分时=源文件）。 */
+    fun splitSourceOfAlbum(key: String): Long? {
+        val ts = albumOrder(key)
+        if (ts.isEmpty()) return null
+        ts.firstOrNull { isSplitTrack(it.id) }?.let { t ->
+            val rowId = t.id - com.shiyin.music.data.split.SplitIds.TRACK_BASE
+            return splitTracks.firstOrNull { it.id == rowId }?.sourceMediaId
+        }
+        return ts.singleOrNull()?.id
+    }
+
+    /**
+     * 是否显示「专辑整轨拆分为单曲」入口。
+     *
+     * 条件（用户定调）：**专辑类型为「单曲」即可，不设时长门槛** —— 8 分钟的串烧、
+     * 45 分钟的全长整轨专辑都能用（后者因为只有 1 个文件，本身就被分类为单曲）。
+     * `classifyAlbum` 是手动覆盖优先，用户若把单文件专辑手动标成「专辑」会被误伤，
+     * 因此再用**曲目数 == 1** 兜底。
+     */
+    fun canSplitAlbum(key: String): Boolean {
+        val ts = albumOrder(key)
+        if (ts.isEmpty()) return false
+        if (albumIsSplit(key)) return true
+        return ts.size == 1 ||
+            com.shiyin.music.ui.screens.classifyAlbum(ts, null) == com.shiyin.music.ui.screens.AlbumCategory.Single
+    }
+
+    /** 该专辑的拆分方案是否还是草稿（有未定时间点的曲目）。 */
+    fun albumSplitIsDraft(key: String): Boolean {
+        val src = splitSourceOfAlbum(key) ?: return false
+        return albumSplits[src]?.status == com.shiyin.music.data.db.AlbumSplitEntity.STATUS_DRAFT
+    }
+
     fun playCountFor(id: Long): Int = playCounts[id] ?: 0
+
+    /** v22: 「完整专辑」被播放了多少次（专辑级口径，与单曲口径互不干扰）。 */
+    fun albumPlayCountFor(containerId: Long): Int = albumPlayCounts[containerId] ?: 0
+
+    /**
+     * v22: 是否「专辑过渡曲」—— intro / outro / interlude 这类 ≤60 秒的短曲。
+     *
+     * 用户定调：这类曲目**要计数**（[playCountFor] 照常返回真实次数），但
+     * **不作为热度评判标准** —— 它某种程度上不算「歌」，而是专辑的过渡。
+     *
+     * 判定纯派生（时长即可），不落库：用户改了拆分时间点后不会出现标记不同步。
+     */
+    fun isInterlude(t: Track): Boolean =
+        com.shiyin.music.data.split.isInterludeDuration(t.durationSec)
+
+    /**
+     * v22: **热度口径**的播放次数 —— 过渡曲恒返回 0。
+     *
+     * 所有"按播放次数排序 / 上榜单"的地方都必须用它，而不是 [playCountFor]：
+     * 收听统计「最常听单曲」、Agent 搜歌/搜歌手排序、歌手页曲目排序、搜索结果排序。
+     * 展示"总共播了多少次"这种纯数字仍可用 [playCountFor]（含过渡曲）。
+     */
+    fun heatCountFor(id: Long): Int {
+        val t = trackById(id) ?: return playCountFor(id)
+        return if (isInterlude(t)) 0 else playCountFor(id)
+    }
 
     private val collator: Collator = Collator.getInstance(Locale.CHINESE)
     // v4: tracks which albumIds are already known so we can detect new arrivals
@@ -852,8 +1426,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun foldersMap(): Map<String, List<Track>> {
+        // v22: 文件夹是**文件视图** —— 走未展开的物理曲目，整轨文件仍显示为 1 条。
+        // 拆出来的 N 首只在 歌曲列表 / 专辑页 / 歌手页 / 搜索 里出现（见 lib()）。
         val m = LinkedHashMap<String, MutableList<Track>>()
-        for (t in lib()) m.getOrPut(t.folder) { mutableListOf() }.add(t)
+        for (t in physicalTracks()) m.getOrPut(t.folder) { mutableListOf() }.add(t)
         return m
     }
 
@@ -863,9 +1439,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      */
     private fun resyncQueue() {
         val key = player.queueKey
+        val cur = player.currentId
         if (key != null && key.startsWith("album:")) {
             val ts = albumOrder(key.removePrefix("album:"))
-            val cur = player.currentId
             if (ts.isEmpty() || cur == null || ts.none { it.id == cur }) {
                 if (player.currentId != null && trackById(player.currentId) == null) {
                     player.stopAndClear()
@@ -873,12 +1449,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 return
             }
-            player.syncQueue(ts)
+            player.syncQueue(collapseSplitRuns(ts, cur))
         } else if (key != null && key.startsWith("artist:")) {
             // v1.3.2: 歌手队列保持歌手范围,与 album: 同样不被同步成全库——
             // 旧逻辑 artist: 队列落进 else 分支,库一变队列就被替换成 sortedSongs()(全库)。
             val ts = artistQueue(key.removePrefix("artist:"))
-            val cur = player.currentId
             if (ts.isEmpty() || cur == null || ts.none { it.id == cur }) {
                 if (player.currentId != null && trackById(player.currentId) == null) {
                     player.stopAndClear()
@@ -886,9 +1461,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 return
             }
-            player.syncQueue(ts)
+            player.syncQueue(collapseSplitRuns(ts, cur))
         } else {
-            player.syncQueue(sortedSongs())
+            player.syncQueue(collapseSplitRuns(sortedSongs(), cur))
         }
     }
 
@@ -1273,18 +1848,21 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                             t.artist.lowercase().filter { it.isLetterOrDigit() }.contains(q) ||
                             t.album.lowercase().filter { it.isLetterOrDigit() }.contains(q))
                 }
-                .sortedByDescending { playCountFor(it.id) }
+                .sortedByDescending { heatCountFor(it.id) }
                 .take(limit)
         }
 
-        /** v1.3.6: 搜歌手名——库内歌手名模糊匹配,按该歌手总播放次数排序。 */
+        /** v1.3.6: 搜歌手名——库内歌手名模糊匹配,按该歌手总播放次数排序。
+         *  v22: 走热度口径（排除 intro/outro 这类过渡曲），否则短曲会挤掉真歌。 */
         override fun searchArtists(query: String, limit: Int): List<String> {
             val q = query.lowercase().filter { it.isLetterOrDigit() }
             if (q.isBlank()) return emptyList()
             val counts = HashMap<String, Int>()
             for (t in lib()) {
+                val heat = heatCountFor(t.id)
+                if (heat <= 0) continue
                 for (a in com.shiyin.music.data.MediaScanner.splitArtists(t.artist)) {
-                    counts.merge(a, playCountFor(t.id), Int::plus)
+                    counts.merge(a, heat, Int::plus)
                 }
             }
             return counts.entries
@@ -1645,12 +2223,19 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
 
     // duplicates / short audio, per prototype semantics
+    // v22: 拆分曲目（合成 id）不参与重复检测 —— 它们共享同一个物理文件，按
+    // 「曲名|歌手」分组时会把用户有意拆出来的曲目误判成重复文件。
     fun dupGroups(): List<List<Track>> = lib()
+        .filterNot { com.shiyin.music.data.split.SplitIds.isSynthetic(it.id) }
         .groupBy { it.title + "|" + it.artist }
         .values.filter { it.size > 1 }
         .map { g -> g.sortedBy { it.dateAdded } }
 
-    fun shortTracks(): List<Track> = lib().filter { it.durationSec in 1..30 }
+    /** v22: 拆分曲目同样排除在"短音频"之外 —— 拆出来的 intro/outro 是专辑的有机
+     *  组成，不是待清理的垃圾音频（用户明确：这类曲目要计数，只是不当热度标准）。 */
+    fun shortTracks(): List<Track> = lib()
+        .filterNot { com.shiyin.music.data.split.SplitIds.isSynthetic(it.id) }
+        .filter { it.durationSec in 1..30 }
 
     fun cleanCount(): Int {
         val dups = dupGroups()
@@ -1841,12 +2426,19 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         appScope.launch(Dispatchers.IO) {
             try {
                 val t = trackById(id) ?: return@launch
+                // v22: 两套统计口径的隔离位。「完整专辑」容器 → kind='album'
+                // （只计入专辑播放次数）；拆分单曲与普通歌曲 → kind='track'。
+                // 两条口径的 mediaId 值域也不相交，双重保证不混淆、不重复计数。
+                val kind = if (isAlbumContainer(id))
+                    com.shiyin.music.data.split.PlayKind.ALBUM
+                else com.shiyin.music.data.split.PlayKind.TRACK
                 val rowId = dao.insertPlayEvent(
                     com.shiyin.music.data.db.PlayEventEntity(
                         mediaId = id,
                         playedAt = System.currentTimeMillis(),
                         durationSec = (t.durationMs / 1000).toInt(),
                         completed = false,
+                        kind = kind,
                     )
                 )
                 player.setSessionRowId(sessionId, rowId)
@@ -1931,15 +2523,33 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val queue = if (isHidden(id))
             sortedSongs().filter { it.id == id || !isHidden(it.id) }
         else playbackFilteredSortedSongs()
-        player.playQueue(queue, id, null)
+        // v22: 同一整轨文件的相邻拆分曲目合并成一个条目 → 播到区间边界无缝续播下一首。
+        player.playQueue(collapseSplitRuns(queue, id), id, null)
     }
 
     /** Play a track from a content URI (e.g. from a system VIEW intent). */
     fun playUri(uri: android.net.Uri) {
+        val s = uri.toString()
         // Find matching track in the library
-        val track = lib().firstOrNull { it.uri.toString() == uri.toString() || it.dataPath == uri.toString() }
+        val track = lib().firstOrNull { it.uri.toString() == s || it.dataPath == s }
         if (track != null) {
             play(track.id)
+            playerOpen = true
+            return
+        }
+        // v22: 整轨文件被拆分后就不在 lib() 里了（被替换成 N 首拆分单曲）。
+        // 从文件管理器 / 其他 App 打开这个文件，语义上就是「播放完整专辑」——
+        // 走容器曲目（容器模式：从头播到尾，计专辑播放次数，不触发任何单曲切换）。
+        val physical = physicalTracks().firstOrNull { it.uri.toString() == s || it.dataPath == s }
+        if (physical != null) {
+            val containerId = com.shiyin.music.data.split.SplitIds.containerId(physical.id)
+            val container = trackById(containerId)
+            if (container != null) {
+                player.setShuffle(false)
+                player.playQueue(listOf(container), containerId, null)
+            } else {
+                play(physical.id)
+            }
             playerOpen = true
             return
         }
@@ -1963,6 +2573,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun playAlbum(key: String, startId: Long? = null) {
+        // v22: 拆分专辑有两条播放入口，语义必须分开（需求三/四）：
+        //   · 无 startId（专辑页「播放」按钮 / 顶部「完整专辑」行）→ **容器模式**：
+        //     队列只放「完整专辑」容器，从文件开头完整播到结尾，不触发任何单曲切换，
+        //     计一次「专辑被播放次数」（kind='album'），绝不产生单曲事件。
+        //   · 有 startId（点第 N 行拆分单曲）→ **单曲模式**：队列放那首虚拟曲目
+        //     （uri 指向整轨文件）并携带方案；播到区间边界无缝切下一首，各自计单曲播放。
+        splitAlbumQueue(key, startId)?.let { (queue, start) ->
+            player.setShuffle(false)
+            player.playQueue(queue, start, "album:$key")
+            return
+        }
         // v5.2 隐藏曲:整张播放默认跳过 hidden 曲。但若用户点的就是 hidden 的那首,
         // 要让它响起来(用户明确点的才播)——用未过滤队列保证该曲在自己位置能播,
         // 否则 playQueue 找不到 startId 会回落到第一首、播成别的曲。null startId
@@ -1977,7 +2598,39 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             ?.takeIf { id -> queue.any { it.id == id } }
             ?: queue.first().id
         player.setShuffle(false)
-        player.playQueue(queue, realStart, "album:$key")
+        player.playQueue(collapseSplitRuns(queue, realStart), realStart, "album:$key")
+    }
+
+    /**
+     * v22: 拆分专辑的队列构造。
+     *
+     * 返回 (队列, 起始 id)；该专辑不适用拆分播放时返回 null，交回常规逻辑。
+     *
+     * ⚠️ 只在该专辑**完全由同一个整轨文件的拆分曲目组成**时接管。若专辑里混着别的
+     * 非拆分曲目（用户先拆了单文件专辑、又往这张专辑迁进了别的歌），容器模式会只播
+     * 那个整轨文件、把其他曲目整条漏掉 —— 这种情况交回常规逻辑（[collapseSplitRuns]
+     * 仍会把同一文件的连续拆分曲目合并成一条，听感依然连续）。
+     */
+    private fun splitAlbumQueue(key: String, startId: Long?): Pair<List<Track>, Long>? {
+        val ts = albumOrder(key)
+        if (ts.isEmpty()) return null
+        val srcId = splitSourceOfAlbum(key) ?: return null
+        if (ts.any { !isSplitTrack(it.id) }) return null
+        // 全部曲目必须来自同一个源文件
+        val allSameSource = ts.all { t ->
+            val row = splitTracks.firstOrNull { it.id == t.id - com.shiyin.music.data.split.SplitIds.TRACK_BASE }
+            row?.sourceMediaId == srcId
+        }
+        if (!allSameSource) return null
+        val plan = splitPlanOf(srcId) ?: return null
+        val container = trackById(plan.containerId) ?: return null
+        // 无起点（专辑页「播放」/ 顶部「完整专辑」行）→ 容器模式：从头播到尾，
+        // 不触发任何单曲切换，计一次「专辑被播放次数」。
+        val start = startId?.takeIf { isSplitTrack(it) }
+        if (start == null) return listOf(container) to container.id
+        // 有起点（点第 N 行）→ 单曲模式：队列放那首虚拟曲目，方案随 extras 走。
+        val vt = ts.firstOrNull { it.id == start } ?: return listOf(container) to container.id
+        return listOf(vt) to vt.id
     }
 
     /**
@@ -2012,7 +2665,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             ?.takeIf { id -> queue.any { it.id == id } }
             ?: queue.first().id
         player.setShuffle(false)
-        player.playQueue(queue, realStart, "artist:$name")
+        player.playQueue(collapseSplitRuns(queue, realStart), realStart, "artist:$name")
     }
 
     fun playRandom() {
@@ -2028,8 +2681,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun playRandom(ids: List<Long>, queueKey: String? = null) {
         val tracks = playbackFiltered(ids.mapNotNull { trackById(it) })
         if (tracks.isEmpty()) return
+        val start = tracks.random().id
         player.setShuffle(true)
-        player.playQueue(tracks, tracks.random().id, queueKey)
+        player.playQueue(collapseSplitRuns(tracks, start), start, queueKey)
     }
 
     /** v1.2.0 #6: 顺序播放整个歌单（从 startId 起；null=从头播）。歌单详情页"播放"用。 */
@@ -2040,7 +2694,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         if (queue.isEmpty()) return
         val realStart = startId?.takeIf { id -> queue.any { it.id == id } } ?: queue.first().id
         player.setShuffle(false)
-        player.playQueue(queue, realStart, "playlist:$pid")
+        player.playQueue(collapseSplitRuns(queue, realStart), realStart, "playlist:$pid")
     }
 
     /** v5.2 隐藏曲 helper:把 [tracks] 中被用户在 track_info_override 标 hidden
@@ -2203,6 +2857,47 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             com.shiyin.music.ui.screens.AlbumCategory.EP -> "EP"
             com.shiyin.music.ui.screens.AlbumCategory.Single -> "Single"
             com.shiyin.music.ui.screens.AlbumCategory.Compilation -> "Compilation"
+        }
+    }
+
+    /**
+     * v22: 从相册选图设专辑封面 —— **先把图片落盘，再存 file:// 路径**。
+     *
+     * 修的问题：原来直接把 photo picker 返回的 `content://` URI 存进 coverUri。
+     * 系统给这种 URI 的读权限是**临时的** —— 官方 Photo Picker 文档原文：
+     * "By default, the system grants your app access to media files **until the device is
+     * restarted**"。于是用户重启手机后封面就读不出来了（ArtCache.decodeUri 的
+     * loadThumbnail 抛 SecurityException → 回退 openInputStream 也失败 → 返回 null → 裂图）。
+     *
+     * 落盘后：重启 / 清缓存都不受影响，而且图片文件能随备份一起走。
+     * 与歌手写真 [setArtistImageFromFile] 走**同一条既有范式**，不是新造的路。
+     *
+     * ⚠️ 只**读取**相册里那一张图 + 在 app 私有目录写一份副本：
+     * 不修改 / 不移动 / 不删除相册原图，也完全不碰任何音乐文件。
+     *
+     * 落库仍复用 [saveAlbumCover]，保证写入逻辑只有一份、不会写歪。
+     */
+    fun setAlbumCoverFromFile(albumId: Long, contentUri: android.net.Uri) {
+        if (albumId <= 0) return
+        viewModelScope.launch {
+            val fileUri: String? = withContext(Dispatchers.IO) {
+                runCatching {
+                    val ctx = getApplication<android.app.Application>()
+                    val dir = java.io.File(ctx.filesDir, "album_cover_override").apply { mkdirs() }
+                    // 同一张专辑只保留最新一份副本（旧副本是这次覆盖之前的，已无引用）
+                    dir.listFiles()?.filter { it.name.startsWith("album_${albumId}_") }?.forEach { it.delete() }
+                    val file = java.io.File(dir, "album_${albumId}_${System.currentTimeMillis()}.jpg")
+                    val input = ctx.contentResolver.openInputStream(contentUri)
+                        ?: return@runCatching null
+                    input.use { i -> file.outputStream().use { o -> i.copyTo(o) } }
+                    "file://${file.absolutePath}"
+                }.getOrNull()
+            }
+            if (fileUri == null) {
+                showToast("封面保存失败", null)
+                return@launch
+            }
+            saveAlbumCover(albumId, fileUri)
         }
     }
 
@@ -2420,24 +3115,43 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private fun uriOf(id: Long): Uri =
         ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, id)
 
+    /**
+     * v22: 挡掉拆分相关的合成 id。
+     *
+     * 拆分单曲 / 完整专辑容器的 id 是 App 内部合成的，不对应任何 MediaStore 记录 ——
+     * 拿它去 `ContentUris.withAppendedId` 会构造出不存在的 URI，轻则 MediaStore 抛异常，
+     * 重则让系统删错文件。而且拆分曲目共享同一个物理文件，"删一首"在语义上就说不通：
+     * 曲目菜单已不提供该入口（用户定调：不给单曲级删除），这里再兜一道，返回实际
+     * 可操作的 id 集合。
+     */
+    private fun realMediaIdsOnly(ids: List<Long>): List<Long> {
+        val real = ids.filterNot { com.shiyin.music.data.split.SplitIds.isSynthetic(it) }
+        if (real.size != ids.size) {
+            showToast("拆分曲目不能单独删除，请在专辑菜单删除整轨文件", null)
+        }
+        return real
+    }
+
     fun requestTrash(ids: List<Long>) {
-        if (ids.isEmpty()) return
+        val real = realMediaIdsOnly(ids)
+        if (real.isEmpty()) return
         val resolver = getApplication<Application>().contentResolver
-        val pi = MediaStore.createTrashRequest(resolver, ids.map(::uriOf), true)
-        pendingTrashOp = TrashOp.Trash(ids)
+        val pi = MediaStore.createTrashRequest(resolver, real.map(::uriOf), true)
+        pendingTrashOp = TrashOp.Trash(real)
         launchTrashIntent?.invoke(pi)
     }
 
     fun requestRestore(ids: List<Long>) {
-        if (ids.isEmpty()) return
+        val real = realMediaIdsOnly(ids)
+        if (real.isEmpty()) return
         val resolver = getApplication<Application>().contentResolver
-        val pi = MediaStore.createTrashRequest(resolver, ids.map(::uriOf), false)
-        pendingTrashOp = TrashOp.Restore(ids)
+        val pi = MediaStore.createTrashRequest(resolver, real.map(::uriOf), false)
+        pendingTrashOp = TrashOp.Restore(real)
         launchTrashIntent?.invoke(pi)
     }
 
     fun requestEmptyTrash() {
-        val ids = trashMirror.map { it.mediaId }
+        val ids = realMediaIdsOnly(trashMirror.map { it.mediaId })
         if (ids.isEmpty()) return
         val resolver = getApplication<Application>().contentResolver
         val pi = MediaStore.createDeleteRequest(resolver, ids.map(::uriOf))
@@ -3134,17 +3848,314 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    // ── v1.2.0 阶段三：修正数据导出/导入 ───────────────────────────────────
-    /** 导出全部修正数据为 JSON 字符串。UI 用 SAF 拿到 OutputStream 后调用。 */
-    suspend fun exportBackup(): String = withContext(Dispatchers.IO) { backupManager.export() }
+    // ── v1.2.0 阶段三：用户数据导出/导入（v22 起范围扩到"用户资产"）────────────
 
-    /** 从 JSON 导入修正数据。返回导入统计；失败抛异常由 UI 捕获提示。 */
+    /**
+     * v22: 构建跨设备重解析用的两张"身份证"表（见 `BackupRemap`）。
+     *
+     * mediaId / albumId 都是**设备本地的自增主键**，换机必变，所以导出时必须附带
+     * 与设备无关的标识：文件路径、以及"专辑名|歌手"。
+     *
+     * 用 `tracksRaw`（物理曲目）而不是 `lib()`：拆分出来的虚拟曲目共享同一个文件，
+     * 它们的合成 id 靠 `split_track` 的自增 id 保留，不需要路径映射。
+     */
+    private fun backupIdMaps(): Pair<Map<String, String>, Map<String, String>> {
+        val pathMap = LinkedHashMap<String, String>()
+        val albumMap = LinkedHashMap<String, String>()
+        for (t in tracksRaw) {
+            if (t.dataPath.isNotBlank()) pathMap[t.id.toString()] = t.dataPath
+            if (t.albumId > 0 && t.album != NO_ALBUM) {
+                // 刻意存"专辑名|歌手"：aid 形式本身就含 id，换机后同样失效
+                albumMap[t.albumId.toString()] = "${t.album}|${t.artist}"
+            }
+        }
+        return pathMap to albumMap
+    }
+
+    /**
+     * 从 JSON 导入用户数据。返回导入统计；失败抛异常由 UI 捕获提示。
+     *
+     * 这是"JSON 层"的入口（[importBackupZip] 解包后调它）；单独保留是因为
+     * `BackupArchive.read` 能识别纯 JSON 旧格式，这条路径正好复用。
+     *
+     * 注：对应的"只导出 JSON"的旧方法已删除 —— UI 全走 zip（本地图片必须跟着走，
+     * 否则换机后是裂图），留着它就是死代码。
+     */
     suspend fun importBackup(json: String): String = withContext(Dispatchers.IO) {
-        val stats = backupManager.import(json)
-        // 导入后刷新内存态，让 UI 立即反映新修正
+        val (pathToId, nameToAlbum) = reverseLookupMaps()
+        val stats = backupManager.importWithRemap(json, pathToId, nameToAlbum)
+        // 导入后刷新内存态，让 UI 立即反映新数据
         if (!firstScanDone) { /* 未扫完不重载 */ }
         else { rescanSilently() }
         stats.toString()
+    }
+
+    // ── v22: 备份包（zip 容器，含本地图片）──────────────────────────────────
+
+    /** 会被打进备份包的本地图片目录（用户手选的歌手写真 / 专辑封面）。 */
+    private val localImageDirs = listOf("artist_image_override", "album_cover_override")
+
+    /**
+     * 收集本地图片。这些图片是**用户资产**，但数据库里只存了 `file://` 路径 ——
+     * 不把文件一起打包，换机恢复后就是一堆裂图。
+     */
+    private fun collectLocalImages(): Map<String, ByteArray> {
+        val out = LinkedHashMap<String, ByteArray>()
+        val base = getApplication<android.app.Application>().filesDir
+        for (d in localImageDirs) {
+            val dir = java.io.File(base, d)
+            if (!dir.isDirectory) continue
+            dir.listFiles()?.forEach { f ->
+                if (f.isFile) runCatching { out["$d/${f.name}"] = f.readBytes() }
+            }
+        }
+        return out
+    }
+
+    /** 把备份包里的图片写回私有目录（文件名与 DB 里的 `file://` 路径一一对应）。 */
+    private fun restoreLocalImages(files: Map<String, ByteArray>): Int {
+        var n = 0
+        val base = getApplication<android.app.Application>().filesDir
+        for ((rel, bytes) in files) {
+            val safe = com.shiyin.music.data.db.BackupArchive.sanitize(rel) ?: continue
+            // 只往已知目录写 —— 备份包可被手工编辑，白名单是必要的闸
+            if (safe.substringBefore('/') !in localImageDirs) continue
+            runCatching {
+                val target = java.io.File(base, safe)
+                target.parentFile?.mkdirs()
+                target.writeBytes(bytes)
+                n++
+            }
+        }
+        return n
+    }
+
+    /** v22: 导出为 zip 备份包（`backup.json` + 本地图片）。 */
+    suspend fun exportBackupZip(): ByteArray = withContext(Dispatchers.IO) {
+        val (paths, albums) = backupIdMaps()
+        val json = backupManager.export(paths, albums)
+        com.shiyin.music.data.db.BackupArchive.write(json, collectLocalImages())
+    }
+
+    /** v22: 从备份包恢复。**自动识别** zip 与纯 JSON 旧格式。 */
+    suspend fun importBackupZip(bytes: ByteArray): String = withContext(Dispatchers.IO) {
+        val archive = com.shiyin.music.data.db.BackupArchive.read(bytes)
+        restoreLocalImages(archive.files)
+        importBackup(archive.json)
+    }
+
+    // ── v22: 恢复前预览 + 快照（防手滑）────────────────────────────────────
+
+    /**
+     * 预览一个备份包（**不写库**）：各表条数 + 重解析会丢掉多少行。
+     *
+     * 原来导入是"选文件 → 直接覆盖写库"，误点一个旧备份就会把当前数据冲掉且不可撤销。
+     */
+    suspend fun previewBackup(bytes: ByteArray): com.shiyin.music.data.db.BackupPreviewer.Preview =
+        withContext(Dispatchers.IO) {
+            val archive = com.shiyin.music.data.db.BackupArchive.read(bytes)
+            val (pathToId, nameToAlbum) = reverseLookupMaps()
+            com.shiyin.music.data.db.BackupPreviewer.preview(
+                archive.json, pathToId, nameToAlbum, imageFiles = archive.files.size,
+            )
+        }
+
+    private val snapshotDirName = "backup_snapshots"
+    private val snapshotKeep = 3
+    private val autoSnapshotIntervalMs = 24L * 60 * 60 * 1000
+
+    private fun snapshotDir(): java.io.File =
+        java.io.File(getApplication<android.app.Application>().filesDir, snapshotDirName)
+
+    /** 当前所有快照（新的在前）。 */
+    fun listSnapshots(): List<java.io.File> =
+        snapshotDir().listFiles()?.filter { it.isFile }
+            ?.sortedByDescending { it.name }.orEmpty()
+
+    /** 写一份快照并滚动清理（只留最新 [snapshotKeep] 份）。返回文件名；失败返回 null。 */
+    private suspend fun writeSnapshot(prefix: String): String? = withContext(Dispatchers.IO) {
+        runCatching {
+            val dir = snapshotDir().apply { mkdirs() }
+            val stamp = java.text.SimpleDateFormat("yyyyMMdd-HHmmss", java.util.Locale.CHINA)
+                .format(java.util.Date())
+            val name = "$prefix-$stamp.zip"
+            java.io.File(dir, name).writeBytes(exportBackupZip())
+            dir.listFiles()?.filter { it.isFile }
+                ?.sortedByDescending { it.name }?.drop(snapshotKeep)?.forEach { it.delete() }
+            name
+        }.getOrNull()
+    }
+
+    /** 恢复前自动快照 —— 恢复失败或反悔时能撤回来。 */
+    suspend fun snapshotBeforeRestore(): String? = writeSnapshot("prerestore")
+
+    /**
+     * v22: 启动时的自动快照 —— 距上次超过 24 小时才写一份。
+     *
+     * 刻意用"启动时机 + 时间戳节流"而不是 WorkManager：不引入新依赖、不需要后台调度，
+     * 而备份内容只在用户打开 app 时才可能变化，"下次启动补一份"已经够用。
+     */
+    fun maybeAutoSnapshot() {
+        appScope.launch {
+            try {
+                if (!firstScanDone) return@launch          // 库还没扫完，快照没意义
+                val last = settingsStore.lastAutoSnapshotAt()
+                val now = System.currentTimeMillis()
+                if (now - last < autoSnapshotIntervalMs) return@launch
+                if (writeSnapshot("auto") != null) settingsStore.setLastAutoSnapshotAt(now)
+            } catch (_: Exception) { }
+        }
+    }
+
+    /** 当前库的反查表：路径 → mediaId、"专辑名|歌手" → albumId。 */
+    private fun reverseLookupMaps(): Pair<Map<String, Long>, Map<String, Long>> {
+        val pathToId = HashMap<String, Long>()
+        val nameToAlbum = HashMap<String, Long>()
+        for (t in tracksRaw) {
+            if (t.dataPath.isNotBlank()) pathToId[t.dataPath] = t.id
+            if (t.albumId > 0 && t.album != NO_ALBUM) {
+                nameToAlbum["${t.album}|${t.artist}"] = t.albumId
+            }
+        }
+        return pathToId to nameToAlbum
+    }
+
+    // ── v22: WebDAV 云备份 ─────────────────────────────────────────────────
+    // 选 WebDAV 的理由：零 SDK 依赖（就是 HTTP）、国内可用（坚果云
+    // https://dav.jianguoyun.com/dav/）、且与项目已有"用户自配地址+凭据"范式一致。
+
+    var webDavUrl by mutableStateOf(""); private set
+    var webDavUser by mutableStateOf(""); private set
+    var webDavPassword by mutableStateOf(""); private set
+    var cloudBusy by mutableStateOf(false); private set
+    var cloudMsg by mutableStateOf<String?>(null); private set
+    var cloudFiles by mutableStateOf<List<com.shiyin.music.data.backup.WebDavXml.Entry>>(emptyList()); private set
+    /** 云端恢复的待确认状态（下载完成、等用户确认后才写库）。 */
+    var cloudPendingName by mutableStateOf<String?>(null); private set
+    private var cloudPendingBytes: ByteArray? = null
+    var cloudPreview by mutableStateOf<com.shiyin.music.data.db.BackupPreviewer.Preview?>(null); private set
+
+    private fun webDav(): com.shiyin.music.data.backup.WebDavClient? {
+        if (webDavUrl.isBlank() || webDavUser.isBlank()) return null
+        return com.shiyin.music.data.backup.WebDavClient(
+            webDavUrl, webDavUser, webDavPassword, sharedHttpClient,
+        )
+    }
+
+    /** 打开云备份页时载入已保存的凭据。 */
+    fun loadWebDavConfig() {
+        appScope.launch {
+            val (u, n, p) = settingsStore.webDavConfig()
+            webDavUrl = u; webDavUser = n; webDavPassword = p
+        }
+    }
+
+    fun saveWebDavConfig(url: String, user: String, password: String) {
+        webDavUrl = url; webDavUser = user; webDavPassword = password
+        appScope.launch { settingsStore.setWebDavConfig(url, user, password) }
+    }
+
+    /** 测试连接（顺便把远端文件列出来）。 */
+    fun cloudTest() {
+        if (cloudBusy) return
+        val c = webDav()
+        if (c == null) { cloudMsg = "请先填写地址与账号"; return }
+        cloudBusy = true; cloudMsg = "正在连接…"
+        appScope.launch {
+            val err = withContext(Dispatchers.IO) { c.test() }
+            if (err == null) {
+                val files = withContext(Dispatchers.IO) { c.list() }
+                cloudFiles = files
+                cloudMsg = "连接成功，远端有 ${files.size} 个备份文件"
+            } else {
+                cloudMsg = err
+            }
+            cloudBusy = false
+        }
+    }
+
+    /** 上传当前备份到云端（文件名带时间戳，便于保留多份）。 */
+    fun cloudUpload() {
+        if (cloudBusy) return
+        val c = webDav() ?: run { cloudMsg = "请先填写地址与账号"; return }
+        cloudBusy = true; cloudMsg = "正在打包上传…"
+        appScope.launch {
+            val name = "pickupmusic-backup-" + java.text.SimpleDateFormat(
+                "yyyyMMdd-HHmmss", java.util.Locale.CHINA,
+            ).format(java.util.Date()) + ".zip"
+            val bytes = withContext(Dispatchers.IO) { runCatching { exportBackupZip() }.getOrNull() }
+            if (bytes == null) {
+                cloudMsg = "打包失败"; cloudBusy = false; return@launch
+            }
+            val err = withContext(Dispatchers.IO) { c.upload(name, bytes) }
+            cloudMsg = err ?: "已上传 $name（${"%.1f".format(bytes.size / 1024.0 / 1024.0)} MB）"
+            if (err == null) cloudFiles = withContext(Dispatchers.IO) { c.list() }
+            cloudBusy = false
+        }
+    }
+
+    fun cloudRefresh() {
+        if (cloudBusy) return
+        val c = webDav() ?: run { cloudMsg = "请先填写地址与账号"; return }
+        cloudBusy = true
+        appScope.launch {
+            cloudFiles = withContext(Dispatchers.IO) { c.list() }
+            cloudMsg = if (cloudFiles.isEmpty()) "远端没有找到备份文件" else "已刷新（${cloudFiles.size} 个）"
+            cloudBusy = false
+        }
+    }
+
+    /** 从云端下载并恢复。恢复前会自动存本地快照。 */
+    /**
+     * v22: 云端恢复第一步 —— 只下载 + 预览，**不写库**。
+     *
+     * 与本地恢复保持一致：云端恢复的风险其实更高（远端可能是很久以前的备份、
+     * 也可能是别人的），更不能"下完直接覆盖"。确认由 [cloudConfirmRestore] 完成。
+     */
+    fun cloudRequestRestore(name: String) {
+        if (cloudBusy) return
+        val c = webDav() ?: run { cloudMsg = "请先填写地址与账号"; return }
+        cloudBusy = true; cloudMsg = "正在下载 $name …"
+        appScope.launch {
+            val bytes = withContext(Dispatchers.IO) { c.download(name) }
+            if (bytes == null) {
+                cloudMsg = "下载失败"
+            } else {
+                try {
+                    cloudPreview = previewBackup(bytes)
+                    cloudPendingBytes = bytes
+                    cloudPendingName = name
+                    cloudMsg = null
+                } catch (e: Exception) {
+                    cloudMsg = "备份包无法解析：${e.message}"
+                }
+            }
+            cloudBusy = false
+        }
+    }
+
+    fun cloudCancelRestore() {
+        cloudPreview = null
+        cloudPendingBytes = null
+        cloudPendingName = null
+    }
+
+    /** 云端恢复第二步 —— 用户确认后才写库（写前自动存快照）。 */
+    fun cloudConfirmRestore() {
+        val bytes = cloudPendingBytes ?: return
+        if (cloudBusy) return
+        cloudBusy = true; cloudMsg = "正在恢复…"
+        appScope.launch {
+            try {
+                snapshotBeforeRestore()
+                cloudMsg = "恢复完成：${importBackupZip(bytes)}"
+            } catch (e: Exception) {
+                cloudMsg = "恢复失败：${e.message}"
+            } finally {
+                cloudBusy = false
+                cloudCancelRestore()
+            }
+        }
     }
 
     fun deleteLyrics() {
