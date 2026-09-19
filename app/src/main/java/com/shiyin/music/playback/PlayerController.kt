@@ -362,6 +362,14 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
         if (i >= 0 && i < c.mediaItemCount) c.getMediaItemAt(i).mediaId.toLongOrNull() else null
     }
 
+    /** v1.3.x 横向分页切歌:nextTrackId() 在 REPEAT_OFF 队尾返回 null,但 next()
+     *  在同场景会回绕到第 0 首(见 next() 的 hasNextMediaItem 分支)——分页视图
+     *  必须预知"下一首是谁"才能预渲染右页,故在此补同样的回绕语义。REPEAT_ALL
+     *  下 Media3 自身的 nextMediaItemIndex 已回绕,不触发本兜底。 */
+    fun wrappedNextTrackId(): Long? = nextTrackId() ?: controller?.let { c ->
+        if (c.mediaItemCount > 1) c.getMediaItemAt(0).mediaId.toLongOrNull() else null
+    }
+
     /** Circular upcoming list after the current item (manual items lead). */
     fun upcomingEntries(): List<QueueEntry> {
         val c = controller ?: return emptyList()

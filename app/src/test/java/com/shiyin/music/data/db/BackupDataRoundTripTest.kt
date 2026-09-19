@@ -56,4 +56,37 @@ class BackupDataRoundTripTest {
         assertEquals(0, back.artistImageCache.orEmpty().size)
         assertEquals(0, back.artistImageOverride.orEmpty().size)
     }
+
+    // ── v1.3.x 需求6:歌词翻译结果随备份走 ─────────────────────────────────────
+
+    private val translationJson = """
+        {"version":1,"app":"com.shiyin.music","exportedAt":123,
+         "albumOverride":[],"albumInfoOverride":[],"trackInfoOverride":[],"trackAlbumMove":[],
+         "artists":[],"songArtist":[],"readingOverride":[],"externalReadingEvidence":[],
+         "lyricsTranslation":[{"mediaId":77,"lyricsHash":"abc123","source":"ai","translatedAt":99,
+           "payload":"{\"0\":\"第一行\",\"1\":\"含\\\"引号\\\"的行\"}"}]}
+    """.trimIndent()
+
+    @Test fun lyricsTranslation_survivesRoundTrip() {
+        val back = Gson().fromJson(translationJson, BackupManager.BackupData::class.java)
+        assertEquals(1, back.lyricsTranslation!!.size)
+        val row = back.lyricsTranslation!![0]
+        assertEquals(77L, row.mediaId)
+        assertEquals("abc123", row.lyricsHash)
+        assertEquals("ai", row.source)
+        assertEquals(99L, row.translatedAt)
+        // payload 是嵌套 JSON 字符串，转义必须原样保住——否则恢复时整批译文丢失
+        assertEquals("""{"0":"第一行","1":"含\"引号\"的行"}""", row.payload)
+        // 二次往返不丢
+        val back2 = Gson().fromJson(Gson().toJson(back), BackupManager.BackupData::class.java)
+        assertEquals(row.payload, back2.lyricsTranslation!![0].payload)
+        assertEquals(77L, back2.lyricsTranslation!![0].mediaId)
+    }
+
+    /** 旧备份（本字段尚不存在）→ null，import 的 orEmpty() 必须兜住，不能让导入整体失败。 */
+    @Test fun oldBackup_missingLyricsTranslation_isNullAndOrEmptySafe() {
+        val back = Gson().fromJson(oldJson, BackupManager.BackupData::class.java)
+        assertNull(back.lyricsTranslation)
+        assertEquals(0, back.lyricsTranslation.orEmpty().size)
+    }
 }

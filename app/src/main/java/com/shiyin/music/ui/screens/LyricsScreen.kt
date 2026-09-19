@@ -1,6 +1,7 @@
 package com.shiyin.music.ui.screens
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -21,7 +22,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -36,24 +37,33 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.boundsInWindow as boundsInWindowExt
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -111,6 +121,7 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
         android.util.Log.d("PaletteTrace", "LyricsScreen track=${track.id} albumId=${track.albumId} resolved=$isResolved artBg=$artBg fg=$LyricText")
     }
     val dimC = LyricText.copy(alpha = 0.55f)
+    // v1.3.x 需求6:译文颜色跟随行激活状态(lineColor 降透明度),不再用独立固定色。
     val artFg = LyricText // fg end (white on dark / dark-grey on light) — paint everywhere
     val btnBg = LyricText.copy(alpha = 0.14f)
     val inactiveC = LyricText.copy(alpha = 0.34f) // clearly dimmer than the active line
@@ -143,6 +154,11 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
     val hasKana = remember(lines) {
         lines.any { line -> line.text.any { ch -> ch.code in 0x3040..0x30FF } }
     }
+    // 第6轮:翻译按钮只对**外语歌词**显示。当前版本用户语言只有中文(简/繁),
+    // 纯中文歌词没有翻译需求——按钮整个不挂载(与「あ」只对日语歌显示同规则)。
+    // 判定与自动翻译共用 MainViewModel.isForeignLyrics(假名/谚文/非 CJK 字母)。
+    // 未来做多语言版本时,这里要跟用户语言走(如日语用户看中文歌也应显示)。
+    val foreignLyrics = remember(lines) { vm.isForeignLyrics(lines.map { it.text }) }
     var furiganaOn by remember(track.id) { mutableStateOf(hasKana && vm.furiganaDefaultOn) }
     // V1.1: 跑准确率流水线（Song Override>纠错表>JMdict>Kuromoji>No Reading）。
     // key 含 furiganaRevision，保存/删除 Song Override 后 bump 即重算该曲。
@@ -173,6 +189,19 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
     // v1.3.x code-review(F7):切歌清上一首的校验状态(单字段不按曲隔离,旧值
     // 残留新歌弹层)。key 用 mediaId 稳定——offset 微调 copy 不触发清。
     LaunchedEffect(ly.mediaId) { vm.clearFuriganaAssistStatus() }
+    // v1.3.x 需求6:切歌/换歌词源 → 同步翻译状态。
+    // 键含 lyricsHash:换源或改歌词文本后 hash 变,旧译文自然不再适用(与振假名
+    // evidence 同键法)。syncLyricsTranslation 内部对"同曲同版本"直接返回——
+    // 关掉歌词本再打开不会误杀正在跑的翻译,也不会把用户隐藏的状态重置。
+    val trLyricsHash = remember(ly.raw) { com.shiyin.music.data.furigana.LyricsHash.of(ly.raw) }
+    LaunchedEffect(ly.mediaId, trLyricsHash) { vm.syncLyricsTranslation(ly) }
+    // v1.3.x 反馈:「外语歌自动翻译」——开关开时,进入歌词本发现无译文且歌词
+    // 非中文(有外文字母)→ 自动触发 AI 翻译。AI 永远是"设置里开了才自动跑",
+    // 不碰从未手动触发过的歌。判定用已解析行文本(跳过元数据行与纯标点)。
+    LaunchedEffect(ly.mediaId, trLyricsHash, vm.translateAutoForeign) {
+        if (!vm.translateAutoForeign) return@LaunchedEffect
+        vm.maybeAutoTranslateForeign(ly)
+    }
     // V1.1: 长按编辑 Song Override 入口（最小可用）
     var pickerLine by remember { mutableStateOf<Int?>(null) }
     // (lineIndex, segment, currentReading)：按出现位置存，同 surface 多次出现可分别设
@@ -309,7 +338,12 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
         // 避免动画中途列表自己滚(锚行已由上条预滚对齐)。
         // v1.3.x 预组合:预热期(!interactive)不跟行——隐形滚动白费,打开时由
         // LaunchedEffect(interactive) 补位。
-        LaunchedEffect(activeI) {
+        // v1.3.x 需求6:键里加上"译文是否显示"——译文出现/隐藏会让**每一行变高变矮**,
+        // 活动行的屏上偏移随之变化(上方 20 行各长 21dp,活动行就偏了 400+dp)。
+        // 复用同一套精确差值滚动重新居中,不另写一份(否则两套滚动逻辑会打架)。
+        // 收窄订阅:用 derivedStateOf 只盯这个布尔,避免 byLine 每次变化都全页重组。
+        val trVisible by remember { androidx.compose.runtime.derivedStateOf { vm.lyricsTranslation.hasContent } }
+        LaunchedEffect(activeI, trVisible) {
             if (!interactive) return@LaunchedEffect
             if (vm.morph.progress.value in 0.001f..0.949f) return@LaunchedEffect
             if (activeI >= 0) {
@@ -343,6 +377,21 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
             androidx.compose.runtime.snapshotFlow { !listState.canScrollBackward }
                 .collect { vm.lyricsListAtTop = it }
         }
+        // v1.3.x 第6轮反馈:下拉退出的**唯一起手判据**是"本手势按下那一刻列表是否在顶"。
+        // 该判据由 LyricsMorphOverlay 的指针闸门独占实现(它在 awaitFirstDown 时读
+        // vm.lyricsListAtTop 做快照,再决定是否 dragging→morph.onDrag),因为那边
+        // 能在 Initial pass 抢在播放 sheet 的 anchoredDraggable 之前消费事件。
+        //
+        // ⚠️ 这里原先还有一份"起手快照 + 喂 morph"的兜底副本,已删除,原因有两条:
+        //  1) 它**不生效**:快照是普通局部 var,被 pointerInput(Unit) 冻结成陈旧闭包
+        //     (block 只在首个指针事件时取一次,key 不变就不会重跑),而 nestedScroll
+        //     每次重组都是新的匿名对象、读的是**新的** Ref —— 写与读指向不同对象,
+        //     守卫恒为 false。更糟的是它**非确定性**:两次组合之间若没有重组,两边
+        //     恰好共用同一个 Ref,这条路径又活了。
+        //  2) 它**冗余**:闸门在 Initial pass 已消费指针,LazyColumn 的 drag 起不来、
+        //     也就不会派发 nested-scroll delta,这条路径只可能在"闸门没消费"时触发,
+        //     而那正是它不该驱动的状态(会重复喂 morph)。
+        // 保留的职责只剩一条:消费中途到顶的向下 delta,不让它冒泡到播放 sheet。
         Box(
             Modifier
                 .weight(1f)
@@ -354,9 +403,16 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
                 }
                 .nestedScroll(object : androidx.compose.ui.input.nestedscroll.NestedScrollConnection {
                     override fun onPreScroll(available: androidx.compose.ui.geometry.Offset, source: androidx.compose.ui.input.nestedscroll.NestedScrollSource): androidx.compose.ui.geometry.Offset {
-                        // 只拦"列表在顶+向下"——其余(向上滚/未到顶)全放行
-                        if (available.y > 0f && !listState.canScrollBackward) {
-                            vm.morph.onDrag(available.y)
+                        // 只拦"列表在顶+向下+用户拖拽"——其余全放行。
+                        // bug⑤ 第2轮:加 source==Drag 过滤——SideEffect(程序滚动,
+                        // 跟行 animateScrollBy)在列表恰好在顶时产生的 delta 也流过这里,
+                        // 不滤的话唱到下一句 morph 自己动(无用户手势的"自动收起")。
+                        if (available.y > 0f && !listState.canScrollBackward &&
+                            source == androidx.compose.ui.input.nestedscroll.NestedScrollSource.UserInput
+                        ) {
+                            // 中途到顶的手势:delta 仍消费(防冒泡到播放 sheet 的
+                            // anchoredDraggable)但**不喂 morph**——起手不在顶的手势
+                            // 永不转收起(用户规则)。想收起请抬手重新起一手。
                             return available
                         }
                         return androidx.compose.ui.geometry.Offset.Zero
@@ -409,9 +465,10 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
                     // 开关切换由 hp/kp 连续驱动过渡。
                     val hasRubyLine = hasKana && rubySegs != null
                     // 单进度 hp 同步驱动行高增量+文字下沉("腾出空间"和"文字
-                    // 下沉"一个连贯动作),假名淡入+从稍高处下滑归位。开启:hp/kp
-                    // 同 spec 240ms FastOutSlowIn(数值恒同步=单驱动效果);关闭:
-                    // kp 110ms 先淡出(字先消失),hp 240ms 完整收拢(空间再合拢)。
+                    // 下沉"一个连贯动作),假名淡入+从稍高处下滑归位。
+                    // v1.3.x 反馈:关闭也改同 240ms——原"kp 110ms 先淡出、hp 240ms
+                    // 再收拢"两段式被用户指认拖沓("一步到位,收纳和调整高度一步进行")。
+                    // 现在开/关都是 hp/kp 同 240ms 同步驱动(淡出与收拢同时进行)。
                     val hp by androidx.compose.animation.core.animateFloatAsState(
                         if (furiganaOn && hasRubyLine) 1f else 0f,
                         animationSpec = tween(240, easing = androidx.compose.animation.core.FastOutSlowInEasing),
@@ -419,27 +476,94 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
                     )
                     val kp by androidx.compose.animation.core.animateFloatAsState(
                         if (furiganaOn && hasRubyLine) 1f else 0f,
-                        animationSpec = tween(if (furiganaOn) 240 else 110, easing = androidx.compose.animation.core.FastOutSlowInEasing),
+                        animationSpec = tween(240, easing = androidx.compose.animation.core.FastOutSlowInEasing),
                         label = "rubyKp",
                     )
-                    if (hasRubyLine) {
-                        RubyText(
-                            text = line.text,
-                            segments = rubySegs,
-                            style = body(26f, FontWeight.ExtraBold, lineColor)
-                                .copy(lineHeight = 36.sp),
-                            color = lineColor,
-                            modifier = Modifier.weight(1f),
-                            heightProgress = hp,
-                            kanaProgress = kp,
+                    // v1.3.x 需求6:译文挂在原文下方。weight(1f) 从原文两分支移到外层
+                    // Column(原文两分支改 fillMaxWidth),译文另起一行;缺行的行不渲染
+                    // 占位文案(宁可缺行不可错行——该行无译文就是真的没译出来)。
+                    // v1.3.x 反馈第3轮:【去掉 animateContentSize】——它包着原文+译文
+                    // 整列,振假名 Canvas 行高变化也被它二次动画化(位置/高度全被打乱,
+                    // 用户实测"比上一版还差、出来的位置都变了")。高度变化交给自然
+                    // 重组(即时),淡入淡出+下滑由 trProgress 一条动画驱动(一步到位,
+                    // 无第二条赛跑)。
+                    Column(Modifier.weight(1f)) {
+                        if (hasRubyLine) {
+                            RubyText(
+                                text = line.text,
+                                segments = rubySegs,
+                                style = body(26f, FontWeight.ExtraBold, lineColor)
+                                    .copy(lineHeight = 36.sp),
+                                color = lineColor,
+                                modifier = Modifier.fillMaxWidth(),
+                                heightProgress = hp,
+                                kanaProgress = kp,
+                            )
+                        } else {
+                            Text(
+                                line.text,
+                                style = body(26f, FontWeight.ExtraBold, lineColor)
+                                    .copy(lineHeight = 36.sp),
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                        }
+                        val trText = if (vm.lyricsTranslation.hasContent) {
+                            vm.lyricsTranslation.translationFor(i)
+                        } else {
+                            null
+                        }
+                        // v1.3.x 需求6 修补:译文弹入/收起**真正一步到位**。
+                        // lastTrText 保留退出动画期间的旧值,trProgress 归零前始终渲染。
+                        // v1.3.x 反馈①(收起卡顿):条件分支让 Text 在淡出期间占位、归零瞬间
+                        // 移除——布局塌陷。改:高度由 trProgress 直接驱动,
+                        // 与 alpha/translationY 同一条动画——收字与收高同时进行,无第二条。
+                        // trProgress 归零后 displayTr=lastTrText 仍渲染但 height=0+alpha=0,
+                        // 零占位零可见,不塌陷。
+                        // ⚠️ 必须按曲 key:歌词本是同窗口 overlay,切歌不重建组合,不 key 的话
+                        // 上一首的译文会在新歌页面上淡出 240ms(用户会看到"串台")。
+                        var lastTrText by remember(ly.mediaId) { mutableStateOf<String?>(null) }
+                        if (trText != null) lastTrText = trText
+                        val trProgress by androidx.compose.animation.core.animateFloatAsState(
+                            if (trText != null) 1f else 0f,
+                            animationSpec = tween(240, easing = androidx.compose.animation.core.FastOutSlowInEasing),
+                            label = "trProgress",
                         )
-                    } else {
-                        Text(
-                            line.text,
-                            style = body(26f, FontWeight.ExtraBold, lineColor)
-                                .copy(lineHeight = 36.sp),
-                            modifier = Modifier.weight(1f),
+                        // v1.3.x 反馈⑤:译文颜色与正文**同步渐变**——正文用 animateColorAsState
+                        // (220ms),译文此前是 if 瞬间切换(用户实测"正文亮的比翻译慢")。
+                        // 同一 animateColorAsState 同一 spec:两者同时开始、同时到达。
+                        val trColor by androidx.compose.animation.animateColorAsState(
+                            if (i <= activeI) artFg.copy(alpha = 0.85f) else inactiveC,
+                            animationSpec = tween(220),
+                            label = "trColor",
                         )
+                        val displayTr = trText ?: lastTrText
+                        // 容器高度必须**跟着字号缩放**:21.sp 在 fontScale=1.3 时是 27.3dp,
+                        // 硬编码 26dp 会把单行译文也裁掉(无障碍大字号 100% 触发)。
+                        // 行数固定 1 行 + Ellipsis,超出宽度显式省略而不是被 clipToBounds 静默切掉。
+                        val trLineH = with(LocalDensity.current) { 21.sp.toDp() }
+                        Box(
+                            Modifier
+                                .fillMaxWidth()
+                                .height((5.dp + trLineH) * trProgress)
+                                .clipToBounds()
+                        ) {
+                            if (displayTr != null && trProgress > 0f) {
+                                Text(
+                                    displayTr,
+                                    style = body(14f, FontWeight.Bold, trColor)
+                                        .copy(lineHeight = 21.sp),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .graphicsLayer {
+                                            alpha = trProgress
+                                            translationY = (1f - trProgress) * 6.dp.toPx()
+                                        }
+                                        .padding(top = 5.dp),
+                                )
+                            }
+                        }
                     }
                     // v2.0: per-line sync button for unsynced lyrics
                     if (unsynced) {
@@ -492,7 +616,9 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
             Box(
                 Modifier
                     .fillMaxWidth()
-                    .height(18.dp)
+                    // 第6轮:触摸范围=条本身显示范围(4dp)。原 18dp 隐形触区在条上下
+                    // 各扩 7dp,滚歌词/点底栏时误触跳转(用户实测)。要拖就拖条本身。
+                    .height(4.dp)
                     .then(if (interactive) Modifier.pointerInput(durMs) {
                         awaitEachGesture {
                             awaitFirstDown(requireUnconsumed = false)
@@ -543,7 +669,8 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
                 )
             }
             // v1.1.0: 播放键同行左侧放「あ」振假名开关（仅日文歌词显示）。
-            // 右侧放等宽占位平衡，使播放键始终居中。开关只影响本全屏页渲染。
+            // v1.3.x 需求6:右槽由"占位"改为「譯」翻译按钮(所有语种都有翻译需求);
+            // 左槽:有「あ」放「あ」,无「あ」补等宽空位——左右各固定 38dp,播放键仍居中。
             Row(
                 Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.Center,
@@ -578,6 +705,8 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
                             ),
                         )
                     }
+                } else {
+                    Spacer(Modifier.size(38.dp))
                 }
                 Spacer(Modifier.weight(1f))
                 // play/pause centered between the time row and the screen bottom.
@@ -597,8 +726,137 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
                     )
                 }
                 Spacer(Modifier.weight(1f))
-                // 右侧平衡占位，与左侧「あ」等宽，保证播放键视觉居中
-                if (hasKana) { Spacer(Modifier.size(38.dp)) }
+                // v1.3.x 需求6:「譯」翻译按钮(繁体,用户已定)。与「あ」同 38dp、同一行平行。
+                // 三态:①初始=无底色悬浮「譯」;②进行中=**实心圆**(同「あ」激活态)+ 圆周
+                // 顺时针加载弧;③已译=**圆角方块** + 右上角**纯文字 AI**(无圆圈底,用户明确)。
+                // 点击语义与振假名一致——**数据持久化,按钮只管显示/隐藏**:
+                //   进行中→取消;已显示→隐藏(数据留);有数据未显示→立刻显示(不调 API);无数据→发起翻译。
+                // 第6轮:只对外语歌词挂载(foreignLyrics);纯中文歌词补等宽空位保持播放键居中。
+                if (foreignLyrics) {
+                val tr = vm.lyricsTranslation
+                val spinning = tr.running
+                // v1.3.x 第7轮:加载弧。头/尾**各自单调前进**,弧长变化由相对速度差产生——
+                // 原实现 startDeg=rotation-sweep,弧长变长时尾巴在**倒退**(相对旋转方向),
+                // 实测"尾部一伸一缩"。现规则(与 Material 旋转弧同思路):
+                //   · 头:匀速前进,1568ms/圈,永不停;
+                //   · 目标弧长:10°↔290°,ease-in-out 1333ms 半程往返(与 1568 不同步);
+                //   · 尾:**只前进不倒退**——要变长时尾巴钉住、头继续跑把弧拉长;
+                //     要收缩时尾巴前追。尾部永无反向运动,无伸缩闪回。
+                val headDeg = remember { mutableFloatStateOf(0f) }
+                val tailDeg = remember { mutableFloatStateOf(0f) }
+                LaunchedEffect(spinning) {
+                    if (!spinning) return@LaunchedEffect
+                    headDeg.floatValue = 0f
+                    tailDeg.floatValue = 0f
+                    val t0 = withFrameNanos { it }
+                    var last = t0
+                    while (true) {
+                        withFrameNanos { now ->
+                            val dtMs = (now - last) / 1_000_000f
+                            last = now
+                            headDeg.floatValue += dtMs * 360f / 1568f
+                            val elapsedMs = (now - t0) / 1_000_000f
+                            val half = (elapsedMs % 2666f) / 1333f           // 0→1→2
+                            val u = if (half <= 1f) half else 2f - half      // 0→1→0
+                            val eased = androidx.compose.animation.core.FastOutSlowInEasing.transform(u)
+                            val sweepTarget = 10f + eased * 280f
+                            val targetTail = headDeg.floatValue - sweepTarget
+                            if (targetTail > tailDeg.floatValue) tailDeg.floatValue = targetTail
+                        }
+                    }
+                }
+                // 圆圈→方块过渡:角半径动画(圆=19dp 全径→方=11dp)。加载中=纯圆,
+                // 加载完成后才从圆形向四周扩散变成圆角方块(240ms)。
+                val cornerR by androidx.compose.animation.core.animateDpAsState(
+                    if (spinning || (!tr.hasContent)) 19.dp else 11.dp,
+                    animationSpec = tween(240, easing = androidx.compose.animation.core.FastOutSlowInEasing),
+                    label = "trCorner",
+                )
+                Box(
+                    Modifier
+                        .size(38.dp)
+                        .clip(RoundedCornerShape(cornerR))
+                        .background(
+                            if (spinning || tr.hasContent) artFg
+                            else androidx.compose.ui.graphics.Color.Transparent
+                        )
+                        .then(
+                            // 加载弧:drawBehind 画在外圈,读动画值(draw 期读,只重绘不重组)。
+                            // 「譯」字在 Box 内容层,进度环在 drawBehind——文字始终可见。
+                            if (spinning) Modifier.drawBehind {
+                                val sw = 2.dp.toPx()
+                                val inset = sw / 2f
+                                val arcSize = Size(size.width - sw, size.height - sw)
+                                val topLeft = Offset(inset, inset)
+                                drawArc(
+                                    color = safeBg.copy(alpha = 0.25f),
+                                    startAngle = 0f, sweepAngle = 360f, useCenter = false,
+                                    topLeft = topLeft, size = arcSize,
+                                    style = Stroke(sw),
+                                )
+                                drawArc(
+                                    color = safeBg,
+                                    startAngle = tailDeg.floatValue,
+                                    sweepAngle = (headDeg.floatValue - tailDeg.floatValue).coerceIn(0f, 360f),
+                                    useCenter = false,
+                                    topLeft = topLeft, size = arcSize,
+                                    style = Stroke(width = sw, cap = StrokeCap.Round),
+                                )
+                            } else Modifier
+                        )
+                        .then(if (interactive) Modifier.clickable(
+                            interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                            indication = null,
+                        ) {
+                            when {
+                                // 进行中再点 = **真取消**（中止 LLM 调用）；切歌走的是
+                                // clearLyricsTranslation（只复位显示，让任务跑完落库，不白花 token）。
+                                tr.running -> vm.cancelLyricsTranslation()
+                                tr.hasContent -> vm.hideLyricsTranslation()
+                                tr.hasData -> vm.showLyricsTranslation()
+                                else -> if (!vm.translateLyricsWithAi()) {
+                                    vm.showToast(vm.lyricsTranslation.error ?: "无法翻译")
+                                }
+                            }
+                        } else Modifier),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    // v1.3.x 反馈:加载中「譯」字保留,进度环(drawBehind)叠加在外圈。
+                    // 第6轮:AI/本地角标改为**锚定譯字本身**(内层 Box 包住文字,
+                    // 角标对齐文字的 TopEnd 再微偏出)——原实现对齐 38dp 外盒角落,
+                    // 与居中的字形天然隔着一圈空白,怎么调 padding 都贴不近。
+                    Box {
+                        Text(
+                            "譯",
+                            // CJK 单字垂直居中要 Trim.Both(同「あ」,v1.2.0 #1b)。
+                            style = body(18f, FontWeight.ExtraBold, if (spinning || tr.hasContent) safeBg else artFg).copy(
+                                lineHeight = 18.sp,
+                                lineHeightStyle = androidx.compose.ui.text.style.LineHeightStyle(
+                                    alignment = androidx.compose.ui.text.style.LineHeightStyle.Alignment.Center,
+                                    trim = androidx.compose.ui.text.style.LineHeightStyle.Trim.Both,
+                                ),
+                            ),
+                        )
+                        // 已译:右上角**纯文字**来源角标,贴着「譯」字右上角但不压字形。
+                        // 角标内容跟着**实际来源**走而不是写死 "AI"——离线档(ML Kit)接线后
+                        // 同一按钮会承载两种译文,写死就会撒谎。
+                        if (!spinning && tr.hasContent) {
+                            Text(
+                                if (tr.source == "offline") "本地" else "AI",
+                                style = body(7f, FontWeight.ExtraBold, safeBg),
+                                modifier = Modifier
+                                    .align(Alignment.TopEnd)
+                                    // 内层 Box 紧贴字形(Trim.Both 剥掉行高余量):
+                                    // 右移 5dp 出字形右缘,上移 4dp 出字形顶缘——贴近不重叠。
+                                    .offset(x = 5.dp, y = (-4).dp),
+                            )
+                        }
+                    }
+                }
+                } else {
+                    // 纯中文歌词:无翻译需求,补等宽空位保持播放键居中(同左侧「あ」的 else 分支)。
+                    Spacer(Modifier.size(38.dp))
+                }
             }
             // breathing room so the play button sits above the bottom edge.
             Spacer(Modifier.height(4.dp))
@@ -622,6 +880,8 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
             showFuriganaVerify = hasKana,
             onSave = { vm.saveLyrics() },
             onDelete = { vm.deleteLyrics() },
+            onDeleteFuriganaCache = { vm.deleteFuriganaCache() },
+            onDeleteTranslationCache = { vm.deleteTranslationCache() },
         )
     }
     // V1.1: 长按编辑 Song Override —— 行注音段选择器
@@ -817,6 +1077,9 @@ private fun LyricsAdjustSheet(
     showFuriganaVerify: Boolean,
     onSave: () -> Unit,
     onDelete: () -> Unit,
+    // v1.3.x 需求6:两个缓存清理入口(紧接「保存在本地」下一行)。
+    onDeleteFuriganaCache: () -> Unit,
+    onDeleteTranslationCache: () -> Unit,
 ) {
     // v5.2 #76: 面板用固定高对比配色,不再依赖封面取色 artFg/safeBg——取色失败时
     // artFg 落到深灰、在半透明黑底(0.78)上几乎看不见("黑漆漆看不清")。改固定白字
@@ -960,6 +1223,31 @@ private fun LyricsAdjustSheet(
                             .padding(horizontal = 16.dp, vertical = 11.dp),
                         contentAlignment = Alignment.Center,
                     ) { Text("删除歌词", style = body(13f, FontWeight.ExtraBold, panelFg)) }
+                }
+                // v1.3.x 需求6:缓存清理行——紧接「保存在本地」下一行,一行两个。
+                // 「删除振假名缓存」只清**外部 evidence**(UtaTen 等抓来的注音缓存),
+                // 不动用户手改的 Song Override(那是用户数据不是缓存);
+                // 「删除翻译缓存」清本曲本版本的已保存译文。两者都按
+                // (mediaId + lyricsHash) 精确定位,不牵连其它歌、也不牵连换源前的旧版本。
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(9.dp)) {
+                    Box(
+                        Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(999.dp))
+                            .background(panelBtnBg)
+                            .clickable { onDeleteFuriganaCache() }
+                            .padding(vertical = 10.dp),
+                        contentAlignment = Alignment.Center,
+                    ) { Text("删除振假名缓存", style = body(12f, FontWeight.Bold, panelFg)) }
+                    Box(
+                        Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(999.dp))
+                            .background(panelBtnBg)
+                            .clickable { onDeleteTranslationCache() }
+                            .padding(vertical = 10.dp),
+                        contentAlignment = Alignment.Center,
+                    ) { Text("删除翻译缓存", style = body(12f, FontWeight.Bold, panelFg)) }
                 }
                 Text(
                     "保存后写入本地歌词库，下次打开自动加载，无需重新匹配。",

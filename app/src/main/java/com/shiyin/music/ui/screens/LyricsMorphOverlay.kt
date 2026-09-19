@@ -114,40 +114,46 @@ fun LyricsMorphOverlay(vm: MainViewModel, morph: LyricsMorphState, interactive: 
                         requireUnconsumed = false,
                         pass = androidx.compose.ui.input.pointer.PointerEventPass.Initial,
                     )
+                    // bug⑤ 修复:起手瞬间快照 atTop,不再在"越过 slop 那一帧"读。
+                    // 原实现会撞上"跟行自动滚"时序——唱到下一句跟行滚回顶,
+                    // canScrollBackward 翻 false 那一刻用户恰好在列表中部下拉,
+                    // 闸门读到的瞬时 atTop=true → 误触发收起。快照化后只认"用户
+                    // 这一手按下时列表就在顶",跟行自动滚动的瞬时态不再参与判定。
+                    val downAtTop = vm.lyricsListAtTop
                     var dragging = false
-                    var blocking = false
                     var pullDown = false
                     var lastY = down.position.y
                     while (true) {
                         val event = awaitPointerEvent(androidx.compose.ui.input.pointer.PointerEventPass.Initial)
                         val change = event.changes.firstOrNull() ?: break
                         tracker.addPosition(change.uptimeMillis, change.position)
-                        if (!dragging && !blocking) {
+                        if (!dragging) {
                             if (!pullDown) {
                                 val dy = change.position.y - down.position.y
                                 if (kotlin.math.abs(dy) > viewConfiguration.touchSlop) {
                                     if (dy <= 0f) break
                                     pullDown = true
-                                    val inChrome = vm.lyricsListTopPx != null && (change.position.y < vm.lyricsListTopPx!! || change.position.y > vm.lyricsListBottomPx!!)
-                                    val atTop = vm.lyricsListAtTop
-                                    if (inChrome || atTop) dragging = true
+                                    // bug⑤ 第2轮:【删 inChrome 触发路径】——原设计"起手在
+                                    // chrome 区(顶/底栏)的下拉允许收起",但用户实测"拉着拉着
+                                    // 就触发"(起手点落在列表 bounds 之下的底栏边缘,以为是
+                                    // 歌词手势区)。用户规则只有一条:列表在顶+继续拉才收起。
+                                    if (downAtTop) dragging = true
                                 }
-                            } else if (vm.lyricsListAtTop) {
-                                blocking = true
                             }
+                            // 第6轮:【删"中途到顶接管"路径】——原实现(bug⑤ 第3轮)允许
+                            // "起手不在顶、滚动中列表到顶"的手势直接接管为 dragging。
+                            // 用户实测:列表中部向下甩,滚动到顶时手指还在动,立刻被接管
+                            // 去收起("明明不在顶层也触发")。用户规则是**起手快照唯一判据**:
+                            // 起手不在顶的手势永不转收起。中途到顶后想做收起,抬手重新
+                            // 起一手(那时 downAtTop=true)。本手势剩余的向下 delta 由
+                            // LyricsScreen nestedScroll 守卫消费丢弃(不喂 morph、不冒泡
+                            // 到播放 sheet)。
                             lastY = change.position.y
                         }
                         if (dragging) {
                             morph.onDrag(change.position.y - lastY)
                             lastY = change.position.y
                             change.consume()
-                        } else if (blocking) {
-                            if (change.position.y < lastY) {
-                                blocking = false
-                            } else {
-                                change.consume()
-                            }
-                            lastY = change.position.y
                         }
                         if (!event.changes.any { it.pressed }) {
                             if (dragging) {
@@ -165,12 +171,9 @@ fun LyricsMorphOverlay(vm: MainViewModel, morph: LyricsMorphState, interactive: 
                                 } else {
                                     scope.launch { morph.progress.animateTo(1f, LyricsMorphSpec.collapseSpring) }
                                 }
-                            } else if (blocking && morph.progress.value < 0.999f) {
-                                // v1.3.x code-review:中部起手滚到顶的 1 帧窗口里
-                                // nestedScroll 守卫喂了 morph.onDrag(progress 微降),blocking
-                                // 接管后消费不再喂;松手时 dragging=false 原无收尾路径 → 卡在
-                                // ~0.96(顶栏偏下、dim 不退)。补 settle 回开(中部起手永不收起,
-                                // 弹回开是规则正确方向)。
+                            } else if (morph.progress.value < 0.999f) {
+                                // 非 dragging 松手(如起手在 chrome 区或向上拉):progress
+                                // 若已被喂过(上一手势残留),settle 回开——不留在中间值。
                                 scope.launch { morph.progress.animateTo(1f, LyricsMorphSpec.collapseSpring) }
                             }
                             break

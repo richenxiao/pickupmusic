@@ -61,4 +61,45 @@ class BackupInstrumentedTest {
         val artist = dao.artistByName("测试歌手")
         assertTrue("歌手合并恢复: ${artist?.aliases}", artist?.aliases?.contains("别名1") == true)
     }
+
+    /**
+     * v1.3.x 需求6:译文随备份走 —— 走**真实 DAO + export/import 全程**验证。
+     *
+     * 重点盯 `payload`：它是**嵌套的 JSON 字符串**（`{"0":"…"}`），
+     * 在 BackupData 里又是一层 JSON 的字段值，**两层转义必须都原样保住**——
+     * 丢一层，恢复时 Gson 解析失败，整批译文静默消失（用户看到"翻译没保存"）。
+     * 单测只验了 Gson 数据形状，这里验的是"真的存进库、清空、再导回来"。
+     */
+    @Test
+    fun exportImportRoundTrip_restoresLyricsTranslation() = runBlocking {
+        val payload = """{"0":"第一行","1":"含\"引号\"的行","5":"第六行"}"""
+        dao.upsertLyricsTranslation(
+            com.shiyin.music.data.db.LyricsTranslationEntity(
+                mediaId = 77777L,
+                lyricsHash = "testhash12345678",
+                payload = payload,
+                source = "ai",
+                translatedAt = 1_700_000_000_000L,
+            ),
+        )
+
+        // 1) 导出
+        val json = mgr.export()
+        assertTrue("export 应含译文行", json.contains("testhash12345678"))
+
+        // 2) 模拟数据丢失
+        db.clearAllTables()
+        assertTrue("清表后译文应空", dao.lyricsTranslation(77777L, "testhash12345678") == null)
+
+        // 3) 导入恢复
+        mgr.import(json)
+
+        // 4) 逐字段核对（payload 转义是重点）
+        val back = dao.lyricsTranslation(77777L, "testhash12345678")
+        assertTrue("译文行应恢复", back != null)
+        assertTrue("payload 转义必须原样保住: ${back?.payload}", back?.payload == payload)
+        assertTrue("mediaId 应恢复", back?.mediaId == 77777L)
+        assertTrue("source 应恢复: ${back?.source}", back?.source == "ai")
+        assertTrue("translatedAt 应恢复", back?.translatedAt == 1_700_000_000_000L)
+    }
 }

@@ -49,6 +49,10 @@ class SettingsStore(private val context: Context) {
     private val keyFuriganaAutoVerify = booleanPreferencesKey("furigana_auto_verify")
     /** 歌词本歌词颜色:"default"(跟随封面,现状) / "white" / "black"。 */
     private val keyLyricsColorMode = stringPreferencesKey("lyrics_color_mode")
+    /** v1.3.x 歌词本翻译:外语歌进入歌词本时自动触发 AI 翻译(默认 false——AI 永远用户主动)。 */
+    private val keyTranslateAutoForeign = booleanPreferencesKey("translate_auto_foreign")
+    /** v1.3.x 歌词本翻译:有保存的译文时默认显示(默认 true——译完即存,进来就给看)。 */
+    private val keyTranslateDefaultShow = booleanPreferencesKey("translate_default_show")
 
     data class Settings(
         val dark: Boolean,
@@ -74,6 +78,10 @@ class SettingsStore(private val context: Context) {
         val furiganaAutoVerify: Boolean,
         /** v1.3.x 歌词本:歌词颜色 "default"(跟随封面)/"white"/"black"。 */
         val lyricsColorMode: String,
+        /** v1.3.x 歌词本翻译:外语歌进歌词本自动触发翻译(默认 false)。 */
+        val translateAutoForeign: Boolean,
+        /** v1.3.x 歌词本翻译:有保存译文时默认显示(默认 true)。 */
+        val translateDefaultShow: Boolean,
     )
 
     val flow: Flow<Settings> = context.dataStore.data.map { p ->
@@ -98,6 +106,8 @@ class SettingsStore(private val context: Context) {
             furiganaDefaultOn = p[keyFuriganaDefaultOn] ?: true,
             furiganaAutoVerify = p[keyFuriganaAutoVerify] ?: true,
             lyricsColorMode = (p[keyLyricsColorMode] ?: "default").let { if (it in listOf("default", "white", "black")) it else "default" },
+            translateAutoForeign = p[keyTranslateAutoForeign] ?: false,
+            translateDefaultShow = p[keyTranslateDefaultShow] ?: true,
         )
     }
 
@@ -135,6 +145,8 @@ class SettingsStore(private val context: Context) {
     /** v1.3.x 歌词本设置写入(见字段注释;lyricsColorMode 只收 default/white/black)。 */
     suspend fun setFuriganaDefaultOn(v: Boolean) = context.dataStore.edit { it[keyFuriganaDefaultOn] = v }
     suspend fun setFuriganaAutoVerify(v: Boolean) = context.dataStore.edit { it[keyFuriganaAutoVerify] = v }
+    suspend fun setTranslateAutoForeign(v: Boolean) = context.dataStore.edit { it[keyTranslateAutoForeign] = v }
+    suspend fun setTranslateDefaultShow(v: Boolean) = context.dataStore.edit { it[keyTranslateDefaultShow] = v }
     suspend fun setLyricsColorMode(mode: String) =
         context.dataStore.edit { it[keyLyricsColorMode] = if (mode in listOf("white", "black")) mode else "default" }
 

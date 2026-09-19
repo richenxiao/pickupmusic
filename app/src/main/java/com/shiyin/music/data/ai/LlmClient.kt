@@ -28,6 +28,45 @@ data class LlmResponse(
     val totalTokens: Int get() = promptTokens + completionTokens
 }
 
+/** v1.3.7: 一次工具调用请求(OpenAI function calling 的 tool_calls 条目)。 */
+data class LlmToolCall(
+    val id: String,
+    val name: String,
+    /** function.arguments 原文(JSON 字符串,由调用方解析)。 */
+    val argumentsJson: String,
+)
+
+/** v1.3.7: 带工具调用的响应——content 与 toolCalls 至少其一非空。 */
+data class LlmToolResponse(
+    val content: String?,
+    val toolCalls: List<LlmToolCall>,
+    val promptTokens: Int,
+    val completionTokens: Int,
+    val cacheTokens: Int,
+    val thinking: String?,
+)
+
+/**
+ * v1.3.7: [LlmClient.callWithTools] 的结果——**错误随结果一起返回**。
+ *
+ * 为什么不复用 `lastError`：它是 `object LlmClient` 上的共享可变状态，而
+ * "聊天搜索决策 / 歌手专辑年份 / 歌词翻译 / 曲目重命名比对"可能同时在跑。
+ * 调用方若在 `callWithTools` 返回后再去读 `lastError`，那个窗口里完全可能被
+ * 另一个协程覆盖（另一个调用成功时会把它置 null）→ 回退判定误判，甚至向用户
+ * 报出 "LLM 调用失败:null"。把码与文案放进返回值，从根上消除这个竞态。
+ */
+sealed class LlmToolResult {
+    data class Ok(val resp: LlmToolResponse) : LlmToolResult()
+
+    /**
+     * @param httpCode 服务端 HTTP 状态码；**null = 网络异常 / 响应不可解析**（可重试）。
+     *                 只有 400/422 这类"请求形状被拒"才应被解读为"供应商不认 tools"；
+     *                 401/403/429 是真实的鉴权/限流错误，必须原样透出，不能静默回退。
+     * @param message  可直接展示给用户的错误文案。
+     */
+    data class Err(val httpCode: Int?, val message: String) : LlmToolResult()
+}
+
 /**
  * v1.2.2 Agent: 通用 OpenAI 兼容 LLM 客户端。给定 [LlmProviderConfig] + messages,
  * 调 chat/completions,解析 content + usage。多供应商共用同一套请求/解析逻辑。
@@ -331,6 +370,132 @@ object LlmClient {
                 null
             }
         }
+
+    /**
+     * v1.3.7: OpenAI 兼容 function calling(非流式——工具循环不需要打字机)。
+     *
+     * 与 [call] 的差异:①messages 是原始 JSON(要支持 role=tool / assistant 的
+     * tool_calls 回显,Pair<String,String> 表达不了);②请求带 tools + tool_choice=auto;
+     * ③响应解析 choices[0].message.tool_calls。
+     *
+     * **错误随结果一起返回**(见 [LlmToolResult.Err])——调用方**不要**去读 [lastError]
+     * 判定回退,它是共享状态、并发下会被覆盖(详见 [LlmToolResult] 的说明)。
+     *
+     * 网络异常(无 HTTP 码)重试 1 次,与 [call] 同一理由:项目实测最常见的失败是
+     * "息屏/切后台后 OkHttp 复用连接被服务端关掉"(SocketException),重试即可恢复。
+     * HTTP 错误不重试——重发同样的请求只会再拿一次同样的拒绝。
+     */
+    suspend fun callWithTools(
+        config: LlmProviderConfig,
+        messages: JsonArray,
+        tools: JsonArray?,
+        temperature: Double = 0.0,
+        maxTokens: Int = 4096,
+        callSec: Long = 120,
+        retries: Int = 1,
+    ): LlmToolResult = withContext(Dispatchers.IO) {
+        var last: LlmToolResult = LlmToolResult.Err(null, "未发起调用")
+        for (attempt in 0..retries) {
+            last = callWithToolsOnce(config, messages, tools, temperature, maxTokens, callSec)
+            if (last is LlmToolResult.Ok) break
+            val err = last as LlmToolResult.Err
+            // 只重试"网络层失败"(无 HTTP 码)
+            if (err.httpCode != null || attempt == retries) break
+            android.util.Log.w(TAG, "callWithTools 网络异常,重试 ${attempt + 1}/$retries: ${err.message}")
+        }
+        last
+    }
+
+    /** [callWithTools] 的单次实现(不含重试)。 */
+    private fun callWithToolsOnce(
+        config: LlmProviderConfig,
+        messages: JsonArray,
+        tools: JsonArray?,
+        temperature: Double,
+        maxTokens: Int,
+        callSec: Long,
+    ): LlmToolResult {
+        if (!config.isConfigured) {
+            lastError = "供应商未配置(缺 API Key 或模型名)"
+            return LlmToolResult.Err(null, "供应商未配置(缺 API Key 或模型名)")
+        }
+        try {
+            val body = JsonObject().apply {
+                addProperty("model", config.model)
+                add("messages", messages)
+                if (tools != null && tools.size() > 0) {
+                    add("tools", tools)
+                    addProperty("tool_choice", "auto")
+                }
+                addProperty("max_tokens", maxTokens)
+                addProperty("temperature", temperature)
+            }.toString()
+
+            val req = Request.Builder()
+                .url(config.endpoint)
+                .header("Authorization", "Bearer ${config.apiKey}")
+                .header("Content-Type", "application/json")
+                .post(body.toRequestBody(JSON))
+                .build()
+            val perCallClient = if (callSec == 120L) client else client.newBuilder()
+                .readTimeout(callSec, TimeUnit.SECONDS)
+                .build()
+
+            val resp = perCallClient.newCall(req).execute()
+            val respBody = resp.body?.string()
+            if (respBody == null) {
+                val m = "服务端响应为空(HTTP ${resp.code})"
+                lastError = m
+                return LlmToolResult.Err(resp.code, m)
+            }
+            if (!resp.isSuccessful) {
+                val msg = errorMessage(respBody)
+                val m = "HTTP ${resp.code}" + if (msg.isNullOrBlank()) "" else ": ${msg.take(140)}"
+                lastError = m
+                return LlmToolResult.Err(resp.code, m)
+            }
+            val json = runCatching { JsonParser.parseString(respBody).asJsonObject }.getOrNull() ?: run {
+                val m = "响应不是 JSON(检查 baseUrl 是否指向 OpenAI 兼容端点)"
+                lastError = m
+                return LlmToolResult.Err(null, m)
+            }
+            val msgObj = json.getAsJsonArray("choices")?.firstOrNull()?.asJsonObject
+                ?.getAsJsonObject("message") ?: run {
+                val m = "响应缺少 message"
+                lastError = m
+                return LlmToolResult.Err(null, m)
+            }
+            val content = msgObj.get("content")?.takeIf { it.isJsonPrimitive }?.asString
+            val toolCalls = msgObj.getAsJsonArray("tool_calls")?.mapIndexedNotNull { idx, el ->
+                val o = el?.asJsonObject ?: return@mapIndexedNotNull null
+                val fn = o.getAsJsonObject("function") ?: return@mapIndexedNotNull null
+                val name = fn.get("name")?.takeIf { it.isJsonPrimitive }?.asString ?: return@mapIndexedNotNull null
+                LlmToolCall(
+                    // 少数网关不回 id;回显时 tool_call_id 必须与 assistant 消息里的 id 一致,
+                    // 空串会被严格校验的网关判 400 → 整条链路失败。这里合成一个稳定 id。
+                    id = o.get("id")?.takeIf { it.isJsonPrimitive }?.asString?.takeIf { it.isNotBlank() }
+                        ?: "call_$idx",
+                    name = name,
+                    argumentsJson = fn.get("arguments")?.takeIf { it.isJsonPrimitive }?.asString ?: "{}",
+                )
+            } ?: emptyList()
+            val thinking = msgObj.get("reasoning")?.takeIf { it.isJsonPrimitive }?.asString
+                ?: msgObj.get("reasoning_content")?.takeIf { it.isJsonPrimitive }?.asString
+            val usage = json.getAsJsonObject("usage")
+            val pt = usage?.get("prompt_tokens")?.takeIf { it.isJsonPrimitive }?.asInt ?: 0
+            val ct = usage?.get("completion_tokens")?.takeIf { it.isJsonPrimitive }?.asInt ?: 0
+            val cacheTk = usage?.getAsJsonObject("prompt_tokens_details")?.get("cached_tokens")?.takeIf { it.isJsonPrimitive }?.asInt
+                ?: usage?.get("prompt_cache_hit_tokens")?.takeIf { it.isJsonPrimitive }?.asInt
+                ?: 0
+            lastError = null
+            return LlmToolResult.Ok(LlmToolResponse(content, toolCalls, pt, ct, cacheTk, thinking))
+        } catch (e: Exception) {
+            if (e is kotlinx.coroutines.CancellationException) throw e
+            val m = "网络异常: ${e.message ?: e.javaClass.simpleName}"
+            lastError = m
+            return LlmToolResult.Err(null, m)
+        }
+    }
 
     /**
      * v1.3.0: 自动获取该供应商可用模型列表(GET {baseUrl}/models,OpenAI 标准)。

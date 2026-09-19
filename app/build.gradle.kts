@@ -165,6 +165,21 @@ dependencies {
     // v4.3: fuzzy-search unit tests
     testImplementation("junit:junit:4.13.2")
 
+    // ── 需求6「歌词本翻译」离线路径：ML Kit 端侧翻译（**已实测、待拍板，暂未启用**）──
+    // 拟加：implementation("com.google.mlkit:translate:17.0.3")
+    //   bundled 变体（翻译代码含 TFLite 运行时打进 APK），不依赖 Google Play 服务，
+    //   国内无 GMS 的 ROM 也能跑；另一变体 play-services-mlkit-translation 走 Play
+    //   Services 分发，国内 ROM 不可用，已排除。
+    // 语言包本身无法打进 APK（官方只提供动态下载，约 30MB/语言存用户手机）。
+    //
+    // ⚠️ 2026-09-16 实测：加这一个依赖使 release APK **27.2 MiB → 87.5 MiB（+60.3 MiB）**，
+    //    远超方案预估的 +2~4MB。原因：R8 裁不了原生库，libtranslate_jni.so 四个 ABI
+    //    全带（arm64 15.60 + armeabi-v7a 11.07 + x86_64 16.57 + x86 16.46 MiB）。
+    //    16KB page size 对齐已实测通过（PT_LOAD p_align = 16384）。
+    //    处置选项见 docs/handoff-*：①接受 87.5MB ②release 只留 arm 两 ABI（≈54.5 MiB，
+    //    但模拟器 x86_64 的 instrumented test 会受影响）③仅 arm64（≈43.4 MiB）。
+    //    拍板后再放开这一行并补回 MlKitLyricsTranslator.kt。
+
     // v1.1.0: 日文歌词振假名（furigana）分词引擎。Kuromoji IPADIC 为纯 Java，
     // 无 .so / JNI / 网络，词表内置（APK 增大约 14MB）。Token.getReading() 返回
     // 片假名读音，渲染层据此生成振假名注音。仅用于「歌词本」全屏页。

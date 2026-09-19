@@ -169,7 +169,16 @@ fun AgentScreen(vm: MainViewModel) {
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.Center,
                     ) {
-                        Text("告诉 Agent 你想做什么", style = heading(18))
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            // v1.3.x 反馈:Sparkles 图标与文字同色(涂黑)——原用 n500(灰)
+                            // 与 heading 文字的 c.text 不协调,视觉上"图标是装饰、文字是正文"
+                            // 两截。同色后图标与文字是一个整体。
+                            OIcon(Lucide.Sparkles, 20.dp, LocalOrganic.current.text)
+                            Text("告诉 Agent 你想做什么", style = heading(18))
+                        }
                     }
                 }
             }
@@ -785,10 +794,13 @@ private fun ThinkingBlock(thinking: String, live: Boolean, thinkingMs: Long = 0L
 @Composable
 private fun AgentReplyText(text: String, streaming: Boolean) {
     val c = LocalOrganic.current
-    var shownCount by remember(text) { mutableStateOf(0) }
+    // v1.3.x 反馈④(打字机错乱):remember(text) 让每次 text 变化(流式新增量到达)
+    // 都重置 shownCount=0——用户看到"每次都从头开始打"。改 remember(Unit) 不重置,
+    // shownCount 只增不减,LaunchedEffect(text) 重启 effect 继续从当前位置追赶。
+    var shownCount by remember { mutableStateOf(0) }
     if (streaming) {
         // 每帧吐字:LaunchedEffect 循环推进游标,追到全量即停(等下一批增量到达
-        // 由 text 变化重启 effect 继续)。
+        // 由 text 变化重启 effect 继续——shownCount 不重置,从上次位置继续)。
         LaunchedEffect(text) {
             while (shownCount < text.length) {
                 shownCount = (shownCount + 2).coerceAtMost(text.length)

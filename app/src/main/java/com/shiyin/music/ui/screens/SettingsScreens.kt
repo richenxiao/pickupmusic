@@ -436,14 +436,25 @@ private fun LyricsBookScreen(vm: MainViewModel) {
                 .padding(horizontal = 16.dp, vertical = 6.dp),
         ) {
             // v1.3.x:图标语义贴合——振假名默认开用"ア"(片假名,furigana 本体,与
-            // 歌词页 あ 开关联动但设置页用片假名区分);自动校验收敛到 Check
-            // (验证通过语义,原 RefreshCw 是"重跑"不合"校验")。
+            // 歌词页 あ 开关联动但设置页用片假名区分);自动校验换 BadgeCheck(徽章
+            // +勾=已验证;原 Check 单勾语义太弱,用户两轮反馈仍觉不符)。
             // 单行布局:图标与文字同行居中,不再错位。
             SettingRowGlyph(glyph = "ア", "日语歌默认开振假名", divider = true) {
                 OrganicSwitch(vm.furiganaDefaultOn) { vm.setFuriganaDefaultOn(!vm.furiganaDefaultOn) }
             }
-            SettingRow(Lucide.Check, "日语歌自动校验振假名", null, divider = true) {
+            SettingRow(Lucide.BadgeCheck, "日语歌自动校验振假名", null, divider = true) {
                 OrganicSwitch(vm.furiganaAutoVerify) { vm.setFuriganaAutoVerify(!vm.furiganaAutoVerify) }
+            }
+            // ── v1.3.x 反馈:翻译小节(紧接振假名之下)─────────────────────────
+            // 外语自动翻译:进入歌词本时外语歌自动触发 AI 翻译(默认关——AI 永远
+            // 用户主动触发,不静默烧 token)。默认显示译文:有保存译文时进页面直接
+            // 给看(译完即存的恢复逻辑,默认开)。图标区分(用户反馈:两个不能一模
+            // 一样):自动翻译=Languages(双语对照),显示译文=Captions(字幕)。
+            SettingRow(Lucide.Languages, "外语歌自动翻译", null, divider = true) {
+                OrganicSwitch(vm.translateAutoForeign) { vm.setTranslateAutoForeign(!vm.translateAutoForeign) }
+            }
+            SettingRow(Lucide.Captions, "默认显示译文", null, divider = true) {
+                OrganicSwitch(vm.translateDefaultShow) { vm.setTranslateDefaultShow(!vm.translateDefaultShow) }
             }
             // 歌词颜色三档:默认(跟随封面)/白色/黑色。
             // v1.3.x 设计打磨:文字 pill 换色样 swatch——选颜色的控件直接展示颜色

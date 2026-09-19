@@ -441,4 +441,14 @@ ${skillsManifest()}
         if (!interrogative) return false
         return Regex("""(谁|什么时候|哪一年|哪年|几几年|多少|是什么|指的是什么|为什么|为啥|什么意思)""").containsMatchIn(q)
     }
+
+    /**
+     * v1.3.7: 该指令是否会走本地快速路径(固定句式的技能指令,零 LLM 往返)。
+     *
+     * 供 MainViewModel 的"要不要联网"决策用:命中快速路径的指令一定是**对音乐库的
+     * 操作**(排曲序/修歌手/找歌词),不可能是需要联网的事实问题。不跳过的话,
+     * 每条本地指令都要白付一次搜索决策 LLM 往返——v1.3.7 把"要不要联网"从本地正则
+     * 改成模型自主后,本地指令原本的零延迟优势会被这条决策调用吃掉。
+     */
+    fun hasFastPath(intent: String): Boolean = fastPathPlan(intent) != null
 }

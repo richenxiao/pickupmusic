@@ -307,6 +307,24 @@ data class ExternalReadingEvidenceEntity(
     val fetchedAt: Long,
 )
 
+// v1.3.x 需求6:歌词翻译结果（AI 档）。
+// 与振假名 evidence 同一套思路——**译完即存，下次打开自动恢复，不再重复烧 token**。
+// 绑 (mediaId + lyricsHash)：换歌词源 / 改歌词文本自动失效，不会把旧译文挂到新文本上。
+// payload 是"行号→译文"的 JSON（Gson），整批替换不做行级增量——翻译本身是一次性整歌结果。
+@Entity(
+    tableName = "lyrics_translation",
+    primaryKeys = ["mediaId", "lyricsHash"],
+)
+data class LyricsTranslationEntity(
+    val mediaId: Long,
+    val lyricsHash: String,
+    /** `Map<Int, String>`（行号 0-based → 译文）的 Gson 序列化。 */
+    val payload: String,
+    /** 译文来源：`ai`（AI 档）／`offline`（离线档，暂未接线）。角标据此显示。 */
+    val source: String,
+    val translatedAt: Long,
+)
+
 @Dao
 interface ShiyinDao {
     // Lyrics
@@ -679,6 +697,20 @@ interface ShiyinDao {
     @Query("DELETE FROM external_reading_evidence WHERE mediaId = :mediaId")
     suspend fun deleteExternalEvidenceForMedia(mediaId: Long)
 
+    // ── v1.3.x 需求6:歌词翻译结果（AI 档）───────────────────────────────────
+    /** 某曲某版本已保存的译文（一行，payload 内含全部行）。 */
+    @Query("SELECT * FROM lyrics_translation WHERE mediaId = :mediaId AND lyricsHash = :lyricsHash")
+    suspend fun lyricsTranslation(mediaId: Long, lyricsHash: String): LyricsTranslationEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertLyricsTranslation(row: LyricsTranslationEntity)
+
+    @Query("DELETE FROM lyrics_translation WHERE mediaId = :mediaId AND lyricsHash = :lyricsHash")
+    suspend fun deleteLyricsTranslation(mediaId: Long, lyricsHash: String)
+
+    @Query("DELETE FROM lyrics_translation WHERE mediaId = :mediaId")
+    suspend fun deleteLyricsTranslationForMedia(mediaId: Long)
+
     // ── v1.1+: 自动识别缓存清理 ─────────────────────────────────────────────
     /** 清理「自动识别」持久化的歌词（autoSaved=1）与全部封面缓存。保留：手动保存/导入的
      *  歌词(autoSaved=0)、Song Override(reading_override)、外部假名 evidence、track_info_override。
@@ -725,6 +757,12 @@ interface ShiyinDao {
     suspend fun upsertAllReadingOverride(list: List<ReadingOverrideEntity>)
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertAllExternalReadingEvidence(list: List<ExternalReadingEvidenceEntity>)
+    // v1.3.x 需求6:翻译结果随备份走——与外部假名 evidence 同一理由(派生数据但
+    // 重建要花钱/花流量:译文重译要再烧一次 token)。主键 (mediaId, lyricsHash) 无自增 id,直接 upsert。
+    @Query("SELECT * FROM lyrics_translation")
+    suspend fun allLyricsTranslations(): List<LyricsTranslationEntity>
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertAllLyricsTranslations(list: List<LyricsTranslationEntity>)
 }
 
 @Database(
@@ -752,8 +790,10 @@ interface ShiyinDao {
         TokenUsageLogEntity::class,
         // v1.3.3b: 歌手页专辑手动排序
         ArtistAlbumOrderEntity::class,
+        // v1.3.x 需求6: 歌词翻译结果（AI 档，译完即存、下次自动恢复）
+        LyricsTranslationEntity::class,
     ],
-    version = 21,
+    version = 22,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -1107,9 +1147,26 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        // v1.3.x 需求6: 歌词翻译结果表。译完即存 → 下次打开歌词本自动恢复,
+        // 不再重复调 LLM 烧 token。绑 (mediaId, lyricsHash) 与振假名 evidence 同键法。
+        private val MIGRATION_21_22 = object : Migration(21, 22) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS lyrics_translation (
+                        mediaId INTEGER NOT NULL,
+                        lyricsHash TEXT NOT NULL,
+                        payload TEXT NOT NULL,
+                        source TEXT NOT NULL,
+                        translatedAt INTEGER NOT NULL,
+                        PRIMARY KEY(mediaId, lyricsHash)
+                    )
+                """.trimIndent())
+            }
+        }
+
         fun get(context: Context): AppDatabase = instance ?: synchronized(this) {
             instance ?: Room.databaseBuilder(context.applicationContext, AppDatabase::class.java, "shiyin.db")
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21, MIGRATION_21_22)
                 // 不使用 fallbackToDestructiveMigration：迁移失败时宁可崩溃也不要删全库。
                 // 之前该选项导致迁移异常时删除所有用户数据（排序、专辑名、播放历史等）。
                 .addCallback(object : Callback() {

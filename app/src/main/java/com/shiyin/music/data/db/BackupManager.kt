@@ -9,6 +9,7 @@ import com.shiyin.music.data.db.ArtistEntity as ART
 import com.shiyin.music.data.db.SongArtistEntity as SA
 import com.shiyin.music.data.db.ReadingOverrideEntity as RO
 import com.shiyin.music.data.db.ExternalReadingEvidenceEntity as ERE
+import com.shiyin.music.data.db.LyricsTranslationEntity as LT
 import com.shiyin.music.data.db.ArtistImageCacheEntity as AIC
 import com.shiyin.music.data.db.ArtistImageOverrideEntity as AIOV
 
@@ -22,6 +23,8 @@ import com.shiyin.music.data.db.ArtistImageOverrideEntity as AIOV
  *  - reading_override（振假名当て字）/ external_reading_evidence（外部假名 evidence）
  *  - artist_image_override（歌手手选写真，永久用户资产）/ artist_image_cache（自动源命中缓存，
  *    仅导出成功行，避免重抓；跨设备不导出失败 TTL 态以免毒到新网络）
+ *  - lyrics_translation（v1.3.x 需求6：歌词翻译结果。虽是派生数据，但**重建要再烧一次
+ *    LLM token**——与 external_reading_evidence 同一理由，故随备份走）
  *
  * 不导出：saved_lyrics（歌词本体，量大且可重新识别）、album_art_cache（取色缓存，
  * 可重算）、play_count/play_event（播放统计，非修正）、playlist*（歌单，非修正）、
@@ -47,6 +50,8 @@ internal class BackupManager(private val dao: ShiyinDao) {
         // v1.2.0 #6: 歌手写真——用户手选 override 是永久资产；cache 成功行随附避免重抓。
         val artistImageCache: List<AIC>,
         val artistImageOverride: List<AIOV>,
+        // v1.3.x 需求6: 歌词翻译结果。可空 + 默认 null → 兼容旧备份（Gson 缺字段即 null）。
+        val lyricsTranslation: List<LT>? = null,
     )
 
     /** 导出全部修正数据为 JSON 字符串。调用方负责写入 SAF/文件。 */
@@ -63,6 +68,7 @@ internal class BackupManager(private val dao: ShiyinDao) {
             externalReadingEvidence = dao.allExternalReadingEvidence(),
             artistImageCache = dao.allArtistImageCacheSuccess(),
             artistImageOverride = dao.allArtistImageOverride(),
+            lyricsTranslation = dao.allLyricsTranslations(),
         )
         return Gson().toJson(data)
     }
@@ -111,6 +117,10 @@ internal class BackupManager(private val dao: ShiyinDao) {
         val imgOverride = data.artistImageOverride.orEmpty()
         if (imgCache.isNotEmpty()) dao.upsertAllArtistImageCache(imgCache)
         if (imgOverride.isNotEmpty()) dao.upsertAllArtistImageOverride(imgOverride)
+        // v1.3.x 需求6:翻译结果。PK=(mediaId, lyricsHash)，无自增 id，直接 upsert。
+        // orEmpty 兼容旧备份（无该字段 → null → 空，跳过）。
+        val translations = data.lyricsTranslation.orEmpty()
+        if (translations.isNotEmpty()) dao.upsertAllLyricsTranslations(translations)
         return ImportStats(
             albumOverride = data.albumOverride.size,
             albumInfoOverride = data.albumInfoOverride.size,
@@ -122,6 +132,7 @@ internal class BackupManager(private val dao: ShiyinDao) {
             externalReadingEvidence = data.externalReadingEvidence.size,
             artistImageCache = imgCache.size,
             artistImageOverride = imgOverride.size,
+            lyricsTranslation = translations.size,
         )
     }
 
@@ -143,11 +154,13 @@ internal class BackupManager(private val dao: ShiyinDao) {
         val externalReadingEvidence: Int,
         val artistImageCache: Int,
         val artistImageOverride: Int,
+        val lyricsTranslation: Int = 0,
     ) {
         override fun toString() =
             "专辑迁移$albumOverride / 专辑修正$albumInfoOverride / 曲目修正$trackInfoOverride / " +
             "曲目迁专辑$trackAlbumMove / 歌手$artists / 曲目-歌手$songArtist / " +
             "振假名注音$readingOverride / 外部假名$externalReadingEvidence / " +
-            "歌手写真缓存$artistImageCache / 歌手写真手选$artistImageOverride"
+            "歌手写真缓存$artistImageCache / 歌手写真手选$artistImageOverride / " +
+            "歌词翻译$lyricsTranslation"
     }
 }

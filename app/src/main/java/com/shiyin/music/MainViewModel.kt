@@ -191,6 +191,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     var furiganaAutoVerify by mutableStateOf(true); private set
     /** 歌词本歌词颜色:"default"=跟随封面取色(现状)/"white"/"black"。 */
     var lyricsColorMode by mutableStateOf("default"); private set
+    /** v1.3.x 歌词本翻译:外语歌进入歌词本时自动触发 AI 翻译(默认 false——AI 永远用户主动触发)。 */
+    var translateAutoForeign by mutableStateOf(false); private set
+    /** v1.3.x 歌词本翻译:有保存的译文时默认显示(默认 true——译完即存,进来就给看)。 */
+    var translateDefaultShow by mutableStateOf(true); private set
 
     // ── UI state (mirrors the prototype's state machine) ────────────────────
     var isOnboarding by mutableStateOf(true)
@@ -362,6 +366,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                                 com.shiyin.music.ui.components.ArtCache.load(
                                     getApplication<Application>(), t, 1024,
                                 )
+                                // v1.3.x 切歌动画补做:迷你播放条 40dp 封面走 160 桶,
+                                // 与 1024 桶互不共享(LruCache 按 albumId@bucket 分桶)——
+                                // 动画滑入的新封面若 160 桶未暖会先字母占位再突变成图,
+                                // 相邻曲两个桶都预热。
+                                com.shiyin.music.ui.components.ArtCache.load(
+                                    getApplication<Application>(), t, 160,
+                                )
                             }
                         }
                     }
@@ -436,6 +447,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 furiganaDefaultOn = s.furiganaDefaultOn
                 furiganaAutoVerify = s.furiganaAutoVerify
                 lyricsColorMode = s.lyricsColorMode
+                // v1.3.x 歌词本翻译设置同步
+                translateAutoForeign = s.translateAutoForeign
+                translateDefaultShow = s.translateDefaultShow
                 // v1.2.1: 写真源运行时配置同步到 ImageSourceConfig(源读取它,即时生效)
                 fanartApiKey = s.fanartApiKey
                 lastfmApiKey = s.lastfmApiKey
@@ -1340,23 +1354,57 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 // Dispatchers.IO)——按项目 v5.2 #75 约定,state 写入投递主线程执行,
                 // 思考胶囊/打字机不依赖"后台写 snapshot 恰好触发重组"。
                 val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
-                // v1.3.5: 事实性问题**先搜后答**——本地判定(问句+事实疑问词)在发车前
-                // 就查一遍,是事实问题 → 先 Tavily 搜证、带着资料路由,模型一次输出
-                // 核实后的答案。不再"先流出猜测、发现是 FACT 再吞回去重搜"(用户看到
-                // 答案闪现又消失,且猜测的瞎编答案不该露脸)。判定完全本地化,模型
-                // 不再打任何标记(不输出 FACT 字样,聊天文本零协议记号)。
-                val isFactQ = com.shiyin.music.data.ai.AgentEngine.looksLikeFactQuestion(text)
+                // v1.3.7: "要不要联网"由**模型自己决定**(function calling)——原实现是
+                // 本地正则(looksLikeFactQuestion),用户说"联网查一下"没踩中正则就
+                // 不搜,模型全程没有工具可用("完全不是 agent 的样子"的根因)。
+                // 现在把 web_search 工具交给模型:它判断需要 → 发起 tool_calls,
+                // 我们执行 Tavily 把资料塞进路由;它判断不需要 → 零搜索零打扰。
+                // 供应商不认 tools(HTTP 4xx)→ 回退旧正则启发式,行为与上一版一致。
                 var webContext = ""
-                if (isFactQ && tavilyApiKey.isNotBlank()) {
-                    mainHandler.post {
-                        steps.upsert("web", "联网核实", com.shiyin.music.data.ai.AgentEngine.StepStatus.RUNNING)
-                        agentMessages = agentMessages.replaceAt(msgIdx, AgentMessage("agent", "", steps.toList()))
+                if (tavilyApiKey.isNotBlank()) {
+                    val decision = com.shiyin.music.data.ai.AgentTools.decideAndSearch(
+                        config, tavilyApiKey, text,
+                        onSearch = { q ->
+                            mainHandler.post {
+                                steps.upsert("web", "联网搜索:$q", com.shiyin.music.data.ai.AgentEngine.StepStatus.RUNNING)
+                                agentMessages = agentMessages.replaceAt(msgIdx, AgentMessage("agent", "", steps.toList()))
+                            }
+                        },
+                    )
+                    // 决策调用本身也花 token(不搜也花了)——无条件入账,用量面板才准。
+                    if (decision != null && decision.toolsSupported) {
+                        viewModelScope.launch(Dispatchers.IO) {
+                            com.shiyin.music.data.ai.TokenUsageStore.log(
+                                getApplication(), llmActiveProvider, "agent_search_decision",
+                                decision.promptTokens, decision.completionTokens, decision.cacheTokens,
+                            )
+                        }
                     }
-                    webContext = runCatching {
-                        com.shiyin.music.data.ai.TavilyService.search(tavilyApiKey, text.take(120))
-                    }.getOrNull() ?: ""
-                    mainHandler.post {
-                        steps.upsert("web", "联网核实", if (webContext.isBlank()) com.shiyin.music.data.ai.AgentEngine.StepStatus.FAILED else com.shiyin.music.data.ai.AgentEngine.StepStatus.DONE)
+                    when {
+                        decision == null -> Unit  // 网络失败:不搜也不阻塞聊天
+                        !decision.toolsSupported -> {                            // 旧启发式回退(供应商不支持 function calling)
+                            val isFactQ = com.shiyin.music.data.ai.AgentEngine.looksLikeFactQuestion(text)
+                            if (isFactQ) {
+                                mainHandler.post {
+                                    steps.upsert("web", "联网核实", com.shiyin.music.data.ai.AgentEngine.StepStatus.RUNNING)
+                                    agentMessages = agentMessages.replaceAt(msgIdx, AgentMessage("agent", "", steps.toList()))
+                                }
+                                webContext = runCatching {
+                                    com.shiyin.music.data.ai.TavilyService.search(tavilyApiKey, text.take(120))
+                                }.getOrNull() ?: ""
+                                mainHandler.post {
+                                    steps.upsert("web", "联网核实", if (webContext.isBlank()) com.shiyin.music.data.ai.AgentEngine.StepStatus.FAILED else com.shiyin.music.data.ai.AgentEngine.StepStatus.DONE)
+                                }
+                            }
+                        }
+                        decision.searches.isNotEmpty() -> {
+                            webContext = decision.contexts.joinToString("\n\n")
+                            val ok = webContext.isNotBlank()
+                            mainHandler.post {
+                                steps.upsert("web", "联网搜索(${decision.searches.size} 次)", if (ok) com.shiyin.music.data.ai.AgentEngine.StepStatus.DONE else com.shiyin.music.data.ai.AgentEngine.StepStatus.FAILED)
+                            }
+                        }
+                        else -> Unit  // 模型判断不需要联网
                     }
                 }
                 var route = routeOnce(text, history, config, steps, msgIdx, mainHandler, webContext) { th, rp ->
@@ -2275,6 +2323,19 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         showToast("已创建「$name」", null)
     }
 
+    /** v1.3.x 反馈:保存到歌单弹窗的「新建歌单」——建完直接把当前歌加进去,
+     *  不用先建再回来点。与 createPlaylist() 同命名规则,但带"立即加入"语义。 */
+    fun createPlaylistAndAdd(trackId: Long) {
+        val now = System.currentTimeMillis()
+        val id = "p${now}"
+        val name = "新歌单 #${playlists.size + 1}"
+        viewModelScope.launch(Dispatchers.IO) {
+            dao.upsertPlaylist(com.shiyin.music.data.db.PlaylistEntity(id, name, playlists.size))
+            dao.addToPlaylist(com.shiyin.music.data.db.PlaylistTrackEntity(id, trackId, now))
+        }
+        showToast("已创建「$name」并加入当前歌曲", null)
+    }
+
     // ── v2.0/v3.0: auto-populate artist entities from library (with multi-artist splitting) ─
     private fun ensureArtistEntities(tracks: List<Track>) {
         val now = System.currentTimeMillis()
@@ -2440,6 +2501,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     // ── v1.3.x 歌词本设置 toggles ───────────────────────────────────────────
     fun setFuriganaDefaultOn(v: Boolean) = viewModelScope.launch { settingsStore.setFuriganaDefaultOn(v) }
     fun setFuriganaAutoVerify(v: Boolean) = viewModelScope.launch { settingsStore.setFuriganaAutoVerify(v) }
+    fun setTranslateAutoForeign(v: Boolean) = viewModelScope.launch { settingsStore.setTranslateAutoForeign(v) }
+    fun setTranslateDefaultShow(v: Boolean) = viewModelScope.launch { settingsStore.setTranslateDefaultShow(v) }
     fun setLyricsColorMode(mode: String) = viewModelScope.launch { settingsStore.setLyricsColorMode(mode) }
     /** v1.2.2 Agent: Tavily 联网搜索 key 设置。 */
     fun setTavilyKey(v: String) = viewModelScope.launch { settingsStore.setTavilyKey(v) }
@@ -2476,62 +2539,161 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         if (config == null) { progress("未配置 LLM(Agent 设置里填 Key + 选模型)"); return@withContext 0 }
         if (tavilyApiKey.isBlank()) { progress("未配置 Tavily 搜索 Key"); return@withContext 0 }
 
-        // 1. 联网搜该歌手的作品发布年表(中英关键词并搜,取先到的)
-        progress("联网搜索 $artistName 作品年表…")
-        val query = "$artistName albums discography release dates 专辑 发行日期 年表"
-        val tavilyCtx = runCatching {
-            com.shiyin.music.data.ai.TavilyService.search(tavilyApiKey, query)
-        }.getOrNull()
-        val ctxBlock = if (tavilyCtx.isNullOrBlank()) "(未搜到网络资料,凭你的知识回答)" else "网络资料:\n$tavilyCtx"
+        // 第7轮:已有日期的专辑**不再送 AI**(用户:"GEN/POP VIRUS 明明已有时间
+        // 还被重复搜,核对也该排在未标注专辑之后")——只把未标注的专辑交给模型,
+        // 已有日期的直接进最终排序。全部都有日期 → 零 LLM 调用直接重排。
+        val existingDates = releaseDates()
+        val alreadyDated = albums.mapNotNull { a ->
+            val d = if (a.second > 0) existingDates[a.second] else null
+            if (!d.isNullOrBlank()) a to d else null
+        }
+        val needDating = albums.filter { a -> a.second <= 0 || existingDates[a.second].isNullOrBlank() }
+        if (needDating.isEmpty()) {
+            if (alreadyDated.isEmpty()) { progress("本页没有可排序的专辑"); return@withContext 0 }
+            progress("全部 ${alreadyDated.size} 张已有日期,直接重排")
+            val ordered0 = alreadyDated.sortedByDescending { it.second }.map { it.first }
+            saveArtistAlbumOrder(artistName, ordered0.map { it.first })
+            progress("")
+            return@withContext alreadyDated.size
+        }
+        if (alreadyDated.isNotEmpty()) progress("${alreadyDated.size} 张已有日期跳过,只查剩余 ${needDating.size} 张…")
 
-        // 2. LLM 输出每张专辑的日期(编号方案:给本地列表编号,模型输出名字+日期)
-        progress("AI 分析发布时间…")
-        val listBlock = albums.joinToString("\n") { (_, _, name) -> "· $name" }
-        val prompt = """
+        // 1+2. AI 工具调用循环(第7轮重构):把 web_search 工具交给模型自己——
+        //    它判断要不要搜、搜什么、搜几次(可分专辑多轮),搜到资料再回答。
+        //    旧链路是本地写死"拼一条查询搜一次",搜不到就只能凭模型记忆 →
+        //    "明明联网能搜到却答不出"。maxTokens 按专辑数放大(默认 2048 会截断
+        //    大专辑表的 JSON,解析整体失败 → "一个日期都没有"的实测根因)。
+        val dateTokens = (needDating.size * 48 + 1024).coerceIn(2048, 8192)
+        val listBlock = needDating.joinToString("\n") { (_, _, name) -> "· $name" }
+        val sysMsg = """
+            你是音乐资料核对助手。你可以调用 web_search 联网搜索(可以多次,可以按专辑分别搜)。
+            有联网资料时以资料为准;资料没覆盖、你又不确定的专辑,直接不返回那一张,不要编造日期。
+        """.trimIndent()
+        val userMsg = """
             歌手:$artistName 的本地专辑/EP/单曲清单(名字可能与官方写法略有差异,由你对应):
             $listBlock
 
-            $ctxBlock
-
-            为上面每张作品输出官方发布日期。只返回 JSON:
+            为上面每张作品查出官方发布日期,最后只返回 JSON:
             {"albums":[{"name":"<上面清单里的原样名字>","date":"YYYY-MM-DD"}]}
-            规则:date 必须是真实发布日期(不确定的不要编造,直接不返回那一张);不要多余文字。
+            规则:date 必须是真实发布日期;只能确定到年就返回 "YYYY"、只能确定到月就返回 "YYYY-MM"
+            (不要为凑格式编造月/日);不确定的专辑不返回;不要多余文字。
         """.trimIndent()
-        val resp = com.shiyin.music.data.ai.LlmClient.call(config, listOf("user" to prompt))
-        val failReason = com.shiyin.music.data.ai.LlmClient.lastError
-        com.shiyin.music.data.ai.LlmClient.clearLastError()
-        if (resp == null) {
-            progress("LLM 调用失败:$failReason")
+        progress("AI 分析发布时间(可自主联网搜索)…")
+        val loop = com.shiyin.music.data.ai.AgentTools.runWebSearchLoop(
+            config, tavilyApiKey, sysMsg, userMsg,
+            maxTokens = dateTokens, maxSearchRounds = 4,
+            onSearch = { q -> progress("联网搜索:$q") },
+        )
+
+        // 供应商不认 tools(HTTP 400/422)→ 回退旧链路:本地拼一条查询搜一次塞给模型。
+        val respContent: String?
+        if (loop.failed) {
+            // 失败路径**也要入账**:多轮循环里已经成功跑过的那几轮 token 是真花掉的,
+            // 不记会让用量面板系统性偏低(项目硬约束:token 必须入账)。
+            if (loop.promptTokens + loop.completionTokens > 0) {
+                viewModelScope.launch(Dispatchers.IO) {
+                    com.shiyin.music.data.ai.TokenUsageStore.log(
+                        getApplication(), llmActiveProvider, "album_dates",
+                        loop.promptTokens, loop.completionTokens, loop.cacheTokens,
+                    )
+                }
+            }
+            progress("LLM 调用失败:${loop.error}")
+            com.shiyin.music.data.ai.LlmClient.clearLastError()
             return@withContext 0
+        } else if (!loop.toolsSupported) {
+            android.util.Log.i("Agent", "albumDates[$artistName]: 供应商不支持 tools,回退一次性搜索")
+            progress("该模型不支持工具调用,回退到单次联网搜索…")
+            val query = "$artistName albums discography release dates 专辑 发行日期 年表"
+            val tavilyCtx = runCatching {
+                com.shiyin.music.data.ai.TavilyService.search(tavilyApiKey, query, includeAnswer = true)
+            }.getOrNull()
+            if (tavilyCtx.isNullOrBlank()) progress("联网搜索没有返回资料,仅凭 AI 自身知识回答(准确率下降)")
+            val ctxBlock = if (tavilyCtx.isNullOrBlank()) "(未搜到网络资料,凭你的知识回答)" else "网络资料:\n$tavilyCtx"
+            val fallbackPrompt = "$userMsg\n\n$ctxBlock"
+            val resp = com.shiyin.music.data.ai.LlmClient.call(config, listOf("user" to fallbackPrompt), maxTokens = dateTokens)
+            if (resp == null) {
+                progress("LLM 调用失败:${com.shiyin.music.data.ai.LlmClient.lastError}")
+                com.shiyin.music.data.ai.LlmClient.clearLastError()
+                return@withContext 0
+            }
+            com.shiyin.music.data.ai.LlmClient.clearLastError()
+            viewModelScope.launch(Dispatchers.IO) {
+                com.shiyin.music.data.ai.TokenUsageStore.log(
+                    getApplication(), llmActiveProvider, "album_dates", resp.promptTokens, resp.completionTokens, resp.cacheTokens,
+                )
+            }
+            respContent = resp.content
+        } else {
+            viewModelScope.launch(Dispatchers.IO) {
+                com.shiyin.music.data.ai.TokenUsageStore.log(
+                    getApplication(), llmActiveProvider, "album_dates", loop.promptTokens, loop.completionTokens, loop.cacheTokens,
+                )
+            }
+            respContent = loop.content
         }
-        // 记 token
-        viewModelScope.launch(Dispatchers.IO) {
-            com.shiyin.music.data.ai.TokenUsageStore.log(
-                getApplication(), llmActiveProvider, "album_dates", resp.promptTokens, resp.completionTokens, resp.cacheTokens,
-            )
+        com.shiyin.music.data.ai.LlmClient.clearLastError()
+        if (respContent.isNullOrBlank()) {
+            progress("AI 没有返回内容(可重试或换更强模型)")
+            return@withContext 0
         }
 
         // 3. 解析 JSON → 名字→日期(归一化匹配:剥括号/空白,contains 兜底)
-        fun norm(s: String) = s.replace(Regex("[(（\\[【].*?[)）\\]】]]"), "").replace(Regex("""\s+"""), "").lowercase()
+        // 第7轮:修 norm 正则——原式末尾多了一个字面 "]",括号注释根本剥不掉
+        // ("Gen (Deluxe)" 匹配不上 AI 返回的 "Gen",单测实锤)。
+        fun norm(s: String) = s.replace(Regex("[(（\\[【].*?[)）\\]】]"), "").replace(Regex("""\s+"""), "").lowercase()
+        // 第7轮:全角符号归一——CJK 语境的模型偶发把 JSON 结构符写成全角
+        // (｛｝＂，：和全角数字),logcat 里肉眼不可辨,但 "{" 正则找不到 →
+        // 整篇解析为空("模型明明返回了合法 JSON 却报 parse empty"的嫌疑路径)。
+        fun String.jsonish(): String = buildString(length) {
+            for (ch in this@jsonish) when (ch) {
+                '｛' -> append('{'); '｝' -> append('}')
+                '“', '”', '＂' -> append('"')
+                '，' -> append(','); '：' -> append(':')
+                in '０'..'９' -> append('0' + (ch.code - '０'.code))
+                else -> append(ch)
+            }
+        }
         val dateByName = mutableMapOf<String, String>()
         try {
             val obj = com.google.gson.JsonParser.parseString(
-                Regex("""\{.*}""", RegexOption.DOT_MATCHES_ALL).find(resp.content ?: "")?.value ?: ""
+                Regex("""\{.*}""", RegexOption.DOT_MATCHES_ALL).find(respContent.jsonish())?.value ?: ""
             ).asJsonObject
             obj.getAsJsonArray("albums")?.forEach { el ->
                 val o = el?.asJsonObject ?: return@forEach
                 val n = o.get("name")?.asString ?: return@forEach
                 val d = o.get("date")?.asString ?: return@forEach
-                if (Regex("""\d{4}-\d{2}-\d{2}""").containsMatchIn(d)) dateByName[norm(n)] = d.take(10)
+                // 接受 YYYY / YYYY-MM / YYYY-MM-DD,不足位补 01——模型对老专辑常只知
+                // 年份,原实现只认完整日期,把这些条目整条丢弃(无结果的第二根因)。
+                val m = Regex("""^(\d{4})(?:-(\d{2}))?(?:-(\d{2}))?""").find(d.trim())
+                if (m != null) {
+                    val y = m.groupValues[1]
+                    val mo = m.groupValues[2].ifEmpty { "01" }
+                    val da = m.groupValues[3].ifEmpty { "01" }
+                    dateByName[norm(n)] = "$y-$mo-$da"
+                }
             }
-        } catch (_: Exception) { }
+        } catch (e: Exception) {
+            // 诊断留痕:把异常类型+消息打出来——下次 parse empty 能直接看到
+            // 是 JSON 非法、结构跑偏还是字段类型不对,不用再猜。
+            android.util.Log.w("Agent", "albumDates[$artistName] parse threw: ${e.javaClass.simpleName}: ${e.message}")
+        }
+        // 诊断留痕:解析一条都没拿到时把模型原始返回打进 logcat——
+        // 下次"未能确认任何专辑时间"可直接看是模型没搜到、格式跑偏还是被截断。
+        if (dateByName.isEmpty()) {
+            // 前 24 字符的码点——全角/不可见字符在 logcat 里看不出来,码点藏不住。
+            val head = respContent.take(24).map { "%04X".format(it.code) }.joinToString(" ")
+            android.util.Log.w("Agent", "albumDates[$artistName] parse empty, head=[$head] raw=${respContent.take(600)}")
+        }
 
         // 4. 匹配本地专辑 + 写日期 + 按日期生成顺序(v1.3.4: 新→旧——最新发布在最上,
         //    与歌手页作品列表的"栈"直觉一致;无日期保持原相对顺序补尾)
+        // 第7轮:dated 先装已有日期的(alreadyDated),新查到的从 needDating 里匹配——
+        // 已有日期的专辑不参与 LLM 匹配,不被重复写库。
         progress("写回日期与顺序…")
-        val dated = mutableListOf<Pair<Triple<String, Long, String>, String>>() // (专辑, 日期)
+        val dated = alreadyDated.toMutableList() // (专辑, 日期)
         val undated = mutableListOf<Triple<String, Long, String>>()
-        for (a in albums) {
+        for (a in needDating) {
             val hit = dateByName[a.third.let(::norm)]
                 ?: dateByName.entries.firstOrNull { it.key.contains(norm(a.third)) || norm(a.third).contains(it.key) }?.value
             if (hit != null) {
@@ -2991,11 +3153,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         closeLyricsInstant()
         lyState = LyState.Idle
         triedAuto -= cur.mediaId
+        // 歌词本体删了，译文也就没意义了——内存态复位，且**真取消**进行中的任务，
+        // 否则它跑完会把刚清掉的译文重新写回库里（复活孤儿行）。
+        cancelLyricsTranslation()
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 dao.deleteLyric(cur.mediaId)
                 dao.deleteReadingOverridesForMedia(cur.mediaId)
                 dao.deleteExternalEvidenceForMedia(cur.mediaId)
+                // v1.3.x 需求6:译文同样按 mediaId 清（含换源前的旧 hash 行）——
+                // 与上面两条同属"这首歌的派生数据"，漏掉会留下永不命中的孤儿行。
+                dao.deleteLyricsTranslationForMedia(cur.mediaId)
             } catch (_: Exception) { }
         }
     }
@@ -3096,6 +3264,311 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      *  或新歌 verify 还没跑完时,弹层显示的是上一首的结论)。LyricsScreen 用
      *  LaunchedEffect(ly.mediaId) 调本方法清,ensure 跑完再写新值。 */
     fun clearFuriganaAssistStatus() { furiganaAssistStatus = null }
+
+    // ── v1.3.x 需求6:歌词本翻译 ──────────────────────────────────────────────
+    //
+    // AI 路径(质量主力):整歌一次调用 + "行号|译文" 协议保证行数一一对应,缺行带语境补齐。
+    // 编排逻辑全在 data/translate/LyricsTranslationPipeline(纯逻辑、47 个单测覆盖),
+    // 这里只负责:状态归属、取消、token 入账、把失败原因透给 UI。
+    // 离线路径(ML Kit 端侧)未接线——APK 体积决策(四 ABI 原生库 +60MiB)后再启。
+
+    /** UI 可见的翻译状态。切歌/换源时 [clearLyricsTranslation]。 */
+    val lyricsTranslation = com.shiyin.music.ui.components.LyricsTranslationState()
+
+    private var lyricsTranslationJob: Job? = null
+
+    /** v1.3.x 反馈②:翻译任务代次——cancel 是协作式的,旧任务的回调可能写入新任务
+     *  的状态。每次 begin 递增,回调只在代次匹配时写入。 */
+    private var lyricsTranslationGeneration = 0
+
+    /**
+     * 切歌/换歌词源时复位**显示状态**。
+     *
+     * **刻意不 cancel 进行中的任务**：译文已经烧掉了 token，让它跑完并落库，
+     * 下次回到这首歌直接恢复——中途切歌就把它扔掉等于白花钱（一首歌 15~40 秒，
+     * 用户很可能等不及就切走了）。任务收尾时会检查"这首歌是否仍是当前曲"，
+     * 不是就不回写显示状态，因此**不会把上一首的译文挂到新歌的行上**。
+     *
+     * 需要"真取消"的场景请用 [cancelLyricsTranslation]。
+     */
+    fun clearLyricsTranslation() {
+        lyricsTranslation.reset()
+    }
+
+    /**
+     * 真取消：中止进行中的 LLM 调用并复位。
+     *
+     * 三个调用点都是"用户明确不要这个结果"：① 进行中再点译按钮 = 取消；
+     * ② 删除歌词；③ 删除翻译缓存。这三处若只复位显示而不取消，
+     * 任务跑完还会把刚被删掉的译文重新写回库里（复活孤儿行）。
+     */
+    fun cancelLyricsTranslation() {
+        lyricsTranslationJob?.cancel()
+        lyricsTranslationJob = null
+        lyricsTranslation.reset()
+    }
+
+    /**
+     * AI 整歌翻译。
+     *
+     * 前置条件不满足时**不发请求**，直接把原因写进 [lyricsTranslation] 的 error
+     * （UI 弹提示，停在初始态）：
+     * - 没有歌词 / 找不到当前曲 → 数据问题
+     * - 未配置大模型 → 同 agent websearch 的置灰逻辑，提示去设置里填 Key
+     *
+     * @return true = 已真正发起；false = 被前置条件挡下
+     */
+    fun translateLyricsWithAi(): Boolean {
+        val ly = currentLyrics ?: run {
+            lyricsTranslation.error = "当前没有歌词可翻译"
+            return false
+        }
+        val track = trackById(ly.mediaId) ?: run {
+            lyricsTranslation.error = "找不到当前歌曲"
+            return false
+        }
+        val config = activeLlmConfig() ?: run {
+            lyricsTranslation.error = "未配置大模型——请到 设置 → Agent 里填好 API Key 并选模型"
+            return false
+        }
+        val lines = ly.parsed.lines.map { it.text }
+        if (lines.isEmpty()) {
+            lyricsTranslation.error = "歌词为空"
+            return false
+        }
+
+        // 歌词版本哈希:落库键与"换源即失效"的判据,与振假名 evidence 同键法。
+        val lyHash = com.shiyin.music.data.furigana.LyricsHash.of(ly.raw)
+        lyricsTranslationJob?.cancel()
+        lyricsTranslation.begin(com.shiyin.music.ui.components.LyricsTranslationMode.Ai, ly.mediaId, lyHash)
+
+        // v1.3.x 反馈②(反复点 3-4 次才成功):旧任务 cancel 是协作式的——OkHttp
+        // execute() 阻塞在 IO 线程,cancel 不立即生效。旧任务的 onProgress/finish
+        // 回调会写入**新任务**的状态(mediaId 相同,stillCurrent 判定通过),
+        // 旧结果覆盖新结果——用户看到"点了没反应,再点才成功"。generation 计数器:
+        // 每次 begin 递增,回调只在 generation 匹配时才写入。
+        val myGeneration = ++lyricsTranslationGeneration
+
+        // 失败原因留痕：把 LLM 的 lastError 透到提示文案里。否则"成功率很低"只能看到
+        // 一句"调用失败"，无法区分网络 / 401 / 429 / 超时 / 格式不符。
+        var lastLlmError: String? = null
+        lyricsTranslationJob = viewModelScope.launch {
+            val pipeline = com.shiyin.music.data.translate.LyricsTranslationPipeline { messages, maxTokens ->
+                com.shiyin.music.data.ai.LlmClient.clearLastError()
+                val resp = com.shiyin.music.data.ai.LlmClient.call(
+                    config,
+                    messages,
+                    // 翻译要稳定复现，不要发挥
+                    temperature = 0.0,
+                    maxTokens = maxTokens,
+                    // 整歌翻译虽是后台静默任务，但**不是**轻量调用：整歌一次生成，
+                    // 长歌可上千 completion token，60s 对慢供应商/思考型模型会误判超时 → 90s。
+                    // retries 用默认 1 次：项目实测最常见的失败是"息屏/切后台后 OkHttp
+                    // 复用连接被服务端关掉"（SocketException），重试一次即可恢复；
+                    // 早先设 0 会让这类瞬时错误直接判失败——是成功率低的一个直接原因。
+                    callSec = 90,
+                    retries = 1,
+                )
+                if (resp == null) lastLlmError = com.shiyin.music.data.ai.LlmClient.lastError
+                if (resp != null) {
+                    viewModelScope.launch(Dispatchers.IO) {
+                        com.shiyin.music.data.ai.TokenUsageStore.log(
+                            getApplication(), llmActiveProvider, "lyrics_translation",
+                            resp.promptTokens, resp.completionTokens, resp.cacheTokens,
+                        )
+                    }
+                }
+                resp?.content
+            }
+
+            val out = pipeline.translate(track.title, track.artist, lines) { d, t ->
+                // pipeline 跑在 viewModelScope(Main) 上，LlmClient 内部自切 IO 后归位，
+                // 故此处回调已在主线程——无需 Handler 投递（对比 fetchArtistAlbumDates）。
+                // generation 守卫:旧任务(被 cancel 但还在跑)的回调不写入新任务状态。
+                if (myGeneration == lyricsTranslationGeneration) {
+                    lyricsTranslation.done = d
+                    lyricsTranslation.total = t
+                }
+            }
+
+            // 取消语义：cancelLyricsTranslation() 会 cancel 本 Job → pipeline 内的
+            // CancellationException 原样穿透到这里，协程直接结束，不覆盖已复位的状态。
+            // generation 守卫:旧任务跑完时若已被新任务取代,不回写 finish。
+            if (myGeneration != lyricsTranslationGeneration) return@launch
+            val failure = out.failure?.let { msg ->
+                val why = lastLlmError
+                if (why.isNullOrBlank()) msg else "$msg（$why）"
+            } ?: if (out.coverage < 1f) "已译 ${out.byLine.size}/${out.requested.size} 行（其余未返回）" else null
+            // 只在"这首歌仍是当前曲"时回写显示状态。切歌走的是 clearLyricsTranslation
+            // （不复位 mediaId 之外还保留任务在跑）→ 任务跑完时 mediaId 已被 reset 清空，
+            // 这里判定不成立 → 不回写，新歌的状态不被污染。而**落库照旧**（见下）。
+            val stillCurrent = lyricsTranslation.mediaId == ly.mediaId
+            if (stillCurrent) {
+                lyricsTranslation.finish(out.byLine, failure)
+                if (failure != null) showToast(failure, null)
+            } else if (failure != null) {
+                // v1.3.x 反馈⑤(20s 无声失败):stillCurrent=false 时静默丢弃——
+                // 用户只看到"动画转了 20 秒又回到没翻译的状态"。失败原因必须透出,
+                // 即使不是当前曲(可能 LyricsScreen 重组导致 mediaId 短暂错位)。
+                showToast("翻译失败：$failure", null)
+                android.util.Log.w("LyricsTranslate", "dropped failure (stillCurrent=false): $failure")
+            }
+            // v1.3.x 需求6:译完即存——下次打开歌词本自动恢复,不再重复烧 token
+            // (与振假名 evidence 同一思路)。只在有成果时写,失败/空结果不落库。
+            // **与"是否仍是当前曲"无关**：token 已经花了，结果必须留下。
+            if (out.byLine.isNotEmpty()) {
+                runCatching {
+                    withContext(Dispatchers.IO) {
+                        dao.upsertLyricsTranslation(
+                            com.shiyin.music.data.db.LyricsTranslationEntity(
+                                mediaId = ly.mediaId,
+                                lyricsHash = lyHash,
+                                payload = com.google.gson.Gson().toJson(out.byLine),
+                                source = "ai",
+                                translatedAt = System.currentTimeMillis(),
+                            ),
+                        )
+                    }
+                }.onFailure { android.util.Log.w("LyricsTranslate", "persist failed: ${it.message}") }
+            }
+        }
+        return true
+    }
+
+    /**
+     * v1.3.x 需求6:歌词本进入/切歌时的翻译状态同步（由 LyricsScreen 用
+     * `LaunchedEffect(mediaId, lyricsHash)` 触发）。
+     *
+     * 分两种情况，**关键是不误杀进行中的任务**：
+     * - **同曲同版本**（关掉歌词本再打开）→ 原样保留现有状态。进行中的翻译继续跑，
+     *   已隐藏的保持隐藏，已显示的保持显示。若在这里无条件 clear，用户切出去再切回来
+     *   就会把正在跑的翻译掐死。
+     * - **换曲 / 换歌词源**（hash 变）→ 清场，再从持久化恢复（有则直接显示）。
+     */
+    suspend fun syncLyricsTranslation(ly: LoadedLyrics) {
+        val hash = com.shiyin.music.data.furigana.LyricsHash.of(ly.raw)
+        val sameSong = lyricsTranslation.mediaId == ly.mediaId && lyricsTranslation.lyricsHash == hash
+        if (sameSong) return
+        // v1.3.x 反馈⑤(20s 无声失败)+⑥(播放中被吞):两道不清场守卫。
+        // 守卫A 翻译进行中:LLM 任务不可打断(token 已花)。
+        if (lyricsTranslation.running && lyricsTranslation.mediaId == ly.mediaId) return
+        // 守卫B 同曲已有译文:hash 漂移(offset 微调等)不该把已保存的译文清掉再恢复
+        // (用户实测"翻译被吞了,几秒后又自己加载起来")。mediaId 必须匹配——切歌时
+        // 旧曲译文挂到新曲是绝对不允许的,mediaId 不同照样清场+按新 hash 恢复。
+        if (lyricsTranslation.hasData && lyricsTranslation.mediaId == ly.mediaId) return
+        // 第7轮:中文歌(用户语言)**不恢复存量译文**。旧版本把"夹几句英语/夹一个「の」的
+        // 中文歌"整首译过,库里可能存着这些译文;而语种判定改后「譯」按钮在中文歌上
+        // 不再挂载(LyricsScreen),若照常恢复,用户会看到中文歌歌词本上挂着译文、
+        // 却**找不到任何关闭入口**(用户明确要求"翻译件不应该出现在繁体中文、简体中文
+        // 的歌词本上,帮我去掉")。这里只清显示状态、**不碰 DB**——译文是用户花 token
+        // 换来的,留在库里,未来做多语言版本时可直接复用。
+        if (!isForeignLyrics(ly.parsed.lines.map { it.text })) {
+            clearLyricsTranslation()
+            return
+        }
+        // 第6轮:**先读 DB 再清场**。原顺序 clear→suspend 读库,协程若在读库期间
+        // 被 LaunchedEffect 换 key 取消,译文停在"已清空未恢复"的空窗(用户实测
+        // "看着看着突然没了")。先读后清,取消只会发生在读库中(旧译文原样保留)。
+        val row = withContext(Dispatchers.IO) {
+            runCatching { dao.lyricsTranslation(ly.mediaId, hash) }.getOrNull()
+        }
+        // 第6轮回归修复:读库这几毫秒里自动翻译可能已启动(maybeAutoTranslateForeign
+        // 与 sync 是两个并发 LaunchedEffect)——不清场守卫必须在**清场前一刻**复查,
+        // 否则 clear 会把刚 begin 的任务状态抹掉(任务还在跑,finish 时 mediaId 已
+        // 被 reset → stillCurrent=false → 结果被丢弃,用户看到"自动翻译没反应")。
+        if (lyricsTranslation.running && lyricsTranslation.mediaId == ly.mediaId) return
+        if (lyricsTranslation.hasData && lyricsTranslation.mediaId == ly.mediaId) return
+        clearLyricsTranslation()
+        applyLyricsTranslationRow(row, ly, hash)
+    }
+
+    /**
+     * v1.3.x 需求6:把持久化查询结果应用到显示状态（有则直接显示）。
+     *
+     * 与振假名 evidence 同键法（mediaId + lyricsHash）：换歌词源/改文本后 hash 变，
+     * 旧译文自然不再适用——不会把旧文本的译文挂到新文本上。
+     */
+    private fun applyLyricsTranslationRow(row: com.shiyin.music.data.db.LyricsTranslationEntity?, ly: LoadedLyrics, hash: String) {
+        if (row == null) return
+        val map: Map<Int, String> = runCatching {
+            com.google.gson.Gson().fromJson<Map<Int, String>>(
+                row.payload,
+                object : com.google.gson.reflect.TypeToken<Map<Int, String>>() {}.type,
+            )
+        }.getOrNull() ?: return
+        if (map.isEmpty()) return
+        // v1.3.x 反馈:恢复受「默认显示译文」开关控制——关时数据照样恢复到内存
+        // (再点按钮立刻回来,不重新调 API),只是不自动展开。开时直接显示。
+        if (translateDefaultShow) {
+            lyricsTranslation.restore(map, row.source, ly.mediaId, hash)
+        } else {
+            lyricsTranslation.restore(map, row.source, ly.mediaId, hash)
+            lyricsTranslation.hide()
+        }
+    }
+
+    /** 隐藏译文（数据保留在内存与 DB，再点即可立刻回来，不重新调 API）。 */
+    fun hideLyricsTranslation() { lyricsTranslation.hide() }
+
+    /** 重新显示已保存的译文（无网络请求）。 */
+    fun showLyricsTranslation() { lyricsTranslation.show() }
+
+    /**
+     * v1.3.x 反馈:「外语歌自动翻译」入口（设置开关开时由歌词本 LaunchedEffect 触发）。
+     *
+     * 条件全部满足才发起：有歌词 / 无进行中任务 / 无已保存译文（避免重复触发）/
+     * 歌词含外文字母（非纯中文——中文歌词不需要翻译）。静默失败不弹提示
+     * （自动任务打扰最小化；失败矩阵与手动触发一致）。
+     */
+    fun maybeAutoTranslateForeign(ly: LoadedLyrics) {
+        if (lyricsTranslation.running || lyricsTranslation.hasData) return
+        val lines = ly.parsed.lines.map { it.text }
+        if (lines.isEmpty()) return
+        if (!isForeignLyrics(lines)) return
+        translateLyricsWithAi()
+    }
+
+    /**
+     * "外语歌词"判定:委托给 LyricsTranslationProtocol.classifyLanguage——
+     * 第7轮起按**字母占比**判(汉字占主体的歌=用户语言,不译),不再"有一个
+     * 外文字母就算外语"(中文歌夹几句英语被整首翻译,用户实测很难堪)。
+     * 按钮显隐(LyricsScreen)与自动翻译共用此判定。多语言版本落地后按用户语言走。
+     */
+    fun isForeignLyrics(lines: List<String>): Boolean =
+        com.shiyin.music.data.translate.LyricsTranslationProtocol.isForeign(lines)
+
+    /**
+     * v1.3.x 需求6「删除翻译缓存」：清掉本曲本版本的已保存译文（内存 + DB）。
+     * 只删当前 `(mediaId, lyricsHash)` —— 不牵连其它歌，也不牵连换源前的旧版本。
+     */
+    fun deleteTranslationCache() {
+        val ly = currentLyrics ?: return
+        // 真取消：用户明确要删，进行中的任务跑完会把删掉的译文再写回来
+        cancelLyricsTranslation()
+        viewModelScope.launch {
+            val hash = com.shiyin.music.data.furigana.LyricsHash.of(ly.raw)
+            withContext(Dispatchers.IO) {
+                runCatching { dao.deleteLyricsTranslation(ly.mediaId, hash) }
+            }
+            showToast("已清除本曲翻译缓存", null)
+        }
+    }
+
+    /**
+     * v1.3.x 需求6「删除振假名缓存」：清掉本曲本版本的**外部 evidence**
+     * （UtaTen 等抓来的注音缓存）。**不碰用户手改的 Song Override**——那是用户数据，不是缓存。
+     */
+    fun deleteFuriganaCache() {
+        val ly = currentLyrics ?: return
+        viewModelScope.launch {
+            val hash = com.shiyin.music.data.furigana.LyricsHash.of(ly.raw)
+            withContext(Dispatchers.IO) {
+                runCatching { dao.deleteExternalEvidence(ly.mediaId, hash) }
+            }
+            bumpFuriganaRevision() // 触发 produceState 重算 → 注音回落到本地分词
+            showToast("已清除本曲振假名缓存", null)
+        }
+    }
 
     /** DB 重试 1 次的写入:失败抛出由调用方归类。 */
     private suspend fun upsertEvidenceRetry(rows: List<com.shiyin.music.data.db.ExternalReadingEvidenceEntity>) {

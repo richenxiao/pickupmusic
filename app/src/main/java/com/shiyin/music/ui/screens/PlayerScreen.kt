@@ -34,6 +34,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
@@ -316,7 +317,12 @@ fun PlayerScreen(vm: MainViewModel) {
             Box(
                 Modifier
                     .fillMaxWidth()
-                    .height(12.dp)  // v1.3.3: 触摸范围从 22dp 缩小到 12dp,减少误触
+                    // 第6轮:触摸范围=条本身显示范围(6dp)。原 12dp 隐形触区误触
+                    // (用户实测)。滑块 15dp 用 requiredSize 强制保留原尺寸——
+                    // 注意 `Modifier.size()` 是 enforceIncoming=true,会被这里的
+                    // 6dp 高度约束压成 15×6 的扁椭圆(Box 的"不裁剪"只管绘制、
+                    // 不改约束),必须用 requiredSize 才能真溢出。
+                    .height(6.dp)  // v1.3.3: 22dp→12dp;第6轮: 12dp→6dp(=条高)
                     .pointerInput(durMs) {
                         awaitEachGesture {
                             awaitFirstDown(requireUnconsumed = false)
@@ -353,7 +359,10 @@ fun PlayerScreen(vm: MainViewModel) {
                     Box(
                         Modifier
                             .offset(x = (maxWidth - 15.dp) * shownPct)
-                            .size(15.dp)
+                            // requiredSize: 绕过父级 6dp 高度约束,保住 15dp 圆形滑块
+                            // (size() 会被约束压成 15×6 扁椭圆)。命中测试沿祖先链,
+                            // 溢出部分仍可被上面的 pointerInput 命中,触区不受影响。
+                            .requiredSize(15.dp)
                             .clip(CircleShape)
                             .background(c.accent)
                     )

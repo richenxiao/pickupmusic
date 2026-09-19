@@ -11,6 +11,7 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.MutableTransitionState
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -31,11 +32,14 @@ import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -70,6 +74,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -80,6 +85,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextAlign
@@ -88,6 +94,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -978,6 +985,18 @@ private fun RootBackHandler(vm: MainViewModel) {
 }
 
 // ── v1.3/v1.5 mini player: square card, bottom progress, device+fav+play ───
+
+/** 迷你播放条封面边长(封面轨道与文字页前导留白共用,必须一致否则会错位)。 */
+private val MiniCoverSize = 40.dp
+
+/** v1.3.x 需求4:封面与歌名/歌手文字区之间的留白。
+ *  原为 11dp,用户反馈"封面和歌名、歌手名之间距离太近",加大到 20dp;
+ *  歌名↔歌手彼此仍保持原有紧凑行距(未动 Column 内两行)。 */
+private val MiniCoverTextGap = 20.dp
+
+/** v1.3.x 需求4:松手切歌的位移阈值 = 信息区宽的 31%(约三分之一页,符合翻页直觉)。 */
+private const val SETTLE_FRACTION = 0.31f
+
 @Composable
 private fun MiniPlayer(vm: MainViewModel, track: Track) {
     val c = LocalOrganic.current
@@ -993,34 +1012,109 @@ private fun MiniPlayer(vm: MainViewModel, track: Track) {
             .clip(RoundedCornerShape(12.dp))
             .background(c.surface),
     ) {
+        // v1.3.x 需求4(横向分页重做 2026-09-15):切歌区域 = "左上一首·中当前·右下一首"
+        // 三页常驻的横向分页。跟手 offsetX 是纯 graphicsLayer X 位移(逐帧 O(1)、零重组、
+        // 无任何 Y 分量);松手过阈值/惯性阈值 → 沿 X 推完剩余行程后才提交 vm.player.next()
+        // /prev()(提交后置,内容不在动画中途替换),未达阈值 → 沿 X 回到原位。
+        // 同专辑封面稳定:当前曲与"拖动方向上的邻曲"albumId 相同时封面不随页位移(整轨
+        // 静止),只有歌名/歌手横移;跨专辑时封面才随页一起横向替换。
+        val density = androidx.compose.ui.platform.LocalDensity.current
+        var infoWidthPx by remember { mutableIntStateOf(0) }
+        val pages = remember(track.id) {
+            // track 变化(任何切歌路径)重算三页——左=prev、中=当前、右=next(回绕补)。
+            // 三页数据在动画开始前就已在手上,动画期间不查库、不重排。
+            Triple(
+                vm.player.prevTrackId()?.let { vm.trackById(it) },
+                track,
+                (vm.player.nextTrackId() ?: vm.player.wrappedNextTrackId())?.let { vm.trackById(it) },
+            )
+        }
+        val scope = rememberCoroutineScope()
+        // 单一真源:拖动与收尾动画都只写这一个 float state;读点全在 graphicsLayer 内
+        // (延迟读),故逐帧位移不触发任何重组。
+        var offsetX by remember(track.id) { mutableFloatStateOf(0f) }
+        // 页宽 = 信息区实宽;首帧未测量前用 120dp 兜底,避免零位移/除零。
+        val pageWidthState = rememberUpdatedState(
+            with(density) { infoWidthPx.toFloat().coerceAtLeast(120.dp.toPx()) },
+        )
+        val velocityThresholdState = rememberUpdatedState(with(density) { 900.dp.toPx() })
+        val pagesState = rememberUpdatedState(pages)
+        // 沿 X 轴走完到 target:target==0 用弹簧回原位,否则用 tween 推完剩余行程。
+        // 两者都只改 X 分量,结构上不可能产生纵向弹跳。
+        val slidePage: suspend (Float, Float) -> Unit = { target, vel ->
+            androidx.compose.animation.core.animate(
+                initialValue = offsetX,
+                targetValue = target,
+                initialVelocity = vel,
+                animationSpec = if (target == 0f) {
+                    spring(dampingRatio = 0.78f, stiffness = 480f)
+                } else {
+                    tween(170, easing = CubicBezierEasing(0.22f, 0.72f, 0f, 1f))
+                },
+            ) { value, _ -> offsetX = value }
+        }
+        // 推到邻页位置后提交切歌。track.id 变化时 offsetX 由 remember(track.id) 随之重建
+        // 为 0,新"当前页"正是刚推到中央的那一页,交接无跳帧;这里的显式复位是幂等兜底
+        // (队列边界等 track 未变的异常情况下把视图拉回中央,不卡在邻页)。
+        val commitThenReset: suspend (() -> Unit) -> Unit = { commit ->
+            commit()
+            delay(400)
+            offsetX = 0f
+        }
         Row(
             Modifier
                 .fillMaxWidth()
-                // v1.3.x 需求4:迷你播放条左右滑切歌(参考 Spotify)。水平手势
-                // 与条内任何内容零冲突(无水平滚动子),点按 vs 拖动由 slop 分离,
-                // 不需要歌词本指针闸门那套嵌套滚动防御。判定:onDragEnd 时
-                // 总位移>40dp 或释放速度>1200dp/s 才切;未达阈值静默忽略
-                // (内容不跟手,无回弹可言)。左滑=下一首,右滑=上一首,语义
-                // 直接复用按钮的 next()/prev()(循环/随机/回绕全在内)。
-                .pointerInput(Unit) {
-                    var totalX = 0f
+                // v1.3.x 需求4(横向分页重做 2026-09-15):手势与位移全部由分页轨道承担,
+                // 本 Row 只负责「信息区 + 按钮组」横向排布。原先「松手才判定、内容不跟手」
+                // 的手势已删除——它与新轨道共存会双份消费同一个水平手势。
+                .pointerInput(track.id) {
+                    // 闭包只捕获稳定对象;页数据/阈值经 rememberUpdatedState 延迟读,
+                    // 避免 pointerInput 因阈值变化重启而打断进行中的拖拽。
+                    var dragging = false
+                    var settleJob: Job? = null
                     val tracker = androidx.compose.ui.input.pointer.util.VelocityTracker()
                     detectHorizontalDragGestures(
                         onDragStart = {
-                            totalX = 0f
+                            settleJob?.cancel()
+                            dragging = true
                             tracker.resetTracking()
                         },
                         onDragEnd = {
+                            if (!dragging) return@detectHorizontalDragGestures
+                            dragging = false
                             val v = tracker.calculateVelocity().x
-                            val thresholdPx = 40.dp.toPx()
-                            val velocityPx = 1200.dp.toPx()
-                            when {
-                                totalX < -thresholdPx || v < -velocityPx -> vm.player.next()
-                                totalX > thresholdPx || v > velocityPx -> vm.player.prev()
+                            val pageW = pageWidthState.value
+                            val threshold = pageW * SETTLE_FRACTION
+                            val velThreshold = velocityThresholdState.value
+                            val cur = offsetX
+                            val hasPrev = pagesState.value.first != null
+                            val hasNext = pagesState.value.third != null
+                            settleJob = scope.launch {
+                                when {
+                                    // 左滑(负位移)→ 下一首自右侧进入;右滑 → 上一首自左侧进入。
+                                    (cur <= -threshold || v <= -velThreshold) && hasNext -> {
+                                        slidePage(-pageW, v)
+                                        commitThenReset { vm.player.next() }
+                                    }
+                                    (cur >= threshold || v >= velThreshold) && hasPrev -> {
+                                        slidePage(pageW, v)
+                                        commitThenReset { vm.player.prev() }
+                                    }
+                                    // 未达阈值 / 该方向无邻页:沿 X 平滑回原位(纯水平,无纵向弹跳)。
+                                    else -> slidePage(0f, v)
+                                }
                             }
                         },
                         onHorizontalDrag = { change, dragAmount ->
-                            totalX += dragAmount
+                            // 该方向没有邻页时不产生位移(不是回弹,是压根不动)。
+                            val p = pagesState.value
+                            offsetX = (offsetX + dragAmount).let { x ->
+                                when {
+                                    x < 0f && p.third == null -> 0f
+                                    x > 0f && p.first == null -> 0f
+                                    else -> x
+                                }
+                            }
                             if (change.positionChanged()) {
                                 tracker.addPosition(change.uptimeMillis, change.position)
                                 change.consume()
@@ -1032,22 +1126,93 @@ private fun MiniPlayer(vm: MainViewModel, track: Track) {
             horizontalArrangement = Arrangement.spacedBy(11.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Box(Modifier.clickable { vm.playerOpen = true }) {
-                CoverArt(track, 40.dp, RoundedCornerShape(8.dp), fontSize = 16)
-            }
-            Column(
+            // 分页轨道:三页(左=prev / 中=current / 右=next)各宽 = 信息区宽,横向平铺;
+            // 相邻页靠 X 位移进入 clipToBounds 的可见区。
+            BoxWithConstraints(
                 Modifier
                     .weight(1f)
-                    // v1.3.x 需求5:去掉点击涟漪/按压反馈(用户嫌不好看)。
-                    // indication=null 不影响 clickable 行为本身(仍打开播放页)。
-                    // 同 LyricsScreen 图标按钮的去涟漪写法。
-                    .clickable(
-                        interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
-                        indication = null,
-                    ) { vm.playerOpen = true },
+                    .clipToBounds()
+                    .onSizeChanged { infoWidthPx = it.width },
             ) {
-                Text(track.title, style = body(13.5f, FontWeight.Bold, c.text), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text(track.artist, style = body(11.5f, FontWeight.Normal, c.n600), maxLines = 1)
+                val pageW = constraints.maxWidth.toFloat()
+                val currentTrack = pages.second
+                val prevPage = pages.first
+                val nextPage = pages.third
+                // 固定三槽:0=左(prev) 1=中(当前) 2=右(next)。槽位必须固定——若用
+                // listOfNotNull 压掉空槽,"当前页"会落到槽 0 而被整体左移一整页。
+                val slots = listOf(prevPage, currentTrack, nextPage)
+                val currentAlbumId = currentTrack.albumId
+                // 邻曲是否同专辑:决定封面跟不跟页走(需求:同专辑封面必须完全稳定)。
+                val prevSameAlbum = prevPage != null && prevPage.albumId == currentAlbumId
+                val nextSameAlbum = nextPage != null && nextPage.albumId == currentAlbumId
+                // 文字页轨道:三页各宽 = 信息区宽,页位 = (槽 - 1) * 页宽,整体跟手 offsetX。
+                // 页内前导留白 = 封面宽 + 间距,给独立的封面轨道让位。
+                slots.forEachIndexed { slotIndex, pageTrack ->
+                    if (pageTrack == null) return@forEachIndexed
+                    val pageBaseX = (slotIndex - 1) * pageW
+                    // key 必须含槽位!仅用 track.id 会在"上一首/下一首回绕到同一首"时
+                    // 产生重复 key(单曲队列 + REPEAT_ALL:previousMediaItemIndex 回绕到
+                    // 自身;双曲队列:prev 与 next 是同一首)——Compose 对同层重复 key
+                    // 直接抛 IllegalArgumentException 崩溃。槽位唯一,加上即无碰撞;
+                    // 同时保留"该槽换曲即重建"的语义。
+                    key(slotIndex, pageTrack.id) {
+                        Row(
+                            Modifier
+                                // 与封面轨道同为 CenterStart 锚点,保证两轨垂直居中对齐
+                                // (文字两行比 40dp 封面矮时不会贴顶)。
+                                .align(Alignment.CenterStart)
+                                .graphicsLayer {
+                                    // 延迟读 offsetX:拖动逐帧只重跑本 lambda,零重组。
+                                    translationX = pageBaseX + offsetX
+                                }
+                                .width(with(density) { pageW.toDp() }),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Spacer(Modifier.width(MiniCoverSize + MiniCoverTextGap))
+                            Column(
+                                Modifier
+                                    .weight(1f)
+                                    // v1.3.x 需求5:去涟漪。
+                                    .clickable(
+                                        interactionSource = androidx.compose.foundation.interaction.MutableInteractionSource(),
+                                        indication = null,
+                                    ) { vm.playerOpen = true },
+                            ) {
+                                Text(pageTrack.title, style = body(13.5f, FontWeight.Bold, c.text), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Text(pageTrack.artist, style = body(11.5f, FontWeight.Normal, c.n600), maxLines = 1)
+                            }
+                        }
+                    }
+                }
+                // 封面轨道:独立于文字页,自己的一份位移。同专辑(拖动方向上的邻曲与当前曲
+                // albumId 相同)时封面位移恒为 0 → 封面绝对静止(不位移、不缩放、不淡入淡出),
+                // 只有歌名/歌手横移;跨专辑时封面跟页一起横移,新旧封面横向替换。
+                // 同专辑时左右两槽的封面被推到 ∓一页宽(屏外),不会叠出重影。
+                slots.forEachIndexed { slotIndex, pageTrack ->
+                    if (pageTrack == null) return@forEachIndexed
+                    val pageBaseX = (slotIndex - 1) * pageW
+                    // key 必须含槽位!仅用 track.id 会在"上一首/下一首回绕到同一首"时
+                    // 产生重复 key(单曲队列 + REPEAT_ALL:previousMediaItemIndex 回绕到
+                    // 自身;双曲队列:prev 与 next 是同一首)——Compose 对同层重复 key
+                    // 直接抛 IllegalArgumentException 崩溃。槽位唯一,加上即无碰撞;
+                    // 同时保留"该槽换曲即重建"的语义。
+                    key(slotIndex, pageTrack.id) {
+                        Box(
+                            Modifier
+                                .align(Alignment.CenterStart)
+                                .graphicsLayer {
+                                    val off = offsetX
+                                    val towardNext = off < 0f
+                                    val neighborSameAlbum =
+                                        if (towardNext) nextSameAlbum else prevSameAlbum
+                                    translationX = pageBaseX + (if (neighborSameAlbum) 0f else off)
+                                }
+                                .clickable { vm.playerOpen = true },
+                        ) {
+                            CoverArt(pageTrack, MiniCoverSize, RoundedCornerShape(8.dp), fontSize = 16)
+                        }
+                    }
+                }
             }
             Box(
                 Modifier
@@ -1834,42 +1999,90 @@ private fun QueueRow(
 }
 
 // ── v1.5 save-to-playlist sheet ────────────────────────────────────────────
+// v1.3.x 反馈:播放页打开时,SheetOverlay 挂在 AppRoot 主树会被播放页 ModalBottomSheet
+// (独立 Popup 窗口)压在下面/渲染错位到"首页"。改:播放页打开时用独立 ModalBottomSheet
+// (声明在播放 sheet 之后→后建窗口居上,与队列/菜单 sheet 同模式);平时用 SheetOverlay。
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
 private fun BoxScope.SaveToPlaylistSheet(vm: MainViewModel) {
     val c = LocalOrganic.current
     val targetId = vm.saveSheetFor
-    SheetOverlay(visible = targetId != null, onDismiss = { vm.saveSheetFor = null }) {
-        if (targetId == null) return@SheetOverlay
-        Column(Modifier.padding(start = 18.dp, end = 18.dp, top = 18.dp, bottom = 14.dp)) {
-            Text("保存到歌单", style = body(16f, FontWeight.ExtraBold, c.text), modifier = Modifier.padding(bottom = 4.dp))
-            for (p in vm.playlists) {
-                val ids = vm.playlistTracks[p.id] ?: emptyList()
-                val checked = targetId in ids
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(10.dp))
-                        .clickable { vm.togglePlaylistMembership(p.id, targetId) }
-                        .padding(horizontal = 4.dp, vertical = 10.dp),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Column(Modifier.weight(1f)) {
-                        Text(p.name, style = body(14.5f, FontWeight.Bold, c.text))
-                        Text("${ids.size} 首", style = body(12f, FontWeight.Normal, c.n600), modifier = Modifier.padding(top = 1.dp))
-                    }
-                    RoundCheck(checked)
-                }
+    if (vm.playerOpen) {
+        // 播放页打开:独立 ModalBottomSheet,盖在播放页之上。
+        if (targetId != null) {
+            androidx.compose.material3.ModalBottomSheet(
+                onDismissRequest = { vm.saveSheetFor = null },
+                dragHandle = null,
+                scrimColor = Color.Black.copy(alpha = 0.35f),
+                containerColor = c.bg,
+                shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
+                contentWindowInsets = { WindowInsets(0, 0, 0, 0) },
+            ) {
+                SaveToPlaylistContent(vm, targetId)
             }
-            PillButton(
-                "完成",
-                onClick = { vm.saveSheetFor = null },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = 6.dp),
-                fontSize = 14.5f, padV = 12.dp,
-            )
         }
+    } else {
+        // 平时(歌词本/列表页):SheetOverlay 即可。
+        SheetOverlay(visible = targetId != null, onDismiss = { vm.saveSheetFor = null }) {
+            if (targetId != null) SaveToPlaylistContent(vm, targetId)
+        }
+    }
+}
+
+@Composable
+private fun SaveToPlaylistContent(vm: MainViewModel, targetId: Long) {
+    val c = LocalOrganic.current
+    Column(Modifier.padding(start = 18.dp, end = 18.dp, top = 18.dp, bottom = 14.dp)) {
+        Text("保存到歌单", style = body(16f, FontWeight.ExtraBold, c.text), modifier = Modifier.padding(bottom = 4.dp))
+        // v1.3.x 反馈:「新建歌单」入口置顶(Spotify 式)——先建后加,
+        // 点一下创建新歌单并把当前歌直接加进去,不用先退出去建。
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(10.dp))
+                .clickable { vm.createPlaylistAndAdd(targetId) }
+                .padding(horizontal = 4.dp, vertical = 10.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(
+                Modifier
+                    .size(36.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(c.surface),
+                contentAlignment = Alignment.Center,
+            ) {
+                OIcon(Lucide.Plus, 18.dp, c.n700)
+            }
+            Text("新建歌单", style = body(14.5f, FontWeight.Bold, c.accent))
+        }
+        for (p in vm.playlists) {
+            val ids = vm.playlistTracks[p.id] ?: emptyList()
+            val checked = targetId in ids
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(10.dp))
+                    .clickable { vm.togglePlaylistMembership(p.id, targetId) }
+                    .padding(horizontal = 4.dp, vertical = 10.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(p.name, style = body(14.5f, FontWeight.Bold, c.text))
+                    Text("${ids.size} 首", style = body(12f, FontWeight.Normal, c.n600), modifier = Modifier.padding(top = 1.dp))
+                }
+                RoundCheck(checked)
+            }
+        }
+        PillButton(
+            "完成",
+            onClick = { vm.saveSheetFor = null },
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 6.dp),
+            fontSize = 14.5f, padV = 12.dp,
+        )
     }
 }
 

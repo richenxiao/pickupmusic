@@ -52,6 +52,19 @@ object Lucide {
     }
     val Check by lazy { stroke("check", "M20 6 9 17l-5-5") }
     val CheckBold by lazy { stroke("checkBold", "M20 6 9 17l-5-5", width = 3.5f) }
+    // v1.3.x 反馈:振假名"自动校验"图标——Check(单勾)语义太弱,用户仍觉得不符内容
+    // (它是"逐行校对跑没跑"而非"确认成功")。BadgeCheck(徽章+勾=已验证)贴合。
+    val BadgeCheck by lazy {
+        stroke(
+            "badgeCheck",
+            "M3.85 8.62a4 4 0 0 1 4.78-4.77 4 4 0 0 1 6.74 0 4 4 0 0 1 4.78 4.78 4 4 0 0 1 0 6.74 4 4 0 0 1-4.77 4.78 4 4 0 0 1-6.74 0 4 4 0 0 1-4.78-4.78 4 4 0 0 1 0-6.74Z",
+            "m9 12 2 2 4-4",
+        )
+    }
+    // v1.3.x 反馈:歌词本翻译设置图标——Languages(双语对照:文A/字A)。
+    val Languages by lazy {
+        stroke("languages", "m5 8 6 6", "m4 14 6-6 2-3", "M2 5h12", "M7 2h1", "m22 22-5-10-5 10", "M14 18h6")
+    }
     val Info by lazy {
         stroke("info", "M12 12m-10 0a10 10 0 1 0 20 0a10 10 0 1 0 -20 0", "M12 8v4", "M12 16h.01")
     }
