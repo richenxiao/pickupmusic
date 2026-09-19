@@ -1,13 +1,18 @@
 # 备份与恢复 —— 现状盘点与方案研究
 
 > 目标：让用户的配置与数据能**方便地**备份、并且**换机后真的能用**。
-> 状态：**方案探讨阶段**（等你拍板后再实现）
+>
+> 状态：**✅ 已实现（C1a / C1b / C1c / C2 / C3 / C4 + L4 全部落地）**。
+> 本文档上半部分是当时的**问题盘点与研究**（保留原样，便于对照"为什么这么设计"），
+> **文末 §10 是实现纪要** —— 记录实际做出来的东西、与原方案的差异、以及踩到的坑。
 
 ---
 
 ## 0. 结论速览
 
-| 问题 | 现状 | 严重度 |
+> 下表是**改造前**的问题盘点。每一条现在都已有对应实现，见 §10。
+
+| 问题 | 改造前的现状 | 严重度 |
 |---|---|---|
 | 备份覆盖范围 | 只备了 **10 张「元数据修正」表**；歌单、手动导入的歌词、手动排序、**全部设置与 API Key** 一个都没备 | 🔴 高 |
 | 换机可用性 | 已备的 10 张表里有 **8 张按 `mediaId` 存**，而 mediaId 换机/重扫必变 → **恢复后全部对不上号** | 🔴 高（地基问题） |
@@ -299,16 +304,77 @@ pickupmusic-backup-20260919-0130.zip
 
 ---
 
-## 9. 建议的实施顺序
+## 9. 实施顺序（实际执行结果）
 
 ```
 C0  ✅ 已修：相册选的专辑封面改成落盘（file://），重启不再失效
-C1  备份内容扩展 + 文件重解析键（mediaId → dataPath）+ 版本 2 格式（改 zip）  ← 地基，收益最大
-C2  恢复前预览 + 恢复前自动快照 + 导入结果报告                              ← 防误操作
-C3  本地自动快照（WorkManager 滚动 3 份）+ 导出后分享                        ← 防手滑
-C4  WebDAV 云备份（手动上传/下载 + 远端版本列表）                            ← "方便"的关键
-C5  dataExtractionRules（云备份排除大缓存/图片，D2D 迁移带上）               ← 小改动
+C1a ✅ 备份内容扩展（歌单 / 手动歌词 / 排序 / 忽略文件夹 / 统计 / 全部设置与 API Key）
+C1b ✅ 重解析键（mediaIdPaths + albumIdKeys）+ 导入时通用 JSON 重写
+C1c ✅ 备份格式升级为 zip（backup.json + files/ 本地图片），兼容纯 JSON 旧格式
+C2  ✅ 恢复前预览 + 写库前自动快照 + 结果如实报告
+C3  ✅ 本地自动快照（滚动保留 3 份）+ 导出后分享
+C4  ✅ WebDAV 云备份（测试连接 / 上传 / 列出 / 恢复）
+L4  ✅ dataExtractionRules（云备份排除大缓存，D2D 迁移保持全量）
 ```
 
-> 用户已拍板：**C1–C4 一次做完**；API Key 进备份但提示含密钥；
-> 备份范围取 L1「必选」两档 + 统计（可选）。
+> 用户拍板：**C1–C4 一次做完**；API Key 进备份但**导出时提示含密钥**；
+> 备份范围取 L1「必选」两档 + 统计（可选）。以上全部按此实现。
+
+---
+
+## 10. 实现纪要（做完之后回头记）
+
+### 10.1 落地了哪些文件
+
+| 文件 | 职责 |
+|---|---|
+| `data/db/BackupManager.kt` | 导出/导入主逻辑；`BackupData` 升到 `version = 2`；`ImportStats` 扩到 22 项 |
+| `data/db/BackupRemap.kt` | **重解析**：按"路径 / 专辑名+歌手"把旧 id 换成新 id（纯 JSON 变换，可单测） |
+| `data/db/BackupArchive.kt` | zip 容器读写 + 自动识别纯 JSON + **zip-slip 防护** |
+| `data/db/BackupPreviewer.kt` | 恢复前预览（各表条数 + 提前算好"会跳过多少条"） |
+| `data/SettingsValueCodec.kt` | 设置值编解码（**带类型前缀**，见 §10.3） |
+| `data/backup/WebDavXml.kt` | `PROPFIND` 多状态响应解析（DOM + 命名空间 + 关 XXE） |
+| `data/backup/WebDavClient.kt` | WebDAV 客户端（测试连接 / 上传 / 列表 / 下载） |
+| `ui/screens/SettingsScreens.kt` | 设置页的备份区 + 恢复预览弹窗 + 新子页 `CloudBackupScreen` |
+| `res/xml/data_extraction_rules.xml` | Android 12+ 备份/迁移规则 |
+
+### 10.2 与原方案的三处差异
+
+1. **C3 用"启动时快照"而不是 WorkManager** —— 不引新依赖、不需后台调度；
+   而备份内容只在用户打开 app 时才变，"下次启动补一份"已经够用。
+2. **C1b 的重解析做成"两张身份证表 + 通用 JSON 遍历"**，而不是给每个实体加字段 ——
+   后者要改 10 个实体 + 10 处导入代码，且以后每加一张表都要记得改；
+   前者一次性覆盖所有按 id 存的表。
+   ⚠️ **专辑键刻意存"专辑名\|歌手"而不是 `aid:NNN`** —— aid 形式本身就含 id，换机后同样失效。
+3. **新增"复合键也要替换"**（原方案没写到）：`album_order.albumKey` 是主键且形如
+   `aid:123`、`orderedIds` 是逗号分隔的 mediaId 列表、`artist_album_order.albumKeys`
+   是逗号分隔的专辑键列表 —— 这些字符串里的 id 也要逐个换掉，只改字段是不够的。
+
+### 10.3 实现中踩到 / 修掉的坑（都已修）
+
+| 坑 | 后果 | 修法 |
+|---|---|---|
+| DataStore `Preferences.Key<T>` 的 equals **只看名字** | 写错类型会覆盖成别的类型，之后 settings flow 取值抛 `ClassCastException`，**整条设置链路挂掉** | `backupKeyTypes`（key → 期望类型），类型不符直接跳过 |
+| Gson 编码 / 字面键名解码**不对称** + R8 混淆 | **只在 release 出现**：字段被改名后解码永远读不到值（「发现更新」状态无法持久化） | ProGuard 保留 `data.update.**` 与 `data.db.**` 的字段名（已用 `mapping.txt` 实测验证） |
+| 恢复时按 MIME 过滤 | 有些来源把 `.zip` 报成 `application/octet-stream` → **用户在选择器里看不到自己的备份** | 放宽成 `*/*`（读入端本来就自动识别格式） |
+| 统计表 id 是本机自增 | 按原 id `REPLACE` 会**覆盖掉本机已有行** | 清零 id 追加 + 用天然键去重（`(mediaId, playedAt)` / `timestamp`） |
+| Android `HttpURLConnection` 不支持 `PROPFIND` | 直接抛 `ProtocolException` | 用 OkHttp（支持任意方法） |
+| `filesDir/cover_cache` **不在 `getCacheDir()` 里** | 会被 Auto Backup 默认纳入 → 顶爆 25MB 配额 → 官方行为是**整个 app 都不上云** | `data_extraction_rules.xml` 显式排除 |
+
+### 10.4 验证方式
+
+- **单元测试 21 项**：`BackupRemapTest` 14、`BackupArchiveTest` 7、`BackupPreviewerTest` 8、
+  `WebDavXmlTest` 8、`SettingsValueCodecTest` 10（纯逻辑，不需要设备）
+- **release 包实测**：`assembleRelease` 通过，release APK **28.7 MB**
+  （基线 28.55 MB → 本分支全部改动只 +0.15 MB）；
+  查 `mapping.txt` 确认 keep 规则生效（恒等映射）
+- **尚未做**：装机实测（换机场景下的端到端验证）—— 等用户合并后一起装
+
+### 10.5 还没做的（可选）
+- `device-transfer` 段的精细规则：目前**刻意不写**该段，让换机迁移保持全量
+  （图片/快照都带上、不经服务器、没有 25MB 限制）—— 这是想要的行为，不算缺口。
+- WebDAV 的**自动定时上传**：目前是手动"上传当前备份"。自动上传需要处理
+  冲突/保留策略，价值不如先把手动路径跑稳。
+- 备份包的**加密**：目前是明文 zip。含 API Key，如果用户要传到不受信任的云盘，
+  可以考虑加口令加密（AES + PBKDF2）—— 需要你决定是否值得。
+

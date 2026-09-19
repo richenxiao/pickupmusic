@@ -3710,13 +3710,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         return pathMap to albumMap
     }
 
-    /** 导出全部用户数据为 JSON 字符串。UI 用 SAF 拿到 OutputStream 后调用。 */
-    suspend fun exportBackup(): String = withContext(Dispatchers.IO) {
-        val (paths, albums) = backupIdMaps()
-        backupManager.export(paths, albums)
-    }
-
-    /** 从 JSON 导入用户数据。返回导入统计；失败抛异常由 UI 捕获提示。 */
+    /**
+     * 从 JSON 导入用户数据。返回导入统计；失败抛异常由 UI 捕获提示。
+     *
+     * 这是"JSON 层"的入口（[importBackupZip] 解包后调它）；单独保留是因为
+     * `BackupArchive.read` 能识别纯 JSON 旧格式，这条路径正好复用。
+     *
+     * 注：对应的"只导出 JSON"的旧方法已删除 —— UI 全走 zip（本地图片必须跟着走，
+     * 否则换机后是裂图），留着它就是死代码。
+     */
     suspend fun importBackup(json: String): String = withContext(Dispatchers.IO) {
         val (pathToId, nameToAlbum) = reverseLookupMaps()
         val stats = backupManager.importWithRemap(json, pathToId, nameToAlbum)
