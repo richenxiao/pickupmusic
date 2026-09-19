@@ -150,6 +150,32 @@ class SettingsStore(private val context: Context) {
     suspend fun setUpdateState(v: com.shiyin.music.data.update.UpdateState) =
         context.dataStore.edit { it[keyUpdateState] = com.shiyin.music.data.update.UpdateStateCodec.encode(v) }
 
+    // ── v22: 备份快照的节流时间戳（**刻意不进备份白名单** —— 它是本机运行态）──
+    private val keyLastAutoSnapshotAt = longPreferencesKey("last_auto_snapshot_at")
+
+    suspend fun lastAutoSnapshotAt(): Long = context.dataStore.data.first()[keyLastAutoSnapshotAt] ?: 0L
+
+    suspend fun setLastAutoSnapshotAt(v: Long) =
+        context.dataStore.edit { it[keyLastAutoSnapshotAt] = v }
+
+    // v22: WebDAV 云备份凭据。**刻意不进备份白名单** ——
+    // 备份包里带着云盘账号密码，等于"备份泄露 = 云盘被接管"。
+    private val keyWebDavUrl = stringPreferencesKey("webdav_url")
+    private val keyWebDavUser = stringPreferencesKey("webdav_user")
+    private val keyWebDavPassword = stringPreferencesKey("webdav_password")
+
+    suspend fun webDavConfig(): Triple<String, String, String> {
+        val p = context.dataStore.data.first()
+        return Triple(p[keyWebDavUrl] ?: "", p[keyWebDavUser] ?: "", p[keyWebDavPassword] ?: "")
+    }
+
+    suspend fun setWebDavConfig(url: String, user: String, password: String) =
+        context.dataStore.edit {
+            it[keyWebDavUrl] = url.trim()
+            it[keyWebDavUser] = user.trim()
+            it[keyWebDavPassword] = password
+        }
+
     // ── v22: 设置随备份走 ────────────────────────────────────────────────────
     // 原来备份完全不含设置 —— 用户花最多时间配的 LLM 供应商 / API Key / 写真源
     // 换机后要从零再填一遍，这是最容易被忽略、但用户最痛的缺口。

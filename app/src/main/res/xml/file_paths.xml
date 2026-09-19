@@ -10,4 +10,8 @@
     <files-path
         name="artist_image_override"
         path="artist_image_override/" />
+    <!-- v22: 备份快照/导出包走系统分享面板（微信/QQ/邮件）时需要授权 content:// URI。 -->
+    <files-path
+        name="backup_snapshots"
+        path="backup_snapshots/" />
 </paths>

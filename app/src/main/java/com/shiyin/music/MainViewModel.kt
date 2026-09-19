@@ -49,7 +49,7 @@ import java.util.Locale
 
 enum class Tab { Home, Search, Library }
 enum class ObStage { Perm, Scan, Done }
-enum class FilesView { Root, Clean, Trash, Folders, FolderContent, Ignored, Devices, About, Merges, ImageSources, LyricsBook }
+enum class FilesView { Root, Clean, Trash, Folders, FolderContent, Ignored, Devices, About, Merges, ImageSources, LyricsBook, CloudBackup }
 enum class LyState { Idle, Searching, Failed }
 enum class LyricsKind { Embedded, Sidecar, Online, Imported }
 
@@ -576,6 +576,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     settingsLoaded = true
                     isOnboarding = !s.onboarded
                     if (permGranted) handlePermission()
+                    // v22: 启动时补一份本地快照（距上次超 24h 才写）—— 防手滑/防误操作。
+                    // 内部有节流与 firstScanDone 检查，重复调用是廉价的 no-op。
+                    maybeAutoSnapshot()
                 }
             }
         }
@@ -3715,7 +3718,133 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     /** 从 JSON 导入用户数据。返回导入统计；失败抛异常由 UI 捕获提示。 */
     suspend fun importBackup(json: String): String = withContext(Dispatchers.IO) {
-        // 当前库的反查表：路径 → mediaId、"专辑名|歌手" → albumId
+        val (pathToId, nameToAlbum) = reverseLookupMaps()
+        val stats = backupManager.importWithRemap(json, pathToId, nameToAlbum)
+        // 导入后刷新内存态，让 UI 立即反映新数据
+        if (!firstScanDone) { /* 未扫完不重载 */ }
+        else { rescanSilently() }
+        stats.toString()
+    }
+
+    // ── v22: 备份包（zip 容器，含本地图片）──────────────────────────────────
+
+    /** 会被打进备份包的本地图片目录（用户手选的歌手写真 / 专辑封面）。 */
+    private val localImageDirs = listOf("artist_image_override", "album_cover_override")
+
+    /**
+     * 收集本地图片。这些图片是**用户资产**，但数据库里只存了 `file://` 路径 ——
+     * 不把文件一起打包，换机恢复后就是一堆裂图。
+     */
+    private fun collectLocalImages(): Map<String, ByteArray> {
+        val out = LinkedHashMap<String, ByteArray>()
+        val base = getApplication<android.app.Application>().filesDir
+        for (d in localImageDirs) {
+            val dir = java.io.File(base, d)
+            if (!dir.isDirectory) continue
+            dir.listFiles()?.forEach { f ->
+                if (f.isFile) runCatching { out["$d/${f.name}"] = f.readBytes() }
+            }
+        }
+        return out
+    }
+
+    /** 把备份包里的图片写回私有目录（文件名与 DB 里的 `file://` 路径一一对应）。 */
+    private fun restoreLocalImages(files: Map<String, ByteArray>): Int {
+        var n = 0
+        val base = getApplication<android.app.Application>().filesDir
+        for ((rel, bytes) in files) {
+            val safe = com.shiyin.music.data.db.BackupArchive.sanitize(rel) ?: continue
+            // 只往已知目录写 —— 备份包可被手工编辑，白名单是必要的闸
+            if (safe.substringBefore('/') !in localImageDirs) continue
+            runCatching {
+                val target = java.io.File(base, safe)
+                target.parentFile?.mkdirs()
+                target.writeBytes(bytes)
+                n++
+            }
+        }
+        return n
+    }
+
+    /** v22: 导出为 zip 备份包（`backup.json` + 本地图片）。 */
+    suspend fun exportBackupZip(): ByteArray = withContext(Dispatchers.IO) {
+        val (paths, albums) = backupIdMaps()
+        val json = backupManager.export(paths, albums)
+        com.shiyin.music.data.db.BackupArchive.write(json, collectLocalImages())
+    }
+
+    /** v22: 从备份包恢复。**自动识别** zip 与纯 JSON 旧格式。 */
+    suspend fun importBackupZip(bytes: ByteArray): String = withContext(Dispatchers.IO) {
+        val archive = com.shiyin.music.data.db.BackupArchive.read(bytes)
+        restoreLocalImages(archive.files)
+        importBackup(archive.json)
+    }
+
+    // ── v22: 恢复前预览 + 快照（防手滑）────────────────────────────────────
+
+    /**
+     * 预览一个备份包（**不写库**）：各表条数 + 重解析会丢掉多少行。
+     *
+     * 原来导入是"选文件 → 直接覆盖写库"，误点一个旧备份就会把当前数据冲掉且不可撤销。
+     */
+    suspend fun previewBackup(bytes: ByteArray): com.shiyin.music.data.db.BackupPreviewer.Preview =
+        withContext(Dispatchers.IO) {
+            val archive = com.shiyin.music.data.db.BackupArchive.read(bytes)
+            val (pathToId, nameToAlbum) = reverseLookupMaps()
+            com.shiyin.music.data.db.BackupPreviewer.preview(
+                archive.json, pathToId, nameToAlbum, imageFiles = archive.files.size,
+            )
+        }
+
+    private val snapshotDirName = "backup_snapshots"
+    private val snapshotKeep = 3
+    private val autoSnapshotIntervalMs = 24L * 60 * 60 * 1000
+
+    private fun snapshotDir(): java.io.File =
+        java.io.File(getApplication<android.app.Application>().filesDir, snapshotDirName)
+
+    /** 当前所有快照（新的在前）。 */
+    fun listSnapshots(): List<java.io.File> =
+        snapshotDir().listFiles()?.filter { it.isFile }
+            ?.sortedByDescending { it.name }.orEmpty()
+
+    /** 写一份快照并滚动清理（只留最新 [snapshotKeep] 份）。返回文件名；失败返回 null。 */
+    private suspend fun writeSnapshot(prefix: String): String? = withContext(Dispatchers.IO) {
+        runCatching {
+            val dir = snapshotDir().apply { mkdirs() }
+            val stamp = java.text.SimpleDateFormat("yyyyMMdd-HHmmss", java.util.Locale.CHINA)
+                .format(java.util.Date())
+            val name = "$prefix-$stamp.zip"
+            java.io.File(dir, name).writeBytes(exportBackupZip())
+            dir.listFiles()?.filter { it.isFile }
+                ?.sortedByDescending { it.name }?.drop(snapshotKeep)?.forEach { it.delete() }
+            name
+        }.getOrNull()
+    }
+
+    /** 恢复前自动快照 —— 恢复失败或反悔时能撤回来。 */
+    suspend fun snapshotBeforeRestore(): String? = writeSnapshot("prerestore")
+
+    /**
+     * v22: 启动时的自动快照 —— 距上次超过 24 小时才写一份。
+     *
+     * 刻意用"启动时机 + 时间戳节流"而不是 WorkManager：不引入新依赖、不需要后台调度，
+     * 而备份内容只在用户打开 app 时才可能变化，"下次启动补一份"已经够用。
+     */
+    fun maybeAutoSnapshot() {
+        appScope.launch {
+            try {
+                if (!firstScanDone) return@launch          // 库还没扫完，快照没意义
+                val last = settingsStore.lastAutoSnapshotAt()
+                val now = System.currentTimeMillis()
+                if (now - last < autoSnapshotIntervalMs) return@launch
+                if (writeSnapshot("auto") != null) settingsStore.setLastAutoSnapshotAt(now)
+            } catch (_: Exception) { }
+        }
+    }
+
+    /** 当前库的反查表：路径 → mediaId、"专辑名|歌手" → albumId。 */
+    private fun reverseLookupMaps(): Pair<Map<String, Long>, Map<String, Long>> {
         val pathToId = HashMap<String, Long>()
         val nameToAlbum = HashMap<String, Long>()
         for (t in tracksRaw) {
@@ -3724,11 +3853,108 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 nameToAlbum["${t.album}|${t.artist}"] = t.albumId
             }
         }
-        val stats = backupManager.importWithRemap(json, pathToId, nameToAlbum)
-        // 导入后刷新内存态，让 UI 立即反映新数据
-        if (!firstScanDone) { /* 未扫完不重载 */ }
-        else { rescanSilently() }
-        stats.toString()
+        return pathToId to nameToAlbum
+    }
+
+    // ── v22: WebDAV 云备份 ─────────────────────────────────────────────────
+    // 选 WebDAV 的理由：零 SDK 依赖（就是 HTTP）、国内可用（坚果云
+    // https://dav.jianguoyun.com/dav/）、且与项目已有"用户自配地址+凭据"范式一致。
+
+    var webDavUrl by mutableStateOf(""); private set
+    var webDavUser by mutableStateOf(""); private set
+    var webDavPassword by mutableStateOf(""); private set
+    var cloudBusy by mutableStateOf(false); private set
+    var cloudMsg by mutableStateOf<String?>(null); private set
+    var cloudFiles by mutableStateOf<List<com.shiyin.music.data.backup.WebDavXml.Entry>>(emptyList()); private set
+
+    private fun webDav(): com.shiyin.music.data.backup.WebDavClient? {
+        if (webDavUrl.isBlank() || webDavUser.isBlank()) return null
+        return com.shiyin.music.data.backup.WebDavClient(
+            webDavUrl, webDavUser, webDavPassword, sharedHttpClient,
+        )
+    }
+
+    /** 打开云备份页时载入已保存的凭据。 */
+    fun loadWebDavConfig() {
+        appScope.launch {
+            val (u, n, p) = settingsStore.webDavConfig()
+            webDavUrl = u; webDavUser = n; webDavPassword = p
+        }
+    }
+
+    fun saveWebDavConfig(url: String, user: String, password: String) {
+        webDavUrl = url; webDavUser = user; webDavPassword = password
+        appScope.launch { settingsStore.setWebDavConfig(url, user, password) }
+    }
+
+    /** 测试连接（顺便把远端文件列出来）。 */
+    fun cloudTest() {
+        if (cloudBusy) return
+        val c = webDav()
+        if (c == null) { cloudMsg = "请先填写地址与账号"; return }
+        cloudBusy = true; cloudMsg = "正在连接…"
+        appScope.launch {
+            val err = withContext(Dispatchers.IO) { c.test() }
+            if (err == null) {
+                val files = withContext(Dispatchers.IO) { c.list() }
+                cloudFiles = files
+                cloudMsg = "连接成功，远端有 ${files.size} 个备份文件"
+            } else {
+                cloudMsg = err
+            }
+            cloudBusy = false
+        }
+    }
+
+    /** 上传当前备份到云端（文件名带时间戳，便于保留多份）。 */
+    fun cloudUpload() {
+        if (cloudBusy) return
+        val c = webDav() ?: run { cloudMsg = "请先填写地址与账号"; return }
+        cloudBusy = true; cloudMsg = "正在打包上传…"
+        appScope.launch {
+            val name = "pickupmusic-backup-" + java.text.SimpleDateFormat(
+                "yyyyMMdd-HHmmss", java.util.Locale.CHINA,
+            ).format(java.util.Date()) + ".zip"
+            val bytes = withContext(Dispatchers.IO) { runCatching { exportBackupZip() }.getOrNull() }
+            if (bytes == null) {
+                cloudMsg = "打包失败"; cloudBusy = false; return@launch
+            }
+            val err = withContext(Dispatchers.IO) { c.upload(name, bytes) }
+            cloudMsg = err ?: "已上传 $name（${"%.1f".format(bytes.size / 1024.0 / 1024.0)} MB）"
+            if (err == null) cloudFiles = withContext(Dispatchers.IO) { c.list() }
+            cloudBusy = false
+        }
+    }
+
+    fun cloudRefresh() {
+        if (cloudBusy) return
+        val c = webDav() ?: run { cloudMsg = "请先填写地址与账号"; return }
+        cloudBusy = true
+        appScope.launch {
+            cloudFiles = withContext(Dispatchers.IO) { c.list() }
+            cloudMsg = if (cloudFiles.isEmpty()) "远端没有找到备份文件" else "已刷新（${cloudFiles.size} 个）"
+            cloudBusy = false
+        }
+    }
+
+    /** 从云端下载并恢复。恢复前会自动存本地快照。 */
+    fun cloudRestore(name: String) {
+        if (cloudBusy) return
+        val c = webDav() ?: run { cloudMsg = "请先填写地址与账号"; return }
+        cloudBusy = true; cloudMsg = "正在下载 $name …"
+        appScope.launch {
+            val bytes = withContext(Dispatchers.IO) { c.download(name) }
+            if (bytes == null) {
+                cloudMsg = "下载失败"; cloudBusy = false; return@launch
+            }
+            try {
+                snapshotBeforeRestore()
+                cloudMsg = "恢复完成：${importBackupZip(bytes)}"
+            } catch (e: Exception) {
+                cloudMsg = "恢复失败：${e.message}"
+            }
+            cloudBusy = false
+        }
     }
 
     fun deleteLyrics() {
