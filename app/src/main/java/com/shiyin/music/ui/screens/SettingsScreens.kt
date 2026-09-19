@@ -202,7 +202,7 @@ private fun CloudBackupScreen(vm: MainViewModel) {
                 for (f in vm.cloudFiles.sortedByDescending { it.name }) {
                     Row(
                         Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).background(c.n100)
-                            .clickable(enabled = !vm.cloudBusy) { vm.cloudRestore(f.name) }
+                            .clickable(enabled = !vm.cloudBusy) { vm.cloudRequestRestore(f.name) }
                             .padding(horizontal = 10.dp, vertical = 8.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
@@ -218,6 +218,45 @@ private fun CloudBackupScreen(vm: MainViewModel) {
             }
         }
         Box(Modifier.height(60.dp))
+    }
+
+    // v22: 云端恢复也要**先预览再写库** —— 与本地恢复同一道闸。
+    // 云端风险其实更高（远端可能是很久以前的备份、也可能是别人的），更不能下完直接覆盖。
+    vm.cloudPreview?.let { p ->
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { if (!vm.cloudBusy) vm.cloudCancelRestore() },
+            containerColor = c.surface,
+            title = {
+                Text(
+                    "从云端恢复「${vm.cloudPendingName ?: ""}」？",
+                    style = body(15f, FontWeight.ExtraBold, c.text),
+                )
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(p.summary(), style = body(12f, FontWeight.Normal, c.n700).copy(lineHeight = 18.sp))
+                    p.lossNote()?.let {
+                        Text("⚠ $it", style = body(11.5f, FontWeight.Bold, c.a700).copy(lineHeight = 17.sp))
+                    }
+                    Text(
+                        "合并恢复：同主键覆盖，其余保留。写库前会自动存一份本地快照。",
+                        style = body(11f, FontWeight.Normal, c.n600),
+                    )
+                }
+            },
+            confirmButton = {
+                com.shiyin.music.ui.components.DialogActionsRow(
+                    listOf(
+                        com.shiyin.music.ui.components.DialogAction("取消") {
+                            if (!vm.cloudBusy) vm.cloudCancelRestore()
+                        },
+                        com.shiyin.music.ui.components.DialogAction("恢复", emphasized = true) {
+                            vm.cloudConfirmRestore()
+                        },
+                    )
+                )
+            },
+        )
     }
 }
 
@@ -316,7 +355,10 @@ private fun SettingsRoot(vm: MainViewModel) {
             try {
                 val bytes = vm.exportBackupZip()
                 context.contentResolver.openOutputStream(uri)?.use { it.write(bytes) }
-                backupMsg = "已备份（${"%.1f".format(bytes.size / 1024.0 / 1024.0)} MB）"
+                // v22: 备份里**含 API Key / 供应商配置**（用户定调：要进，否则换机最痛），
+                // 所以导出后必须明确提醒一句"含密钥"，让用户知道这个文件不能随便发。
+                backupMsg = "已备份（${"%.1f".format(bytes.size / 1024.0 / 1024.0)} MB）· " +
+                    "含密钥，请妥善保管"
             } catch (e: Exception) { backupMsg = "备份失败：${e.message}" }
         }
     }
@@ -479,8 +521,11 @@ private fun SettingsRoot(vm: MainViewModel) {
                         Modifier.clip(RoundedCornerShape(999.dp)).background(c.n100)
                             .clickable {
                                 backupMsg = null
-                                // 同时接受 zip（新）与 json（旧备份）
-                                importLauncher.launch(arrayOf("application/zip", "application/json"))
+                                // v22: 不过滤 MIME —— 有些文件来源会把 .zip 报成
+                                // application/octet-stream，按 application/zip 过滤会让用户
+                                // **在选择器里看不到自己的备份文件**。反正读入端
+                                // （BackupArchive.read）本来就自动识别 zip / 纯 JSON。
+                                importLauncher.launch(arrayOf("*/*"))
                             }
                             .padding(horizontal = 12.dp, vertical = 7.dp),
                     ) { Text("恢复", style = body(12.5f, FontWeight.Bold, c.text)) }

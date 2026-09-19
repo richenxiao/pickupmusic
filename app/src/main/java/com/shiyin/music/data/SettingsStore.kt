@@ -181,27 +181,46 @@ class SettingsStore(private val context: Context) {
     // 换机后要从零再填一遍，这是最容易被忽略、但用户最痛的缺口。
 
     /**
-     * 可备份的设置白名单：**只含用户配置与凭证**。
+     * 可备份的设置白名单：**key → 期望类型**（类型见 [SettingsValueCodec] 的前缀）。
      *
      * 刻意排除的运行态：
      *  - `onboarded` / `first_scan_done` —— "本机已完成初始化"的标记，带到新机会让
      *    新机**跳过首次扫描引导**，反而像坏了
      *  - `recent_ids` —— 最近播放的本地 mediaId，跨设备无意义
      *  - `update_state` —— 检查更新缓存，新机自己会查
+     *  - `webdav_*` / `last_auto_snapshot_at` —— 云盘凭据与本机运行态
+     *
+     * ⚠️ **为什么必须带期望类型**：DataStore 的 `Preferences.Key<T>` 的 equals
+     * **只看名字**（`Key<String>("dark_theme") == Key<Boolean>("dark_theme")`）。
+     * 一旦写进类型不符的值，之后 `prefs[booleanPreferencesKey("dark_theme")]` 会在取值时
+     * 抛 ClassCastException —— 而且是在 settings flow 里抛，**整条设置同步链路挂掉**。
+     * 备份文件可被手工编辑、也可能来自未来版本，所以类型不符一律跳过。
      */
-    private val backupKeyNames = listOf(
-        "dark_theme", "gapless", "auto_match", "auto_save_recognition",
-        "playback_speed", "retro_speed_mode",
-        "furigana_default_on", "furigana_auto_verify", "lyrics_color_mode",
-        "deepseek_api_key", "tavily_api_key", "llm_providers", "llm_active_provider",
-        "fanart_api_key", "lastfm_api_key", "disabled_image_sources", "custom_image_sources",
+    private val backupKeyTypes: Map<String, Char> = mapOf(
+        "dark_theme" to SettingsValueCodec.BOOL,
+        "gapless" to SettingsValueCodec.BOOL,
+        "auto_match" to SettingsValueCodec.BOOL,
+        "auto_save_recognition" to SettingsValueCodec.BOOL,
+        "playback_speed" to SettingsValueCodec.FLOAT,
+        "retro_speed_mode" to SettingsValueCodec.BOOL,
+        "furigana_default_on" to SettingsValueCodec.BOOL,
+        "furigana_auto_verify" to SettingsValueCodec.BOOL,
+        "lyrics_color_mode" to SettingsValueCodec.STR,
+        "deepseek_api_key" to SettingsValueCodec.STR,
+        "tavily_api_key" to SettingsValueCodec.STR,
+        "llm_providers" to SettingsValueCodec.STR,
+        "llm_active_provider" to SettingsValueCodec.STR,
+        "fanart_api_key" to SettingsValueCodec.STR,
+        "lastfm_api_key" to SettingsValueCodec.STR,
+        "disabled_image_sources" to SettingsValueCodec.STR_SET,
+        "custom_image_sources" to SettingsValueCodec.STR,
     )
 
     /** 导出白名单设置（值已编码成"类型前缀 + 原文"，见 [SettingsValueCodec]）。 */
     suspend fun exportBackupSettings(): Map<String, String> {
         val all = context.dataStore.data.first().asMap()
         val out = LinkedHashMap<String, String>()
-        for (name in backupKeyNames) {
+        for (name in backupKeyTypes.keys) {
             val v = all.entries.firstOrNull { it.key.name == name }?.value ?: continue
             SettingsValueCodec.encode(v)?.let { out[name] = it }
         }
@@ -212,15 +231,16 @@ class SettingsStore(private val context: Context) {
      * 导入白名单设置。只写备份里**确实存在**的 key，其余保持本机不动（合并语义）。
      * 返回成功写入的条数。
      *
-     * 白名单外的 key 一律拒绝 —— 备份文件是可以被手工编辑的，不加这道闸就等于
-     * "任意 key 注入"。
+     * 两道闸：**不在白名单**的 key 一律拒绝（防任意 key 注入）；**类型不符**的也拒绝
+     * （防把 Key 的类型写歪导致 settings flow 抛 ClassCastException）。
      */
     suspend fun importBackupSettings(values: Map<String, String>): Int {
         var n = 0
         context.dataStore.edit { prefs ->
             for ((name, encoded) in values) {
-                if (name !in backupKeyNames) continue
-                when (SettingsValueCodec.typeOf(encoded)) {
+                val expected = backupKeyTypes[name] ?: continue
+                if (SettingsValueCodec.typeOf(encoded) != expected) continue
+                when (expected) {
                     SettingsValueCodec.BOOL -> SettingsValueCodec.boolOf(encoded)?.let {
                         prefs[booleanPreferencesKey(name)] = it; n++
                     }
@@ -239,7 +259,7 @@ class SettingsStore(private val context: Context) {
                     SettingsValueCodec.STR_SET -> {
                         prefs[stringSetPreferencesKey(name)] = SettingsValueCodec.setOf(encoded); n++
                     }
-                    else -> Unit   // 未知类型：跳过，不写坏
+                    else -> Unit
                 }
             }
         }

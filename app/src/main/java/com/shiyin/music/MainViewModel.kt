@@ -3866,6 +3866,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     var cloudBusy by mutableStateOf(false); private set
     var cloudMsg by mutableStateOf<String?>(null); private set
     var cloudFiles by mutableStateOf<List<com.shiyin.music.data.backup.WebDavXml.Entry>>(emptyList()); private set
+    /** 云端恢复的待确认状态（下载完成、等用户确认后才写库）。 */
+    var cloudPendingName by mutableStateOf<String?>(null); private set
+    private var cloudPendingBytes: ByteArray? = null
+    var cloudPreview by mutableStateOf<com.shiyin.music.data.db.BackupPreviewer.Preview?>(null); private set
 
     private fun webDav(): com.shiyin.music.data.backup.WebDavClient? {
         if (webDavUrl.isBlank() || webDavUser.isBlank()) return null
@@ -3938,22 +3942,55 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** 从云端下载并恢复。恢复前会自动存本地快照。 */
-    fun cloudRestore(name: String) {
+    /**
+     * v22: 云端恢复第一步 —— 只下载 + 预览，**不写库**。
+     *
+     * 与本地恢复保持一致：云端恢复的风险其实更高（远端可能是很久以前的备份、
+     * 也可能是别人的），更不能"下完直接覆盖"。确认由 [cloudConfirmRestore] 完成。
+     */
+    fun cloudRequestRestore(name: String) {
         if (cloudBusy) return
         val c = webDav() ?: run { cloudMsg = "请先填写地址与账号"; return }
         cloudBusy = true; cloudMsg = "正在下载 $name …"
         appScope.launch {
             val bytes = withContext(Dispatchers.IO) { c.download(name) }
             if (bytes == null) {
-                cloudMsg = "下载失败"; cloudBusy = false; return@launch
+                cloudMsg = "下载失败"
+            } else {
+                try {
+                    cloudPreview = previewBackup(bytes)
+                    cloudPendingBytes = bytes
+                    cloudPendingName = name
+                    cloudMsg = null
+                } catch (e: Exception) {
+                    cloudMsg = "备份包无法解析：${e.message}"
+                }
             }
+            cloudBusy = false
+        }
+    }
+
+    fun cloudCancelRestore() {
+        cloudPreview = null
+        cloudPendingBytes = null
+        cloudPendingName = null
+    }
+
+    /** 云端恢复第二步 —— 用户确认后才写库（写前自动存快照）。 */
+    fun cloudConfirmRestore() {
+        val bytes = cloudPendingBytes ?: return
+        if (cloudBusy) return
+        cloudBusy = true; cloudMsg = "正在恢复…"
+        appScope.launch {
             try {
                 snapshotBeforeRestore()
                 cloudMsg = "恢复完成：${importBackupZip(bytes)}"
             } catch (e: Exception) {
                 cloudMsg = "恢复失败：${e.message}"
+            } finally {
+                cloudBusy = false
+                cloudCancelRestore()
             }
-            cloudBusy = false
         }
     }
 
