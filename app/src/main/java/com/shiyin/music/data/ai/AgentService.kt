@@ -171,8 +171,10 @@ object AgentService {
     /**
      * v1.3.3: 检测文本主要语言(粗略启发式)——日语/中文/英文,用于 Tavily 查询关键词选择。
      * 日语:含平假名/片假名;中文:含汉字(但无假名);其他:英文。
+     * v1.3.8: 由 private 改 internal——SongStorySkill 选搜索角度关键词时复用同一套判定,
+     * 避免两处各写一份语言识别再漂移。
      */
-    private fun detectLanguage(text: String): String {
+    internal fun detectLanguage(text: String): String {
         val hasHiragana = text.any { it.code in 0x3040..0x309F }
         val hasKatakana = text.any { it.code in 0x30A0..0x30FF }
         if (hasHiragana || hasKatakana) return "ja"

@@ -64,56 +64,6 @@ object AgentTools {
             Result.failure(e)
         }
 
-    /**
-     * 聊天链路的"要不要联网"判定——**模型自己决定**,不再是本地正则。
-     *
-     * 一轮调用:模型要么直接答(=不需要搜,content 丢弃),要么发起 tool_calls
-     * (=执行搜索,把资料返回给调用方,由正式回复链路使用)。不做第二轮回答,
-     * 省一次 LLM 往返。null=网络/配置失败(按不搜继续,不阻塞聊天);
-     * toolsSupported=false=供应商不认 tools(调用方回退旧正则启发式)。
-     */
-    suspend fun decideAndSearch(
-        config: LlmProviderConfig,
-        tavilyKey: String,
-        userText: String,
-        maxQueries: Int = 2,
-        onSearch: (String) -> Unit = {},
-    ): WebLoopResult? {
-        val tools = JsonArray().apply { add(webSearchTool()) }
-        val messages = JsonArray().apply {
-            add(JsonObject().apply {
-                addProperty("role", "system")
-                addProperty("content", "你是联网搜索判断器。判断用户这条消息是否需要联网搜索才能准确回答:事实核查/实时信息/具体作品或人物资料/用户明确要求联网 → 调用 web_search(最多 $maxQueries 次,可按不同角度各搜一次);闲聊/主观感受/常识/对音乐库的操作指令 → 不要调用任何工具,直接回复任意简短内容。你的回复不会被展示,只有搜索动作有意义。")
-            })
-            add(JsonObject().apply { addProperty("role", "user"); addProperty("content", userText) })
-        }
-        val resp = when (val r = LlmClient.callWithTools(config, messages, tools, maxTokens = 512, callSec = 45)) {
-            is LlmToolResult.Ok -> r.resp
-            is LlmToolResult.Err ->
-                return if (r.httpCode in TOOLS_UNSUPPORTED_CODES) {
-                    // 供应商不认 tools → 调用方回退旧正则启发式(行为与上一版一致)
-                    WebLoopResult(null, emptyList(), emptyList(), 0, 0, 0, null, toolsSupported = false)
-                } else {
-                    // 真实失败(鉴权/限流/网络):不搜也不阻塞聊天,但把原因留痕
-                    android.util.Log.w("Agent", "搜索决策调用失败: ${r.message}")
-                    null
-                }
-        }
-        val searches = mutableListOf<String>()
-        val contexts = mutableListOf<String>()
-        resp.toolCalls.filter { it.name == WEB_SEARCH }.take(maxQueries).forEach { tc ->
-            val q = parseQuery(tc.argumentsJson).orEmpty()
-            if (q.isBlank()) return@forEach
-            onSearch(q)
-            searches += q
-            val ctx = runCatchingCancellable { TavilyService.search(tavilyKey, q, includeAnswer = true) }.getOrNull()
-            // searches 与 contexts 必须严格一一对应(调用方按下标/按数量配对展示)。
-            // Tavily 失败时用占位串补位,不能只往 searches 里加。
-            contexts += (ctx ?: "(本次搜索没有返回资料)")
-        }
-        return WebLoopResult(null, searches, contexts, resp.promptTokens, resp.completionTokens, resp.cacheTokens, resp.thinking, toolsSupported = true)
-    }
-
     /** 从 tool_call 的 arguments JSON 里取 query;非法 JSON / 缺字段 → null。 */
     private fun parseQuery(argumentsJson: String): String? = try {
         JsonParser.parseString(argumentsJson).asJsonObject.get("query")?.asString
@@ -263,5 +213,299 @@ object AgentTools {
             // (硬上限兜底,防止"永远搜不成功"把循环吊死)。
             if (searchRounds >= maxSearchRounds || rounds >= hardRoundCap - 1) toolsOn = false
         }
+    }
+
+    // ── v1.3.8 统一工具调用分发(P1 核心重构) ────────────────────────────────
+    //
+    // 取代旧的「prompt 里塞技能清单 → 模型输出 {"skill":...} JSON → 本地解析」伪工具调用。
+    // 技能现在是**真正的工具**:schema 由各技能自己声明(见 AgentEngine.AgentSkill.parameters),
+    // 模型通过 tool_calls 结构化地选技能,模型不再需要把 JSON 写进 content。
+    //
+    // 因此旧链路里为「用自由文本模拟工具调用」而生的整套防御可以删掉:
+    // parseIntent 的容错抠取、流式期「这段像不像 JSON 开头」的缓冲判断、clamp 到
+    // 最后一行... 全部不再需要(见 AgentEngine.route 的删除)。
+
+    const val CLARIFY = "clarify"
+
+    /** 模型选中的技能调用。args 已从 JSON 抽成字符串表。 */
+    data class SkillInvocation(val key: String, val args: Map<String, String>)
+
+    /** 模型要求澄清(第三态):不执行任何技能,把问题交还给用户。 */
+    data class ClarifyRequest(val question: String, val options: List<String>)
+
+    /**
+     * 分发结果。**失败与降级都是返回值的一部分**,调用方不读 [LlmClient.lastError]
+     * (共享状态,并发下会被覆盖)。
+     *
+     *  - [chatReply] 非空 → 闲聊/问答回复(打字机正文已通过 onContent 流式流出)
+     *  - [skill] 非空     → 要执行的技能,由调用方用现有链路执行(技能接口未变)
+     *  - [clarify] 非空   → 追问用户,不执行技能
+     *  - [toolsSupported]=false → 供应商不认 tools(HTTP 400/422),调用方回退旧链
+     */
+    data class DispatchResult(
+        val chatReply: String? = null,
+        val skill: SkillInvocation? = null,
+        val clarify: ClarifyRequest? = null,
+        val thinking: String? = null,
+        val thinkingMs: Long = 0L,
+        val promptTokens: Int = 0,
+        val completionTokens: Int = 0,
+        val cacheTokens: Int = 0,
+        val toolsSupported: Boolean = true,
+        val failed: Boolean = false,
+        val error: String? = null,
+    )
+
+    /**
+     * 分发用的 system prompt。
+     *
+     * v1.3.8 关键变化:技能清单**不再写进 prompt**——它现在由 tools 参数携带
+     * (name/description/parameters 三件套)。prompt 只讲行为准则。
+     *
+     * clarify 的边界写进 prompt + 工具 description 双处(用户 D3 的硬性要求):
+     * clarify 只解决"多个技能都成立、无从选择",不解决"你没看清工具说明"。
+     */
+    private fun dispatchSystemPrompt(contextBlock: String): String = buildString {
+        appendLine("你是「拾音 PickUpMusic」音乐播放器里的 Agent,用户的听歌伙伴。性格:懂音乐、随和、有点幽默、说话像朋友,不说客服腔,不复述自己的功能清单(用户主动问才介绍)。中文回复简洁自然,一般 1-3 句。")
+        appendLine()
+        appendLine("行为准则:")
+        appendLine("1. 用户想对音乐库做操作(排曲序/改歌名/改歌手名/找歌词/查库里有没有)→ 调用对应工具。调用后不要再用文字描述你打算怎么做,系统会执行。")
+        appendLine("2. 纯聊天、问候、感慨、聊音乐感受 → 直接自然回复,不要调用任何工具。")
+        appendLine("3. 需要实时信息、事实核查、作品或人物资料 → 调用 web_search。")
+        appendLine("4. 只有当你确实无法在可用工具之间做出可靠选择时,才调用 clarify 追问。**不要**用 clarify 掩盖没看清工具说明——看完工具描述能判断该用哪个,就必须直接调用那个工具;也不要为寒暄、确认、征求许可而追问。")
+        appendLine("5. 各工具能做什么、参数怎么填,以工具描述为准。")
+        if (contextBlock.isNotEmpty()) {
+            appendLine()
+            appendLine("[当前上下文]")
+            appendLine(contextBlock)
+        }
+    }.trimEnd()
+
+    /** 组装工具表:全部技能 + (可选)web_search + clarify。 */
+    private fun buildTools(includeWebSearch: Boolean): JsonArray = JsonArray().apply {
+        for (s in AgentEngine.skills) {
+            add(JsonObject().apply {
+                addProperty("type", "function")
+                add("function", JsonObject().apply {
+                    addProperty("name", s.key)
+                    addProperty("description", s.description)
+                    // 技能声明的 schema 解析失败时退回空对象 schema 并留痕——
+                    // 让一个写坏的 schema 瘫掉整条分发链,比缺参数更糟。
+                    val params = runCatching { JsonParser.parseString(s.parameters).asJsonObject }.getOrElse {
+                        android.util.Log.w("Agent", "技能 ${s.key} 的 parameters 不是合法 JSON Schema:${s.parameters.take(80)}")
+                        JsonObject().apply {
+                            addProperty("type", "object")
+                            add("properties", JsonObject())
+                        }
+                    }
+                    add("parameters", params)
+                })
+            })
+        }
+        if (includeWebSearch) add(webSearchTool())
+        add(clarifyTool())
+    }
+
+    /** clarify 工具。description 里写明硬性边界(用户 D3)。 */
+    private fun clarifyTool(): JsonObject = JsonObject().apply {
+        addProperty("type", "function")
+        add("function", JsonObject().apply {
+            addProperty("name", CLARIFY)
+            addProperty(
+                "description",
+                "向用户追问以澄清意图。硬性边界:仅当【多个操作工具的语义都成立、你无法从中做出可靠选择】时才使用。" +
+                    "不要用它弥补某个工具描述不清——若能依据现有工具描述做出可靠判断,必须直接调用那个工具。" +
+                    "也不要为寒暄、确认、征求许可而调用它。",
+            )
+            add("parameters", JsonObject().apply {
+                addProperty("type", "object")
+                add("properties", JsonObject().apply {
+                    add("question", JsonObject().apply {
+                        addProperty("type", "string")
+                        addProperty("description", "要问用户的问题,一句话说清")
+                    })
+                    add("options", JsonObject().apply {
+                        addProperty("type", "array")
+                        add("items", JsonObject().apply { addProperty("type", "string") })
+                        addProperty("description", "2-4 个候选选项,尽量给(用户点一下就回答)")
+                    })
+                })
+                add("required", JsonArray().apply { add("question") })
+            })
+        })
+    }
+
+    /** tool_call 的 arguments JSON → 字符串参数表。数组拼成空格分隔串(容错)。 */
+    private fun parseArgs(argumentsJson: String): Map<String, String> = try {
+        val obj = JsonParser.parseString(argumentsJson).asJsonObject
+        obj.entrySet().mapNotNull { (k, v) ->
+            val s = when {
+                v.isJsonPrimitive -> v.asString
+                v.isJsonArray -> v.asJsonArray.mapNotNull { e -> if (e.isJsonPrimitive) e.asString else null }
+                    .joinToString(" ")
+                else -> null
+            }
+            s?.takeIf { it.isNotBlank() }?.let { k to it }
+        }.toMap()
+    } catch (e: Exception) {
+        android.util.Log.w("Agent", "tool_call arguments 解析失败: ${argumentsJson.take(120)}")
+        emptyMap()
+    }
+
+    private fun parseClarify(argumentsJson: String): ClarifyRequest {
+        val obj = runCatching { JsonParser.parseString(argumentsJson).asJsonObject }.getOrNull()
+        val q = obj?.get("question")?.takeIf { it.isJsonPrimitive }?.asString?.takeIf { it.isNotBlank() }
+            ?: "你想让我做什么?"
+        val opts = obj?.getAsJsonArray("options")?.mapNotNull {
+            if (it?.isJsonPrimitive == true) it.asString.takeIf { s -> s.isNotBlank() } else null
+        } ?: emptyList()
+        return ClarifyRequest(q, opts)
+    }
+
+    /** assistant 的 tool_calls 原样回显(OpenAI 协议要求,下一轮请求要带)。
+     *  DeepSeek 强制「带 tool_calls 的 assistant 消息必须紧接其 tool 响应」,顺序不能错。 */
+    private fun assistantToolEcho(calls: List<LlmToolCall>): JsonObject = JsonObject().apply {
+        addProperty("role", "assistant")
+        add("tool_calls", JsonArray().apply {
+            calls.forEach { tc ->
+                add(JsonObject().apply {
+                    addProperty("id", tc.id)
+                    addProperty("type", "function")
+                    add("function", JsonObject().apply {
+                        addProperty("name", tc.name)
+                        addProperty("arguments", tc.argumentsJson)
+                    })
+                })
+            }
+        })
+    }
+
+    private fun toolResult(id: String, text: String): JsonObject = JsonObject().apply {
+        addProperty("role", "tool")
+        addProperty("tool_call_id", id)
+        addProperty("content", text.take(4000))
+    }
+
+    /**
+     * 统一分发:一次流式调用同时完成「选技能 / 聊天回答 / 要不要联网」,并把
+     * web_search 的多轮循环收在里面。
+     *
+     * 相比旧链路(决策调用 → 路由调用 → 技能),这里**只有一次流式往返**,闲聊
+     * 不再白付一次非流式决策调用(callSec=45s)。
+     *
+     * @param tavilyKey 为空时不把 web_search 挂进工具表——不向模型提供用不了的工具。
+     * @param maxSearchRounds 允许的**成功搜索**轮数上限。
+     */
+    suspend fun dispatch(
+        config: LlmProviderConfig,
+        tavilyKey: String,
+        userText: String,
+        contextBlock: String = "",
+        history: List<Pair<String, String>> = emptyList(),
+        maxSearchRounds: Int = 2,
+        onThinking: (String?) -> Unit = {},
+        onContent: (String) -> Unit = {},
+        onSearch: (String) -> Unit = {},
+    ): DispatchResult {
+        val tools = buildTools(includeWebSearch = tavilyKey.isNotBlank())
+        val messages = JsonArray().apply {
+            add(JsonObject().apply {
+                addProperty("role", "system")
+                addProperty("content", dispatchSystemPrompt(contextBlock))
+            })
+            for ((role, text) in history) {
+                add(JsonObject().apply {
+                    addProperty("role", if (role == "user") "user" else "assistant")
+                    addProperty("content", text)
+                })
+            }
+            add(JsonObject().apply { addProperty("role", "user"); addProperty("content", userText) })
+        }
+
+        val started = System.currentTimeMillis()
+        val thinkSb = StringBuilder()
+        val contentSb = StringBuilder()
+        var pt = 0; var ct = 0; var cache = 0
+        var searchRounds = 0
+        var rounds = 0
+        // 硬轮次上限,与"成功搜索次数"解耦:弱模型若每轮都返回空 query / 不存在的工具名,
+        // searchRounds 恒为 0 → 没有独立刹车就会无限烧钱(与 runWebSearchLoop 同因)。
+        val hardCap = maxSearchRounds + 3
+
+        fun snap() = DispatchResult(
+            thinking = thinkSb.toString().ifBlank { null },
+            thinkingMs = System.currentTimeMillis() - started,
+            promptTokens = pt, completionTokens = ct, cacheTokens = cache,
+        )
+
+        while (rounds < hardCap) {
+            rounds++
+            val resp = when (val r = LlmClient.callWithToolsStream(
+                config, messages, tools, maxTokens = 4096,
+                onDelta = { c, reason ->
+                    // (null,null) = 重试轮开始,清空缓冲(重试会从头重发全量)
+                    if (c == null && reason == null) {
+                        thinkSb.clear(); contentSb.clear()
+                        onThinking(null); onContent("")
+                        return@callWithToolsStream
+                    }
+                    reason?.let { thinkSb.append(it); onThinking(thinkSb.toString()) }
+                    c?.let { contentSb.append(it); onContent(contentSb.toString()) }
+                },
+            )) {
+                is LlmToolResult.Ok -> r.resp
+                is LlmToolResult.Err -> {
+                    if (rounds == 1 && r.httpCode in TOOLS_UNSUPPORTED_CODES) {
+                        // 第一轮就 400/422 → 供应商不认 tools,调用方回退旧链
+                        return snap().copy(toolsSupported = false)
+                    }
+                    return snap().copy(failed = true, error = r.message)
+                }
+            }
+            pt += resp.promptTokens; ct += resp.completionTokens; cache += resp.cacheTokens
+
+            // 无工具调用 = 这一轮就是最终回复(闲聊 / 问答 / 搜索后的总结)
+            if (resp.toolCalls.isEmpty()) {
+                return snap().copy(chatReply = contentSb.toString().trim().takeIf { it.isNotBlank() })
+            }
+
+            val skillCall = resp.toolCalls.firstOrNull { AgentEngine.skillByKey(it.name) != null }
+            val clarifyCall = resp.toolCalls.firstOrNull { it.name == CLARIFY }
+            val searchCalls = resp.toolCalls.filter { it.name == WEB_SEARCH }
+
+            // 技能优先:它是用户真实意图。澄清只在没有技能可执行时才有意义。
+            if (skillCall != null) {
+                return snap().copy(skill = SkillInvocation(skillCall.name, parseArgs(skillCall.argumentsJson)))
+            }
+            if (clarifyCall != null) {
+                return snap().copy(clarify = parseClarify(clarifyCall.argumentsJson))
+            }
+
+            // 到这里只剩 web_search(或模型编造的工具名)。先把 assistant 回显出去,
+            // 再逐条给 tool 响应——顺序必须成对,否则严格网关(DeepSeek)下一轮 400。
+            messages.add(assistantToolEcho(resp.toolCalls))
+            for (tc in resp.toolCalls) {
+                val text = when {
+                    tc.name != WEB_SEARCH -> "(不支持的工具: ${tc.name})"
+                    searchRounds >= maxSearchRounds -> "(已达搜索次数上限,请用现有资料回答)"
+                    else -> {
+                        val q = parseQuery(tc.argumentsJson)
+                        if (q.isNullOrBlank()) "(缺少 query 参数)"
+                        else {
+                            searchRounds++
+                            onSearch(q)
+                            runCatchingCancellable { TavilyService.search(tavilyKey, q, includeAnswer = true) }
+                                .getOrNull() ?: "(本次搜索没有返回资料)"
+                        }
+                    }
+                }
+                messages.add(toolResult(tc.id, text))
+            }
+            if (searchCalls.isEmpty()) {
+                // 全是编造的工具名:回灌了错误说明,让模型下一轮自纠(轮次上限兜底)
+                android.util.Log.w("Agent", "dispatch: 模型调了未知工具 ${resp.toolCalls.map { it.name }}")
+            }
+        }
+        return snap().copy(failed = true, error = "工具调用轮数超出上限")
     }
 }

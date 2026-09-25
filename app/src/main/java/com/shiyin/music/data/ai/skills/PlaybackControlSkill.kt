@@ -1,0 +1,129 @@
+package com.shiyin.music.data.ai.skills
+
+import com.shiyin.music.data.ai.AgentEngine
+import com.shiyin.music.data.ai.LlmProviderConfig
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+
+/**
+ * v1.3.8 Agent 技能⑧:播放控制。
+ *
+ * 补的是一个**能力空洞**:在此之前用户最自然的日常说法(「放一下《晴天》」「暂停」
+ * 「下一首」)没有任何工具接得住,只会被当成闲聊回一句——这是可用性硬伤,优先级高于
+ * 锦上添花的查询类技能。
+ *
+ * 零 LLM、零网络:动作与目标都由模型在分发那一次工具调用里抽成结构化参数,execute
+ * 只是落地到 PlayerController。
+ *
+ * **只操作播放状态,不碰音乐库内容**——与项目约定一致:不可逆/改库操作永不接入
+ * 自然语言执行路径(删除、收藏、改元数据这些一律不做)。
+ */
+object PlaybackControlSkill : AgentEngine.AgentSkill {
+
+    /** 括号补充说明(「晴天 (Live)」「歌名【remix】」)——比对前剥掉。 */
+    private val BRACKET_SUFFIX = Regex("[(（\\[【].*?[)）\\]】]")
+    override val key = "playback_control"
+    override val description =
+        "控制播放:播放指定的歌曲/专辑、暂停、继续、下一首、上一首。" +
+            "用户说「放一下X」「听听X」「来一首X」「暂停」「继续」「下一首」「上一首」时用这个工具。" +
+            "只控制播放,不改音乐库内容。仅询问当前在放什么时不要调用本工具。"
+    override val parameters = """
+        {"type":"object","properties":{
+          "action":{"type":"string","enum":["play","pause","resume","next","previous"],"description":"要做的播放动作:play=播放(可用 target 指定内容),pause=暂停,resume=从暂停处继续,next=下一首,previous=上一首"},
+          "target":{"type":"string","description":"要播放的歌曲名/专辑名/歌手名。仅 action=play 且用户点名了内容时填,用用户说的原样中文;用户只是说「继续放」时不要填"}
+        },"required":["action"]}
+    """.trimIndent()
+
+    override fun panelSteps(args: Map<String, String>) = listOf(
+        AgentEngine.PanelStep("apply", "控制播放"),
+    )
+
+    /**
+     * 规范化:剥括号补充说明(「晴天 (Live)」→「晴天」),再交给 FuzzySearch.normalize
+     * 做**全角→半角 + 繁体→简体 + 去空格 + 小写**。
+     *
+     * ⚠️ 不要自己 lowercase()+filter { isLetterOrDigit }:候选来自 ctx.searchTracks,
+     * 而定这个技能要与之比对的是「库内标题」——全 App 的规范归一就是
+     * FuzzySearch.normalize。自造版对「周杰倫/周杰伦」「ＡＢＣ/ABC」「晴天 (Live)/晴天」
+     * 全部判不相等 → 精确命中失败 → 退化成"把 30 条搜索结果全部塞进队列",
+     * 用户点名单曲却先听到一首不相干的。
+     */
+    private fun normalize(s: String): String =
+        com.shiyin.music.data.search.FuzzySearch.normalize(BRACKET_SUFFIX.replace(s, ""))
+
+    override suspend fun execute(
+        ctx: AgentEngine.SkillContext,
+        args: Map<String, String>,
+        config: LlmProviderConfig,
+        tavilyKey: String,
+        onStep: (String, AgentEngine.StepStatus) -> Unit,
+    ): AgentEngine.SkillResult = withContext(Dispatchers.IO) {
+        val action = args["action"]?.trim()?.lowercase().orEmpty()
+        val target = args["target"]?.trim().orEmpty()
+
+        onStep("apply", AgentEngine.StepStatus.RUNNING)
+
+        fun done(msg: String): AgentEngine.SkillResult {
+            onStep("apply", AgentEngine.StepStatus.DONE)
+            return AgentEngine.SkillResult(msg)
+        }
+
+        fun fail(msg: String): AgentEngine.SkillResult {
+            onStep("apply", AgentEngine.StepStatus.FAILED)
+            return AgentEngine.SkillResult(msg, success = false)
+        }
+
+        // ── play + 点名了内容:先找专辑,再找单曲/歌手 ──────────────────────
+        if (action == "play" && target.isNotBlank()) {
+            val albumKey = ctx.findAlbum(target)
+            if (albumKey != null) {
+                val tracks = ctx.albumTracksOf(albumKey)
+                if (tracks.isEmpty()) return@withContext fail("专辑《$target》里没有曲目。")
+                ctx.playTracks(tracks, tracks.first().id)
+                return@withContext done("开始播放专辑《${tracks.first().album}》,共 ${tracks.size} 首。")
+            }
+            // searchTracks 同时匹配歌名/歌手/专辑,按播放次数排序——
+            // 因此"周杰伦"这种歌手名也能拿到他的歌,且最常听的排最前。
+            val hits = ctx.searchTracks(target, 30)
+            if (hits.isEmpty()) {
+                return@withContext fail("音乐库里没找到「$target」。换个写法试试,或者说「放一下《完整歌名》」。")
+            }
+            // 精确命中歌名 → 只放这一首;否则当成歌手/关键词,放这批(首位是最常听的)
+            val exact = hits.firstOrNull { normalize(it.title) == normalize(target) }
+            val queue = if (exact != null) listOf(exact) else hits
+            ctx.playTracks(queue, queue.first().id)
+            return@withContext done(
+                if (exact != null) "正在播放《${exact.title}》— ${exact.artist}。"
+                else "开始播放「$target」相关的 ${queue.size} 首(最常听的在最前)。",
+            )
+        }
+
+        // ── 其余动作 ───────────────────────────────────────────────────────
+        when (action) {
+            "play", "resume" -> {
+                if (ctx.isPlaying()) return@withContext done("已经在播放了。")
+                if (ctx.currentTrack() == null) {
+                    return@withContext fail("还没有选歌。可以说「放一下《歌名》」,或者从库里点一首。")
+                }
+                ctx.resumePlayback()
+                done("继续播放。")
+            }
+            "pause" -> {
+                if (!ctx.isPlaying()) return@withContext done("现在没有在播放。")
+                ctx.pausePlayback()
+                done("已暂停。")
+            }
+            "next" -> {
+                if (ctx.currentTrack() == null) return@withContext fail("还没有在放歌,没有下一首。")
+                ctx.nextTrack()
+                done("已切到下一首。")
+            }
+            "previous" -> {
+                if (ctx.currentTrack() == null) return@withContext fail("还没有在放歌,没有上一首。")
+                ctx.previousTrack()
+                done("已回到上一首。")
+            }
+            else -> fail("没听清要做什么播放操作。可以说「放一下《歌名》」「暂停」「下一首」。")
+        }
+    }
+}

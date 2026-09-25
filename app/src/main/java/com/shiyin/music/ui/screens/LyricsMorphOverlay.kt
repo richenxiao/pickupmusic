@@ -100,25 +100,16 @@ fun LyricsMorphOverlay(vm: MainViewModel, morph: LyricsMorphState, interactive: 
             // v1.3.x 预组合:闸门只在 interactive(歌词本打开)时挂载——预热期整层
             // 零命中测试,触摸穿透到播放页(卡片点照常打开、播放键/进度条不受影响)。
             .then(if (interactive) Modifier.pointerInput(Unit) {
-                // ── P3-① 指针闸门(§3.5 主防御;bug③ 修复:整条手势流持续判定;
-                //      用户严格规则:仅顶部起手可收起)──
-                // 播放 sheet 的 anchoredDraggable 会对"sheet 正文任意位置"的下拉 1:1
-                // 跟手(nestedScroll pre 派发它先看到)。必须在指针层拦截:过 slop 后
-                // 逐帧判主轴。用户规则:只有"到手时列表已在顶 或 起手在 chrome 区
-                // (顶栏/底栏)"的下拉才允许收起;列表中部起手永不转收起。向上/水平
-                // 不消费正常派发。Initial pass 父先于子收事件,此处消费能拦在
-                // LazyColumn/sheet 之前。chrome 区由 LyricsScreen 经 VM 透传判定。
+                // v23:诊断打点(PullGate 日志 / 逐行 Press 收集器)已全部撤掉——
+                // 下拉误触的根因已由实机 logcat 定案(**不是**闸门内部,是播放页
+                // ModalBottomSheet 自身的 settleToDismiss → onDismissRequest),
+                // 修复打在 AppRoot 的 confirmValueChange 上,与闸门无关。
                 val tracker = androidx.compose.ui.input.pointer.util.VelocityTracker()
                 awaitEachGesture {
                     val down = awaitFirstDown(
                         requireUnconsumed = false,
                         pass = androidx.compose.ui.input.pointer.PointerEventPass.Initial,
                     )
-                    // bug⑤ 修复:起手瞬间快照 atTop,不再在"越过 slop 那一帧"读。
-                    // 原实现会撞上"跟行自动滚"时序——唱到下一句跟行滚回顶,
-                    // canScrollBackward 翻 false 那一刻用户恰好在列表中部下拉,
-                    // 闸门读到的瞬时 atTop=true → 误触发收起。快照化后只认"用户
-                    // 这一手按下时列表就在顶",跟行自动滚动的瞬时态不再参与判定。
                     val downAtTop = vm.lyricsListAtTop
                     var dragging = false
                     var pullDown = false
@@ -127,27 +118,15 @@ fun LyricsMorphOverlay(vm: MainViewModel, morph: LyricsMorphState, interactive: 
                         val event = awaitPointerEvent(androidx.compose.ui.input.pointer.PointerEventPass.Initial)
                         val change = event.changes.firstOrNull() ?: break
                         tracker.addPosition(change.uptimeMillis, change.position)
+                        val dyRaw = change.position.y - down.position.y
                         if (!dragging) {
                             if (!pullDown) {
-                                val dy = change.position.y - down.position.y
-                                if (kotlin.math.abs(dy) > viewConfiguration.touchSlop) {
-                                    if (dy <= 0f) break
+                                if (kotlin.math.abs(dyRaw) > viewConfiguration.touchSlop) {
+                                    if (dyRaw <= 0f) break
                                     pullDown = true
-                                    // bug⑤ 第2轮:【删 inChrome 触发路径】——原设计"起手在
-                                    // chrome 区(顶/底栏)的下拉允许收起",但用户实测"拉着拉着
-                                    // 就触发"(起手点落在列表 bounds 之下的底栏边缘,以为是
-                                    // 歌词手势区)。用户规则只有一条:列表在顶+继续拉才收起。
                                     if (downAtTop) dragging = true
                                 }
                             }
-                            // 第6轮:【删"中途到顶接管"路径】——原实现(bug⑤ 第3轮)允许
-                            // "起手不在顶、滚动中列表到顶"的手势直接接管为 dragging。
-                            // 用户实测:列表中部向下甩,滚动到顶时手指还在动,立刻被接管
-                            // 去收起("明明不在顶层也触发")。用户规则是**起手快照唯一判据**:
-                            // 起手不在顶的手势永不转收起。中途到顶后想做收起,抬手重新
-                            // 起一手(那时 downAtTop=true)。本手势剩余的向下 delta 由
-                            // LyricsScreen nestedScroll 守卫消费丢弃(不喂 morph、不冒泡
-                            // 到播放 sheet)。
                             lastY = change.position.y
                         }
                         if (dragging) {
@@ -158,10 +137,6 @@ fun LyricsMorphOverlay(vm: MainViewModel, morph: LyricsMorphState, interactive: 
                         if (!event.changes.any { it.pressed }) {
                             if (dragging) {
                                 val velocity = tracker.calculateVelocity().y
-                                // v1.3.x code-review:与 onDrag/collapse 同一除数——
-                                // b.top 下限 screenH*0.2(卡片高位时不致低估剩余拉距,
-                                // threshold 误判回弹);null 兜底同 collapse 用 screenH*0.2
-                                // 而非 1f(原 1f 使 null 时 dd≤1 永不达阈值→永不阈值收起)。
                                 val D = (morph.cardBounds?.top ?: morph.screenH * 0.2f)
                                     .coerceAtLeast(morph.screenH * 0.2f)
                                 val dd = (1f - morph.progress.value) * D
@@ -172,8 +147,6 @@ fun LyricsMorphOverlay(vm: MainViewModel, morph: LyricsMorphState, interactive: 
                                     scope.launch { morph.progress.animateTo(1f, LyricsMorphSpec.collapseSpring) }
                                 }
                             } else if (morph.progress.value < 0.999f) {
-                                // 非 dragging 松手(如起手在 chrome 区或向上拉):progress
-                                // 若已被喂过(上一手势残留),settle 回开——不留在中间值。
                                 scope.launch { morph.progress.animateTo(1f, LyricsMorphSpec.collapseSpring) }
                             }
                             break

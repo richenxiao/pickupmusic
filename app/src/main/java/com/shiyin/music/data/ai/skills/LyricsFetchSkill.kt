@@ -17,6 +17,10 @@ import kotlinx.coroutines.withContext
 object LyricsFetchSkill : AgentEngine.AgentSkill {
     override val key = "lyrics_fetch"
     override val description = "为当前播放的歌曲找歌词(LRCLIB→网易云)"
+    override val parameters = """{"type":"object","properties":{},"required":[]}"""
+    override fun panelSteps(args: Map<String, String>) = listOf(
+        AgentEngine.PanelStep("search", "搜索歌词源"),
+    )
 
     override suspend fun execute(
         ctx: AgentEngine.SkillContext,

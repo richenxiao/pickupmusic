@@ -24,6 +24,14 @@ import kotlinx.coroutines.withContext
 object ArtistFixSkill : AgentEngine.AgentSkill {
     override val key = "artist_fix"
     override val description = "修正专辑/曲目的歌手名识别错误(联网搜证后校正单曲歌手字段);指令里可点名任意专辑名,不限当前页"
+    override val parameters = """
+        {"type":"object","properties":{"album":{"type":"string","description":"要修正歌手名的专辑名。用户点名了就填;没点名则不要填(作用于当前打开的专辑)"},"artist":{"type":"string","description":"该专辑本地识别出的歌手名,一般不用填"}},"required":[]}
+    """.trimIndent()
+    override fun panelSteps(args: Map<String, String>) = listOf(
+        AgentEngine.PanelStep("search", "联网搜证"),
+        AgentEngine.PanelStep("analyze", "AI 分析修正"),
+        AgentEngine.PanelStep("writeback", "写回本地"),
+    )
 
     override suspend fun execute(
         ctx: AgentEngine.SkillContext,
@@ -113,8 +121,10 @@ object ArtistFixSkill : AgentEngine.AgentSkill {
     private fun parseFixes(raw: String): List<Pair<Long, String>> = try {
         val direct = runCatching { JsonParser.parseString(raw.trim()).asJsonObject }.getOrNull()
         val obj = direct ?: run {
-            val m = Regex("""\{.*}""", RegexOption.DOT_MATCHES_ALL).find(raw) ?: return emptyList()
-            runCatching { JsonParser.parseString(m.value).asJsonObject }.getOrNull()
+            // v1.3.8: 原为 Regex("""\{.*}""")——裸 '}' 在 Android 上编译抛
+            // PatternSyntaxException(JVM 单测用桌面正则,测不出来)。
+            val json = com.shiyin.music.data.firstBalancedJsonObject(raw) ?: return emptyList()
+            runCatching { JsonParser.parseString(json).asJsonObject }.getOrNull()
         } ?: return emptyList()
         val arr = obj.getAsJsonArray("fixes") ?: return emptyList()
         arr.mapNotNull { el ->

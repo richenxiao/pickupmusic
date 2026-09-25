@@ -17,7 +17,14 @@ import kotlinx.coroutines.withContext
  */
 object LibraryQuerySkill : AgentEngine.AgentSkill {
     override val key = "library_query"
-    override val description = "查询本地音乐库(库里有没有某首歌/某歌手的歌/某专辑——把 args.query 填成要找的歌名/歌手名/专辑名,返回真实检索结果);用户聊到具体歌曲/歌手是否存在时必须用它查,不要凭记忆猜"
+    override val description = "查询本地音乐库(库里有没有某首歌/某歌手的歌/某专辑)。用户聊到具体歌曲、歌手、专辑是否存在时,必须用这个工具真查,不要凭记忆猜。"
+    override val parameters = """
+        {"type":"object","properties":{"query":{"type":"string","description":"要查找的歌名/歌手名/专辑名,用用户说的原样中文填写"}},"required":["query"]}
+    """.trimIndent()
+    override fun panelSteps(args: Map<String, String>) = listOf(
+        AgentEngine.PanelStep("search", "检索音乐库"),
+        AgentEngine.PanelStep("answer", "组织回答"),
+    )
 
     override suspend fun execute(
         ctx: AgentEngine.SkillContext,
@@ -62,6 +69,13 @@ object LibraryQuerySkill : AgentEngine.AgentSkill {
             )
         }
         resp.let { ctx.logUsage(it.promptTokens, it.completionTokens, it.cacheTokens) }
-        AgentEngine.SkillResult(resp.content?.trim() ?: trackBlock, thinking = resp.thinking)
+        // v1.3.8 修「列清单打勾后没有任何输出」:原为 `resp.content?.trim() ?: trackBlock`——
+        // 推理模型把输出全放 reasoning、content 为空串时,`"".trim()` 得到 "" 而**不是 null**,
+        // elvis 兜底根本不触发 → summary 是空串 → 面板只剩打了勾的清单、没有一句回复。
+        // 必须显式判空串(不是判 null)。
+        AgentEngine.SkillResult(
+            resp.content?.trim()?.takeIf { it.isNotBlank() } ?: trackBlock,
+            thinking = resp.thinking,
+        )
     }
 }

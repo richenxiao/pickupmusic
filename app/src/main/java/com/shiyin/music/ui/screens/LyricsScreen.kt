@@ -8,11 +8,14 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -41,6 +44,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
@@ -107,27 +111,34 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
     val raw = rememberCoverPalette(track)
     val fallbackPair = coverPalette(track.paletteIndex)
     val isResolved = raw != fallbackPair
-    // v1.3.x 歌词本设置:歌词颜色手动档(white/black)只覆盖文字色——背景恒为
-    // 封面取色(用户明确:只变歌词颜色,不变背景)。default=跟随封面(bg+自适应 fg)。
     val lyricsMode = vm.lyricsColorMode
     val artBgRaw = if (isResolved) raw.first else Color(0xFF2A2A2E)
     val artBg = artBgRaw
+    // v1.3.x 歌词颜色档修正（用户：选"白色"后**整个页面都跟着变**，背离"只改歌词
+    // 颜色"的初衷）。根因：此前 `artFg = LyricText`，而 artFg 不只画歌词——头行、
+    // 图标、进度、按钮全部画它，歌词档一变，整页 UI 跟着换色。
+    // 现在拆成两条互不干扰的色路：
+    //  - artFg / dimC / inactiveC：**UI 控件**色，恒取封面自适应色，与歌词颜色档无关；
+    //  - LyricText / lyricInactiveC：**歌词正文与译文**色，跟随歌词颜色档。
+    val artFg = if (isResolved) raw.second else Color.White
+    val dimC = artFg.copy(alpha = 0.55f)
+    val btnBg = artFg.copy(alpha = 0.14f)
     val LyricText = when (lyricsMode) {
         "white" -> Color.White
         "black" -> Color(0xFF1A1A1E)
-        else -> if (isResolved) raw.second else Color.White
+        else -> artFg
     }
+    val lyricInactiveC = LyricText.copy(alpha = 0.34f) // 歌词"非焦点行"降档（控件侧是 inactiveC）
     androidx.compose.runtime.LaunchedEffect(track.id, isResolved) {
         android.util.Log.d("PaletteTrace", "LyricsScreen track=${track.id} albumId=${track.albumId} resolved=$isResolved artBg=$artBg fg=$LyricText")
     }
-    val dimC = LyricText.copy(alpha = 0.55f)
-    // v1.3.x 需求6:译文颜色跟随行激活状态(lineColor 降透明度),不再用独立固定色。
-    val artFg = LyricText // fg end (white on dark / dark-grey on light) — paint everywhere
-    val btnBg = LyricText.copy(alpha = 0.14f)
-    val inactiveC = LyricText.copy(alpha = 0.34f) // clearly dimmer than the active line
     val safeBg = artBg // bg colour, named for backward-compat with the button/dialog uses below
     val lines = ly.parsed.lines
-    val durMs = if (vm.player.durationMs > 0) vm.player.durationMs else track.durationMs
+    // v22 修补(用户反馈⑥"歌词本还是整轨时长"):拆分模式下读**显示时长**
+    // (当前这首的分段时长),不读 vm.player.durationMs(整轨文件总时长)。
+    // displayDurationMs() 内部 currentCarry() 为 null(普通曲目)时回退 durationMs,
+    // 与旧路径语义一致;拆分单曲时返回该曲的 endMs-startMs,进度条/底栏时长全对。
+    val durMs = vm.player.displayDurationMs().takeIf { it > 0 } ?: track.durationMs
     // v1.3.x 跟行滚动卡顿修复(重组风暴根因):positionMs 是组合级读——
     // PlayerController ticker 每 300ms 写一次,整个 LyricsScreen 函数体
     // (头行/按钮/列表容器/渐隐层/底栏/全部可见行)每 300ms 全量重组,
@@ -135,11 +146,33 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
     // 派生:读点订阅的是派生结果 activeI(只在行推进时变,每 2-5s 一次),
     // 不是 ticker 原始值——300ms 重组风暴消失;行推进时行高亮/跟行滚动
     // 照常更新(本来就要更新)。
-    val activeI by remember(ly, durMs) {
-        androidx.compose.runtime.derivedStateOf {
-            ly.parsed.activeIndex(vm.player.positionMs, durMs, ly.offsetMs)
+    // v1.3.x 跟行/高亮延迟修复(用户反馈⑯:唱到该行还慢半拍才亮):
+    // 与"重组风暴"同一类问题——positionMs 是 ticker 每 300ms 刷的状态,派生值
+    // 最多滞后一个 tick;再叠 220ms 颜色渐变,感知可到 ~0.5s。
+    // 修复:①位置改用 framePositionMs()(ExoPlayer currentPosition 自带时钟插值,
+    // 帧级精确);②用一个每帧推进的 frameClock 驱动派生重算——**只在行号真正
+    // 变化时才通知下游**(值不变不重组),所以不会退回 300ms 全页重组风暴。
+    // 暂停时帧循环不跑,但 positionMs 仍是依赖(seek 等高亮照常更新)。
+    val frameClock = remember { androidx.compose.runtime.mutableLongStateOf(0L) }
+    androidx.compose.runtime.LaunchedEffect(vm.player.isPlaying, interactive) {
+        if (!interactive || !vm.player.isPlaying) return@LaunchedEffect
+        while (true) {
+            androidx.compose.runtime.withFrameNanos { frameClock.longValue = it }
         }
     }
+    val activeI by remember(ly, durMs) {
+        androidx.compose.runtime.derivedStateOf {
+            // 两个依赖都读:positionMs 兜"暂停时 seek";frameClock 让播放中每帧重算。
+            @Suppress("UNUSED_EXPRESSION") vm.player.positionMs
+            @Suppress("UNUSED_EXPRESSION") frameClock.longValue
+            ly.parsed.activeIndex(vm.player.frameDisplayPositionMs(), durMs, ly.offsetMs)
+        }
+    }
+    // v1.3.x 用户反馈("点时钟锚定后,被点到的那行应该在本行亮起,像被唱到了一样"):
+    // 未打轴的歌词 activeIndex 恒为 -1(整列都不亮),而打轴正是逐行点时钟的场景——
+    // 所以"刚锚定的那一行"要单独亮起来。记最后一次锚定的行;全部锚定完成后
+    // (synced=true)高亮交回 activeIndex。
+    var tappedLine by remember(ly.mediaId) { androidx.compose.runtime.mutableIntStateOf(-1) }
     val unsynced = !ly.parsed.synced
 
     // v1.1.0: 振假名（furigana）。仅对日文歌词生效——以「是否存在平/片假名」
@@ -193,14 +226,13 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
     // 键含 lyricsHash:换源或改歌词文本后 hash 变,旧译文自然不再适用(与振假名
     // evidence 同键法)。syncLyricsTranslation 内部对"同曲同版本"直接返回——
     // 关掉歌词本再打开不会误杀正在跑的翻译,也不会把用户隐藏的状态重置。
+    //
+    // ⚠️ 「恢复」与「自动翻译」必须走**同一个**入口顺序执行,不能拆成两个
+    // LaunchedEffect 并发跑:恢复要 await 读库,自动翻译只看内存 → 会抢跑翻一遍,
+    // 恢复结果再被"进行中"守卫丢掉(用户反馈"译好的退出后又要重新加载")。
     val trLyricsHash = remember(ly.raw) { com.shiyin.music.data.furigana.LyricsHash.of(ly.raw) }
-    LaunchedEffect(ly.mediaId, trLyricsHash) { vm.syncLyricsTranslation(ly) }
-    // v1.3.x 反馈:「外语歌自动翻译」——开关开时,进入歌词本发现无译文且歌词
-    // 非中文(有外文字母)→ 自动触发 AI 翻译。AI 永远是"设置里开了才自动跑",
-    // 不碰从未手动触发过的歌。判定用已解析行文本(跳过元数据行与纯标点)。
     LaunchedEffect(ly.mediaId, trLyricsHash, vm.translateAutoForeign) {
-        if (!vm.translateAutoForeign) return@LaunchedEffect
-        vm.maybeAutoTranslateForeign(ly)
+        vm.enterLyricsTranslation(ly, vm.translateAutoForeign)
     }
     // V1.1: 长按编辑 Song Override 入口（最小可用）
     var pickerLine by remember { mutableStateOf<Int?>(null) }
@@ -281,10 +313,42 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
                     modifier = Modifier.fillMaxWidth(),
                 )
             }
-            if (ly.canAdjust) {
-                // v1.3.x 虚影终版:同关闭按钮——无背景,图标悬浮,clickable 触区。
-                // 四项体验:同返回键——无涟漪 + 图标调大调粗补偿存在感。
-                // ③贴边:字形右缘贴内容右边界(与返回键对称),触区不变。
+            // v1.3.x 打轴模式:入口在顶栏右侧(与编辑键并排)。打轴进行中时替换为
+            // 「进度 + 退出」;普通模式下显示「打轴」按钮(仅未同步歌词可见)。
+            if (vm.tapSyncMode == MainViewModel.TapSyncMode.NotStarted) {
+                if (unsynced && ly.canAdjust) {
+                    Box(
+                        Modifier
+                            .size(38.dp)
+                            .clip(CircleShape)
+                            .then(if (interactive) Modifier.clickable(
+                                interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                                indication = null,
+                            ) { vm.tapSyncStart() } else Modifier),
+                        contentAlignment = Alignment.Center,
+                    ) { OIcon(Lucide.Crosshair, 19.dp, artFg) }
+                }
+                if (ly.canAdjust) {
+                    // v1.3.x 虚影终版:同关闭按钮——无背景,图标悬浮,clickable 触区。
+                    Box(
+                        Modifier
+                            .size(38.dp)
+                            .clip(CircleShape)
+                            .then(if (interactive) Modifier.clickable(
+                                interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                                indication = null,
+                            ) { vm.lySheet = !vm.lySheet } else Modifier),
+                        contentAlignment = Alignment.CenterEnd,
+                    ) { OIcon(Lucide.SlidersBold, 19.dp, artFg) }
+                }
+            } else {
+                // 打轴模式顶栏:进度 + 退出
+                val tapped = lines.count { it.timeMs != null }
+                Text(
+                    "已锚定 $tapped / ${lines.size}",
+                    style = body(13f, FontWeight.Bold, artFg),
+                )
+                Spacer(Modifier.size(10.dp))
                 Box(
                     Modifier
                         .size(38.dp)
@@ -292,9 +356,9 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
                         .then(if (interactive) Modifier.clickable(
                             interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
                             indication = null,
-                        ) { vm.lySheet = !vm.lySheet } else Modifier),
-                    contentAlignment = Alignment.CenterEnd,
-                ) { OIcon(Lucide.SlidersBold, 19.dp, artFg) }
+                        ) { vm.tapSyncExit() } else Modifier),
+                    contentAlignment = Alignment.Center,
+                ) { OIcon(Lucide.Close, 19.dp, artFg) }
             }
         }
 
@@ -343,6 +407,27 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
         // 复用同一套精确差值滚动重新居中,不另写一份(否则两套滚动逻辑会打架)。
         // 收窄订阅:用 derivedStateOf 只盯这个布尔,避免 byLine 每次变化都全页重组。
         val trVisible by remember { androidx.compose.runtime.derivedStateOf { vm.lyricsTranslation.hasContent } }
+        // v1.3.x 打轴模式:当前待锚定行自动滚动到可视区居中——锚定后前进到下一句
+        // 时,用户不需要手动找回焦点(用户反馈 Bug A 的交互层修复:打轴模式下
+        // 当前行始终在可视区中央,点击屏幕任意位置即可锚定)。
+        LaunchedEffect(vm.tapSyncCurrentLine, vm.tapSyncMode) {
+            if (vm.tapSyncMode != MainViewModel.TapSyncMode.InProgress) return@LaunchedEffect
+            if (!interactive) return@LaunchedEffect
+            val info = listState.layoutInfo
+            val viewport = info.viewportSize.height
+            val target = info.visibleItemsInfo.firstOrNull { it.index == vm.tapSyncCurrentLine }
+            if (target != null) {
+                val d = target.offset - (viewport / 2 - 60)
+                if (kotlin.math.abs(d) > 0.5f) {
+                    listState.animateScrollBy(
+                        d.toFloat(),
+                        tween(240, easing = androidx.compose.animation.core.FastOutSlowInEasing),
+                    )
+                }
+            } else {
+                listState.animateScrollToItem(vm.tapSyncCurrentLine, scrollOffset = -(viewport / 2 - 60))
+            }
+        }
         LaunchedEffect(activeI, trVisible) {
             if (!interactive) return@LaunchedEffect
             if (vm.morph.progress.value in 0.001f..0.949f) return@LaunchedEffect
@@ -401,6 +486,9 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
                     vm.lyricsListTopPx = b.top
                     vm.lyricsListBottomPx = b.bottom
                 }
+                // v1.3.x 第9项:撤掉"点屏幕任意位置锚定当前行"的全屏点击层。
+                // 校准改成"点某一行=选中它、点该行时钟=把当前播放时间绑给它",
+                // 全屏点击锚定与新交互冲突,且会让选句丢失上下文。
                 .nestedScroll(object : androidx.compose.ui.input.nestedscroll.NestedScrollConnection {
                     override fun onPreScroll(available: androidx.compose.ui.geometry.Offset, source: androidx.compose.ui.input.nestedscroll.NestedScrollSource): androidx.compose.ui.geometry.Offset {
                         // 只拦"列表在顶+向下+用户拖拽"——其余全放行。
@@ -431,27 +519,90 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
             contentPadding = androidx.compose.foundation.layout.PaddingValues(top = 10.dp, bottom = 150.dp),
         ) {
             itemsIndexed(lines) { i, line ->
+                // v1.3.x 跟行滚动卡顿修复(疑点4):activeI 的读点从 item lambda 挪到
+                // item 内部的 derivedStateOf——行推进时只有 isActive 结果变化的
+                // item 重组(真正变色/变化的那一两行),其余可见行完全跳过。
+                // 原实现 i <= activeI 直接读在 lambda 里,activeI 一变整个 items
+                // 块失效重跑,@Immutable 只帮"参数没变跳过 Composable 调用",
+                // 不帮"lambda 本身失效重跑"——行推进仍拖全列表可见行重组。
+                val isActive by androidx.compose.runtime.remember(ly) {
+                    // 第9项 A:无时间戳歌词**默认整列全亮**——它不是"还没唱到"，
+                    // 而是根本没有时间轴可依，所以不参与 i <= activeI 的时间判断。
+                    // 同时:key 用 ly——原来 remember 无键，切歌后 item 槽位复用会
+                    // 继续持有**上一首**的闭包（activeI 是旧的 State 引用），高亮跟着
+                    // 上一首的时间走。
+                    androidx.compose.runtime.derivedStateOf {
+                        !ly.parsed.synced || i <= activeI
+                    }
+                }
+                // v1.3.x 打轴模式:当前待锚定行高亮——背景色块 + 加粗 + accent 色,
+                // 与普通行/已播放行视觉上明确区分。已锚定行左侧加小圆点标记。
+                val isTapSyncCurrent = vm.tapSyncMode == MainViewModel.TapSyncMode.InProgress && i == vm.tapSyncCurrentLine
+                val isTapped = line.timeMs != null
+                // 仅用于抑制涟漪(indication = null);不再挂 Press/Release 诊断收集器。
+                val rowClickSrc = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
                 Row(
                     Modifier
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(8.dp))
-                        .then(if (interactive) Modifier.combinedClickable(
-                            onClick = {
-                                val target = line.timeMs?.let { (it - ly.offsetMs).coerceAtLeast(0) }
-                                    ?: (i.toLong() * durMs / lines.size.coerceAtLeast(1))
-                                vm.player.seekToMs(target)
-                            },
-                            onLongClick = {
-                                // V1.1: 长按带振假名的行 → 打开该行注音段选择器（编辑 Song Override）
-                                if (furiganaOn && hasKana && segmentsByLine != null) pickerLine = i
-                            },
-                        ) else Modifier)
+                        // v1.3.x 打轴模式:打轴模式下禁用歌词行原有点击行为(防冲突),
+                        // 全屏点击由外层 pointerInput 接管(见下方 tapSyncTapBox)。
+                        // v1.3.x 第9项:校准模式点某一行 = 把它设为当前校准目标
+                        // (与 index 绑定,不依赖列表位置);时钟按钮另有其职(绑定当前播放时间)。
+                        // 正常模式保持原有的 seek/长按行为。
+                        .then(
+                            when {
+                                vm.tapSyncMode == MainViewModel.TapSyncMode.InProgress -> Modifier.clickable(
+                                    interactionSource = rowClickSrc,
+                                    indication = null,
+                                ) { vm.calibSelect(i) }
+                                interactive && vm.tapSyncMode == MainViewModel.TapSyncMode.NotStarted -> Modifier.combinedClickable(
+                                    interactionSource = rowClickSrc,
+                                    indication = null,
+                                    onClick = {
+                                        // v23: target 是**当前曲目内**的毫秒(时间戳/按行数均分),
+                                        // 必须走 seekToDisplayMs —— 走 seekToMs 会被当成整轨文件
+                                        // 绝对坐标,拆分单曲下 seek 到区间外 → 边界检查切到第一首
+                                        // (用户实测:"点歌词行会退出播放,转到专辑的第一首歌")。
+                                        val target = line.timeMs?.let { (it - ly.offsetMs).coerceAtLeast(0) }
+                                            ?: (i.toLong() * durMs / lines.size.coerceAtLeast(1))
+                                        vm.player.seekToDisplayMs(target)
+                                    },
+                                    onLongClick = {
+                                        // V1.1: 长按带振假名的行 → 打开该行注音段选择器（编辑 Song Override）
+                                        if (furiganaOn && hasKana && segmentsByLine != null) pickerLine = i
+                                    },
+                                )
+                                else -> Modifier
+                            }
+                        )
                         .padding(vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
+                    // v1.3.x 打轴模式:已锚定行左侧小圆点标记(已打轴的行有记号,
+                    // 未打轴的行没有——一眼看出哪些已锚定)。
+                    if (isTapped && vm.tapSyncMode == MainViewModel.TapSyncMode.InProgress) {
+                        Box(
+                            Modifier.size(6.dp).clip(CircleShape).background(artFg),
+                        )
+                        Spacer(Modifier.size(6.dp))
+                    }
                     // v1.2.0 #1a: 句间过渡用 animateColorAsState 渐变，不再硬切。
+                    // v1.3.x 打轴模式修正(用户反馈"打轴根本没有变亮"):打轴模式下
+                    // **只有当前待锚定行亮**,其余行(含已唱过的)全部暗——聚光灯效果,
+                    // 跟唱的反转。原实现 isTapSyncCurrent 和 isActive 都是 artFg,
+                    // 播放中已唱行也在亮,当前行混在里面完全看不出。
                     val lineColor by androidx.compose.animation.animateColorAsState(
-                        if (i <= activeI) artFg else inactiveC,
+                        when {
+                            vm.tapSyncMode == MainViewModel.TapSyncMode.InProgress ->
+                                if (isTapSyncCurrent) LyricText else lyricInactiveC
+                            // 未打轴时 activeIndex 恒 -1:刚点时钟锚定的那一行单独亮起
+                            // (用户要求"像被唱到了一样")。
+                            unsynced && i == tappedLine -> LyricText
+                            // v1.3.x 歌词颜色档:行色用歌词色路(LyricText/lyricInactiveC),
+                            // 不再用 artFg——否则改歌词颜色会连带整页图标/按钮变色。
+                            else -> if (isActive) LyricText else lyricInactiveC
+                        },
                         animationSpec = tween(220),
                         label = "lineColor",
                     )
@@ -531,29 +682,47 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
                         // v1.3.x 反馈⑤:译文颜色与正文**同步渐变**——正文用 animateColorAsState
                         // (220ms),译文此前是 if 瞬间切换(用户实测"正文亮的比翻译慢")。
                         // 同一 animateColorAsState 同一 spec:两者同时开始、同时到达。
+                        // v1.3.x 反馈⑩(译文与正文不同时亮起/部分行只有翻译亮):原实现 trColor
+                        // 直接读 `i <= activeI`(组合级),而 lineColor 走 derivedStateOf(延迟读)。
+                        // 两条路径对 activeI 的快照时机不同,行推进瞬间同一行正文与译文短暂
+                        // 不同步。改:trColor 也用 derivedStateOf 派生 isActive,与正文同源。
+                        val trActive by androidx.compose.runtime.remember(ly) {
+                            // 与正文同源（第9项：正文/翻译必须基于**同一个** active 状态）：
+                            // 无时间戳歌词同样是"全亮"，不各算各的。
+                            androidx.compose.runtime.derivedStateOf {
+                                !ly.parsed.synced || i <= activeI
+                            }
+                        }
                         val trColor by androidx.compose.animation.animateColorAsState(
-                            if (i <= activeI) artFg.copy(alpha = 0.85f) else inactiveC,
+                            // 译文是歌词内容的一部分,跟歌词色路(LyricText),不用控件色路。
+                            if (trActive) LyricText.copy(alpha = 0.85f) else lyricInactiveC,
                             animationSpec = tween(220),
                             label = "trColor",
                         )
                         val displayTr = trText ?: lastTrText
-                        // 容器高度必须**跟着字号缩放**:21.sp 在 fontScale=1.3 时是 27.3dp,
-                        // 硬编码 26dp 会把单行译文也裁掉(无障碍大字号 100% 触发)。
-                        // 行数固定 1 行 + Ellipsis,超出宽度显式省略而不是被 clipToBounds 静默切掉。
-                        val trLineH = with(LocalDensity.current) { 21.sp.toDp() }
+                        // 译文弹入/收起 = **高度驱动展开**,与振假名(RubyText 的
+                        // heightProgress)同一种手感:容器高度随 trProgress 长开、
+                        // clipToBounds 把文字按"卷帘"露出。v1.3.x 曾把这里改成
+                        // "内容撑开 + 只有 alpha/translationY",展开失去高度维度,
+                        // 用户实测"弹出手感不流畅了"——改回高度驱动。
+                        //
+                        // 与旧版的唯一区别:高度按**实测行数**算(trFullH = 行高 × 行数),
+                        // 不再写死单行。因此长译文换行后完整显示(需求:译文不被截断),
+                        // 而展开过程依旧是顺滑的卷帘,而不是"瞬间占满再淡入"。
+                        // 行高用 21.sp.toDp() 随字号缩放(fontScale 大时不会裁字)。
+                        var trFullH by remember(ly.mediaId) { mutableStateOf(0.dp) }
+                        val trLineH = with(androidx.compose.ui.platform.LocalDensity.current) { 21.sp.toDp() }
                         Box(
                             Modifier
                                 .fillMaxWidth()
-                                .height((5.dp + trLineH) * trProgress)
-                                .clipToBounds()
+                                .height((5.dp + trFullH) * trProgress)
+                                .clipToBounds(),
                         ) {
                             if (displayTr != null && trProgress > 0f) {
                                 Text(
                                     displayTr,
                                     style = body(14f, FontWeight.Bold, trColor)
                                         .copy(lineHeight = 21.sp),
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .graphicsLayer {
@@ -561,22 +730,30 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
                                             translationY = (1f - trProgress) * 6.dp.toPx()
                                         }
                                         .padding(top = 5.dp),
+                                    onTextLayout = { r ->
+                                        // 首次布局即拿到真实行数;trProgress 从 0 长开的
+                                        // 240ms 内完成修正,肉眼不可辨。
+                                        trFullH = trLineH * r.lineCount
+                                    },
                                 )
                             }
                         }
                     }
-                    // v2.0: per-line sync button for unsynced lyrics
-                    if (unsynced) {
-                        Box(
-                            Modifier
-                                .size(32.dp)
-                                .clip(CircleShape)
-                                .background(btnBg)
-                                .then(if (interactive) Modifier.clickable { vm.syncLyricLine(i) } else Modifier),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            OIcon(Lucide.Clock, 14.dp, dimC)
-                        }
+                    // v1.3.x 第9项 D/E/Q:校准模式下每行右侧是**固定时间区**——
+                    // 上=时钟(把当前播放时间绑为本行时间戳),下=时间胶囊(本行已绑定的
+                    // 时间戳)。宽高固定,歌词一行还是两行都不影响它的位置(不会跑到文字
+                    // 行尾)。**正常模式不显示**(第9项 C:时钟只在校准模式出现;
+                    // 原来只在"无时间戳歌词"下常驻,正常阅读时也挂着,已撤)。
+                    if (vm.tapSyncMode == MainViewModel.TapSyncMode.InProgress) {
+                        CalibTimeArea(
+                            timeMs = vm.calibDisplayLines.getOrNull(i)?.timeMs,
+                            selected = i == vm.tapSyncCurrentLine,
+                            atBoundary = i == vm.tapSyncCurrentLine && vm.calibAtBoundary,
+                            fg = LyricText,
+                            bg = safeBg,
+                            enabled = interactive,
+                            onClock = { vm.calibSelect(i); vm.calibBindCurrentTime() },
+                        )
                     }
                 }
             }
@@ -593,6 +770,137 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
             )
         } // 渐隐遮罩包裹 Box 闭合
 
+        // v1.3.x 打轴模式:底部控制条替换——进行中显示撤销/跳过/微调;预览模式
+        // 显示确认/放弃。普通模式保持原播放控制条。
+        if (vm.tapSyncMode == MainViewModel.TapSyncMode.InProgress) {
+            Column(
+                Modifier.padding(start = 22.dp, end = 22.dp, top = 8.dp, bottom = 4.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                // 进度条(可拖动,打轴时需要精确定位)
+                val dispDurMs = vm.player.displayDurationMs().takeIf { it > 0 } ?: durMs
+                val pct = if (interactive && dispDurMs > 0) (vm.player.displayPositionMs().toFloat() / dispDurMs).coerceIn(0f, 1f) else 0f
+                var scrubFraction by remember { mutableStateOf<Float?>(null) }
+                val shownPct = scrubFraction ?: pct
+                val shownPosMs = (scrubFraction?.let { it * dispDurMs } ?: if (interactive) vm.player.displayPositionMs() else 0L).toLong()
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(4.dp)
+                        .then(if (interactive) Modifier.pointerInput(durMs) {
+                            awaitEachGesture {
+                                awaitFirstDown(requireUnconsumed = false)
+                                do {
+                                    val event = awaitPointerEvent()
+                                    event.changes.firstOrNull()?.let { change ->
+                                        val f = (change.position.x / size.width).coerceIn(0f, 1f)
+                                        scrubFraction = f
+                                        change.consume()
+                                    }
+                                } while (event.changes.any { it.pressed })
+                                scrubFraction?.let { vm.player.seekToDisplayFraction(it) }
+                                scrubFraction = null
+                            }
+                        } else Modifier),
+                    contentAlignment = Alignment.CenterStart,
+                ) {
+                    Box(Modifier.fillMaxWidth().height(4.dp).clip(RoundedCornerShape(2.dp)).background(btnBg))
+                    Box(Modifier.fillMaxWidth(shownPct).height(4.dp).clip(RoundedCornerShape(2.dp)).background(artFg))
+                }
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Text(
+                        formatDuration(shownPosMs / 1000),
+                        style = body(11.5f, FontWeight.Bold, dimC),
+                        modifier = Modifier.width(44.dp),
+                    )
+                    Text(
+                        formatDuration(durMs / 1000),
+                        style = body(11.5f, FontWeight.Bold, dimC),
+                        modifier = Modifier.width(44.dp),
+                        textAlign = TextAlign.End,
+                    )
+                }
+                // 第9项 O/P:当前播放时间是**独立的读数行**（在按钮行上方），
+                // 与"每行已绑定的时间戳"是两回事;显示到毫秒（校准需要看这个精度）。
+                Text(
+                    calibStamp((if (interactive) vm.player.displayPositionMs() else 0L)),
+                    style = body(12f, FontWeight.Bold, dimC),
+                )
+                // 第9项 O:播放/暂停**严格居中**。顺序为 撤销 / -0.5s / -0.1s / ▶ /
+                // +0.1s / +0.5s / 跳过——左右两组宽度对称(44+40+40 = 40+40+44),
+                // 中间的 ▶ 严格落在控制区正中;撤销/跳过在两侧,±微调贴着 ▶。
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceEvenly,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    // 撤销——打轴模式按钮加大到 44dp,加边框让涟漪反馈在封面取色
+                    // 背景下可见(用户反馈"按钮没有反馈":36dp 小按钮 + 无底纹
+                    // 涟漪在深色背景上几乎看不见)。
+                    Box(
+                        Modifier.size(44.dp).clip(CircleShape).background(btnBg)
+                            .border(1.dp, artFg.copy(alpha = 0.2f), CircleShape)
+                            .then(if (interactive) Modifier.clickable { vm.tapSyncUndo() } else Modifier),
+                        contentAlignment = Alignment.Center,
+                    ) { OIcon(Lucide.RotateCcw, 20.dp, artFg) }
+                    CalibAdjustButton("-0.5s", -500, interactive, artFg, btnBg, vm)
+                    CalibAdjustButton("-0.1s", -100, interactive, artFg, btnBg, vm)
+                    // 播放/暂停(打轴时需要反复试听)
+                    Box(
+                        Modifier.size(52.dp).shadowMd(CircleShape).clip(CircleShape).background(artFg)
+                            .then(if (interactive) Modifier.clickable { vm.player.toggle() } else Modifier),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        OIcon(
+                            if (vm.player.isPlaying) Lucide.Pause else Lucide.Play,
+                            24.dp, safeBg,
+                            modifier = if (vm.player.isPlaying) Modifier else Modifier.padding(start = 3.dp),
+                        )
+                    }
+                    CalibAdjustButton("+0.1s", 100, interactive, artFg, btnBg, vm)
+                    CalibAdjustButton("+0.5s", 500, interactive, artFg, btnBg, vm)
+                    // 跳过
+                    Box(
+                        Modifier.size(44.dp).clip(CircleShape).background(btnBg)
+                            .border(1.dp, artFg.copy(alpha = 0.2f), CircleShape)
+                            .then(if (interactive) Modifier.clickable { vm.tapSyncSkip() } else Modifier),
+                        contentAlignment = Alignment.Center,
+                    ) { OIcon(Lucide.SkipForward, 20.dp, artFg) }
+                }
+            }
+        } else if (vm.tapSyncMode == MainViewModel.TapSyncMode.Preview) {
+            // 预览模式:确认/放弃
+            Column(
+                Modifier.padding(start = 22.dp, end = 22.dp, top = 8.dp, bottom = 4.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Text(
+                    "打轴完成,播放预览确认无误后保存",
+                    style = body(12.5f, FontWeight.Normal, dimC),
+                )
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceEvenly,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Box(
+                        Modifier.clip(RoundedCornerShape(999.dp)).background(btnBg)
+                            .clickable { vm.tapSyncDiscard() }
+                            .padding(horizontal = 24.dp, vertical = 10.dp),
+                    ) { Text("放弃", style = body(13.5f, FontWeight.Bold, artFg)) }
+                    Box(
+                        Modifier.clip(RoundedCornerShape(999.dp)).background(artFg)
+                            .clickable { vm.tapSyncConfirm() }
+                            .padding(horizontal = 24.dp, vertical = 10.dp),
+                    ) { Text("确认保存", style = body(13.5f, FontWeight.Bold, safeBg)) }
+                }
+            }
+        } else {
         // bottom bar: slim progress + time row + play/pause.
         // Order per v4.3 spec: progress bar on top, time row hugging it just
         // below (not at the very bottom), play/pause centered between the time
@@ -865,6 +1173,7 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
             // breathing room so the play button sits above the bottom edge.
             Spacer(Modifier.height(4.dp))
         }
+        }
     }
     // Bug4c: render the adjust sheet as an overlay ON TOP of the lyrics
     // column. It slides down from above with a tween, full-screen scrim
@@ -1048,9 +1357,129 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
     }
 }
 
+/**
+ * v1.3.x 第9项 D/E/Q:校准模式下每一行右侧的**固定时间区**。
+ *
+ * 上=时钟(把当前播放时间绑为本行时间戳),下=时间胶囊(本行已绑定的时间戳)。
+ * 宽高固定、位置在右侧——歌词一行还是两行都不影响它的位置,时间不会跟着文字换行漂。
+ *
+ * 配色走**中性黑白对比**(第9项 E):颜色取自歌词本的前景色(歌词正文色,明暗随
+ * 专辑封面),不依赖红/黄——背景是专辑取色,红黄可能与背景撞色。选中行用"反转"
+ * (实心 + 反色文字);顶到相邻边界时再提高一档对比并出现一个极小的关联符号
+ * (第9项 I/M),不把歌词正文染色。
+ */
 @Composable
-private fun SheetPill(text: String, bg: Color, fg: Color, onClick: () -> Unit) {
+private fun CalibTimeArea(
+    timeMs: Long?,
+    selected: Boolean,
+    atBoundary: Boolean,
+    fg: Color,
+    bg: Color,
+    enabled: Boolean,
+    onClock: () -> Unit,
+) {
+    Column(
+        Modifier.width(58.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        // 时钟 = 「把当前播放时间绑到这一句」(第9项 Q)。它不负责进出校准模式。
+        Box(
+            Modifier
+                .size(28.dp)
+                .clip(CircleShape)
+                .background(if (selected) fg else fg.copy(alpha = 0.14f))
+                .then(if (enabled) Modifier.clickable { onClock() } else Modifier),
+            contentAlignment = Alignment.Center,
+        ) {
+            OIcon(Lucide.Clock, 15.dp, if (selected) bg else fg)
+        }
+        // 时间胶囊:本行**已绑定**的时间戳(与底部"当前播放时间"是两回事)。
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(3.dp),
+            modifier = Modifier
+                .clip(RoundedCornerShape(999.dp))
+                .background(
+                    when {
+                        selected -> fg                       // 选中:反转,高对比
+                        atBoundary -> fg.copy(alpha = 0.28f) // 顶到边界:再提高一档
+                        else -> fg.copy(alpha = 0.12f)
+                    },
+                )
+                .padding(horizontal = 7.dp, vertical = 3.dp),
+        ) {
+            if (atBoundary) {
+                // 极小的"关联/向后传播"提示(第9项 I/M):不用警告三角、不用红黄。
+                OIcon(Lucide.ListQueue, 9.dp, if (selected) bg else fg)
+            }
+            Text(
+                text = timeMs?.let { calibStamp(it) } ?: "--:--",
+                style = body(9.5f, FontWeight.Bold, if (selected || atBoundary) bg else fg),
+                maxLines = 1,
+            )
+        }
+    }
+}
+
+/** 时间戳格式 `mm:ss.mmm`(如 00:30.500)——时间胶囊的读数。 */
+private fun calibStamp(ms: Long): String =
+    "%02d:%02d.%03d".format(ms / 60_000, (ms % 60_000) / 1000, ms % 1000)
+
+/**
+ * v1.3.x 第9项 H/I/J:校准的 ±微调按钮。
+ *
+ *  - **单击**：只调当前选中行一步（[MainViewModel.tapSyncAdjust]，带相邻边界钳制）。
+ *  - **长按**（>400ms 起连续步进，每 90ms 一步）：顶到下一句的时间戳就**停**
+ *    （第一次到达边界=拦截，不偷偷把后面一起挪）。
+ *  - **第二次同向长按**：进入涟漪平移（[MainViewModel.calibRippleStep]），选中句
+ *    与后面所有已有时间戳的行整体平移同一 offset，松手一次性提交。
+ */
+@Composable
+private fun CalibAdjustButton(
+    label: String,
+    deltaMs: Long,
+    enabled: Boolean,
+    fg: Color,
+    bg: Color,
+    vm: MainViewModel,
+) {
+    val scope = rememberCoroutineScope()
+    var holdJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
     Box(
+        Modifier
+            .size(40.dp)
+            .clip(CircleShape)
+            .background(if (enabled) bg else bg.copy(alpha = 0.4f))
+            .border(1.dp, fg.copy(alpha = 0.2f), CircleShape)
+            .then(
+                if (enabled) Modifier.pointerInput(Unit) {
+                    awaitEachGesture {
+                        awaitFirstDown(requireUnconsumed = false)
+                        var didHold = false
+                        holdJob = scope.launch {
+                            kotlinx.coroutines.delay(400)
+                            didHold = true
+                            while (true) {
+                                val blocked = vm.calibHoldStep(deltaMs)
+                                if (blocked) break   // 顶到边界 = 这次长按到此为止
+                                kotlinx.coroutines.delay(90)
+                            }
+                        }
+                        waitForUpOrCancellation()
+                        val wasHolding = didHold
+                        holdJob?.cancel()
+                        holdJob = null
+                        if (wasHolding) vm.calibHoldRelease() else vm.tapSyncAdjust(deltaMs)
+                    }
+                } else Modifier,
+            ),
+        contentAlignment = Alignment.Center,
+    ) { Text(label, style = body(10.5f, FontWeight.Bold, fg)) }
+}
+
+@Composable
+private fun SheetPill(text: String, bg: Color, fg: Color, onClick: () -> Unit) {    Box(
         Modifier
             .clip(RoundedCornerShape(999.dp))
             .background(bg)

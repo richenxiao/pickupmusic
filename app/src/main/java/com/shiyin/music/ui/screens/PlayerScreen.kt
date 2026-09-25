@@ -337,20 +337,53 @@ fun PlayerScreen(vm: MainViewModel) {
                     // 不改约束),必须用 requiredSize 才能真溢出。
                     .height(6.dp)  // v1.3.3: 22dp→12dp;第6轮: 12dp→6dp(=条高)
                     .pointerInput(durMs) {
+                        // v1.3.x 修复(用户反馈⑭:进度条纵向滑动误触导致进度跳转):
+                        // 旧实现 awaitFirstDown 后**无条件 consume 每一帧**——全向判定,
+                        // 纵向滑过条区域就跳进度。改为**显式只响应水平分量**,与 Compose
+                        // 标准 API(awaitHorizontalTouchSlopOrCancellation)同语义:
+                        //   · 水平位移超过 touch slop 才算拖动开始;
+                        //   · 纵向位移无论多大都不触发,且纵向期间**不 consume**——
+                        //     事件保持未消费,自然冒泡给外层容器(播放页纵向手势等);
+                        //   · 斜向滑动要求 |dx| > |dy| 才算横向拖动(明显偏纵向不误触)。
+                        // 保留"轻点跳转":全程任何方向位移都 < slop 的点击按 down 的 x seek。
                         awaitEachGesture {
-                            awaitFirstDown(requireUnconsumed = false)
-                            do {
+                            val down = awaitFirstDown(requireUnconsumed = false)
+                            val slop = viewConfiguration.touchSlop
+                            // v1.3.x 反馈⑭第2轮:斜向(约45°)下滑仍被误判为横向拖动。
+                            // 原判据 |dx|>|dy| 在 45° 附近是模糊地带,横分量略大即算拖动。
+                            // 收紧为 |dx| > |dy| * RATIO——要求横向位移**明显**大于纵向。
+                            // 1.5 是起点:既能滤掉 45° 附近,又不至于让手指自然的斜向分量
+                            // (日常横向滑动通常自带 20~30° 偏角,|dx|/|dy| ≈ 1.7~2.7)被误杀。
+                            val ratio = 1.5f
+                            var dragging = false
+                            var maxDy = 0f
+                            while (true) {
                                 val event = awaitPointerEvent()
-                                event.changes.firstOrNull()?.let { change ->
-                                    val f = (change.position.x / size.width).coerceIn(0f, 1f)
-                                    scrubFraction = f
-                                    change.consume()
+                                val ch = event.changes.firstOrNull { it.id == down.id } ?: break
+                                val dx = ch.position.x - down.position.x
+                                val dy = ch.position.y - down.position.y
+                                if (kotlin.math.abs(dy) > maxDy) maxDy = kotlin.math.abs(dy)
+                                if (!dragging && kotlin.math.abs(dx) > slop &&
+                                    kotlin.math.abs(dx) > kotlin.math.abs(dy) * ratio
+                                ) {
+                                    dragging = true
                                 }
-                            } while (event.changes.any { it.pressed })
-                            // 抬手:提交一次 seek 并结束 scrub,bar 回到播放器真实位置。
-                            // v22: 用显示坐标提交 —— 拆分模式下把"当前曲目内的比例"映射
-                            // 回整轨文件坐标，否则拖进度条会跳到错误的位置。
-                            scrubFraction?.let { vm.player.seekToDisplayFraction(it) }
+                                if (dragging) {
+                                    scrubFraction = (ch.position.x / size.width).coerceIn(0f, 1f)
+                                    ch.consume()
+                                }
+                                if (!ch.pressed) break
+                            }
+                            // 松手结算:拖动 → 提交 seek;纯轻点(各方向位移均 < slop)
+                            // → 点按 seek;纵向滑动(位移大且未水平拖动)→ 不处理,
+                            // 事件全程未被消费,已冒泡给外层。
+                            if (dragging) {
+                                scrubFraction?.let { vm.player.seekToDisplayFraction(it) }
+                            } else if (maxDy < slop) {
+                                vm.player.seekToDisplayFraction(
+                                    (down.position.x / size.width).coerceIn(0f, 1f),
+                                )
+                            }
                             scrubFraction = null
                         }
                     },
@@ -383,7 +416,9 @@ fun PlayerScreen(vm: MainViewModel) {
                     )
                 }
             }
-            Row(Modifier.fillMaxWidth().padding(bottom = 14.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+            // v1.3.x 用户反馈(两次):时间行与进度条**挨得太近**——加 12dp 上间距
+            // (原来只有进度条 Box 底部到文字的自然间距,视觉上贴在一起)。
+            Row(Modifier.fillMaxWidth().padding(top = 12.dp, bottom = 14.dp), horizontalArrangement = Arrangement.SpaceBetween) {
                 Text(formatDuration(shownPosMs / 1000), style = body(12f, FontWeight.Normal, c.n600))
                 Text(formatDuration(durMs / 1000), style = body(12f, FontWeight.Normal, c.n600))
             }
@@ -494,6 +529,13 @@ private fun LyricsPeekCard(vm: MainViewModel, artBg: Color, artFg: Color, dimC: 
     val track = vm.trackById(vm.player.currentId) ?: return
     val ly = vm.currentLyrics
     val lines = ly?.parsed?.lines ?: emptyList()
+    // v1.3.x 歌词颜色档:卡片预览文字跟随档位(与 LyricsScreen 同一套规则)——
+    // 原来 fg 传的是 artFg(UI 控件色,随封面),改了"歌词颜色"卡片纹丝不动(用户实测)。
+    val lyricTextC = when (vm.lyricsColorMode) {
+        "white" -> Color.White
+        "black" -> Color(0xFF1A1A1E)
+        else -> artFg
+    }
     val context = LocalContext.current
     val pickTarget = androidx.compose.runtime.remember { androidx.compose.runtime.mutableLongStateOf(0L) }
     val lrcPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -545,17 +587,17 @@ private fun LyricsPeekCard(vm: MainViewModel, artBg: Color, artFg: Color, dimC: 
         )
         if (lines.isNotEmpty() && ly != null) {
             val durMs = if (vm.player.durationMs > 0) vm.player.durationMs else track.durationMs
-            val activeI = ly.parsed.activeIndex(vm.player.positionMs, durMs, ly.offsetMs)
-            val peekStart = (activeI - 1).coerceIn(0, (lines.size - 4).coerceAtLeast(0))
+            val activeI = ly.parsed.activeIndex(vm.player.displayPositionMs(), durMs, ly.offsetMs)
+            // v1.3.x: 去掉卡片底部的「展开歌词」胶囊(用户:点卡片本体就能展开,胶囊是
+            // 冗余入口,还占掉能多显示几行歌词的空间);预览窗口 4 → 6 行。
+            // fg 用 lyricTextC(跟随歌词颜色档),不再用 artFg(那是 UI 控件色)。
             com.shiyin.music.ui.components.LyricsCardPreview(
                 lines = lines.map { it.text },
                 activeIndex = activeI,
-                peekStart = peekStart,
-                fg = artFg,
+                fg = lyricTextC,
                 fontSize = 19.sp,
                 lineHeight = 28.sp,
             )
-            com.shiyin.music.ui.components.LyricsCardExpandPill(btnBg = btnBg, fg = artFg)
         } else {
             when (vm.lyState) {
                 LyState.Searching -> {

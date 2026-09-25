@@ -244,6 +244,37 @@ object Lucide {
     val Speaker by lazy {
         stroke("speaker", "M6 2h12a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2z", "M12 6h.01", "M12 14m-4 0a4 4 0 1 0 8 0a4 4 0 1 0 -8 0", "M12 14h.01")
     }
+    // v1.3.x 播放设置专用(用户明确要求不复用图标):Volume2/AudioLines/SlidersVertical/Layers,
+    // 与 Lucide 官方 24x24 路径一致,描边风格同本项目 stroke()。
+    val Volume2 by lazy {
+        stroke(
+            "volume2",
+            "M11 5 6 9H2v6h4l5 4V5z",
+            "M15.54 8.46a5 5 0 0 1 0 7.07",
+            "M19.07 4.93a10 10 0 0 1 0 14.14",
+        )
+    }
+    val AudioLines by lazy {
+        stroke(
+            "audioLines",
+            "M2 10v3", "M6 6v11", "M10 3v18", "M14 8v7", "M18 5v13", "M22 10v3",
+        )
+    }
+    val SlidersVertical by lazy {
+        stroke(
+            "slidersVertical",
+            "M4 21v-7", "M4 10V3", "M12 21v-9", "M12 8V3", "M20 21v-5", "M20 12V3",
+            "M2 14h4", "M10 8h4", "M18 16h4",
+        )
+    }
+    val Layers by lazy {
+        stroke(
+            "layers",
+            "m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z",
+            "m22 17.65-9.17 4.16a2 2 0 0 1-1.66 0L2 17.65",
+            "m22 12.65-9.17 4.16a2 2 0 0 1-1.66 0L2 12.65",
+        )
+    }
     val Tv by lazy {
         stroke("tv", "M4 7h16a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2z", "M17 2 12 7 7 2")
     }
@@ -286,6 +317,19 @@ object Lucide {
 
     // Filled transport glyphs
     val Play by lazy { filled("play", "M6 3 L20 12 L6 21 Z") }
+
+    /** v1.3.x: 描边版 play——设置列表等"图标全是描边"的场景用,与 Lucide 官方
+     *  play 路径一致(填充版 Play 只用于彩色圆钮上的白色三角)。 */
+    val PlayOutline by lazy { stroke("playOutline", "M6 3 20 12 6 21Z") }
+
+    /** v1.3.x: 打轴模式入口(锚定/对准语义,与每行的锚定 Clock 按钮区分)。 */
+    val Crosshair by lazy {
+        stroke(
+            "crosshair",
+            "M22 12h-4", "M6 12H2", "M12 6V2", "M12 22v-4",
+            "M12 12m-10 0a10 10 0 1 0 20 0a10 10 0 1 0 -20 0",
+        )
+    }
     val Pause by lazy {
         filled("pause", "M7 4h2a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1z", "M15 4h2a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1h-2a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1z")
     }

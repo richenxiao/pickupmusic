@@ -30,6 +30,19 @@ object AgentEngine {
         val error: String? = null,
     )
 
+    /** v1.3.8: 循环模式的语义表示——技能层不碰 Media3 的 REPEAT_MODE_* 常量,
+     *  由 MainViewModel 的桥实现负责翻译成 PlayerController 的值。 */
+    enum class RepeatMode { OFF, ALL, ONE }
+
+    /**
+     * v1.3.8: 「按发布时间排序歌手作品」的结果。
+     *
+     * [detail] 承载**真实失败原因**(LLM 429 / 未搜到资料 / 未配 Key / 解析不出日期),
+     * 由技能原样回执给用户——而不是笼统报一句"失败了"。歌手页的进度行也是同一套文案,
+     * 两个入口说同一件事。
+     */
+    data class AlbumDateOutcome(val datedCount: Int, val detail: String = "")
+
     /** 技能执行上下文:技能可读当前专辑/歌手/曲目 + 按名搜库 + 调 vm 写回。 */
     interface SkillContext {
         val albumKey: String?
@@ -51,6 +64,45 @@ object AgentEngine {
         fun applyAlbumOrderIndices(key: String, indices: List<Int>)
         fun saveTrackInfo(mediaId: Long, title: String, artist: String)
         fun hasPendingOrder(): Boolean
+        /** v1.3.8: 睡眠定时——到点淡出并暂停。minutes<=0 = 取消(见 PlayerController.setSleepTimer)。 */
+        fun setSleepTimer(minutes: Int)
+        /** v1.3.8: 睡眠定时——本曲结束后模式。 */
+        fun setSleepTimerEndOfTrack()
+        /** v1.3.8: 睡眠定时当前状态文案(PlayerController.sleepStatusText),用于回执确认。 */
+        fun sleepTimerStatus(): String
+
+        // ── v1.3.8: 播放控制与播放模式(playback_control / playback_mode 技能) ──
+        // 只操作播放状态,**不改音乐库内容**——与"不可逆操作永不接入 Agent"的约定一致
+        // (见项目约定:删除/清空/覆盖式导入这类一律不做)。
+        /** 播放这批曲目(队列 + 起点)。 */
+        fun playTracks(tracks: List<com.shiyin.music.data.Track>, startId: Long)
+        fun pausePlayback()
+        fun resumePlayback()
+        fun nextTrack()
+        fun previousTrack()
+        fun isPlaying(): Boolean
+        fun setShuffle(on: Boolean)
+        fun isShuffleOn(): Boolean
+        fun setRepeatMode(mode: RepeatMode)
+        fun repeatMode(): RepeatMode
+        /** 变速(沿用用户的复古变速偏好;写回设置,重启后保持)。 */
+        fun setPlaybackSpeed(speed: Float)
+
+        // ── v1.3.8: 收听统计(只读) ──────────────────────────────────────
+        /** 本周收听统计。**口径与统计页共用同一实现**(data/stats/ListeningStats.kt),
+         *  保证两个入口给出的数字是同一件事。 */
+        suspend fun weeklyListeningStats(): com.shiyin.music.data.stats.WeeklyStats
+        /** 按 mediaId 取曲目(含「完整专辑」容器曲目,它们不在 lib() 里)。 */
+        fun trackById(id: Long): com.shiyin.music.data.Track?
+
+        /**
+         * v1.3.8: 按官方发布时间排序某歌手的专辑/EP/单曲(联网查发行日期)。
+         *
+         * **复用歌手页「AI 排时间」的同一实现与同一套作品筛选规则**(专辑位歌手 +
+         * 排除合集),保证 Agent 与歌手页给出同一份作品集、同一个顺序——两个入口
+         * 说同一件事。**写库**(album_art_cache.releaseDate + artist_album_order)。
+         */
+        suspend fun sortArtistAlbumsByDate(artistName: String): AlbumDateOutcome
         /** 记录一次 LLM 调用的 token 消耗(落 token_usage_log 表,供设置页累计显示)。
          *  v1.3.6: cacheTokens=缓存命中 token(用量面板曲线;0=供应商不报)。 */
         fun logUsage(promptTokens: Int, completionTokens: Int, cacheTokens: Int = 0)
@@ -87,10 +139,31 @@ object AgentEngine {
         val completionTokens: Int = 0,
     )
 
-    /** 技能接口。各技能实现 [execute],内部编排 + 回调 [onStep] + 返回结果。 */
+    /** v1.3.8(P2):步骤面板的一行。[id] 必须与技能在 execute 里回调 onStep 用的 id
+     *  **完全一致**——面板行 id == 语义 id,映射关系不复存在,也就没有错位可言。 */
+    data class PanelStep(val id: String, val label: String)
+
+    /** 技能接口。各技能实现 [execute],内部编排 + 回调 [onStep] + 返回结果。
+     *
+     *  v1.3.8(D1-A 决策):[parameters] —— 该技能在原生 tool calling 里的 JSON Schema
+     *  (即 tools[].function.parameters 的正文)。**与实现同文件声明**,而不是集中放在
+     *  分发层:本项目反复出现「契约与实现分居两处 → 漂移」的模式(步骤行映射表、
+     *  批量编排),多写一段声明换掉这个风险是划算的。
+     *
+     *  新增技能只需:①本文件的 [skills] 列表加一行(声明"我存在") ②实现类里写
+     *  key/description/parameters/panelSteps/execute——**不需要改分发逻辑或
+     *  MainViewModel**。多路径技能用 [panelSteps] 按 args 分流。
+     */
     interface AgentSkill {
         val key: String
         val description: String
+        /** JSON Schema 对象文本,如 `{"type":"object","properties":{...}}`。 */
+        val parameters: String
+        /** 执行前就渲染的步骤清单(按执行顺序)。返回空 = 这个技能不显示步骤面板。
+         *
+         *  v1.3.8(P2):取代 MainViewModel 里的 `panelStepsFor(skillKey)` + 语义 id→行号
+         *  switch 两处硬编码。默认空实现,普通技能覆写即可。 */
+        fun panelSteps(args: Map<String, String>): List<PanelStep> = emptyList()
         suspend fun execute(
             ctx: SkillContext,
             args: Map<String, String>,
@@ -107,6 +180,12 @@ object AgentEngine {
         com.shiyin.music.data.ai.skills.LyricsFetchSkill,
         com.shiyin.music.data.ai.skills.TrackRenameSkill,
         com.shiyin.music.data.ai.skills.LibraryQuerySkill,
+        com.shiyin.music.data.ai.skills.SleepTimerSkill,
+        com.shiyin.music.data.ai.skills.SongStorySkill,
+        com.shiyin.music.data.ai.skills.PlaybackControlSkill,
+        com.shiyin.music.data.ai.skills.PlaybackModeSkill,
+        com.shiyin.music.data.ai.skills.ListeningStatsSkill,
+        com.shiyin.music.data.ai.skills.AlbumDatesSkill,
     )
 
     fun skillByKey(key: String): AgentSkill? = skills.firstOrNull { it.key == key }
@@ -273,8 +352,8 @@ ${skillsManifest()}
         if (plan != null) Route(plan, null, resp.thinking, elapsedMs, resp.promptTokens, resp.completionTokens)
         else {
             // v1.3.5: 残留的 [[FACT]]/【【Fact】】变体标记与```围栏一律剥离——路由
-            // 协议记号不进用户气泡(事实性判定已全部本地化 looksLikeFactQuestion,
-            // 不再依赖模型打标,模型漏写/瞎写都无所谓)。
+            // 协议记号不进用户气泡。v1.3.8: 事实性判定已由原生工具调用(web_search)
+            // 承担,本正则链路只剩「供应商不认 tools」时的降级通道(见 AgentTools.dispatch)。
             val raw = resp.content ?: ""
             val body = raw
                 .replace(Regex("""(\[{1,2}|【{1,2})\s*FACT\s*(\]{1,2}|】{1,2})""", RegexOption.IGNORE_CASE), "")
@@ -295,83 +374,36 @@ ${skillsManifest()}
     }
 
     /**
-     * v1.3.2: 高频指令本地快速路由(省一次路由 LLM 往返)。
-     *  - 排序:须有「排/整理/修正 + 顺序/曲序」或「按官方/正确顺序」的动作句式——
-     *    纯聊天里出现"顺序"二字(如"为什么会卡在写回顺序上")不会误命中。
-     *  - 修歌手:「歌手/艺人」+ 识别错误类动词。
-     *  - 找歌词:「歌词」+ 找/搜/配 等动作动词(问"歌词什么意思"不走技能)。
-     * 书名号/引号里的名字 → args.album;没有则技能自己回退当前专辑页。
+     * v1.3.2 / v1.3.8(D2):高频指令的本地快速路径——零 LLM 往返直接选中技能。
+     *
+     * **v1.3.8 收窄:只保留 album_sort 一条。** 原实现里 artist_fix / track_rename /
+     * library_query 的正则消歧全部删除。
+     *
+     * 删除理由:那套正则本质是**用本地正则手工复刻工具 description 该承担的语义消歧**,
+     * 且已反复踩坑——v1.3.6e/f 连续两次修补(ruleCtx/artistCtx 互斥、"去掉歌名的-
+     * 歌手名后缀"被 artist_fix 抢走、指令没踩中正则导致 args 全空落回错误路径)。
+     * 原生 tool calling 生效后语义消歧已由模型读工具描述完成,再留一套正则 =
+     * 新旧两套消歧机制并存,风险只是换了战场。
+     *
+     * 保留 album_sort 的理由:"打开专辑 → 排成正确顺序"是 golden path,高频且句式固定,
+     * 值得保住 0 次 LLM 的即时响应。
+     *
+     * steps 返回空——步骤行文案统一由 MainViewModel.panelStepsFor 派生,模型不再产出清单。
      */
-    private fun fastPathPlan(intent: String): IntentPlan? {
-        // v1.3.4: 书名号里抓到的名字做资格判定——纯数字(如用户说"排第15首歌"被
-        // 《15》误抓)、单字符不作为专辑名;空则不带 album 参数(技能自己回退当前页)。
+    fun fastPathPlan(intent: String): IntentPlan? {
+        // 动作句式:须有「排/整理/修正 + 顺序/曲序」或「按官方/正确顺序」。
+        // 纯聊天里出现"顺序"二字(如"为什么会卡在写回顺序上")不会误命中。
+        val sortHit = Regex("""(排|整理|修正)(成|为|到|一下)*(正确|官方|正式)?(的)?(曲目|播放)?(顺序|曲序)""")
+            .containsMatchIn(intent) ||
+            Regex("""按\s*(官方|正确)\s*(顺序|曲序)""").containsMatchIn(intent)
+        if (!sortHit) return null
+        // v1.3.4: 书名号里抓到的名字做资格判定——纯数字(如用户说"排第15首歌"被《15》
+        // 误抓)、单字符不作为专辑名;空则不带 album 参数(技能自己回退当前专辑页)。
         val albumArgRaw = Regex("""《([^》]+)》""").find(intent)?.groupValues?.get(1)
             ?: Regex("""「([^」]+)」""").find(intent)?.groupValues?.get(1)
         val albumArg = albumArgRaw?.takeIf { it.isNotBlank() && !it.all { ch -> ch.isDigit() } && it.length >= 2 }
         val args = albumArg?.let { mapOf("album" to it) } ?: emptyMap()
-
-        val sortHit = Regex("""(排|整理|修正)(成|为|到|一下)*(正确|官方|正式)?(的)?(曲目|播放)?(顺序|曲序)""")
-            .containsMatchIn(intent) ||
-            Regex("""按\s*(官方|正确)\s*(顺序|曲序)""").containsMatchIn(intent)
-        if (sortHit) return IntentPlan("album_sort", args, listOf("读取专辑曲目", "联网搜索官方顺序", "AI 核对生成顺序", "写回排序"))
-
-        // v1.3.6e: 歌名批量规则上下文提前算——artist_fix 判定要用它做排除:
-        // "统一去掉歌名的-歌手名后缀"同时含"歌手"与"识别(错乱)",不排除就被
-        // artist_fix 抢走,永远进不了改名规则路径(用户正是这么说的)。
-        val artistCtx = Regex("歌手|艺人|演唱者").containsMatchIn(intent)
-        val orderCtx = Regex("顺序|曲序|排序|排到|排成").containsMatchIn(intent)
-        val ruleCtx = !orderCtx &&
-            Regex("""(去掉|删除|移除|剥掉|清理|统一|繁体|简体|转简|转繁|编号|后缀|前缀|规范化|格式化)""").containsMatchIn(intent) &&
-            Regex("""(歌名|歌的名|曲目名|标题|后缀|前缀)""").containsMatchIn(intent)
-
-        val artistFixHit = artistCtx && !ruleCtx &&
-            Regex("反了|识别|修正|不对|有误|错了|查一下|归属|张冠李戴").containsMatchIn(intent)
-        if (artistFixHit) return IntentPlan("artist_fix", args, listOf("联网搜证", "AI 分析修正", "写回本地"))
-
-        // v1.3.3b: 修歌名——「歌名/标题」+ 修正类动词(与修歌手的判定分开,两个词都
-        // 出现时歌名优先:更具体的意图先判)。v1.3.4: 补"帮我改/修一下歌名"句式。
-        // v1.3.6e: track_rename 三条路,按具体度排序:
-        //  ①点名直改:引号旧→新名(把「搁浅」改成「擱淺」)——args track/new_title,
-        //    技能零 LLM 直写(旧链路把点名的新旧名全丢了,只传专辑名,结果"改不了名")。
-        //  ②批量规则:用户描述"怎么改"而不是"改成什么"(统一去掉-歌手名后缀/繁转简/
-        //    去编号)——args rule=需求原话,技能一次 LLM 把规则落到每首歌的修改清单。
-        //  ③泛泛修正(歌名识别有误):不带规则,走联网比对官方曲目表(原行为)。
-        // 「专辑」字样只挡 ①(改专辑名不归本技能);②的句式常带"专辑中每首歌",
-        // 不能挡。artistCtx(已在上面提前算)挡 ①/③,不挡 ②——"去掉歌名的-
-        // 歌手名后缀"里的"歌手"是后缀描述,不是修歌手意图。
-        val quotedNames = Regex("""[「『“《]([^」』”》]+)[」』”》]""").findAll(intent)
-            .map { it.groupValues[1].trim() }.filter { it.isNotEmpty() }.toList()
-        val renameVerb = Regex("""改成|改为|换成|重命名|改名|更名|改叫|叫做|叫作|修正成|修正为|统一为""")
-            .containsMatchIn(intent)
-        val albumWordCtx = intent.contains("专辑")
-        val directNew = if (renameVerb && !artistCtx && !orderCtx && !albumWordCtx && quotedNames.isNotEmpty()) quotedNames.last() else null
-        val directOld = if (directNew != null && quotedNames.size >= 2) quotedNames[quotedNames.size - 2] else ""
-        val trackRenameHit = directNew != null || ruleCtx || (!artistCtx &&
-            (Regex("歌名|歌的名|曲目名|标题").containsMatchIn(intent) &&
-                Regex("反了|识别|修正|不对|有误|错了|统一|改|修|帮").containsMatchIn(intent))
-            )
-        if (trackRenameHit) {
-            val renameAlbum = albumArg?.takeIf { it != directNew && it != directOld }
-            // v1.3.6f: 命中改名技能就**无条件**带 rule=用户原话——不再依赖 ruleCtx
-            // 正则去猜句式(用户复现的指令没踩中正则,args 全空落回老的联网比对
-            // 路径,对冷门歌手搜不到资料,模型零修改却报"完成"——"显示成功但没变"
-            // 的根因)。技能侧 LLM 拿原话自己理解"去掉-歌手名后缀"怎么逐首落地;
-            // directNew(点名直改)优先级更高,有它技能走零 LLM 直写。
-            val renameArgs = buildMap {
-                renameAlbum?.let { put("album", it) }
-                put("rule", intent.trim())
-                if (directNew != null) { put("track", directOld); put("new_title", directNew) }
-            }
-            return IntentPlan(
-                "track_rename", renameArgs,
-                if (directNew != null) listOf("定位歌曲", "写回新歌名") else listOf("分析需求与修改清单", "写回并验收"),
-            )
-        }
-
-        val lyricsHit = intent.contains("歌词") && Regex("找|搜|配|下载|获取|来一份").containsMatchIn(intent)
-        if (lyricsHit) return IntentPlan("lyrics_fetch", emptyMap(), listOf("搜索歌词源"))
-
-        return null
+        return IntentPlan("album_sort", args, emptyList())
     }
 
     /** v1.3.6c: 模型往 content 开头混写思考的已知标记(全小写比较,前缀判定用)。
@@ -414,9 +446,10 @@ ${skillsManifest()}
     private fun parseIntent(raw: String): IntentPlan? {        return try {
             val direct = runCatching { JsonParser.parseString(raw.trim()).asJsonObject }.getOrNull()
             val obj = direct ?: run {
-                val m = Regex("""\{.*}""", RegexOption.DOT_MATCHES_ALL).find(raw)
-                if (m == null) return null
-                runCatching { JsonParser.parseString(m.value).asJsonObject }.getOrNull()
+                // v1.3.8: 原为 Regex("""\{.*}""")——裸 '}' 在 Android 上编译抛
+                // PatternSyntaxException(JVM 单测用桌面正则,测不出来)。
+                val json = com.shiyin.music.data.firstBalancedJsonObject(raw) ?: return null
+                runCatching { JsonParser.parseString(json).asJsonObject }.getOrNull()
             } ?: return null
             val skillKey = obj.get("skill")?.takeIf { it.isJsonPrimitive }?.asString ?: return null
             if (skillKey == "unknown") return null
@@ -428,27 +461,4 @@ ${skillsManifest()}
         } catch (_: Exception) { null }
     }
 
-    /**
-     * v1.3.4: 事实性问题的本地兜底判定——弱模型(sensenova-flash-lite 等)对
-     * "[[FACT]] 三选一"新约定的遵守度不可靠,模型忘了标时本地再判一层:
-     * 疑问语气(问号/吗/呢) + 事实类疑问词(谁/什么时候/哪一年/多少/是什么/为什么…)
-     * 即视为事实问题,需要联网。问候/闲聊/主观表达(觉得/好听/推荐)不含这些词。
-     */
-    fun looksLikeFactQuestion(intent: String): Boolean {
-        val q = intent.trim()
-        val interrogative = q.endsWith("?") || q.endsWith("？") || q.contains("吗") || q.contains("呢") ||
-            Regex("""(谁|什么|何时|哪|几|多少|为什么|为啥|怎么|如何|是不是|有没有)""").containsMatchIn(q)
-        if (!interrogative) return false
-        return Regex("""(谁|什么时候|哪一年|哪年|几几年|多少|是什么|指的是什么|为什么|为啥|什么意思)""").containsMatchIn(q)
-    }
-
-    /**
-     * v1.3.7: 该指令是否会走本地快速路径(固定句式的技能指令,零 LLM 往返)。
-     *
-     * 供 MainViewModel 的"要不要联网"决策用:命中快速路径的指令一定是**对音乐库的
-     * 操作**(排曲序/修歌手/找歌词),不可能是需要联网的事实问题。不跳过的话,
-     * 每条本地指令都要白付一次搜索决策 LLM 往返——v1.3.7 把"要不要联网"从本地正则
-     * 改成模型自主后,本地指令原本的零延迟优势会被这条决策调用吃掉。
-     */
-    fun hasFastPath(intent: String): Boolean = fastPathPlan(intent) != null
 }

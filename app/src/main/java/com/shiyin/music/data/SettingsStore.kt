@@ -59,6 +59,18 @@ class SettingsStore(private val context: Context) {
     /** v1.3.x 歌词本翻译:有保存的译文时默认显示(默认 true——译完即存,进来就给看)。 */
     private val keyTranslateDefaultShow = booleanPreferencesKey("translate_default_show")
 
+    // ── v1.3.x 播放设置(设置·播放页,用户 2026-09-22 指定分组)─────────────────
+    /** 音量均衡:平衡所有曲目的播放音量(响度归一)。 */
+    private val keyVolumeNormalize = booleanPreferencesKey("volume_normalize")
+    /** 单声道音频:左右扬声器播放相同的音频。 */
+    private val keyMonoAudio = booleanPreferencesKey("mono_audio")
+    /** 允许与其他应用同时播放。 */
+    private val keyAllowConcurrent = booleanPreferencesKey("allow_concurrent_playback")
+    /** 均衡器开关(5 段 EQ;具体曲线设置页内调)。 */
+    private val keyEqualizerOn = booleanPreferencesKey("equalizer_on")
+    /** 均衡器各频段增益(mB,逗号分隔;长度=段数)。 */
+    private val keyEqualizerBands = stringPreferencesKey("equalizer_bands")
+
     data class Settings(
         val dark: Boolean,
         val gapless: Boolean,
@@ -87,6 +99,13 @@ class SettingsStore(private val context: Context) {
         val translateAutoForeign: Boolean,
         /** v1.3.x 歌词本翻译:有保存译文时默认显示(默认 true)。 */
         val translateDefaultShow: Boolean,
+        /** v1.3.x 播放设置(设置·播放页)。 */
+        val volumeNormalize: Boolean,
+        val monoAudio: Boolean,
+        val allowConcurrentPlayback: Boolean,
+        val equalizerOn: Boolean,
+        /** 均衡器各频段增益(mB)。 */
+        val equalizerBands: List<Int>,
         /** v22: 检查更新状态(最近检查结果 + 已忽略版本)。 */
         val updateState: com.shiyin.music.data.update.UpdateState,
     )
@@ -115,6 +134,13 @@ class SettingsStore(private val context: Context) {
             lyricsColorMode = (p[keyLyricsColorMode] ?: "default").let { if (it in listOf("default", "white", "black")) it else "default" },
             translateAutoForeign = p[keyTranslateAutoForeign] ?: false,
             translateDefaultShow = p[keyTranslateDefaultShow] ?: true,
+            volumeNormalize = p[keyVolumeNormalize] ?: false,
+            monoAudio = p[keyMonoAudio] ?: false,
+            allowConcurrentPlayback = p[keyAllowConcurrent] ?: false,
+            equalizerOn = p[keyEqualizerOn] ?: false,
+            equalizerBands = (p[keyEqualizerBands] ?: "")
+                .split(",").mapNotNull { it.trim().toIntOrNull() }
+                .takeIf { it.size == 5 } ?: listOf(0, 0, 0, 0, 0),
             updateState = com.shiyin.music.data.update.UpdateStateCodec.decode(p[keyUpdateState] ?: ""),
         )
     }
@@ -155,6 +181,14 @@ class SettingsStore(private val context: Context) {
     suspend fun setFuriganaAutoVerify(v: Boolean) = context.dataStore.edit { it[keyFuriganaAutoVerify] = v }
     suspend fun setTranslateAutoForeign(v: Boolean) = context.dataStore.edit { it[keyTranslateAutoForeign] = v }
     suspend fun setTranslateDefaultShow(v: Boolean) = context.dataStore.edit { it[keyTranslateDefaultShow] = v }
+
+    /** v1.3.x 播放设置写入。 */
+    suspend fun setVolumeNormalize(v: Boolean) = context.dataStore.edit { it[keyVolumeNormalize] = v }
+    suspend fun setMonoAudio(v: Boolean) = context.dataStore.edit { it[keyMonoAudio] = v }
+    suspend fun setAllowConcurrentPlayback(v: Boolean) = context.dataStore.edit { it[keyAllowConcurrent] = v }
+    suspend fun setEqualizerOn(v: Boolean) = context.dataStore.edit { it[keyEqualizerOn] = v }
+    suspend fun setEqualizerBands(v: List<Int>) =
+        context.dataStore.edit { it[keyEqualizerBands] = v.joinToString(",") }
     suspend fun setLyricsColorMode(mode: String) =
         context.dataStore.edit { it[keyLyricsColorMode] = if (mode in listOf("white", "black")) mode else "default" }
 

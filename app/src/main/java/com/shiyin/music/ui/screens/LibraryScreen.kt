@@ -1122,51 +1122,28 @@ private fun AlbumDetail(vm: MainViewModel, key: String) {
         // 需求三的最终呈现形态：顶部用封面/LOGO 位代表整张专辑，而不是某首拆分单曲的
         // 序号占位；点它从文件开头完整播到结尾，不受任何拆分区间限制，计「专辑被播放
         // 一次」（kind='album'），绝不产生任何单曲事件。
-        if (vm.albumIsSplit(key)) {
+        // v22 修补(用户反馈⑦): 左侧加唱片图标与下方歌曲序号对齐(原来封面图与序号
+        // 列不对齐,看起来不整齐);删去副标题"完整版 · XX 首"。
+        // 草稿态（有曲目还没定时间点）：给一条可点的提示条。未完成的曲目不显示在
+        // 下方列表里，避免出现时长未知的幽灵行。
+        if (vm.albumIsSplit(key) && vm.albumSplitIsDraft(key)) {
             item {
+                val src = vm.splitSourceOfAlbum(key)
                 Row(
-                    Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
-                        .clickable { vm.playAlbum(key) }
-                        .padding(horizontal = 4.dp, vertical = 6.dp),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp))
+                        .background(c.surface)
+                        .clickable { if (src != null) vm.openSplitEditor(src) }
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    com.shiyin.music.ui.components.CoverArt(first, 48.dp)
-                    Column(Modifier.weight(1f)) {
-                        Text("完整专辑", style = body(14f, FontWeight.SemiBold, c.text), maxLines = 1)
-                        Text(
-                            "${tracks.size} 首 · 整轨未切割",
-                            style = body(12f, FontWeight.Normal, c.n500), maxLines = 1,
-                        )
-                    }
-                    Text(formatDuration(tracks.sumOf { it.durationSec }), style = body(11f, FontWeight.Normal, c.n400))
-                    Box(
-                        Modifier.size(34.dp).clip(CircleShape).background(c.surface),
-                        contentAlignment = Alignment.Center,
-                    ) { OIcon(Lucide.Play, 15.dp, c.text) }
-                }
-            }
-            // 草稿态（有曲目还没定时间点）：给一条可点的提示条。未完成的曲目不显示在
-            // 下方列表里，避免出现时长未知的幽灵行。
-            if (vm.albumSplitIsDraft(key)) {
-                item {
-                    val src = vm.splitSourceOfAlbum(key)
-                    Row(
-                        Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp))
-                            .background(c.surface)
-                            .clickable { if (src != null) vm.openSplitEditor(src) }
-                            .padding(horizontal = 12.dp, vertical = 10.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        OIcon(Lucide.Info, 15.dp, c.a700)
-                        Text(
-                            "拆分未完成 · 继续编辑",
-                            style = body(12.5f, FontWeight.Medium, c.a700),
-                            modifier = Modifier.weight(1f),
-                        )
-                        OIcon(Lucide.ChevronRight, 15.dp, c.n500)
-                    }
+                    OIcon(Lucide.Info, 15.dp, c.a700)
+                    Text(
+                        "拆分未完成 · 继续编辑",
+                        style = body(12.5f, FontWeight.Medium, c.a700),
+                        modifier = Modifier.weight(1f),
+                    )
+                    OIcon(Lucide.ChevronRight, 15.dp, c.n500)
                 }
             }
         }
@@ -1219,6 +1196,61 @@ private fun AlbumDetail(vm: MainViewModel, key: String) {
                     showMenu = true,
                     coverScope = trackCoverScope,
                 )
+            }
+        }
+        // ── v23: 拆分专辑 —— 「完整专辑」（整轨）入口，放在曲目列表**之后** ──────
+        // 用户反馈:整轨行放在曲目前面"有点突兀"——它是一条与曲目层级不同的入口,
+        // 排在最后、用分节的细实线与曲目区分开,读作"这张专辑的整轨本体"。
+        // 点击从文件开头完整播到结尾,不受任何拆分区间限制,计「专辑被播放一次」
+        // (kind='album'),绝不产生任何单曲事件。
+        //
+        // v23 方案C(用户定稿):与歌曲行的区分度全部走**结构**信号而非色块——
+        // 整行左缩进(封面左缘对齐歌曲行**文字**左缘,而非序号列)、封面小一号、
+        // 字重降级、眉题点明身份。"完整专辑"入口不由再与序号列比对齐,
+        // "左右中心不稳"随之消失;细实线分隔比歌曲行间 divider 更疏,但同语言。
+        if (vm.albumIsSplit(key)) {
+            item { SplitSectionDivider(c) }
+            item {
+                // 眉题行:唱片图标 + "完整专辑"。图标承担"这是专辑"的符号语义,
+                // 放在眉题行而非内容行——若留在内容行会把封面顶偏、破坏与歌曲行
+                // 文字左缘的对齐(用户定夺:图标保留,只是换条轴线)。16dp 与 11sp
+                // 眉题文字的视觉重量匹配。
+                Row(
+                    Modifier.fillMaxWidth().padding(start = 30.dp, end = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(5.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    OIcon(Lucide.Disc, 16.dp, c.n600)
+                    Text(
+                        "完整专辑",
+                        style = body(11f, FontWeight.Bold, c.n600).copy(letterSpacing = 1.2.sp),
+                    )
+                }
+            }
+            item {
+                val albumName = first.album
+                Row(
+                    Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp))
+                        .clickable { vm.playAlbum(key) }
+                        // 歌曲行布局 = 4dp 页面内边距 + 20dp 序号列 + 6dp 间距 → 歌曲标题
+                        // 左缘位于 30dp 处。整轨行的封面左缘对齐到同一坐标。
+                        .padding(start = 30.dp, end = 4.dp, top = 2.dp, bottom = 10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    CoverArt(
+                        first, 36.dp, RoundedCornerShape(6.dp),
+                        modifier = Modifier.size(36.dp).shadowSm(RoundedCornerShape(6.dp)),
+                        coverScope = trackCoverScope,
+                    )
+                    Column(Modifier.weight(1f)) {
+                        Text(albumName, style = body(15f, FontWeight.Medium, c.n800), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                    Text(
+                        "整轨 · ${tracks.size} 首",
+                        style = body(11.5f, FontWeight.Normal, c.n600),
+                    )
+                }
             }
         }
         // 5: footer summary — "X 首 · XX 分钟" (left-aligned)
@@ -1380,7 +1412,7 @@ private fun NumberedTrackRow(
             Text(
                 "$idx",
                 style = body(14f, FontWeight.Bold, if (isCur) c.a700 else c.text),
-                textAlign = TextAlign.Start,
+                textAlign = TextAlign.Center,
                 modifier = Modifier.width(20.dp),
             )
             if (showCover) {
@@ -1408,6 +1440,25 @@ private fun NumberedTrackRow(
                 .fillMaxWidth()
                 .height(1.dp)
                 .background(c.divider)
+        )
+    }
+}
+
+/**
+ * v23 方案C: 分节分隔线 —— 区隔「曲目列表」与「完整专辑（整轨）」。
+ * 1dp 细实线,左右缩进 4dp(与歌曲行间 1dp divider 同语言),但上下各留 14dp
+ * 并额外加 6dp 空档 → 比歌曲行之间的分隔更疏、更像"分节"而非"下一行"。
+ * 取代早先的圆点虚线(用户反馈"显得随意、与整体风格不统一")。
+ */
+@Composable
+private fun SplitSectionDivider(c: com.shiyin.music.ui.theme.OrganicColors) {
+    Column(Modifier.fillMaxWidth().padding(top = 20.dp, bottom = 14.dp)) {
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 4.dp)
+                .height(1.dp)
+                .background(c.divider),
         )
     }
 }

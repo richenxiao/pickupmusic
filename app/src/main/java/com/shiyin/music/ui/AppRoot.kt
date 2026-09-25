@@ -18,6 +18,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -281,6 +282,10 @@ fun AppRoot(vm: MainViewModel) {
                     // 已由 values-night/themes.xml 覆盖深色、AppRoot 根 Box 铺 c.bg,
                     // fade 半透明期透出的是与主题同色的 c.bg(或同主题的 window 底),
                     // 不再透亮白窗口底。
+                    // v1.3.x 第4项:设置一级页的滚动状态提升到 AnimatedContent 之上
+                    // (这里),换路由销毁子页时不跟着销毁;SettingsRoot 用它做
+                    // verticalScroll——返回后停在进入子页前的位置。按 view 分键,不共享。
+                    val settingsScrollStates = remember { LinkedHashMap<String, ScrollState>() }
                     val contentKey = when {
                         vm.agentOpen -> "agent"
                         vm.splitEditFor != null -> "split"
@@ -311,7 +316,17 @@ fun AppRoot(vm: MainViewModel) {
                                 // 旧层(settings:旧view)保留旧页面渐隐,不跟着 filesView
                                 // 改写成新页面——与其他路由(一 key 一组件)结构对齐。
                                 val fv = com.shiyin.music.FilesView.valueOf(key.removePrefix("settings:"))
-                                Box(pad) { SettingsHost(vm, fv) }
+                                // v1.3.x 第4项:返回后恢复一级页的滚动位置。
+                                // AnimatedContent 换 key 时整页销毁,一级页 Column 的
+                                // rememberScrollState 跟着丢。这里按路由名把这个页面的
+                                // ScrollState 提升到 AnimatedContent 之上(换 key 不销毁),
+                                // 设置页各处用同一份——回一级页时停在进入子页前的位置。
+                                Box(pad) {
+                                    SettingsHost(
+                                        vm, fv,
+                                        scrollStates = settingsScrollStates,
+                                    )
+                                }
                             }
                             key == "recent" -> Box(pad) { com.shiyin.music.ui.screens.RecentPlaysScreen(vm) }
                             key == "stats" -> Box(pad) { com.shiyin.music.ui.screens.ListeningStatsScreen(vm) }
@@ -372,12 +387,19 @@ fun AppRoot(vm: MainViewModel) {
                     .clip(RoundedCornerShape(topEnd = 28.dp, bottomEnd = 28.dp))
                     .background(c.surface)
                     .statusBarsPadding()
-                    .padding(20.dp),
+                    // v1.3.x 第1项:与主内容顶栏共用同一套顶部基准(见 TopBarTop/TopBarHeight)
+                    // ——两边都是 statusBarsPadding + TopBarTop，品牌区与主顶栏等行高居中，
+                    // 中心线自然对齐；不再各写各的 padding 靠肉眼凑。
+                    .padding(horizontal = 20.dp)
+                    .padding(top = com.shiyin.music.ui.components.TopBarTop),
             ) {
                 Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                    Row(verticalAlignment = Alignment.Bottom, modifier = Modifier.padding(bottom = 16.dp)) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.height(com.shiyin.music.ui.components.TopBarHeight),
+                    ) {
                         Text("拾音", style = heading(24))
-                        Text("PickUpMusic", style = body(13f, FontWeight.Normal, c.n500), modifier = Modifier.padding(start = 0.dp, bottom = 3.dp))
+                        Text("PickUpMusic", style = body(13f, FontWeight.Normal, c.n500), modifier = Modifier.padding(start = 6.dp))
                     }
                     // v4: sidebar restructured — 5 items, no file-management here.
                     // v1.3.x: Agent 提到"设置"前面(AI 是高频入口,不该排在最后),
@@ -385,9 +407,15 @@ fun AppRoot(vm: MainViewModel) {
                     SidebarItem(Lucide.History, "最近播放") { vm.sidebarOpen = false; vm.recentOpen = true; vm.settingsOpen = false }
                     SidebarItem(Lucide.BarChart, "收听统计") { vm.sidebarOpen = false; vm.statsOpen = true; vm.settingsOpen = false }
                     SidebarItem(Lucide.Bell, "你的更新") { vm.sidebarOpen = false; vm.updatesOpen = true; vm.settingsOpen = false }
-                    SidebarItem(Lucide.Sparkles, "Agent") { vm.sidebarOpen = false; vm.agentOpen = true }
-                    SidebarItem(Lucide.Settings, "设置") { vm.sidebarOpen = false; vm.settingsOpen = true; vm.filesView = com.shiyin.music.FilesView.Root; vm.recentOpen = false; vm.statsOpen = false; vm.updatesOpen = false; vm.cleanEntry = false }
-                    SidebarItem(Lucide.CircleInfo, "关于我们") { vm.sidebarOpen = false; vm.settingsOpen = true; vm.filesView = com.shiyin.music.FilesView.About }
+                    // v1.3.x: Agent 更名「拾光Agent」+ 换用定稿品牌图标
+                    // (docs/images/agent-logo 的线稿 → res/drawable/ic_agent.xml)。
+                    // vectorResource 直接把它变成 ImageVector，侧边栏签名不用改。
+                    SidebarItem(
+                        androidx.compose.ui.res.painterResource(com.shiyin.music.R.drawable.ic_agent),
+                        "拾光Agent",
+                    ) { vm.sidebarOpen = false; vm.agentOpen = true }
+                    SidebarItem(Lucide.Settings, "设置") { vm.sidebarOpen = false; vm.openSettingsView(); vm.recentOpen = false; vm.statsOpen = false; vm.updatesOpen = false; vm.cleanEntry = false }
+                    SidebarItem(Lucide.CircleInfo, "关于我们") { vm.sidebarOpen = false; vm.openSettingsView(); vm.navFilesTo(com.shiyin.music.FilesView.About) }
                 }
             }
         }
@@ -424,8 +452,35 @@ fun AppRoot(vm: MainViewModel) {
             // AFTER the sheet has actually been visible at least once this
             // session (sheetState.isVisible went true), so the initial Hidden
             // state doesn't pull the rug out.
+            // v23 修复(报告B 实锤根因 —— sheet 抢收起手势):
+            // material3 1.3.2 的 ModalBottomSheet 有**两条彼此独立**的收起通道:
+            //   ① PullGate 闸门(歌词本自己的下拉,经 morph collapse);
+            //   ② sheet 自身的拖拽 —— ModalBottomSheetContent 上挂了 anchoredDraggable
+            //      (`onDragStopped = settleToDismiss`)与
+            //      ConsumeSwipeWithinBottomSheetBoundsNestedScrollConnection(`onFling =
+            //      settleToDismiss`),而 settleToDismiss = { scope.launch { settle(it) }
+            //      .invokeOnCompletion { if (!isVisible) onDismissRequest() } }。
+            // 歌词区下拉时若闸门判定"不该收起"(起手不在顶 → dragging 恒 false)而放行
+            // 事件,②会接管这次下拉、把 sheet 拖到 Hidden,进而直接调 onDismissRequest
+            // (实测 BackDebug 日志:闸门 dragging=false、UP "no collapse" 之后 ~300ms
+            // sheet onDismissRequest 触发 —— 正是这条)。
+            // 修法:打在 AnchoredDraggableState **唯一的仲裁点** confirmValueChange 上
+            // (settle() 与 anchoredDrag() 都要过它:前者否决则回滚到原状态,后者否决则
+            // 不执行 dragTo)。产品规则:歌词本打开时 sheet 不允许进入 Hidden —— 收起
+            // 歌词本只能走闸门那条路径。歌词本关闭时一切照旧(拖拽关播放页不受影响)。
+            //
+            // ⚠️ 必须用 remember 固定 lambda 实例:rememberModalBottomSheetState 内部是
+            // rememberSaveable(..., confirmValueChange, ...),lambda 是 **key** —— 每次
+            // 重组换新实例会让 SheetState 被重建(initialValue=Hidden),播放页当场自闭。
+            // 无捕获的默认值 `{ true }` 是 Kotlin 单例所以此前侥幸成立。
+            val allowSheetHidden = androidx.compose.runtime.remember {
+                { value: androidx.compose.material3.SheetValue ->
+                    !(value == androidx.compose.material3.SheetValue.Hidden && vm.lyricsOn)
+                }
+            }
             val sheetState = androidx.compose.material3.rememberModalBottomSheetState(
                 skipPartiallyExpanded = true,
+                confirmValueChange = allowSheetHidden,
             )
             // v1.3.x bug① 修复:hide 请求的协程作用域(sheet 内容注入的
             // playerExitRequest 用;lyricsOn 时 overlay 的 scope 已卸载,这里常驻)。
@@ -952,20 +1007,23 @@ private fun RootBackHandler(vm: MainViewModel) {
             vm.artistMerge -> vm.artistMerge = false
             vm.settingsOpen -> {
                 if (vm.folderKey != null) {
+                    // 文件夹内容页:清 folderKey + 弹栈回文件夹管理(不再直接写 Root)
                     vm.folderKey = null
-                    vm.filesView = FilesView.Folders
+                    vm.navFilesBack()
                 } else if (vm.cleanEntry) {
                     // v1.3.5: 首页清理建议卡直接进的清理页——返回跳过"设置根"直接
                     // 回来源 tab(从哪来回哪)。退出设置即复位标记。
                     vm.cleanEntry = false
-                    vm.filesView = FilesView.Root
                     vm.sel = emptyMap()
                     vm.settingsOpen = false
                     vm.restoreTabIfDrillFullyClosed()
-                } else if (vm.filesView != FilesView.Root) {
-                    vm.filesView = FilesView.Root
+                } else {
+                    // v1.3.x 第4项:统一走返回栈逐级退出(navFilesBack pop),
+                    // 不再一律跳回设置根(那是"三级页手势返回跳过中间层"的根因)。
+                    // 栈空(已在根)才关设置。
+                    if (!vm.navFilesBack()) vm.settingsOpen = false
                     vm.sel = emptyMap()
-                } else vm.settingsOpen = false
+                }
             }
             vm.plId != null -> { vm.plId = null; vm.restoreTabIfDrillFullyClosed() }
             vm.albumKey != null -> {
@@ -2334,7 +2392,30 @@ private fun BoxScope.ToastHost(vm: MainViewModel) {
 
 // ── v3.0: sidebar item ─────────────────────────────────────────────────────
 @Composable
-private fun SidebarItem(icon: androidx.compose.ui.graphics.vector.ImageVector, label: String, onClick: () -> Unit) {
+private fun SidebarItem(icon: androidx.compose.ui.graphics.vector.ImageVector, label: String, onClick: () -> Unit) =
+    SidebarItemRow(
+        icon = { com.shiyin.music.ui.components.OIcon(icon, 20.dp, LocalOrganic.current.n700) },
+        label = label,
+        onClick = onClick,
+    )
+
+/**
+ * 重载：矢量 drawable（`painterResource`）——拾光Agent 的品牌图标走这条。
+ * 见 `OIcon(Painter…)` 注释：本 Compose 版本没有可用的 `vectorResource`。
+ *
+ * 尺寸与图标行一致（20dp）：v1.3.x 第2项把 ic_agent 重绘成了标准 24×24 实占的等线宽
+ * Mono 图标，视觉重量与 Lucide 图标相同，所以不再需要为旧的"宽而扁"线稿做尺寸补偿。
+ */
+@Composable
+private fun SidebarItem(icon: androidx.compose.ui.graphics.painter.Painter, label: String, onClick: () -> Unit) =
+    SidebarItemRow(
+        icon = { com.shiyin.music.ui.components.OIcon(icon, 20.dp, LocalOrganic.current.n700) },
+        label = label,
+        onClick = onClick,
+    )
+
+@Composable
+private fun SidebarItemRow(icon: @Composable () -> Unit, label: String, onClick: () -> Unit) {
     val c = LocalOrganic.current
     Row(
         Modifier
@@ -2345,7 +2426,7 @@ private fun SidebarItem(icon: androidx.compose.ui.graphics.vector.ImageVector, l
         horizontalArrangement = Arrangement.spacedBy(14.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        com.shiyin.music.ui.components.OIcon(icon, 20.dp, c.n700)
+        icon()
         Text(label, style = body(15f, FontWeight.SemiBold, c.text))
     }
 }
@@ -2368,14 +2449,22 @@ private fun BoxScope.AlbumMenuSheet(vm: MainViewModel) {
             )
             Box(Modifier.fillMaxWidth().height(1.dp).background(c.divider))
             Spacer(Modifier.height(6.dp))
-            SheetActionRow(Lucide.ArrowUpDown, "调整歌曲顺序") {
-                vm.albumMenuOpen = false
-                vm.albumEdit = true
-                vm.snapshotAlbumOrder()
+            // ── v22 修补: 拆分专辑禁用「调整歌曲顺序」(用户反馈③——专辑页排序
+            // 与拆分编辑页的顺序是两套真源,专辑页改动会导致移动错乱;拆分后一切
+            // 顺序以编辑页为准,想调顺序回编辑页拖)。
+            if (!vm.albumIsSplit(vm.albumKey ?: "")) {
+                SheetActionRow(Lucide.ArrowUpDown, "调整歌曲顺序") {
+                    vm.albumMenuOpen = false
+                    vm.albumEdit = true
+                    vm.snapshotAlbumOrder()
+                }
             }
-            SheetActionRow(Lucide.ListRows, "文本调整顺序") {
-                vm.albumMenuOpen = false
-                vm.albumEditText = true
+            // v22 修补: 文本排序同禁——与拖拽排序同一错乱源(拆分顺序以编辑页为准)。
+            if (!vm.albumIsSplit(vm.albumKey ?: "")) {
+                SheetActionRow(Lucide.ListRows, "文本调整顺序") {
+                    vm.albumMenuOpen = false
+                    vm.albumEditText = true
+                }
             }
             SheetActionRow(Lucide.Settings, "修改专辑信息") {
                 vm.albumMenuOpen = false
@@ -2413,8 +2502,11 @@ private fun BoxScope.AlbumMenuSheet(vm: MainViewModel) {
                 }
             }
             // v1.3.2: Agent 入口(图标与侧边栏一致)——打开对话页,Agent 打招呼 + 建议回复,
-            // 不再局限于"识别排序"一种处理。
-            SheetActionRow(Lucide.Sparkles, "Agent") {
+            // 不再局限于"识别排序"一种处理。v1.3.x: 更名「拾光Agent」+ 换品牌图标。
+            SheetActionRow(
+                androidx.compose.ui.res.painterResource(com.shiyin.music.R.drawable.ic_agent),
+                "拾光Agent",
+            ) {
                 vm.albumMenuOpen = false
                 vm.openAgentForAlbum(vm.albumKey ?: return@SheetActionRow)
             }

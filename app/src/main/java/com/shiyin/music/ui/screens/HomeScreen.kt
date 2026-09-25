@@ -92,14 +92,17 @@ fun HomeScreen(vm: MainViewModel) {
             .fillMaxSize()
             // v1.3.3 返回恢复:滚动位置用 VM 常驻 state——进专辑销毁重建后位置保留。
             .verticalScroll(vm.homeScroll)
-            .padding(top = 22.dp),
+            // v1.3.x 第1项:与侧边栏品牌区共用同一顶部基准(见 components.TopBarTop/Height),
+            // 两处中心线一致。
+            .padding(top = com.shiyin.music.ui.components.TopBarTop),
         verticalArrangement = Arrangement.spacedBy(18.dp),
     ) {
         // top bar — v3.0: hamburger menu (sidebar)
         Row(
             Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 20.dp),
+                .padding(horizontal = 20.dp)
+                .height(com.shiyin.music.ui.components.TopBarHeight),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             // v1.3.6c: 三线与"下午好"同一起点线——图标 24dp 紧贴文字(文字左缘=
@@ -133,17 +136,29 @@ fun HomeScreen(vm: MainViewModel) {
 
         // v2: 2×2 shortcut grid (removed 深夜书桌 + 通勤路上)
         val p0 = coverPalette(0); val p3 = coverPalette(3); val p4 = coverPalette(4)
-        data class Cut(val icon: String, val label: String, val bg: Color, val fg: Color, val onClick: () -> Unit)
+        // v1.3.x 第8项:入口图标改用项目图标体系(Lucide)的矢量——「全部歌曲」「最近播放」
+        // 此前分别是 ♪ / ◷ 两个文字字形，字号小、笔画细、在小尺寸下发虚，与整页图标语言
+        // 不统一。♥ / ⇄ 的字形本身清晰，保持不动。
+        data class Cut(
+            val icon: String,
+            val label: String,
+            val bg: Color,
+            val fg: Color,
+            val vector: androidx.compose.ui.graphics.vector.ImageVector? = null,
+            val onClick: () -> Unit,
+        )
         val cuts = listOf(
             Cut("♥", "我的喜欢", p0.first, p0.second) { vm.openPlaylist("p3") },
-            Cut("♪", "全部歌曲", p4.first, p4.second) {
+            // 「全部歌曲」= 完整曲库/歌曲集合语义 → ListMusic(曲目列表)。
+            Cut("♪", "全部歌曲", p4.first, p4.second, Lucide.ListMusic) {
                 // v1.3.3 返回恢复:主动切 tab 作废下钻来源记录,防返回错误恢复。
                 vm.discardPrevTab()
                 vm.tab = Tab.Library; vm.libChip = "songs"; vm.plId = null; vm.albumKey = null; vm.artistKey = null; vm.settingsOpen = false
             },
             Cut("⇄", "随机播放", p3.first, p3.second) { vm.playRandom() },
             // v1.3.6: 清理建议 → 最近播放(用户定调;清理建议在设置里仍有入口)。
-            Cut("◷", "最近播放", c.a200, c.a800) { vm.recentOpen = true; vm.settingsOpen = false },
+            // 「最近播放」= 播放历史/最近使用语义 → History(时钟+回溯箭头)。
+            Cut("◷", "最近播放", c.a200, c.a800, Lucide.History) { vm.recentOpen = true; vm.settingsOpen = false },
         )
         Column(
             Modifier.padding(horizontal = 20.dp),
@@ -169,7 +184,13 @@ fun HomeScreen(vm: MainViewModel) {
                                     .background(cut.bg),
                                 contentAlignment = Alignment.Center,
                             ) {
-                                Text(cut.icon, fontFamily = Caprasimo, style = body(20f, FontWeight.Normal, cut.fg).copy(fontFamily = Caprasimo))
+                                // v1.3.x 第8项:有矢量图标时用矢量(Lucide 体系,线宽/留白
+                                // 与其他图标一致、缩放不发虚);没有才回退到 Caprasimo 字形。
+                                if (cut.vector != null) {
+                                    OIcon(cut.vector, 24.dp, cut.fg)
+                                } else {
+                                    Text(cut.icon, fontFamily = Caprasimo, style = body(20f, FontWeight.Normal, cut.fg).copy(fontFamily = Caprasimo))
+                                }
                             }
                             Text(
                                 cut.label,

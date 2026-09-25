@@ -49,7 +49,7 @@ import java.util.Locale
 
 enum class Tab { Home, Search, Library }
 enum class ObStage { Perm, Scan, Done }
-enum class FilesView { Root, Clean, Trash, Folders, FolderContent, Ignored, Devices, About, Merges, ImageSources, LyricsBook, CloudBackup }
+enum class FilesView { Root, Clean, Trash, Folders, FolderContent, Ignored, Devices, About, Merges, ImageSources, LyricsBook, CloudBackup, PlaySettings, Equalizer, Logs, DataManage, FilesManage }
 enum class LyState { Idle, Searching, Failed }
 enum class LyricsKind { Embedded, Sidecar, Online, Imported }
 
@@ -232,6 +232,18 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** v1.3.x 歌词本翻译:有保存的译文时默认显示(默认 true——译完即存,进来就给看)。 */
     var translateDefaultShow by mutableStateOf(true); private set
 
+    // ── v1.3.x 播放设置(设置·播放页,用户 2026-09-22 指定分组)──────────────────
+    /** 音量均衡:平衡所有曲目的播放音量(响度归一,ExoPlayer setVolume 实现见 PlaybackService)。 */
+    var volumeNormalize by mutableStateOf(false); private set
+    /** 单声道音频:左右扬声器播放相同的音频。 */
+    var monoAudio by mutableStateOf(false); private set
+    /** 允许与其他应用同时播放(关闭=播放时暂停其他应用的音频焦点)。 */
+    var allowConcurrentPlayback by mutableStateOf(false); private set
+    /** 均衡器开关(5 段 EQ,曲线见 equalizerBands)。 */
+    var equalizerOn by mutableStateOf(false); private set
+    /** 均衡器各频段增益(mB)。默认全 0=平坦;长度即段数(超设备支持段数的忽略)。 */
+    var equalizerBands by mutableStateOf(listOf(0, 0, 0, 0, 0)); private set
+
     // ── v22: 检查更新（本项目没有服务器，版本信息只在 GitHub Releases）────────
     var updateState by mutableStateOf(com.shiyin.music.data.update.UpdateState()); private set
     /** 正在检查中（关于页显示「检查中…」）。 */
@@ -359,7 +371,44 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     var sidebarOpen by mutableStateOf(false)
     var libSearchQuery by mutableStateOf("")
     var settingsOpen by mutableStateOf(false)
+    /**
+     * v1.3.x 第4项:设置子页导航改为**返回栈**。
+     *
+     * 之前 filesView 是扁平状态,系统/手势返回一律 `filesView = Root`(跳过中间
+     * 层级),而页面返回按钮走各自写死的父级(均衡器→播放设置)——两条路径不一致,
+     * 三级页手势返回直接跳回设置根(用户实测)。
+     *
+     * 现在 forward 一律 [navFilesTo](push),back 一律 [navFilesBack](pop),
+     * 按钮返回与系统/手势返回共用同一个栈,逐级退出。栈在打开设置时清空
+     * (每次进入都是全新导航)。folderKey(文件夹内容页)与 cleanEntry(清理建议
+     * 首页直达)是两个真实存在的旁路状态,在返回处各自特殊处理——不是"给某个
+     * 页面写死 route",而是这两个页面的进入本来就不只依赖 filesView。
+     */
     var filesView by mutableStateOf(FilesView.Root)
+        private set
+    private val filesNavStack = ArrayDeque<FilesView>()
+
+    /** 进入子页(push)。重复进入当前页不入栈。 */
+    fun navFilesTo(view: FilesView) {
+        if (view != filesView) {
+            filesNavStack.addLast(filesView)
+            filesView = view
+        }
+    }
+
+    /** 返回上一级(pop)。栈空(已在根)返回 false,由调用方决定关设置。 */
+    fun navFilesBack(): Boolean {
+        val prev = filesNavStack.removeLastOrNull() ?: return false
+        filesView = prev
+        return true
+    }
+
+    /** 打开设置(每次进入清空返回栈,从根页开始)。 */
+    fun openSettingsView() {
+        filesNavStack.clear()
+        filesView = FilesView.Root
+        settingsOpen = true
+    }
     // v4: standalone sidebar pages
     var recentOpen by mutableStateOf(false)
     var statsOpen by mutableStateOf(false)
@@ -465,9 +514,22 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     // 用 "\n" join 存为单串（StringSet 不保序）。键盘"搜索"键或点结果播放时 commit。
     var searchHistory by mutableStateOf<List<String>>(emptyList()); private set
     private val searchPrefs by lazy { app.getSharedPreferences("search_history", android.content.Context.MODE_PRIVATE) }
+    /**
+     * v1.3.x 鉴权: 用户手动删除歌词的 mediaId 黑名单(SharedPreferences 持久化,与
+     * searchHistory 同一做法,不引入新依赖)。自动匹配(loadLyricsFor)查这里命中即跳过。
+     *
+     * ⚠️ 必须声明在第一个 [init] 之前——`init { loadManualDeletedLyrics() }` 会
+     * `synchronized(manualDeletedLyrics)`;Kotlin 属性按**声明顺序**初始化,声明
+     * 在 init 之后就仍是 null → `synchronized(null)` 抛
+     * "NullPointerException: Null reference used for synchronization",
+     * 启动即崩(本轮 13:19 版本黑屏的根因)。
+     */
+    private val manualDeletedLyrics = HashSet<Long>()
     init {
         val saved = searchPrefs.getString("terms", "") ?: ""
         searchHistory = if (saved.isBlank()) emptyList() else saved.split("\n")
+        // v1.3.x 鉴权:启动时加载用户手动删除过的歌词黑名单(持久化,见 deleteLyrics)
+        loadManualDeletedLyrics()
     }
     init {
         // v1.3.x 需求4:封面预加载——切歌后后台预取相邻两首(nextTrackId/
@@ -542,6 +604,330 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val triedAuto = HashSet<Long>()
     private var lyricsJob: Job? = null
 
+    // ── v1.3.x: 打轴模式(歌词手动打轴交互重做) ──────────────────────────────
+    /**
+     * 打轴模式状态机:未开始 / 进行中 / 已完成。
+     * - NotStarted: 默认状态,歌词本正常浏览
+     * - InProgress: 打轴进行中(顶部进度/当前行高亮/点击锚定/撤销/跳过/微调)
+     * - Preview: 打轴完成,预览模式(播放时高亮跟随,确认无误再保存)
+     */
+    enum class TapSyncMode { NotStarted, InProgress, Preview }
+    var tapSyncMode by mutableStateOf(TapSyncMode.NotStarted); private set
+    /** 打轴模式当前行索引(待锚定的句子)。 */
+    var tapSyncCurrentLine by mutableStateOf(0); private set
+    /** 撤销栈:最近 20 步(行索引 + 旧时间戳)。 */
+    private val tapSyncUndoStack = ArrayDeque<Pair<Int, Long?>>(20)
+    /** 打轴模式启动时的原始歌词(退出时若用户放弃改动,回滚到这里)。 */
+    private var tapSyncOriginalLines: List<com.shiyin.music.data.lyrics.LyricLine>? = null
+
+    // ── v1.3.x 第9项:歌词时间轴校准 ────────────────────────────────────────
+    /** 连续调整已顶到相邻时间戳的边界(第一次拦截)。松开按钮后复位;
+     *  再次长按同一方向 → 才允许进入涟漪平移(第9项 I/J:第一次拦截≠用户已确认
+     *  要改后面)。 */
+    var calibAtBoundary by mutableStateOf(false); private set
+    /** 已进入涟漪平移(第二次长按):后续调整带动**后面所有已有时间戳的行**整体平移。 */
+    var calibRippling by mutableStateOf(false); private set
+    /** 涟漪预览(未提交):整段后续时间轴平移后的结果。null = 无预览。
+     *  长按期间只改这里、不落库——用户中途松手/取消/返回都不会留下半完成的时间轴;
+     *  松手时才一次性 commitLyricLines 提交(第9项 L)。 */
+    var calibPendingLines by mutableStateOf<List<com.shiyin.music.data.lyrics.LyricLine>?>(null); private set
+
+    /** 校准模式下"当前展示"的歌词行(预览优先)。UI 用它渲染时间胶囊。 */
+    val calibDisplayLines: List<com.shiyin.music.data.lyrics.LyricLine>
+        get() = calibPendingLines ?: currentLyrics?.parsed?.lines.orEmpty()
+
+    /** 上一句**真实存在**的时间戳(跳过无时间戳行——不凭空造边界)。 */
+    private fun calibLowerBound(lines: List<com.shiyin.music.data.lyrics.LyricLine>, i: Int): Long? {
+        for (k in i - 1 downTo 0) lines.getOrNull(k)?.timeMs?.let { return it }
+        return null
+    }
+
+    /** 下一句**真实存在**的时间戳(同上)。 */
+    private fun calibUpperBound(lines: List<com.shiyin.music.data.lyrics.LyricLine>, i: Int): Long? {
+        for (k in i + 1 until lines.size) lines.getOrNull(k)?.timeMs?.let { return it }
+        return null
+    }
+
+    /**
+     * 进入校准(准星按钮)。与打轴共用同一模式标志,但交互改为
+     * "选句 → 点该行时钟绑定 / 底部微调"(第9项 C/F/Q)。
+     */
+    fun calibEnter() = tapSyncStart()
+
+    /** 选句:与 index 绑定(不依赖列表位置)。该行已有时间戳时，把播放位置带到它附近，
+     *  用户不必自己从当前进度往回找(第9项 F)。 */
+    fun calibSelect(i: Int) {
+        val cur = currentLyrics ?: return
+        if (tapSyncMode != TapSyncMode.InProgress) return
+        if (i < 0 || i >= cur.parsed.lines.size) return
+        tapSyncCurrentLine = i
+        calibAtBoundary = false
+        calibRippling = false
+        calibPendingLines = null
+        calibBoundaryArmed = false
+        // 有既有时间戳 → 播放位置回到该句附近(留 1.2s 余量便于听辨)。
+        cur.parsed.lines[i].timeMs?.let { t ->
+            player.seekToDisplayMs((t - cur.offsetMs - 1200).coerceAtLeast(0))
+        }
+    }
+
+    /** 把**当前播放时间**绑定为当前选中句的时间戳(点这一行的时钟)。
+     *  受相邻边界约束:结果钳在 (上一真实时间戳, 下一真实时间戳) 内。 */
+    fun calibBindCurrentTime() {
+        if (tapSyncMode != TapSyncMode.InProgress) return
+        val cur = currentLyrics ?: return
+        val i = tapSyncCurrentLine
+        val lines = calibDisplayLines.toMutableList()
+        if (i !in lines.indices) return
+        val pos = player.displayPositionMs()
+        var t = (pos - cur.offsetMs).coerceAtLeast(0)
+        val lo = calibLowerBound(lines, i)
+        val hi = calibUpperBound(lines, i)
+        if (lo != null) t = t.coerceAtLeast(lo + 1)
+        if (hi != null) t = t.coerceAtMost(hi - 1)
+        tapSyncUndoStack.addLast(i to lines[i].timeMs)
+        if (tapSyncUndoStack.size > 20) tapSyncUndoStack.removeFirst()
+        lines[i] = lines[i].copy(timeMs = t)
+        commitLyricLines(lines)
+        calibAtBoundary = false
+        calibRippling = false
+        calibPendingLines = null
+    }
+
+    /** 微调(单击 / 长按连续)。返回 true = 这一次被**边界拦下**(时间未再变化)。
+     *  严格递增:结果钳在 (上一真实时间戳, 下一真实时间戳) 内(第9项 G/H)。 */
+    fun tapSyncAdjust(deltaMs: Long): Boolean {
+        if (tapSyncMode != TapSyncMode.InProgress) return false
+        val cur = currentLyrics ?: return false
+        val i = tapSyncCurrentLine
+        val lines = calibDisplayLines.toMutableList()
+        if (i !in lines.indices) return false
+        val before = lines[i].timeMs ?: return false
+        val lo = calibLowerBound(lines, i)
+        val hi = calibUpperBound(lines, i)
+        var nt = before + deltaMs
+        if (lo != null) nt = nt.coerceAtLeast(lo + 1)
+        if (hi != null) nt = nt.coerceAtMost(hi - 1)
+        nt = nt.coerceAtLeast(0)
+        val blocked = nt == before
+        if (blocked) {
+            calibAtBoundary = true
+            return true
+        }
+        lines[i] = lines[i].copy(timeMs = nt)
+        // 涟漪进行中 → 只更新预览;单击(非涟漪) → 立即提交。
+        if (calibRippling) calibPendingLines = lines else commitLyricLines(lines)
+        return false
+    }
+
+    /**
+     * 第二次长按 → 正式进入涟漪平移(第9项 J/K):从选中句起，
+     * 把**后面所有已有时间戳的行**按"相对原始时间戳的同一 offset"整体平移，
+     * 保持它们之间原有的时间间隔;无时间戳的行**不动、也不被赋时间**。
+     * 结果先写进 pending 预览，松手时提交。
+     */
+    fun calibRippleStep(deltaMs: Long) {
+        if (tapSyncMode != TapSyncMode.InProgress) return
+        val cur = currentLyrics ?: return
+        val orig = tapSyncOriginalLines ?: return
+        val i = tapSyncCurrentLine
+        val base = calibDisplayLines
+        val selOrig = orig.getOrNull(i)?.timeMs ?: return
+        val selNow = base.getOrNull(i)?.timeMs ?: return
+        calibRippling = true
+        val target = selNow + deltaMs
+        val offset = target - selOrig
+        val out = base.toMutableList()
+        for (k in i until out.size) {
+            val ot = orig.getOrNull(k)?.timeMs ?: continue   // 无时间戳行保持原样
+            out[k] = out[k].copy(timeMs = (ot + offset).coerceAtLeast(0))
+        }
+        calibPendingLines = out
+    }
+
+    /** 松手:把涟漪预览一次性提交(第9项 L)。无预览则空操作。 */
+    fun calibCommitPending() {
+        val pending = calibPendingLines ?: return
+        calibPendingLines = null
+        calibRippling = false
+        calibAtBoundary = false
+        commitLyricLines(pending)
+    }
+
+    /** 松手/松开边界提示:复位"已拦截""涟漪"两个手势态。 */
+    fun calibReleaseGesture() {
+        calibAtBoundary = false
+    }
+
+    /** 校准目标前后移动(第9项 R):语义是移动**校准选句**,不是切歌。 */
+    fun calibMoveTarget(delta: Int) {
+        val cur = currentLyrics ?: return
+        val n = cur.parsed.lines.size
+        if (n == 0) return
+        calibSelect((tapSyncCurrentLine + delta).coerceIn(0, n - 1))
+    }
+
+    // ── 长按连续调整(单击/长按共用同一约束;涟漪只在"第二次长按"才进) ────────────
+    /** 上一次长按已顶到边界且已松手——下一次同向长按进入涟漪平移(第9项 I→J)。 */
+    private var calibBoundaryArmed = false
+
+    /**
+     * 长按的一步(由 UI 的长按循环每 tick 调一次)。
+     *
+     *  - 还没进涟漪：走 [tapSyncAdjust](带相邻边界钳制)；顶到边界返回 true
+     *    → UI 这一轮长按就此停止（**第一次到达边界=拦截**，不偷偷把后面一起挪）。
+     *  - 上次已"顶到边界过且松手过"（[calibBoundaryArmed]）→ 这次长按进涟漪平移，
+     *    走 [calibRippleStep]（只更新预览，松手才提交）。
+     */
+    fun calibHoldStep(directionMs: Long): Boolean {
+        if (calibBoundaryArmed && !calibRippling) calibRippling = true
+        return if (calibRippling) {
+            calibRippleStep(directionMs)
+            false
+        } else {
+            tapSyncAdjust(directionMs)
+        }
+    }
+
+    /** 松手。涟漪进行中 → 一次性提交预览；只是顶到边界 → 记下"armed"(下次同向长按进涟漪)。 */
+    fun calibHoldRelease() {
+        if (calibRippling) {
+            calibCommitPending()
+        } else if (calibAtBoundary) {
+            calibBoundaryArmed = true
+        }
+        calibRippling = false
+        calibAtBoundary = false
+    }
+
+    fun tapSyncStart() {
+        val cur = currentLyrics ?: return
+        tapSyncOriginalLines = cur.parsed.lines
+        tapSyncCurrentLine = 0
+        tapSyncUndoStack.clear()
+        calibAtBoundary = false
+        calibRippling = false
+        calibPendingLines = null
+        tapSyncMode = TapSyncMode.InProgress
+    }
+
+    fun tapSyncExit() {
+        // 中途退出保留已打轴结果(用户明确:"中途退出保留已打轴结果")
+        // 第9项 L:涟漪的 pending 预览若还没提交,退出时丢弃——不留半完成的时间轴。
+        calibPendingLines = null
+        calibRippling = false
+        calibAtBoundary = false
+        tapSyncMode = TapSyncMode.NotStarted
+        tapSyncOriginalLines = null
+        tapSyncUndoStack.clear()
+    }
+
+    /**
+     * 歌词行统一提交:重建 raw(带时间戳的 LRC)→ 更新 currentLyrics → 立即落库。
+     *
+     * 打轴的全部动作(tapSyncTap / Undo / Adjust / Discard)与 syncLyricLine 共用。
+     * 抽出来的原因:这段「重建 raw + copy + upsert」原先在四处逐字复制,任一处漏改
+     * 就出 bug——历史上正是它导致「只改了 parsed 没改 raw,打好轴的时间戳存不进去」,
+     * 以及「放弃打轴只回滚 parsed、不回滚 raw/DB,等于没放弃」。现在只有一处定义,
+     * LRC 时间戳格式与 synced 判据也只有一个来源。
+     */
+    private fun commitLyricLines(lines: List<com.shiyin.music.data.lyrics.LyricLine>) {
+        val cur = currentLyrics ?: return
+        val newRaw = lines.joinToString("\n") { line ->
+            val t = line.timeMs
+            if (t != null) {
+                "[${(t / 60_000).toString().padStart(2, '0')}:" +
+                    "${((t % 60_000) / 1000).toString().padStart(2, '0')}." +
+                    "${(t % 1000).toString().padStart(3, '0')}] ${line.text}"
+            } else {
+                line.text
+            }
+        }
+        val next = cur.copy(
+            raw = newRaw,
+            parsed = com.shiyin.music.data.lyrics.ParsedLyrics(
+                lines = lines,
+                synced = lines.all { it.timeMs != null },
+            ),
+            saved = false,
+        )
+        currentLyrics = next
+        // 每点一句立即落库(切歌/杀进程都不丢)
+        viewModelScope.launch(Dispatchers.IO) {
+            dao.upsertLyric(SavedLyricEntity(next.mediaId, newRaw, next.source, next.offsetMs, System.currentTimeMillis(), autoSaved = 0))
+        }
+    }
+
+    /** 打轴模式下点击屏幕任意位置(或空格/回车)锚定当前行。 */
+    fun tapSyncTap() {
+        val cur = currentLyrics ?: return
+        if (tapSyncMode != TapSyncMode.InProgress) return
+        val lines = cur.parsed.lines.toMutableList()
+        if (tapSyncCurrentLine < 0 || tapSyncCurrentLine >= lines.size) return
+        // v23: 打的时间戳必须是**当前曲目**坐标(歌词时间戳的坐标系)。player.positionMs
+        // 在拆分单曲下是整轨文件绝对位置,直接存下去会让这首的歌词整体偏移。
+        val pos = player.displayPositionMs()
+        val newTime = (pos - cur.offsetMs).coerceAtLeast(0)
+        // 撤销栈:记录该行旧时间戳(撤销时恢复)
+        tapSyncUndoStack.addLast(tapSyncCurrentLine to lines[tapSyncCurrentLine].timeMs)
+        if (tapSyncUndoStack.size > 20) tapSyncUndoStack.removeFirst()
+        lines[tapSyncCurrentLine] = com.shiyin.music.data.lyrics.LyricLine(newTime, lines[tapSyncCurrentLine].text)
+        commitLyricLines(lines)
+        // 前进到下一句;最后一句时进入预览模式
+        if (tapSyncCurrentLine < lines.size - 1) {
+            tapSyncCurrentLine++
+        } else {
+            tapSyncMode = TapSyncMode.Preview
+        }
+    }
+
+    /** 撤销:回退上一句,时间戳清空,高亮回到上一句。 */
+    fun tapSyncUndo() {
+        if (tapSyncMode != TapSyncMode.InProgress) return
+        if (tapSyncUndoStack.isEmpty()) return
+        val (idx, oldTime) = tapSyncUndoStack.removeLast()
+        val cur = currentLyrics ?: return
+        val lines = cur.parsed.lines.toMutableList()
+        lines[idx] = lines[idx].copy(timeMs = oldTime)
+        commitLyricLines(lines)
+        tapSyncCurrentLine = idx
+    }
+
+    /** 跳过:这句不打,留空,前进到下一句。 */
+    fun tapSyncSkip() {
+        if (tapSyncMode != TapSyncMode.InProgress) return
+        val cur = currentLyrics ?: return
+        val lines = cur.parsed.lines
+        if (tapSyncCurrentLine < lines.size - 1) {
+            tapSyncCurrentLine++
+        } else {
+            tapSyncMode = TapSyncMode.Preview
+        }
+    }
+
+    /** 预览模式确认:保存并退出。 */
+    fun tapSyncConfirm() {
+        if (tapSyncMode != TapSyncMode.Preview) return
+        tapSyncMode = TapSyncMode.NotStarted
+        tapSyncOriginalLines = null
+        tapSyncUndoStack.clear()
+        saveLyrics()
+    }
+
+    /** 预览模式放弃:回滚到打轴前的原始歌词。 */
+    fun tapSyncDiscard() {
+        if (tapSyncMode != TapSyncMode.Preview) return
+        val original = tapSyncOriginalLines ?: return
+        // v23 修复:"放弃"必须把 raw 与**数据库**一起回滚。原实现只 copy 了 parsed,
+        // 而打轴每点一句都已 upsertLyric 落库 —— 用户点"放弃"后退出再进,时间戳
+        // 原样复活(等于没放弃)。改走统一的 commitLyricLines:重建无时间戳的 raw
+        // 并覆盖落库。
+        commitLyricLines(original)
+        tapSyncMode = TapSyncMode.NotStarted
+        tapSyncOriginalLines = null
+        tapSyncUndoStack.clear()
+    }
+
     // trash plumbing
     var pendingTrashOp: TrashOp? = null; private set
     var launchTrashIntent: ((PendingIntent) -> Unit)? = null
@@ -577,6 +963,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 // v1.3.x 歌词本翻译设置同步
                 translateAutoForeign = s.translateAutoForeign
                 translateDefaultShow = s.translateDefaultShow
+                // v1.3.x 播放设置同步
+                volumeNormalize = s.volumeNormalize
+                monoAudio = s.monoAudio
+                allowConcurrentPlayback = s.allowConcurrentPlayback
+                equalizerOn = s.equalizerOn
+                equalizerBands = s.equalizerBands
+                // 下发给服务进程的 ExoPlayer 生效(音量均衡/焦点/均衡器)。
+                player.applyAudioSettings(
+                    s.volumeNormalize, s.monoAudio, s.allowConcurrentPlayback, s.equalizerOn,
+                    s.equalizerBands,
+                )
                 // v1.2.1: 写真源运行时配置同步到 ImageSourceConfig(源读取它,即时生效)
                 fanartApiKey = s.fanartApiKey
                 lastfmApiKey = s.lastfmApiKey
@@ -982,6 +1379,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             if (tn.title.isNotBlank()) r = r.copy(title = tn.title)
             if (tn.artist.isNotBlank()) r = r.copy(artist = tn.artist)
         }
+        // v23: 「完整专辑」容器曲目的标题 = 专辑的**最终显示名**。
+        // 容器标题在 containerTrackOf 里取自音频文件的 album 标签,而专辑名常被
+        // 手动改名(albumInfoOverrides / albumOverrides)覆盖——只改 album 不改 title
+        // 会让播放栏显示文件里的旧标签(实测显示 "Music")。此处按已解析出的 album 回填。
+        if (com.shiyin.music.data.split.SplitIds.isContainerId(t.id)) {
+            val albumName = r.album.takeIf { it.isNotBlank() && it != NO_ALBUM }
+            if (albumName != null) r = r.copy(title = albumName)
+        }
         return r
     }
 
@@ -1158,9 +1563,23 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         splitPasteError = ""
         splitEditStep = if (existing.isNotEmpty()) 1 else 0
         splitEditFor = sourceMediaId
-        trackById(com.shiyin.music.data.split.SplitIds.containerId(sourceMediaId))?.let { container ->
+        // v22 修补: 首次拆分(专辑还没有 split 方案)时容器曲目**从未进 libById**——
+        // lib() 里 containers 只为已有拆分方案的文件构建。trackById 解析不到 →
+        // loadQueue 从未被调用 → 编辑页播放键 toggle 的是空队列(静默无响应,
+        // 用户反馈"全长自己无法点击播放"的根因)。这里按需构建容器并补进 libById;
+        // 保存后 split 方案存在,lib() 重建时容器自然进入。
+        val container = trackById(com.shiyin.music.data.split.SplitIds.containerId(sourceMediaId))
+            ?: physicalTracks().firstOrNull { it.id == sourceMediaId }?.let { src ->
+                val c0 = containerTrackOf(src)
+                libById = libById + (c0.id to applyDisplayOverrides(c0))
+                c0
+            }
+        container?.let {
             player.setShuffle(false)
-            player.playQueue(listOf(container), container.id, null)
+            // v22 修补:只装载队列**不自动播放**(用户反馈——进编辑页就自己响起来,
+            // 打断了"先看一眼曲目表"的预期)。让用户自己点播放键;加载停在暂停态,
+            // 进度条/时长/插旗照常可读。
+            player.loadQueue(listOf(it), it.id, null)
         }
     }
 
@@ -1211,6 +1630,58 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** 第一首固定 0:00:00，UI 上禁掉它的编辑入口。 */
     fun splitRowLocked(ordinal: Int): Boolean = ordinal == 1
 
+    /**
+     * v22 修补: 编辑页补录——漏粘贴的曲目在这里追加一行(用户反馈:50 分钟专辑漏了
+     * 后面几首,便导致后面不知道绑定哪些歌曲,应提供加号键)。
+     * 新行序号 = 当前最大序号 + 1,起始时间未定(留给「设为当前时间」补)。
+     */
+    fun splitAppendRow() {
+        val nextOrdinal = (splitRows.maxOfOrNull { it.ordinal } ?: 0) + 1
+        splitRows = splitRows + com.shiyin.music.data.split.SplitListParser.Row(
+            ordinal = nextOrdinal,
+            title = "",
+            startMs = com.shiyin.music.data.split.SPLIT_START_UNKNOWN,
+            hasTimestamp = false,
+        )
+        // 空标题行允许出现(用户马上要填);冲突检测照常重算。
+        splitConflicts = com.shiyin.music.data.split.SplitListParser.conflictsOf(splitRows)
+    }
+
+    /** v22 修补: 编辑页删行(补录加错了/不要某行)。 */
+    fun splitRemoveRow(ordinal: Int) {
+        val rows = splitRows.filter { it.ordinal != ordinal }
+        splitRows = rows
+        splitConflicts = com.shiyin.music.data.split.SplitListParser.conflictsOf(rows)
+    }
+
+    /**
+     * v22 修补: 编辑页改曲名(补录行的空标题在这里填,已有行也可改名)。
+     * 与 splitSetStart 同一"再点即生效"范式,不做二次确认。
+     */
+    fun splitRenameRow(ordinal: Int, title: String) {
+        val i = splitRows.indexOfFirst { it.ordinal == ordinal }
+        if (i < 0) return
+        val rows = splitRows.toMutableList()
+        rows[i] = rows[i].copy(title = title.trim())
+        splitRows = rows
+    }
+
+    /**
+     * v22 修补: 编辑页排序——把 [from] 行移到 [to] 位置(拖拽/上下移按钮共用)。
+     * 序号跟随位置重排(1..n 连续),起始时间**跟着行走**(用户以编辑页顺序为准)。
+     * 保存时 entities 的 ordinal = i+1 按位置重建,所以这里只需保证 rows 顺序正确。
+     */
+    fun splitMoveRow(fromOrdinal: Int, toOrdinal: Int) {
+        val fromIdx = splitRows.indexOfFirst { it.ordinal == fromOrdinal }
+        val toIdx = splitRows.indexOfFirst { it.ordinal == toOrdinal }
+        if (fromIdx < 0 || toIdx < 0 || fromIdx == toIdx) return
+        val rows = splitRows.toMutableList()
+        val item = rows.removeAt(fromIdx)
+        rows.add(toIdx, item)
+        splitRows = rows.mapIndexed { i, r -> r.copy(ordinal = i + 1) }
+        splitConflicts = com.shiyin.music.data.split.SplitListParser.conflictsOf(splitRows)
+    }
+
     fun splitCancel() {
         splitEditFor = null
         splitEditStep = 0
@@ -1233,6 +1704,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         if (rows.none { it.startMs != com.shiyin.music.data.split.SPLIT_START_UNKNOWN }) {
             showToast("还没有任何曲目设置起始时间", null); return
         }
+        // v22 修补: 空标题行(补录还没来得及填的)自动命名「未命名」——
+        // 否则专辑页出现空名幽灵行。
+        val named = rows.map { if (it.title.isBlank()) it.copy(title = "未命名") else it }
         val path = tracksRaw.firstOrNull { it.id == src }?.dataPath ?: ""
         viewModelScope.launch(Dispatchers.IO) {
             try {
@@ -1241,7 +1715,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     // 收藏 / 歌单 / 歌词 / 隐藏都按它存，id 一变这些引用全断。
                     val existing = dao.splitTracksFor(src).associateBy { it.ordinal }
                     val now = System.currentTimeMillis()
-                    val entities = rows.mapIndexed { i, r ->
+                    val entities = named.mapIndexed { i, r ->
                         val ord = i + 1
                         com.shiyin.music.data.db.SplitTrackEntity(
                             id = existing[ord]?.id ?: 0L,
@@ -1268,7 +1742,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 withContext(Dispatchers.Main) {
                     showToast(
-                        if (done) "拆分完成，已按 ${rows.count { it.startMs != com.shiyin.music.data.split.SPLIT_START_UNKNOWN }} 首生成单曲"
+                        if (done) "拆分完成，已按 ${named.count { it.startMs != com.shiyin.music.data.split.SPLIT_START_UNKNOWN }} 首生成单曲"
                         else "已保存草稿，可随时继续编辑",
                         null,
                     )
@@ -1369,6 +1843,28 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val t = trackById(id) ?: return playCountFor(id)
         return if (isInterlude(t)) 0 else playCountFor(id)
     }
+
+    /**
+     * v1.3.8: 本周收听统计。
+     *
+     * 计算口径在 data/stats/ListeningStats.kt —— **统计页与 Agent 的 listening_stats
+     * 技能共用同一实现**,不是各算一份。口径统一保护的不只是算法一致,还有"用户在统计页
+     * 与 Agent 两个入口得到的答案必须是同一件事"。
+     */
+    suspend fun weeklyListeningStats(): com.shiyin.music.data.stats.WeeklyStats =
+        withContext(Dispatchers.IO) {
+            val events = dao.completedPlayEventsBetween(
+                com.shiyin.music.data.stats.currentWeekStartMillis(),
+                System.currentTimeMillis(),
+            )
+            com.shiyin.music.data.stats.computeWeeklyStats(
+                events = events,
+                lib = lib(),
+                trackById = { trackById(it) },
+                isInterlude = { isInterlude(it) },
+                albumTypeFor = { albumTypeFor(it) },
+            )
+        }
 
     private val collator: Collator = Collator.getInstance(Locale.CHINESE)
     // v4: tracks which albumIds are already known so we can detect new arrivals
@@ -1747,6 +2243,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     // track_album_move,绝不碰 artist_aliases 全局表。
     var agentOpen by mutableStateOf(false)
     var agentSettingsOpen by mutableStateOf(false)
+    /** v1.3.8: 对话历史页(Agent 页右上"历史"入口)。 */
+    var agentHistoryOpen by mutableStateOf(false)
     /** 对话消息流(用户消息 + Agent 消息,含步骤面板 + tokens)。 */
     var agentMessages by mutableStateOf<List<AgentMessage>>(emptyList()); private set
     var agentRunning by mutableStateOf(false); private set
@@ -1877,6 +2375,65 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         override fun saveTrackInfo(mediaId: Long, title: String, artist: String) =
             this@MainViewModel.saveTrackInfo(mediaId, title, artist, "")
         override fun hasPendingOrder(): Boolean = pendingOrder != null
+        override fun setSleepTimer(minutes: Int) = player.setSleepTimer(minutes)
+        override fun setSleepTimerEndOfTrack() = player.setSleepEndOfTrack()
+        override fun sleepTimerStatus(): String = player.sleepStatusText()
+
+        // v1.3.8: 播放控制/模式桥。只动播放状态,不碰音乐库内容。
+        override fun playTracks(tracks: List<Track>, startId: Long) = player.playQueue(tracks, startId, null)
+        override fun pausePlayback() { if (player.isPlaying) player.toggle() }
+        override fun resumePlayback() { if (!player.isPlaying) player.toggle() }
+        override fun nextTrack() = player.next()
+        override fun previousTrack() = player.prev()
+        override fun isPlaying(): Boolean = player.isPlaying
+        override fun setShuffle(on: Boolean) = player.setShuffle(on)
+        override fun isShuffleOn(): Boolean = player.shuffleFlag
+        override fun setRepeatMode(mode: com.shiyin.music.data.ai.AgentEngine.RepeatMode) {
+            player.setRepeat(
+                when (mode) {
+                    com.shiyin.music.data.ai.AgentEngine.RepeatMode.OFF -> androidx.media3.common.Player.REPEAT_MODE_OFF
+                    com.shiyin.music.data.ai.AgentEngine.RepeatMode.ALL -> androidx.media3.common.Player.REPEAT_MODE_ALL
+                    com.shiyin.music.data.ai.AgentEngine.RepeatMode.ONE -> androidx.media3.common.Player.REPEAT_MODE_ONE
+                },
+            )
+        }
+        override fun repeatMode(): com.shiyin.music.data.ai.AgentEngine.RepeatMode = when (player.repeatMode) {
+            androidx.media3.common.Player.REPEAT_MODE_ALL -> com.shiyin.music.data.ai.AgentEngine.RepeatMode.ALL
+            androidx.media3.common.Player.REPEAT_MODE_ONE -> com.shiyin.music.data.ai.AgentEngine.RepeatMode.ONE
+            else -> com.shiyin.music.data.ai.AgentEngine.RepeatMode.OFF
+        }
+        override fun setPlaybackSpeed(speed: Float) = setSpeed(speed)
+        override suspend fun weeklyListeningStats() = this@MainViewModel.weeklyListeningStats()
+        override fun trackById(id: Long): Track? = this@MainViewModel.trackById(id)
+
+        /**
+         * v1.3.8: Agent 的 album_dates 技能走这里。
+         *
+         * 作品筛选**必须**与歌手页 ArtistDetail 逐字一致(专辑位歌手 + 排除合集),
+         * 否则同一个歌手在歌手页与 Agent 里会看到不同的作品集/不同的顺序——
+         * "两个入口的答案是同一件事"这条规矩要求复刻规则,而不是另写一套。
+         * (classifyAlbum 是 ui.screens 里的公开纯函数,内容判定逻辑放那儿了,这里直接用。)
+         */
+        override suspend fun sortArtistAlbumsByDate(artistName: String): com.shiyin.music.data.ai.AgentEngine.AlbumDateOutcome {
+            val entries = albumsMap().entries.filter { e ->
+                artistName in com.shiyin.music.data.MediaScanner.splitArtists(e.value.first().artist) &&
+                    com.shiyin.music.ui.screens.classifyAlbum(e.value) != com.shiyin.music.ui.screens.AlbumCategory.Compilation
+            }
+            if (entries.isEmpty()) {
+                return com.shiyin.music.data.ai.AgentEngine.AlbumDateOutcome(0, "音乐库里没有「$artistName」的专辑")
+            }
+            val triples = entries.map { (key, tracks) ->
+                Triple(key, tracks.first().albumId, tracks.first().album)
+            }
+            // 进度回调在主线程 post,fetchArtistAlbumDates 内部已处理;这里只留存最后一条
+            // 非空原因,失败时原样回执(与歌手页状态行同一套文案)
+            var lastReason = ""
+            val n = fetchArtistAlbumDates(artistName, triples) { if (it.isNotBlank()) lastReason = it }
+            return com.shiyin.music.data.ai.AgentEngine.AlbumDateOutcome(
+                n,
+                if (n > 0) "" else lastReason.ifBlank { "未能获取「$artistName」的发布时间" },
+            )
+        }
         override fun logUsage(promptTokens: Int, completionTokens: Int, cacheTokens: Int) {
             viewModelScope.launch(Dispatchers.IO) {
                 com.shiyin.music.data.ai.TokenUsageStore.log(
@@ -1918,8 +2475,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             // 占位一条 Agent 消息(后面替换)
             agentMessages = agentMessages + AgentMessage("agent", "", steps.toList())
             try {
-                // 1. 单次调用路由(v1.3.3: 技能判定 + 聊天回答合并为一次 LLM 往返,
-                //    闲聊不再"意图理解→聊天兜底"跑两次模型——那让"你好"也要等半分钟)
+                // 1. v1.3.8: 单次流式工具调用分发。原生 tool calling 让「选技能 / 聊天回答 /
+                //    要不要联网」在**同一次请求**里完成——取代旧的「决策调用 + 路由调用」
+                //    两次串行往返(旧链路连"你好"都要先等一次非流式决策调用,callSec=45s)。
                 val history = agentMessages
                     .filter { it.text.isNotBlank() && it.steps == null }
                     .dropLast(1)  // 最后一条是刚 append 的当前指令,不算历史
@@ -1928,20 +2486,52 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 // 思考链实时流出(reasoning 增量) + 聊天回复实时流出(打字机数据源)
                 var intentThinking: String? = null
                 var streamedReply: String? = null
-                // v1.3.3b review#B2: SSE 回调在 IO 线程触发(LlmClient.callStream 在
-                // Dispatchers.IO)——按项目 v5.2 #75 约定,state 写入投递主线程执行,
+                // v1.3.3b review#B2: SSE 回调在 IO 线程触发——state 写入投递主线程执行,
                 // 思考胶囊/打字机不依赖"后台写 snapshot 恰好触发重组"。
                 val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
-                // v1.3.7: "要不要联网"由**模型自己决定**(function calling)——原实现是
-                // 本地正则(looksLikeFactQuestion),用户说"联网查一下"没踩中正则就
-                // 不搜,模型全程没有工具可用("完全不是 agent 的样子"的根因)。
-                // 现在把 web_search 工具交给模型:它判断需要 → 发起 tool_calls,
-                // 我们执行 Tavily 把资料塞进路由;它判断不需要 → 零搜索零打扰。
-                // 供应商不认 tools(HTTP 4xx)→ 回退旧正则启发式,行为与上一版一致。
-                var webContext = ""
-                if (tavilyApiKey.isNotBlank()) {
-                    val decision = com.shiyin.music.data.ai.AgentTools.decideAndSearch(
-                        config, tavilyApiKey, text,
+                val contextBlock = buildString {
+                    albumKey?.let { k -> albumOrder(k).firstOrNull()?.album }?.let { appendLine("当前专辑: $it") }
+                    (artistKey ?: player.currentId?.let { trackById(it)?.artist })?.let { appendLine("当前歌手: $it") }
+                    player.currentId?.let { trackById(it)?.title }?.let { appendLine("当前播放曲目: $it") }
+                }.trimEnd()
+
+                // v1.3.8(D2): 高频单条指令本地快速路径——命中即零 LLM 往返直接执行
+                // (golden path:「打开专辑 → 排成正确顺序」)。已收窄到 album_sort 一条;
+                // 其余技能的本地正则消歧删除,语义消歧交给工具 description。
+                val fastPlan = com.shiyin.music.data.ai.AgentEngine.fastPathPlan(text)
+
+                var chatReply: String? = null
+                var planDraft: com.shiyin.music.data.ai.AgentEngine.IntentPlan? =
+                    fastPlan?.let { com.shiyin.music.data.ai.AgentEngine.IntentPlan(it.skillKey, it.args, emptyList()) }
+                var clarifyReq: com.shiyin.music.data.ai.AgentTools.ClarifyRequest? = null
+                var routeTokens: Pair<Int, Int> = 0 to 0
+                var dispatchThinking: String? = null
+                var dispatchThinkingMs = 0L
+
+                if (fastPlan != null) {
+                    android.util.Log.i("Agent", "fast-path: skill=${fastPlan.skillKey} args=${fastPlan.args}(省一次分发 LLM)")
+                } else {
+                    val disp = com.shiyin.music.data.ai.AgentTools.dispatch(
+                        config = config,
+                        tavilyKey = tavilyApiKey,
+                        userText = text,
+                        contextBlock = contextBlock,
+                        history = history,
+                        onThinking = { th ->
+                            mainHandler.post {
+                                intentThinking = th
+                                agentMessages = agentMessages.replaceAt(
+                                    msgIdx, AgentMessage("agent", "", steps.toList(), thinking = th),
+                                )
+                            }
+                        },
+                        onContent = { full ->
+                            mainHandler.post {
+                                val clean = full.trimStart()
+                                streamedReply = clean
+                                agentMessages = agentMessages.replaceAt(msgIdx, AgentMessage("agent", clean, steps.toList()))
+                            }
+                        },
                         onSearch = { q ->
                             mainHandler.post {
                                 steps.upsert("web", "联网搜索:$q", com.shiyin.music.data.ai.AgentEngine.StepStatus.RUNNING)
@@ -1949,134 +2539,105 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                             }
                         },
                     )
-                    // 决策调用本身也花 token(不搜也花了)——无条件入账,用量面板才准。
-                    if (decision != null && decision.toolsSupported) {
+                    // 分发调用本身也花 token(不搜也花了)——无条件入账,用量面板才准。
+                    if (disp.promptTokens + disp.completionTokens > 0) {
                         viewModelScope.launch(Dispatchers.IO) {
                             com.shiyin.music.data.ai.TokenUsageStore.log(
-                                getApplication(), llmActiveProvider, "agent_search_decision",
-                                decision.promptTokens, decision.completionTokens, decision.cacheTokens,
+                                getApplication(), llmActiveProvider, "agent_dispatch",
+                                disp.promptTokens, disp.completionTokens, disp.cacheTokens,
                             )
                         }
                     }
-                    when {
-                        decision == null -> Unit  // 网络失败:不搜也不阻塞聊天
-                        !decision.toolsSupported -> {                            // 旧启发式回退(供应商不支持 function calling)
-                            val isFactQ = com.shiyin.music.data.ai.AgentEngine.looksLikeFactQuestion(text)
-                            if (isFactQ) {
-                                mainHandler.post {
-                                    steps.upsert("web", "联网核实", com.shiyin.music.data.ai.AgentEngine.StepStatus.RUNNING)
-                                    agentMessages = agentMessages.replaceAt(msgIdx, AgentMessage("agent", "", steps.toList()))
-                                }
-                                webContext = runCatching {
-                                    com.shiyin.music.data.ai.TavilyService.search(tavilyApiKey, text.take(120))
-                                }.getOrNull() ?: ""
-                                mainHandler.post {
-                                    steps.upsert("web", "联网核实", if (webContext.isBlank()) com.shiyin.music.data.ai.AgentEngine.StepStatus.FAILED else com.shiyin.music.data.ai.AgentEngine.StepStatus.DONE)
-                                }
-                            }
+                    chatReply = disp.chatReply
+                    clarifyReq = disp.clarify
+                    routeTokens = disp.promptTokens to disp.completionTokens
+                    dispatchThinking = disp.thinking ?: intentThinking
+                    dispatchThinkingMs = disp.thinkingMs
+
+                    if (!disp.toolsSupported) {
+                        // 供应商不认 tools(HTTP 400/422)→ 回退旧 prompt+JSON 链路,行为与上一版一致
+                        android.util.Log.i("Agent", "dispatch: 供应商不支持 tools,回退旧 route 链路")
+                        val r = routeOnce(text, history, config, steps, msgIdx, mainHandler, "") { th, rp ->
+                            intentThinking = th; streamedReply = rp
                         }
-                        decision.searches.isNotEmpty() -> {
-                            webContext = decision.contexts.joinToString("\n\n")
-                            val ok = webContext.isNotBlank()
-                            mainHandler.post {
-                                steps.upsert("web", "联网搜索(${decision.searches.size} 次)", if (ok) com.shiyin.music.data.ai.AgentEngine.StepStatus.DONE else com.shiyin.music.data.ai.AgentEngine.StepStatus.FAILED)
-                            }
+                        if (r == null) {
+                            val err = com.shiyin.music.data.ai.LlmClient.lastError ?: "未知错误"
+                            agentMessages = agentMessages.replaceAt(
+                                msgIdx,
+                                AgentMessage("agent", "LLM 调用失败:$err\n请到右上「设置」检查供应商额度 / Key / 模型名。", steps.toList()),
+                            )
+                            return@launch
                         }
-                        else -> Unit  // 模型判断不需要联网
+                        chatReply = r.chatReply
+                        clarifyReq = null
+                        planDraft = r.skill
+                        routeTokens = r.promptTokens to r.completionTokens
+                        dispatchThinking = r.thinking ?: intentThinking
+                        dispatchThinkingMs = r.thinkingMs
+                    } else if (disp.failed) {
+                        agentMessages = agentMessages.replaceAt(
+                            msgIdx, AgentMessage("agent", "分发失败:${disp.error ?: "未知错误"}", steps.toList()),
+                        )
+                        return@launch
+                    } else {
+                        disp.skill?.let {
+                            planDraft = com.shiyin.music.data.ai.AgentEngine.IntentPlan(it.key, it.args, emptyList())
+                        }
                     }
                 }
-                var route = routeOnce(text, history, config, steps, msgIdx, mainHandler, webContext) { th, rp ->
-                    intentThinking = th; streamedReply = rp
-                }
-                if (route == null) {
-                    // 调用失败(429/网络/配置)——透传真实原因
-                    val err = com.shiyin.music.data.ai.LlmClient.lastError ?: "未知错误"
+
+                // 2a. 反问(第三态):模型不确定 → 不执行任何技能,把问题交还用户。
+                if (clarifyReq != null) {
                     agentMessages = agentMessages.replaceAt(
                         msgIdx,
-                        AgentMessage("agent", "LLM 调用失败:$err\n请到右上「设置」检查供应商额度 / Key / 模型名。", steps.toList()),
+                        AgentMessage("agent", clarifyReq.question, null, thinking = dispatchThinking, thinkingMs = dispatchThinkingMs),
                     )
+                    // 复用现有建议 chip(点一条 = 以用户身份发一条消息),与追问同构
+                    if (clarifyReq.options.isNotEmpty()) agentSuggestions = clarifyReq.options
+                    refreshAgentTokens()
                     return@launch
                 }
-                // v1.3.3b review#B7: 路由调用真实 usage(fast-path 无 LLM 调用=0)
-                val routeTokens = route.promptTokens to route.completionTokens
-                if (route.chatReply != null) {
-                    // 2a. 闲聊:回复已在 onContent 流式写入消息(打字机数据源已在)。
-                    // 这里只确保最终态一致并带真实思考耗时 + 本次 tokens。
+                // 2b. 闲聊:正文已由 onContent 流式写入(打字机数据源已在),这里落最终态。
+                if (chatReply != null) {
                     agentMessages = agentMessages.replaceAt(
                         msgIdx,
-                        AgentMessage("agent", streamedReply ?: route.chatReply, null, tokens = routeTokens, thinking = route.thinking, thinkingMs = route.thinkingMs),
+                        AgentMessage("agent", streamedReply ?: chatReply, null, tokens = routeTokens, thinking = dispatchThinking, thinkingMs = dispatchThinkingMs),
                     )
                     refreshAgentTokens()
                     return@launch
                 }
-                // 2b. 技能路由。skill 与 chatReply 双空 = 模型无有效输出——按失败透传,不崩。
-                val plan = route.skill ?: run {
+                // 2c. 技能。skill 与 chatReply 双空 = 模型无有效输出——按失败透传,不崩。
+                val plan = planDraft ?: run {
                     val err = com.shiyin.music.data.ai.LlmClient.lastError ?: "模型无返回"
                     agentMessages = agentMessages.replaceAt(msgIdx, AgentMessage("agent", "LLM 无有效回复:$err", steps.toList()))
                     return@launch
                 }
-                android.util.Log.i("Agent", "plan: skill=${plan.skillKey} args=${plan.args} steps=${plan.steps}")
-                // v1.3.3 动画统一:步骤面板 = 思考后的产物,由路由(plan.steps)生成、显示在
-                // 思考胶囊下方(先思考→出计划→逐步执行)。步骤行文案优先用模型生成清单,
-                // fastPath/模型没给 steps 时用技能预置清单。
-                steps.clear()
-                val panelSteps = plan.steps.ifEmpty { panelStepsFor(plan.skillKey) }
-                for ((i, s) in panelSteps.withIndex()) {
-                    steps.add(com.shiyin.music.data.ai.AgentEngine.Step("step_$i", s, com.shiyin.music.data.ai.AgentEngine.StepStatus.PENDING))
-                }
-                agentMessages = agentMessages.replaceAt(msgIdx, AgentMessage("agent", "", steps.toList(), thinking = intentThinking))
-                // 2. 技能分发执行
+                android.util.Log.i("Agent", "plan: skill=${plan.skillKey} args=${plan.args}")
+                // 2. 技能解析 + 步骤面板
                 val skill = com.shiyin.music.data.ai.AgentEngine.skillByKey(plan.skillKey)
                 if (skill == null) {
                     agentMessages = agentMessages.replaceAt(msgIdx, AgentMessage("agent", "没有可执行技能「${plan.skillKey}」。"))
                     return@launch
                 }
+                steps.clear()
+                // v1.3.8(P2): 步骤清单由**技能自己声明**(panelSteps),面板行 id == 技能回调
+                // 的语义 id——映射表不复存在。行文案也不再用模型生成的 plan.steps(§3 定调),
+                // "模型给 2 步、技能有 4 个回调"这类错位从根上消失。
+                for (ps in skill.panelSteps(plan.args)) {
+                    steps.add(com.shiyin.music.data.ai.AgentEngine.Step(ps.id, ps.label, com.shiyin.music.data.ai.AgentEngine.StepStatus.PENDING))
+                }
+                agentMessages = agentMessages.replaceAt(msgIdx, AgentMessage("agent", "", steps.toList(), thinking = intentThinking))
                 // v1.3.3b review#B7: lastTokens 原来恒 null(声明后从未赋值),"本次 N tokens"
                 // 从不显示——改记路由调用的真实 usage,技能内调用靠 refreshAgentTokens 累计。
                 val lastTokens: Pair<Int, Int>? = routeTokens
                 val result = skill.execute(
                     agentCtx, plan.args, config, tavilyApiKey,
                 ) { id, st ->
-                    // 技能回调的语义步骤 id → 面板行:行文案用 plan 生成清单(upsert 就地
-                    // 更新时保留行上文案);语义索引超出模型给的步数时(模型只给 2 步但
-                    // 技能有 4 个回调)落到最后一行,不追加裸 id 行。
-                    val rowId = when (plan.skillKey) {
-                        "album_sort" -> when (id) {
-                            "tracks" -> "step_0"
-                            "search" -> "step_1"
-                            "analyze" -> "step_2"
-                            "writeback" -> "step_3"
-                            else -> id
-                        }
-                        // v1.3.6e: track_rename 三条路的步骤清单不同,按 args 分派行号:
-                        // rule=批量规则(分析/写回 2 行)|new_title=点名直改(定位/改名 2 行)
-                        // |其余=联网比对官方表(搜证/分析/写回 3 行)。
-                        "track_rename" -> when {
-                            plan.args.containsKey("rule") -> when (id) {
-                                "analyze" -> "step_0"
-                                "writeback" -> "step_1"
-                                else -> id
-                            }
-                            plan.args.containsKey("new_title") -> when (id) {
-                                "locate" -> "step_0"
-                                "rename" -> "step_1"
-                                else -> id
-                            }
-                            else -> when (id) {
-                                "search" -> "step_0"
-                                "analyze" -> "step_1"
-                                "writeback" -> "step_2"
-                                else -> id
-                            }
-                        }
-                        else -> when (id) {
-                            "search" -> "step_0"
-                            "analyze" -> "step_1"
-                            "writeback" -> "step_2"
-                            else -> id
-                        }
-                    }
-                    val effectiveRow = if (steps.none { it.id == rowId }) "step_${(steps.size - 1).coerceAtLeast(0)}" else rowId
+                    // v1.3.8(P2): 语义 id 直接就是面板行 id,无需任何映射。万一技能回调了
+                    // 未在 panelSteps 里声明的 id(技能改了回调没改声明),落到最后一行——
+                    // 保证进度仍可见,且**不追加裸 id 行**污染面板。
+                    val effectiveRow = if (steps.any { it.id == id }) id
+                        else steps.lastOrNull()?.id ?: id
                     // v1.3.3: 联网搜证没搜到资料 → 行内给"未搜到相关资料"而不是空 ✗
                     // (upsert 自动取的 lastError 已被业务路径清空)。
                     val bizErr = if (st == com.shiyin.music.data.ai.AgentEngine.StepStatus.FAILED && id == "search")
@@ -2087,6 +2648,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                         agentMessages = agentMessages.replaceAt(msgIdx, AgentMessage("agent", "", steps.toList(), lastTokens))
                     }
                 }
+                // v1.3.x 使用日志:记"用了哪个技能、成没成",**不记用户的提问与回复内容**。
+                com.shiyin.music.data.log.UsageLog.event(
+                    getApplication(), "Agent",
+                    "技能 ${skill.key} · ${if (result.success) "成功" else "失败"}",
+                )
                 // 记 tokens(意图理解 + 技能内 LLM 调用累计由 LlmClient 不自动汇总,
                 // 这里用一个近似:从 TokenUsageStore 读增量。简化:记录本次为 0 占位,
                 // 真实累计靠 refreshAgentTokens 从 DB 读)。
@@ -2103,7 +2669,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 steps.removeAll { it.status == com.shiyin.music.data.ai.AgentEngine.StepStatus.PENDING }
                 // v1.3.3: 最终消息带上思考链(意图理解 + 技能内 LLM 调用,取最全的一条)+ 真实耗时。
                 val finalThinking = result.thinking ?: intentThinking
-                agentMessages = agentMessages.replaceAt(msgIdx, AgentMessage("agent", result.summary, steps.toList(), lastTokens, thinking = finalThinking, thinkingMs = route.thinkingMs))
+                agentMessages = agentMessages.replaceAt(msgIdx, AgentMessage("agent", result.summary, steps.toList(), lastTokens, thinking = finalThinking, thinkingMs = dispatchThinkingMs))
                 // v1.3.2: 按本轮任务结果更新建议(点过/发过即消失,不常驻)
                 // v1.3.3: 删掉「查歌手名识别是否正确」建议——意义不明,任务完成后清空。
                 agentSuggestions = emptyList()
@@ -2122,16 +2688,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 agentRunning = false
             }
         }
-    }
-
-    /** 面板预置步骤(按技能固定文案,与技能回调的语义 id 顺序一一对应)。 */
-    private fun panelStepsFor(skillKey: String): List<String> = when (skillKey) {
-        "album_sort" -> listOf("读取专辑曲目", "联网搜索官方顺序", "AI 核对生成顺序", "写回排序")
-        "artist_fix" -> listOf("联网搜证", "AI 分析修正", "写回本地")
-        "track_rename" -> listOf("联网搜证", "AI 分析修正", "写回本地")
-        "lyrics_fetch" -> listOf("搜索歌词源")
-        "library_query" -> listOf("检索音乐库", "组织回答")
-        else -> emptyList()
     }
 
     /**
@@ -2628,9 +3184,18 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         // 不触发任何单曲切换，计一次「专辑被播放次数」。
         val start = startId?.takeIf { isSplitTrack(it) }
         if (start == null) return listOf(container) to container.id
-        // 有起点（点第 N 行）→ 单曲模式：队列放那首虚拟曲目，方案随 extras 走。
-        val vt = ts.firstOrNull { it.id == start } ?: return listOf(container) to container.id
-        return listOf(vt) to vt.id
+        // v22 修补(用户反馈⑥"播放列表只能一首"):单曲模式队列放**整组拆分单曲**
+        // (从点击那首起、按专辑页顺序到最后一首)——原实现只放一首,播放列表只见
+        // 一条、插入队列的歌排在唯一 item 后面且 SplitCarry 无缝切换永不前进到
+        // 下一个队列项。现在整组进队列:播放列表完整显示;插到队列的歌正常排队;
+        // 拆分顺序 = 队列顺序(albumOrder 已按用户编辑页的顺序),到区间边界时
+        // checkVirtualBoundary 的 replaceMediaItem 与队列推进自洽(同一首),无缝
+        // 由 alignToSplitStartIfNeeded 对齐起点。起点前的曲目不进队列——用户点的
+        // 是从第 N 首开始听,前面几首不属于本次会话。
+        val startIdx = ts.indexOfFirst { it.id == start }
+        val vt = ts.getOrNull(startIdx) ?: return listOf(container) to container.id
+        val queue = ts.drop(startIdx.coerceAtLeast(0))
+        return queue to vt.id
     }
 
     /**
@@ -3217,6 +3782,21 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun setFuriganaAutoVerify(v: Boolean) = viewModelScope.launch { settingsStore.setFuriganaAutoVerify(v) }
     fun setTranslateAutoForeign(v: Boolean) = viewModelScope.launch { settingsStore.setTranslateAutoForeign(v) }
     fun setTranslateDefaultShow(v: Boolean) = viewModelScope.launch { settingsStore.setTranslateDefaultShow(v) }
+
+    /** v1.3.x 播放设置 setter(设置·播放页)。 */
+    fun setVolumeNormalize(v: Boolean) = viewModelScope.launch { settingsStore.setVolumeNormalize(v) }
+    fun setMonoAudio(v: Boolean) = viewModelScope.launch { settingsStore.setMonoAudio(v) }
+    fun setAllowConcurrentPlayback(v: Boolean) = viewModelScope.launch { settingsStore.setAllowConcurrentPlayback(v) }
+    fun setEqualizerOn(v: Boolean) = viewModelScope.launch { settingsStore.setEqualizerOn(v) }
+
+    /** 均衡器某频段增益(mB)——设置页滑块拖动时调用(乐观更新内存,异步落库)。 */
+    fun setEqualizerBand(index: Int, mB: Int) {
+        val cur = equalizerBands
+        if (index !in cur.indices) return
+        val next = cur.toMutableList().also { it[index] = mB }
+        equalizerBands = next
+        viewModelScope.launch { settingsStore.setEqualizerBands(next) }
+    }
     fun setLyricsColorMode(mode: String) = viewModelScope.launch { settingsStore.setLyricsColorMode(mode) }
     /** v1.2.2 Agent: Tavily 联网搜索 key 设置。 */
     fun setTavilyKey(v: String) = viewModelScope.launch { settingsStore.setTavilyKey(v) }
@@ -3249,7 +3829,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             android.util.Log.i("Agent", "albumDates[$artistName]: $s")
             android.os.Handler(android.os.Looper.getMainLooper()).post { onProgress(s) }
         }
+        // v1.3.6 修补:入口日志——用户反馈"点了没返回,连报错都没有"。加一条最先
+        // 打的日志,确认函数被调用了、以及带了多少张专辑进来。之后每一步都有
+        // progress 日志,看 logcat 能直接定位卡在哪一步。
+        progress("开始:共 ${albums.size} 张专辑")
         val config = activeLlmConfig()
+        // v1.3.6 修补:config/tavilyKey 的实时值也打出来——"没配置"的判断依赖
+        // activeLlmConfig()/tavilyApiKey,真机上如果它们恰好是空,用户看到的
+        // 只有"未配置"而没有上下文。把当时的值一并打印,方便排查。
+        android.util.Log.i("Agent", "albumDates[$artistName]: config=${if (config != null) "ok" else "null"} tavilyKey=${tavilyApiKey.isNotBlank()}")
         if (config == null) { progress("未配置 LLM(Agent 设置里填 Key + 选模型)"); return@withContext 0 }
         if (tavilyApiKey.isBlank()) { progress("未配置 Tavily 搜索 Key"); return@withContext 0 }
 
@@ -3282,6 +3870,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val sysMsg = """
             你是音乐资料核对助手。你可以调用 web_search 联网搜索(可以多次,可以按专辑分别搜)。
             有联网资料时以资料为准;资料没覆盖、你又不确定的专辑,直接不返回那一张,不要编造日期。
+
+            搜索查询词规范(重要):
+            - 查询词只包含歌手名 + 专辑名 + "发行日期"或"release date",
+              **不要把猜测的年份放进搜索词**(如不要搜"星野源 Gen 2025")——
+              把年份放进搜索词会让结果偏向那个年份的版本,导致同名不同版专辑错配;
+            - 中文歌手用中文搜,日文歌手用日文搜(如"星野源 Gen アルバム 発売日"),
+              英文歌手用英文搜(如"Artist Album release date");
+            - 一次搜一张专辑,不要在同一个查询里塞多张专辑名。
         """.trimIndent()
         val userMsg = """
             歌手:$artistName 的本地专辑/EP/单曲清单(名字可能与官方写法略有差异,由你对应):
@@ -3291,6 +3887,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             {"albums":[{"name":"<上面清单里的原样名字>","date":"YYYY-MM-DD"}]}
             规则:date 必须是真实发布日期;只能确定到年就返回 "YYYY"、只能确定到月就返回 "YYYY-MM"
             (不要为凑格式编造月/日);不确定的专辑不返回;不要多余文字。
+            **name 字段必须与上面清单里的原样名字完全一致**(逐字照抄),不要改写、翻译或缩写。
         """.trimIndent()
         progress("AI 分析发布时间(可自主联网搜索)…")
         val loop = com.shiyin.music.data.ai.AgentTools.runWebSearchLoop(
@@ -3371,7 +3968,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val dateByName = mutableMapOf<String, String>()
         try {
             val obj = com.google.gson.JsonParser.parseString(
-                Regex("""\{.*}""", RegexOption.DOT_MATCHES_ALL).find(respContent.jsonish())?.value ?: ""
+                // v1.3.8: 原为 Regex("""\{.*}""")——裸 '}' 在 Android 的 java.util.regex
+                // 上编译即抛 PatternSyntaxException(真机实测:PatternSyntaxException
+                // near index 5),模型返回的合法 JSON 被整段丢弃 → "联网搜到了却没返回"。
+                // 改用配平大括号抠取(见 data/JsonExtraction.kt)。
+                com.shiyin.music.data.firstBalancedJsonObject(respContent.jsonish()) ?: ""
             ).asJsonObject
             obj.getAsJsonArray("albums")?.forEach { el ->
                 val o = el?.asJsonObject ?: return@forEach
@@ -3554,7 +4155,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 )
                 return@launch
             }
-            if (autoMatch && track.artist != UNKNOWN_ARTIST && id !in triedAuto) {
+            // v1.3.x 鉴权: 用户手动删除过歌词的歌不自动匹配(用户删了=这份匹配不对,
+            // 再自动匹配回来是同样的错误歌词反复出现)。triedAuto 挡"本 session 已试过";
+            // manualDeletedLyrics 持久化挡"用户明确删除过"——后者优先级更高。
+            // ⚠️ 包含性判断必须在 synchronized **块内**执行:原写法
+            // `id !in synchronized(x) { x }` 只是借锁取了集合引用,`in` 在锁外跑,
+            // 与另一线程的 `synchronized(x){ x += mediaId }`(HashSet 扩容/rehash)
+            // 并发 → 可能读到错误结果,极端下在环形桶链上死循环。
+            val manuallyDeleted = synchronized(manualDeletedLyrics) { id in manualDeletedLyrics }
+            if (autoMatch && track.artist != UNKNOWN_ARTIST && id !in triedAuto && !manuallyDeleted) {
                 triedAuto += id
                 matchOnline(track, sourceIndex = 0, thenNextSource = true)
             }
@@ -3626,12 +4235,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 val prompt = """
                     请写出歌曲《${track.title}》(歌手:${track.artist})的完整歌词。
                     输出要求:
-                    1. 优先输出带时间轴的 LRC 格式,每行形如 [mm:ss.xx]歌词文本
-                    2. 资料里没有时间轴信息时,输出纯文本歌词,每行一句,不要编号
+                    1. 优先输出带时间轴的 LRC 格式,每行形如 [mm:ss.xx]歌词文本;
+                       资料里没有精确时间轴时,**用你对歌曲结构的常识估算时间戳**
+                       (前奏约 10-30 秒开始唱,每句间隔按歌词长度估),不要直接输出纯文本
+                    2. 输出**完整歌词**——从第一句到最后一句,一句不落;
+                       某句确实不确定时仍要输出该句(尽力回忆),不要整段省略
                     3. 只输出歌词本身,不要任何解释、前缀或代码围栏
-                    ${if (webContext.isBlank()) "(没有搜索到资料,凭你确定的知识输出;不确定的段落宁可省略,不要编造)" else "参考资料(以此为准;资料没覆盖的段落凭你的知识补齐,不确定的宁可省略):\n$webContext"}
+                    ${if (webContext.isBlank()) "(没有搜索到资料,凭你记忆中的完整歌词输出;记忆里确实没有这首时才允许省略)" else "参考资料(以此为准;资料没覆盖的段落凭你的记忆补齐,不要省略):\n$webContext"}
                 """.trimIndent()
-                val resp = com.shiyin.music.data.ai.LlmClient.call(config, listOf("user" to prompt), maxTokens = 4096) ?: run {
+                // v1.3.x 修补: maxTokens 4096→8192——长歌(百行级)整首生成 4096 会
+                // 截断,截断的半首歌词"只有几句"的直接来源之一。
+                val resp = com.shiyin.music.data.ai.LlmClient.call(config, listOf("user" to prompt), maxTokens = 8192) ?: run {
                     lyFailReason = com.shiyin.music.data.ai.LlmClient.lastError ?: "LLM 调用失败"
                     lyState = LyState.Failed
                     return@launch
@@ -3723,6 +4337,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             // (否则 triedAuto 永久挡住,只能手动切源)。这样"两个都没才显示无资源"成立。
             triedAuto -= track.id
             lyState = LyState.Failed
+            com.shiyin.music.data.log.UsageLog.event(getApplication(), "歌词", "自动匹配失败")
             return
         }
         val (src, raw) = found
@@ -3734,6 +4349,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         currentLyrics = LoadedLyrics(track.id, raw, parsed, src, LyricsKind.Online, saved = false, offsetMs = 0)
         lyState = LyState.Idle
         if (reopenSheet) lySheet = true
+        com.shiyin.music.data.log.UsageLog.event(getApplication(), "歌词", "匹配成功 · $src · ${parsed.lines.size} 行")
         // v1.1+: 自动保存识别结果——开关开时把匹配成功的歌词持久化（autoSaved=1），
         // 下次打开直接从本地加载，不再联网。关时仅临时展示。封面已由 album_art_cache 持久化。
         autoSaveRecognizedLyrics(track.id, raw, src)
@@ -3761,30 +4377,20 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      *  so they don't have to remember to hit "保存". */
     fun syncLyricLine(lineIdx: Int) {
         val cur = currentLyrics ?: return
-        val pos = player.positionMs
+        // v23: 同 tapSyncTap —— 时间戳用**当前曲目**坐标,不能拿整轨文件的绝对位置。
+        val pos = player.displayPositionMs()
         val lines = cur.parsed.lines.toMutableList()
         if (lineIdx < 0 || lineIdx >= lines.size) return
         val newTime = (pos - cur.offsetMs).coerceAtLeast(0)
         lines[lineIdx] = com.shiyin.music.data.lyrics.LyricLine(newTime, lines[lineIdx].text)
-        // Convert to timed: sort by time, mark synced
-        val sorted = lines.sortedBy { it.timeMs ?: 0 }
-        val wasSynced = cur.parsed.synced
-        val nowSynced = sorted.all { it.timeMs != null }
-        val next = cur.copy(
-            parsed = com.shiyin.music.data.lyrics.ParsedLyrics(
-                lines = sorted,
-                synced = nowSynced,
-            ),
-            saved = false,
-        )
-        currentLyrics = next
-        if (!wasSynced && nowSynced) {
-            // The user just finished time-stamping every line — save right away.
-            viewModelScope.launch(Dispatchers.IO) {
-                dao.upsertLyric(SavedLyricEntity(next.mediaId, next.raw, next.source, next.offsetMs, System.currentTimeMillis()))
-            }
-            currentLyrics = next.copy(saved = true)
-        }
+        // v1.3.x Bug A 修复:**不排序**——原实现 sortedBy 把整列重排,activeI 变化
+        // 触发 animateScrollToItem 滚动到当前行(用户反馈"点击后歌词跳到末尾,
+        // 焦点丢失,要手动滚回去再点下一句")。打轴时保持原索引顺序,UI 不重排,
+        // 用户连续点下一句不用找回焦点。
+        // v1.3.x Bug B 修复:**raw 同步更新**——原实现只改 parsed.lines 没改 raw,
+        // 保存时存的是原始 LRC 文本(没有时间戳),下次载入读到的还是未打轴状态。
+        // 这里把打轴后的 lines 重新生成 LRC 文本([mm:ss.xx] 行头),raw 同步更新。
+        commitLyricLines(lines)
     }
 
     fun saveLyrics() {
@@ -4066,7 +4672,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             if (err == null) {
                 val files = withContext(Dispatchers.IO) { c.list() }
                 cloudFiles = files
-                cloudMsg = "连接成功，远端有 ${files.size} 个备份文件"
+                // 把实际读写目录显示出来 —— 用户能一眼核对"备份到底存到哪"。
+                cloudMsg = "连接成功（备份目录：${c.workDir}），远端有 ${files.size} 个备份文件"
             } else {
                 cloudMsg = err
             }
@@ -4089,6 +4696,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             }
             val err = withContext(Dispatchers.IO) { c.upload(name, bytes) }
             cloudMsg = err ?: "已上传 $name（${"%.1f".format(bytes.size / 1024.0 / 1024.0)} MB）"
+            com.shiyin.music.data.log.UsageLog.event(
+                getApplication(), "云备份",
+                if (err == null) "上传成功 ${"%.1f".format(bytes.size / 1024.0 / 1024.0)}MB"
+                else "上传失败：$err",
+            )
             if (err == null) cloudFiles = withContext(Dispatchers.IO) { c.list() }
             cloudBusy = false
         }
@@ -4164,6 +4776,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         closeLyricsInstant()
         lyState = LyState.Idle
         triedAuto -= cur.mediaId
+        // v1.3.x 鉴权(用户反馈⑧):用户手动删除歌词 = "这份匹配不对"的明确信号——
+        // 记入持久化黑名单,**不再自动匹配**,待用户手动获取歌词资源(设置·歌词来源)。
+        // 旧实现 `triedAuto -= mediaId` 反而把该曲放回自动匹配队列——用户删了又自动
+        // 匹配回来,同样的错误歌词反复出现。
+        markManualLyricsDeleted(cur.mediaId)
         // 歌词本体删了，译文也就没意义了——内存态复位，且**真取消**进行中的任务，
         // 否则它跑完会把刚清掉的译文重新写回库里（复活孤儿行）。
         cancelLyricsTranslation()
@@ -4176,6 +4793,25 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 // 与上面两条同属"这首歌的派生数据"，漏掉会留下永不命中的孤儿行。
                 dao.deleteLyricsTranslationForMedia(cur.mediaId)
             } catch (_: Exception) { }
+        }
+    }
+
+    /** v1.3.x 鉴权: 用户手动删除歌词的 mediaId 黑名单(SharedPreferences 持久化,与
+     *  searchHistory 同一做法,不引入新依赖)。自动匹配(loadLyricsFor)查这里,命中即跳过。
+     *  字段声明在文件前部(triedAuto 旁)——init 块要用,声明顺序必须在 init 之前。 */
+
+    private fun markManualLyricsDeleted(mediaId: Long) {
+        synchronized(manualDeletedLyrics) { manualDeletedLyrics += mediaId }
+        val prefs = getApplication<Application>().getSharedPreferences("lyrics_blacklist", android.content.Context.MODE_PRIVATE)
+        prefs.edit().putString("ids", synchronized(manualDeletedLyrics) { manualDeletedLyrics.joinToString(",") }).apply()
+    }
+
+    private fun loadManualDeletedLyrics() {
+        val prefs = getApplication<Application>().getSharedPreferences("lyrics_blacklist", android.content.Context.MODE_PRIVATE)
+        val ids = prefs.getString("ids", "") ?: ""
+        synchronized(manualDeletedLyrics) {
+            manualDeletedLyrics.clear()
+            manualDeletedLyrics.addAll(ids.split(",").mapNotNull { it.toLongOrNull() })
         }
     }
 
@@ -4439,8 +5075,28 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                                 translatedAt = System.currentTimeMillis(),
                             ),
                         )
+                        // ⚠️ 译文落库还不够 —— 必须把**它赖以存在的那份歌词文本**也落库。
+                        //
+                        // 译文的键是 `LyricsHash.of(ly.raw)`。若这份歌词只是联网匹配来的
+                        // 临时结果（没开「自动保存识别资源」时 saved=false，不写库），
+                        // 重启后 savedLyricsMap 里没有它 → 重新联网匹配 → 拿到的文本未必
+                        // 逐字相同（不同源/多一行元数据/行尾差异）→ **hash 变了 → 按旧 hash
+                        // 查不到译文** → 用户看到"翻译好了，退出后又要重新加载一遍"。
+                        //
+                        // 所以译完即把歌词一并存下（这就是"AI翻译也要自动保存"的落点）。
+                        // 用 insert-IfAbsent：已有行一律不动，绝不把用户更新的歌词版本覆盖
+                        // 回旧文本（那种情况下译文与新文本本就不匹配，属正确的失效）。
+                        dao.insertAutoSavedLyricIfAbsent(
+                            ly.mediaId, ly.raw, ly.source, ly.offsetMs, System.currentTimeMillis(),
+                        )
                     }
                 }.onFailure { android.util.Log.w("LyricsTranslate", "persist failed: ${it.message}") }
+                // v1.3.x 使用日志:只记"译了多少行",不记歌词内容与译文。
+                com.shiyin.music.data.log.UsageLog.event(
+                    getApplication(), "翻译",
+                    "成功 ${out.byLine.size}/${out.requested.size} 行 · rounds=${out.rounds}" +
+                        (if (failure != null) " · ${failure.take(60)}" else ""),
+                )
             }
         }
         return true
@@ -4523,6 +5179,22 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     /** 重新显示已保存的译文（无网络请求）。 */
     fun showLyricsTranslation() { lyricsTranslation.show() }
+
+    /**
+     * v1.3.x 需求6:歌词本"进入翻译"的**唯一**入口 —— 先从持久化恢复,再按需自动翻译。
+     *
+     * ⚠️ 为什么必须合成一个入口：这两步原来在 LyricsScreen 里是两个并发的
+     * LaunchedEffect。「恢复」要 await 一次读库(IO,几毫秒),而「自动翻译」只看
+     * 内存状态 —— 它会抢在恢复完成前看到 hasData=false 并发起新翻译,随后恢复
+     * 结果撞上"翻译进行中"守卫被丢弃。表现就是**明明库里有译文却重翻了一遍**
+     * (用户反馈"译好的内容退出后又要重新加载一遍",既慢又白烧 token)。
+     * 合成后顺序确定：恢复完成 → 仍然没有译文 → 才自动翻译。
+     */
+    suspend fun enterLyricsTranslation(ly: LoadedLyrics, autoTranslate: Boolean) {
+        syncLyricsTranslation(ly)
+        if (!autoTranslate) return
+        maybeAutoTranslateForeign(ly)
+    }
 
     /**
      * v1.3.x 反馈:「外语歌自动翻译」入口（设置开关开时由歌词本 LaunchedEffect 触发）。
@@ -4866,6 +5538,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         for (g in dupGroups()) g.drop(1).forEach { prefill[it.id] = true }
         for (t in shortTracks()) prefill[t.id] = true
         sel = prefill
+        // 清理建议是从首页清理卡直达(不经过设置根),不压栈——返回走 cleanEntry 旁路
+        // 直接回来源 tab。清空栈保证此时栈是空的,navFilesBack 不会误弹到别层。
+        filesNavStack.clear()
         filesView = FilesView.Clean
         settingsOpen = true
         // v1.3.5: 记来源 tab,返回时直接回它(首页)

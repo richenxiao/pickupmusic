@@ -212,9 +212,44 @@ fun SheetActionRow(
     tint: Color? = null,
     trailing: (@Composable () -> Unit)? = null,
     onClick: () -> Unit,
+) = SheetActionRowImpl(
+    icon = { OIcon(icon, 19.dp, tint ?: LocalOrganic.current.n700) },
+    label = label,
+    labelColor = tint ?: LocalOrganic.current.text,
+    trailing = trailing,
+    onClick = onClick,
+)
+
+/**
+ * 重载：矢量 drawable（`painterResource`）——拾光Agent 的品牌图标走这条。
+ * 见 `OIcon(Painter…)` 注释：本 Compose 版本没有可用的 `vectorResource`。
+ *
+ * 尺寸与图标行一致（19dp）：ic_agent 已重绘为标准 24×24 实占的等线宽 Mono 图标
+ * （v1.3.x 第2项），不需要再为旧的"宽而扁"线稿补偿尺寸。
+ */
+@Composable
+fun SheetActionRow(
+    icon: androidx.compose.ui.graphics.painter.Painter,
+    label: String,
+    tint: Color? = null,
+    trailing: (@Composable () -> Unit)? = null,
+    onClick: () -> Unit,
+) = SheetActionRowImpl(
+    icon = { OIcon(icon, 19.dp, tint ?: LocalOrganic.current.n700) },
+    label = label,
+    labelColor = tint ?: LocalOrganic.current.text,
+    trailing = trailing,
+    onClick = onClick,
+)
+
+@Composable
+private fun SheetActionRowImpl(
+    icon: @Composable () -> Unit,
+    label: String,
+    labelColor: Color,
+    trailing: (@Composable () -> Unit)?,
+    onClick: () -> Unit,
 ) {
-    val c = LocalOrganic.current
-    val color = tint ?: c.text
     Row(
         Modifier
             .fillMaxWidth()
@@ -224,8 +259,8 @@ fun SheetActionRow(
         horizontalArrangement = Arrangement.spacedBy(14.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        OIcon(icon, 19.dp, if (tint != null) tint else c.n700)
-        Text(label, style = body(14.5f, FontWeight.SemiBold, color), modifier = Modifier.weight(1f))
+        icon()
+        Text(label, style = body(14.5f, FontWeight.SemiBold, labelColor), modifier = Modifier.weight(1f))
         trailing?.invoke()
     }
 }

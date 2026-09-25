@@ -88,7 +88,10 @@ object FuriganaLlmAssist {
         for (g in gaps) whitelist["${g.lineIndex}|${g.charStart}|${g.length}"] = g
         val obj = runCatching { JsonParser.parseString(raw.trim()).asJsonObject }.getOrNull()
             ?: run {
-                val json = firstBalancedBraces(raw) ?: return emptyList()
+                // v1.3.8: 改用 data/JsonExtraction.kt 的共享实现——这里原本有一份私有
+                // 拷贝,而项目里另外 4 处还在用会抛异常的贪婪 `\{.*}` 正则。同一件事
+                // 有 5 份实现正是这个 bug 能长期存在的原因,统一成一份。
+                val json = com.shiyin.music.data.firstBalancedJsonObject(raw) ?: return emptyList()
                 runCatching { JsonParser.parseString(json).asJsonObject }.getOrNull() ?: return emptyList()
             }
         val arr = runCatching { obj.getAsJsonArray("fixes") }.getOrNull() ?: return emptyList()
@@ -109,29 +112,6 @@ object FuriganaLlmAssist {
             byPos["$line|$start|$len"] = Fix(line, start, len, reading)
         }
         return byPos.values.toList()
-    }
-
-    /** 首个配平大括号段("{" 起逐字符计深度到配平 "}"),无配平段返回 null。 */
-    private fun firstBalancedBraces(raw: String): String? {
-        val start = raw.indexOf('{')
-        if (start < 0) return null
-        var depth = 0
-        var inStr = false
-        var esc = false
-        for (i in start until raw.length) {
-            val c = raw[i]
-            if (esc) { esc = false; continue }
-            when {
-                inStr && c == '\\' -> esc = true
-                c == '"' -> inStr = !inStr
-                !inStr && c == '{' -> depth++
-                !inStr && c == '}' -> {
-                    depth--
-                    if (depth == 0) return raw.substring(start, i + 1)
-                }
-            }
-        }
-        return null
     }
 
     /** JSON 数字字段宽松读取:数字原始值取整;字符串可整转(如 "2"/"2.0")也收;

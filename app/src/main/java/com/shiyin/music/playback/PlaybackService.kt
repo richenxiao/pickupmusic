@@ -41,12 +41,43 @@ class PlaybackService : MediaSessionService() {
     companion object {
         const val ACTION_ROUTE_DEVICE = "com.shiyin.music.ROUTE_DEVICE"
         const val KEY_ADDRESS = "address"
+
+        /** v1.3.x 播放设置: app 侧把「播放」页四个开关下发到服务进程生效
+         *  (ExoPlayer 在这里,audiofx/焦点/声道处理都必须在服务进程做)。 */
+        const val ACTION_AUDIO_SETTINGS = "com.shiyin.music.AUDIO_SETTINGS"
+        const val KEY_VOLUME_NORMALIZE = "volume_normalize"
+        const val KEY_MONO_AUDIO = "mono_audio"
+        const val KEY_ALLOW_CONCURRENT = "allow_concurrent"
+        const val KEY_EQUALIZER = "equalizer"
+        const val KEY_EQ_BANDS = "eq_bands"
     }
 
     private val routeDeviceCommand = SessionCommand(ACTION_ROUTE_DEVICE, Bundle())
+    private val audioSettingsCommand = SessionCommand(ACTION_AUDIO_SETTINGS, Bundle())
+
+    /**
+     * ⚠️ 单声道已**再次撤回**(2026-09-23)。
+     *
+     * v23 试过一次"安全版":官方 ChannelMixingAudioProcessor + 与 media3 默认实现
+     * 逐行一致的 buildAudioSink 覆写,只多一句 setAudioProcessors。装机后**用户实测
+     * 仍然播不了** —— 与 2026-09-22 那次自建 AudioSink 的结论一致:本项目这条
+     * ExoPlayer 管线上,任何 buildAudioSink 覆写都会让音频渲染失效。
+     *
+     * 结论(两次实测):**不要再动播放管线去实现单声道**。若将来还要做,应换与
+     * ExoPlayer 渲染链无关的路径(例如系统级/AudioEffect 侧),或先在一个隔离的
+     * spike 里验证通过再进主链路。用户既定规矩:"宁可缺,不能给一个开了播不了的开关"。
+     */
+    private var player: ExoPlayer? = null
+    private var equalizer: android.media.audiofx.Equalizer? = null
+    private var loudness: android.media.audiofx.LoudnessEnhancer? = null
+    /** 上次生效的焦点策略——只在**真的变化**时调 setAudioAttributes。
+     *  ExoPlayer.setAudioAttributes 会重新申请音频焦点,重复调用会把正在播的曲子打断。 */
+    private var lastHandleFocus: Boolean? = null
 
     override fun onCreate() {
         super.onCreate()
+        // 播放管线保持**原样**——两次实测(2026-09-22 自建 sink / 2026-09-23 官方
+        // 处理器 + 逐行一致覆写)都让音频渲染失效。见上方 mono 撤回注释。
         val player = ExoPlayer.Builder(this)
             .setAudioAttributes(
                 AudioAttributes.Builder()
@@ -59,6 +90,7 @@ class PlaybackService : MediaSessionService() {
             .setWakeMode(C.WAKE_MODE_LOCAL)
             .setMaxSeekToPreviousPositionMs(4000)
             .build()
+        this.player = player
 
         val openApp = PendingIntent.getActivity(
             this, 0,
@@ -83,7 +115,7 @@ class PlaybackService : MediaSessionService() {
                     controller: MediaSession.ControllerInfo,
                 ): MediaSession.ConnectionResult {
                     val sessionCommands = MediaSession.ConnectionResult.DEFAULT_SESSION_COMMANDS
-                        .buildUpon().add(routeDeviceCommand).build()
+                        .buildUpon().add(routeDeviceCommand).add(audioSettingsCommand).build()
                     return MediaSession.ConnectionResult.AcceptedResultBuilder(session)
                         .setAvailableSessionCommands(sessionCommands)
                         .build()
@@ -95,6 +127,19 @@ class PlaybackService : MediaSessionService() {
                     customCommand: SessionCommand,
                     args: Bundle,
                 ): ListenableFuture<SessionResult> {
+                    // v1.3.x 播放设置下发:四个开关在服务进程生效(ExoPlayer 在这里)。
+                    if (customCommand.customAction == ACTION_AUDIO_SETTINGS) {
+                        applyAudioSettings(
+                            normalize = args.getBoolean(KEY_VOLUME_NORMALIZE, false),
+                            mono = args.getBoolean(KEY_MONO_AUDIO, false),
+                            concurrent = args.getBoolean(KEY_ALLOW_CONCURRENT, false),
+                            equalizerOn = args.getBoolean(KEY_EQUALIZER, false),
+                            bands = args.getIntArray(KEY_EQ_BANDS) ?: IntArray(0),
+                        )
+                        return com.google.common.util.concurrent.Futures.immediateFuture(
+                            SessionResult(SessionResult.RESULT_SUCCESS)
+                        )
+                    }
                     if (customCommand.customAction != ACTION_ROUTE_DEVICE) {
                         return com.google.common.util.concurrent.Futures.immediateFuture(
                             SessionResult(SessionResult.RESULT_ERROR_NOT_SUPPORTED)
@@ -207,7 +252,77 @@ class PlaybackService : MediaSessionService() {
         }
     }
 
+    /**
+     * v1.3.x 播放设置: app 侧「播放」页四个开关在此生效。
+     *
+     * - **单声道**: 写 [MonoAudioProcessor].enabled(常驻处理器,透传态零开销);
+     * - **音量均衡**: LoudnessEnhancer 提升响度(+3 dB,响度归一);
+     * - **允许同时播放**: 关=接管音频焦点(播放时压低其他应用),开=不接管;
+     * - **均衡器**: Equalizer(默认平坦曲线,开=启用)。
+     *
+     * audiofx 对象都挂在 ExoPlayer 的 audioSessionId 上;**会话 id 在播放器
+     * 未就绪时为 0/UNSET** → 此时只记设置,等下一次下发(播放开始后 app 侧会
+     * 再发一次)。所有 audiofx 创建都 runCatching 包裹——部分机型/ROM 上
+     * 创建会抛(缺效果库、session 被占用),不能因此崩服务。
+     */
+    private fun applyAudioSettings(
+        normalize: Boolean,
+        mono: Boolean,
+        concurrent: Boolean,
+        equalizerOn: Boolean,
+        bands: IntArray = IntArray(0),
+    ) {
+        val p = player ?: session?.player as? ExoPlayer ?: return
+        // 焦点策略:开=不接管(与其他应用混播),关=接管(默认行为)。
+        // ⚠️ 只在**真的变化**时调用——setAudioAttributes 会重新申请音频焦点,
+        // 重复调用会把正在播放的曲子打断(实测"点播放播不动"的根因)。
+        val wantFocus = !concurrent
+        if (wantFocus != lastHandleFocus) {
+            runCatching {
+                p.setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
+                        .setUsage(C.USAGE_MEDIA)
+                        .build(),
+                    /* handleAudioFocus = */ wantFocus,
+                )
+            }
+            lastHandleFocus = wantFocus
+        }
+        val sessionId = runCatching { p.audioSessionId }.getOrDefault(0)
+        if (sessionId <= 0) return
+        runCatching {
+            if (equalizer == null) {
+                equalizer = android.media.audiofx.Equalizer(0, sessionId)
+            }
+            // 各频段增益(mB):索引即频段序号;超出设备支持的段数忽略。
+            equalizer?.let { eq ->
+                val n = runCatching { eq.numberOfBands.toInt() }.getOrDefault(0)
+                val range = runCatching { eq.bandLevelRange }.getOrNull()
+                for (i in 0 until minOf(n, bands.size)) {
+                    val v = if (range != null) {
+                        bands[i].coerceIn(range[0].toInt(), range[1].toInt()).toShort()
+                    } else bands[i].toShort()
+                    runCatching { eq.setBandLevel(i.toShort(), v) }
+                }
+                eq.enabled = equalizerOn
+            }
+        }.onFailure { android.util.Log.w("AudioFX", "Equalizer 不可用: ${it.message}") }
+        runCatching {
+            if (loudness == null) {
+                loudness = android.media.audiofx.LoudnessEnhancer(sessionId)
+            }
+            // 目标增益单位是毫贝(mB):+300mB = +3dB,听感上明显但不失真。
+            loudness?.setTargetGain(if (normalize) 300 else 0)
+            loudness?.enabled = normalize
+        }.onFailure { android.util.Log.w("AudioFX", "LoudnessEnhancer 不可用: ${it.message}") }
+    }
+
     override fun onDestroy() {
+        runCatching { equalizer?.release() }
+        runCatching { loudness?.release() }
+        equalizer = null
+        loudness = null
         session?.run {
             player.release()
             release()

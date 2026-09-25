@@ -38,7 +38,16 @@ data class ParsedLyrics(
         if (synced) {
             var active = -1
             for (i in lines.indices) {
-                val t = lines[i].timeMs ?: continue
+                val t = lines[i].timeMs
+                if (t == null) {
+                    // v1.3.x 第7项（用户实测"第 3 行亮、第 4/5 行延迟数秒才亮、第 6 行正常"）：
+                    // **没有时间戳的行必须跟着前一行一起亮，不能被跳过**。
+                    // 原实现 `?: continue` 把它跳过 → active 停在它之前不动 → 该行一直不亮，
+                    // 直到后面某行到点，active 直接跳过去，它才"顺带"亮起（几秒延迟）。
+                    // 现在：只要前面已经有行到点（active != -1），就把它一并纳入已唱范围。
+                    if (active != -1) active = i
+                    continue
+                }
                 if (t <= p) active = i else break
             }
             return active

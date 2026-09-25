@@ -194,6 +194,9 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
                     it.seekTo(it.currentMediaItemIndex, 0L)
                 }
             }
+            // v1.3.x 播放设置:READY 时 audioSessionId 才有效,补发一次(见
+            // applyAudioSettings 的注释——服务端 sessionId<=0 时只记不生效)。
+            if (state == Player.STATE_READY) lastAudioSettings?.let { sendAudioSettings(it) }
         }
     }
 
@@ -214,6 +217,28 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
         }
         trackerInitialized = true
     }
+
+    /**
+     * v1.3.x: 帧级精确播放位置。
+     *
+     * [positionMs] 是 ticker 每 300ms 刷一次的**状态**——歌词跟唱高亮读它最多滞后
+     * 一个 tick(实测"唱到该行了还慢半拍才亮")。ExoPlayer 的 `currentPosition`
+     * 自带系统时钟插值(基于上次内部更新外推),帧级调用拿到的是当下精确位置,
+     * 无 tick 粒度延迟。仅歌词高亮这类"需要跟帧"的场景用它;进度条/时间显示
+     * 继续读 [positionMs](300ms 粒度足够,且避免全页重组)。
+     */
+    fun framePositionMs(): Long = controller?.currentPosition?.coerceAtLeast(0) ?: positionMs
+
+    /**
+     * v23: 与 [framePositionMs] 同源（帧级插值），但换算到**当前曲目**坐标。
+     *
+     * 歌词时间戳、进度条时长都是"当前曲目"坐标系；而 `currentPosition` 是**整轨文件**
+     * 的绝对位置。拆分单曲下两者差一个 [virtualStartMs] —— 拿文件坐标去比歌词时间戳，
+     * 高亮会整体偏移（这首的区间起点越靠后，偏得越多）。普通单曲两者重合。
+     */
+    fun frameDisplayPositionMs(): Long =
+        if (virtualDurationMs > 0L) (framePositionMs() - virtualStartMs).coerceAtLeast(0L)
+        else framePositionMs()
 
     private var tickerStarted = false
     private fun startTicker() {
@@ -410,6 +435,22 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
 
     /** Starts playback of [tracks] at [startId]. [key] null = normal queue. */
     fun playQueue(tracks: List<Track>, startId: Long, key: String?) {
+        // v23:空队列必须是**完整 no-op**。抽 loadQueue 时把原来开头的
+        // `if (tracks.isEmpty()) return` 一起搬走了,只剩 loadQueue 内部的早退,
+        // 而 playQueue 会继续执行到下面的 play() —— 结果 playQueue(emptyList())
+        // 会把**上一次装载的队列**接着播起来(调用方以为静默什么都不做)。
+        if (tracks.isEmpty()) return
+        loadQueue(tracks, startId, key)
+        // playQueue = 装载 + 立即开播；loadQueue 只装载(拆分编辑页"不自动播放"用)。
+        controller?.play()
+    }
+
+    /**
+     * 装载队列但**不播放**——停在暂停态。与 playQueue 同一套装载逻辑:
+     * repeatMode/queueKey/起点/manual queue/统计口径全部一致,唯一差异是不调 play。
+     * 拆分编辑页用它:进页面只装载整轨文件(进度条可拖、时长可读),用户自己点播放。
+     */
+    fun loadQueue(tracks: List<Track>, startId: Long, key: String?) {
         val c = controller ?: return
         if (tracks.isEmpty()) return
         gapJob?.cancel()
@@ -429,7 +470,6 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
         manualQueue.forEachIndexed { i, t -> c.addMediaItem(index + 1 + i, buildItem(t)) }
         c.shuffleModeEnabled = shuffleFlag && key == null
         c.prepare()
-        c.play()
         currentId = startId
         queueVersion++
         startTracking(tracks[index].id)
@@ -721,6 +761,32 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
         controller?.play()
     }
 
+    /**
+     * v23: 按**当前曲目内的时间**定位（拆分单曲会自动映射回整轨文件坐标）。
+     *
+     * 与 [seekToMs] 的区别就是坐标系:[seekToMs] 收的是**整轨文件**的绝对毫秒,
+     * 而歌词时间戳、进度条显示的时长都是**当前曲目**坐标系。
+     *
+     * 修的是一个真实事故:拆分专辑里点击歌词行会"退出播放并跳到专辑第一首"——
+     * 点击处理按 [displayDurationMs] 算出的是曲目内坐标(如 30s),却被当成文件坐标
+     * 交给 [seekToMs],于是 seek 到整轨文件第 30 秒。那个位置落在该单曲区间**之前**,
+     * 播放服务的虚拟边界检查判定"越界"→ 切到包含第 30 秒的那首(即第一首),
+     * 连带把刚导入、还没时间戳的歌词"弄没了"(其实只是换了曲目)。
+     * 普通单曲两个坐标系重合,所以此前没暴露。
+     */
+    fun seekToDisplayMs(ms: Long) {
+        val c = controller ?: return
+        val t = currentCarry()?.current
+        if (t == null) {
+            c.seekTo(ms.coerceAtLeast(0))
+            c.play()
+            return
+        }
+        val span = (t.endMs - t.startMs).coerceAtLeast(0L)
+        c.seekTo(t.startMs + ms.coerceIn(0L, span))
+        c.play()
+    }
+
     fun toggleShuffle() {
         shuffleFlag = !shuffleFlag
         controller?.shuffleModeEnabled = shuffleFlag && queueKey == null
@@ -732,13 +798,20 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
     }
 
     fun cycleRepeat() {
-        val next = when (repeatMode) {
-            Player.REPEAT_MODE_OFF -> Player.REPEAT_MODE_ALL
-            Player.REPEAT_MODE_ALL -> Player.REPEAT_MODE_ONE
-            else -> Player.REPEAT_MODE_OFF
-        }
-        repeatMode = next
-        controller?.repeatMode = next
+        setRepeat(
+            when (repeatMode) {
+                Player.REPEAT_MODE_OFF -> Player.REPEAT_MODE_ALL
+                Player.REPEAT_MODE_ALL -> Player.REPEAT_MODE_ONE
+                else -> Player.REPEAT_MODE_OFF
+            },
+        )
+    }
+
+    /** v1.3.8: 直接设定循环模式(Agent 的 playback_mode 技能用)——cycleRepeat 只能轮流切,
+     *  用户说"单曲循环"时必须能一步到位,不能连点两次碰运气。 */
+    fun setRepeat(mode: Int) {
+        repeatMode = mode
+        controller?.repeatMode = mode
     }
 
     /**
@@ -882,5 +955,45 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
             // call after connection succeeds will re-send.
             c.sendCustomCommand(cmd, args)
         } catch (_: Exception) { }
+    }
+
+    // ── v1.3.x 播放设置(音量均衡/单声道/同时播放/均衡器)──────────────────────
+    /** 最近一次下发的播放设置——READY 后补发用(audioSessionId 就绪前服务端只记不生效)。 */
+    private var lastAudioSettings: Bundle? = null
+    /** 幂等守卫用的"上次已下发"快照:值没变就**不重复下发**。
+     *  设置流在每次 DataStore 写入都会发射(播放一首歌就会写 recentIds!),若无条件
+     *  下发,服务端会反复 setAudioAttributes → **反复重申请音频焦点** → 刚起的播放
+     *  被打断(实测"点播放播不动"的根因)。 */
+    private var lastSentAudioKey: String? = null
+
+    /** app 侧 facade:把「播放」页设置下发到服务进程的 ExoPlayer 上生效。 */
+    fun applyAudioSettings(
+        normalize: Boolean,
+        mono: Boolean,
+        concurrent: Boolean,
+        equalizerOn: Boolean,
+        equalizerBands: List<Int> = emptyList(),
+    ) {
+        val key = "$normalize|$mono|$concurrent|$equalizerOn|${equalizerBands.joinToString(",")}"
+        if (key == lastSentAudioKey) return
+        val args = Bundle().apply {
+            putBoolean(PlaybackService.KEY_VOLUME_NORMALIZE, normalize)
+            putBoolean(PlaybackService.KEY_MONO_AUDIO, mono)
+            putBoolean(PlaybackService.KEY_ALLOW_CONCURRENT, concurrent)
+            putBoolean(PlaybackService.KEY_EQUALIZER, equalizerOn)
+            putIntArray(PlaybackService.KEY_EQ_BANDS, equalizerBands.toIntArray())
+        }
+        lastAudioSettings = args
+        if (sendAudioSettings(args)) lastSentAudioKey = key
+    }
+
+    /** @return true = 命令已发出(用于幂等快照只在真正送达时更新)。 */
+    private fun sendAudioSettings(args: Bundle): Boolean {
+        val c = controller ?: return false
+        val cmd = SessionCommand(PlaybackService.ACTION_AUDIO_SETTINGS, args)
+        return try {
+            c.sendCustomCommand(cmd, args)
+            true
+        } catch (_: Exception) { false }
     }
 }

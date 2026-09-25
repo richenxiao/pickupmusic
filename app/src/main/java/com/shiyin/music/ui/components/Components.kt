@@ -33,7 +33,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
@@ -46,6 +49,7 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -698,14 +702,45 @@ object ArtCache {
 }
 
 @Composable
-fun rememberAlbumArt(track: Track?, sizeDp: Dp, coverScope: ArtCache.CoverScope = ArtCache.CoverScope.AUTO): ImageBitmap? {
+fun rememberAlbumArt(track: Track?, sizeDp: Dp, coverScope: ArtCache.CoverScope = ArtCache.CoverScope.AUTO): ImageBitmap? =
+    rememberAlbumArtState(track, sizeDp, coverScope).art
+
+/** 封面 + 「是否已解析完成」。null 且 resolved=true 才代表"这首确实没有封面"。 */
+internal data class AlbumArtState(val art: ImageBitmap?, val resolved: Boolean)
+
+/**
+ * v23: [rememberAlbumArt] 的带状态版本。
+ *
+ * 为什么要多一个 resolved:封面为 null 有两种截然不同的含义——「还在异步加载」
+ * 与「这首根本没有封面」。旧 API 二者不可分,于是 CoverArt 的"加载间隙沿用上一张"
+ * 兜底会在**无封面曲目**上永久显示别的歌的封面(列表滚动/兜底源全失败时尤其明显)。
+ */
+@Composable
+internal fun rememberAlbumArtState(
+    track: Track?,
+    sizeDp: Dp,
+    coverScope: ArtCache.CoverScope = ArtCache.CoverScope.AUTO,
+): AlbumArtState {
     val context = LocalContext.current
     val px = with(LocalDensity.current) { sizeDp.roundToPx() }.coerceAtLeast(32)
     // v1.2.0：初始值同步查内存缓存命中即显示，避免列表滚动 item 回收重组时
     // null→bitmap 一帧闪烁 + 反复加载。未命中 produceState 异步 load 补。
     val initial = track?.let { ArtCache.getCached(it, px)?.asImageBitmap() }
-    val state = produceState<ImageBitmap?>(initial, track?.id, coverScope) {
-        value = track?.let { ArtCache.load(context, it, px, coverScope)?.asImageBitmap() }
+    // v1.3.x 第10项:produceState 的键用**专辑维度**的 artId，不是 track.id。
+    // 封面缓存本来就按 albumId 归档(getCached/load 都是 artId)，用 track.id 做键会
+    // 让"同一张专辑内切歌"也重启 producer → value 回到初值那一瞬就是用户看到的
+    // "同一专辑也闪一下"。改成 artId 后，同专辑切歌完全不重启、位图原样复用。
+    // (albumId<=0 的孤立单曲仍按 track.id 区分，行为不变。)
+    val artId = track?.let { if (it.albumId > 0) it.albumId else -it.id }
+    val state = produceState<AlbumArtState>(
+        AlbumArtState(initial, initial != null),
+        artId,
+        coverScope,
+    ) {
+        value = AlbumArtState(
+            track?.let { ArtCache.load(context, it, px, coverScope)?.asImageBitmap() },
+            resolved = true,
+        )
     }
     return state.value
 }
@@ -804,18 +839,66 @@ fun CoverArt(
     modifier: Modifier = Modifier,
     coverScope: ArtCache.CoverScope = ArtCache.CoverScope.AUTO,
 ) {
-    val art = rememberAlbumArt(track, size, coverScope)
+    val artState = rememberAlbumArtState(track, size, coverScope)
+    val art = artState.art
     val (bg, fg) = coverPalette(track?.paletteIndex ?: 0)
     val sizeMod = if (fillToParent) Modifier.fillMaxSize() else Modifier.size(size)
+
+    // v1.3.x 修复(用户反馈⑮:切歌时封面"正确→首字→正确"闪一下):
+    // rememberAlbumArt 按 track.id 重启 produceState,新曲封面未就绪期间返回 null
+    // → 旧实现立刻落到"首字占位",封面到达再切回,闪一帧。
+    // 修复:①加载间隙保持上一张已就绪封面(不闪首字);
+    //      ②封面**真的换了**(跨专辑;同专辑复用同一张不做)才做 240ms 交叉淡化
+    //        ——旧封面垫底淡出、新封面淡入,两层同时在场,无中间空帧。
+    var lastArt by remember { mutableStateOf<ImageBitmap?>(null) }
+    var prevArt by remember { mutableStateOf<ImageBitmap?>(null) }
+    var lastAlbumId by remember { mutableLongStateOf(Long.MIN_VALUE) }
+    val fadeAlpha = remember { androidx.compose.animation.core.Animatable(1f) }
+    LaunchedEffect(art) {
+        val target = art ?: run {
+            // art 变 null(加载中 / track 置空):必须清掉交叉淡化的中间态。
+            // 否则在上一轮 240ms 淡化未跑完时再切歌,prevArt 未清、fadeAlpha 停在
+            // 0.2~0.8,下一次绘制就是"半透明封面压在上一张封面上"的冻结重影。
+            prevArt = null
+            fadeAlpha.snapTo(1f)
+            return@LaunchedEffect
+        }
+        val albumChanged = track?.albumId != lastAlbumId
+        if (lastArt != null && albumChanged && target !== lastArt) {
+            prevArt = lastArt
+            lastArt = target
+            lastAlbumId = track?.albumId ?: Long.MIN_VALUE
+            fadeAlpha.snapTo(0f)
+            fadeAlpha.animateTo(1f, tween(240, easing = androidx.compose.animation.core.FastOutSlowInEasing))
+            prevArt = null
+        } else {
+            lastArt = target
+            lastAlbumId = track?.albumId ?: Long.MIN_VALUE
+            fadeAlpha.snapTo(1f)
+        }
+    }
+    // 显示目标:同一首**还在加载** → 沿用上一张(消掉 null→首字的闪烁);
+    // 已解析完成仍为 null(这首确实没有封面)→ 落到首字占位。
+    // 旧实现是 `art ?: lastArt`,把"没有封面"也当成"加载中",于是无封面的曲目会
+    // 永久显示上一首的封面(列表滚动复用 slot 时更明显)。
+    val display = art ?: lastArt?.takeIf { !artState.resolved }
     Box(
         modifier = modifier
             .then(sizeMod)
             .clip(shape)
-            .background(if (art != null) Color.Transparent else bg),
+            .background(if (display != null) Color.Transparent else bg),
         contentAlignment = Alignment.Center,
     ) {
-        if (art != null) {
-            Image(art, contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+        if (display != null) {
+            // 旧封面垫底(淡出层):交叉淡化期间两层同时在场。
+            prevArt?.let { p ->
+                Image(p, contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+            }
+            Image(
+                display, contentDescription = null,
+                modifier = Modifier.fillMaxSize().graphicsLayer { alpha = fadeAlpha.value },
+                contentScale = ContentScale.Crop,
+            )
         } else {
             if (showDeco) {
                 Box(
@@ -913,6 +996,16 @@ fun heading(size: Int, color: Color = LocalOrganic.current.text) = TextStyle(
     lineHeight = (size * 1.12f).sp,
 )
 
+/**
+ * v1.3.x 第1项：主页面顶栏与侧边栏品牌区**共用**的顶部基准。
+ *
+ * 此前两边各写各的（侧边栏 `padding(20.dp)` 且行高由文字撑；主页面 `padding(top=22.dp)`
+ * 且行高由 26sp 问候语撑），字号又不同，中心线自然对不上。改成同一偏移 + 同一行高 +
+ * 同一居中方式后，两侧的垂直中心线在任何屏宽与字号下都一致——不是靠负 margin 硬凑。
+ */
+val TopBarTop = 22.dp
+val TopBarHeight = 40.dp
+
 fun body(size: Float, weight: FontWeight = FontWeight.Normal, color: Color) = TextStyle(
     fontFamily = Figtree,
     fontSize = size.sp,
@@ -924,6 +1017,18 @@ fun body(size: Float, weight: FontWeight = FontWeight.Normal, color: Color) = Te
 @Composable
 fun OIcon(icon: ImageVector, size: Dp, tint: Color, modifier: Modifier = Modifier) {
     Icon(icon, contentDescription = null, modifier = modifier.size(size), tint = tint)
+}
+
+/**
+ * 同上，但接 [Painter] —— 供**矢量 drawable**（`painterResource(R.drawable.xxx)`）使用。
+ *
+ * 为什么不用 `vectorResource` 直接变成 ImageVector：这个 Compose 版本上
+ * `androidx.compose.ui.res.vectorResource` 解析不到（编译期 Unresolved reference），
+ * 而 `painterResource` 可用。图标仍由 [Icon] 按 tint 上色，行为与 ImageVector 版一致。
+ */
+@Composable
+fun OIcon(painter: Painter, size: Dp, tint: Color, modifier: Modifier = Modifier) {
+    Icon(painter, contentDescription = null, modifier = modifier.size(size), tint = tint)
 }
 
 // ── buttons ────────────────────────────────────────────────────────────────

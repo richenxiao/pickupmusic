@@ -1,0 +1,136 @@
+package com.shiyin.music.data.translate
+
+import android.util.Log
+import com.google.android.gms.tasks.Task
+import com.google.mlkit.common.model.DownloadConditions
+import com.google.mlkit.common.model.RemoteModelManager
+import com.google.mlkit.nl.translate.TranslateLanguage
+import com.google.mlkit.nl.translate.TranslateRemoteModel
+import com.google.mlkit.nl.translate.Translation
+import com.google.mlkit.nl.translate.Translator
+import com.google.mlkit.nl.translate.TranslatorOptions
+import kotlinx.coroutines.CancellableContinuation
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
+
+/**
+ * 需求6「歌词本翻译」离线路径 —— ML Kit 端侧翻译的薄封装。
+ *
+ * 三件必须知道的事（方案已调研确认，非实现偷懒）：
+ * 1. **语言包只能动态下载**，无法打进 APK（约 30MB/语言，存用户手机）。
+ *    目标语言是中文，所以最小可用集 = 源语言 + 中文（ja→zh 还需英语 pivot，见 3）。
+ * 2. **下载无进度百分比**：Android 端 `Task` 只有成功/失败回调（iOS 才有进度通知），
+ *    故对外只能给不定态 + 看门狗超时。
+ * 3. **ja→zh 走英语中转**：官方模型只对英语双向训练，非英语↔非英语经英语转译，
+ *    离线质量上限是"句子通顺"档，质量主力必须靠 AI 路径。
+ *
+ * 使用方负责 close()（内部 Translator 持有原生资源）。
+ */
+class MlKitLyricsTranslator(private val sourceLanguage: String) {
+
+    private var translator: Translator? = null
+
+    /** 惰性建 client：ML Kit 的 Translation.getClient 是同步的，但没必要提前建。 */
+    private fun client(): Translator = translator ?: Translation.getClient(
+        TranslatorOptions.Builder()
+            .setSourceLanguage(sourceLanguage)
+            .setTargetLanguage(TranslateLanguage.CHINESE)
+            .build(),
+    ).also { translator = it }
+
+    /** 语言包是否已下载（决定是否需要走下载引导）。 */
+    suspend fun isModelDownloaded(): Boolean {
+        val downloaded = downloadedModels()
+        // 源语言包必备；ja→zh 还要英语 pivot 包（官方中转），一并要求。
+        val need = buildSet {
+            add(sourceLanguage)
+            add(TranslateLanguage.CHINESE)
+            if (sourceLanguage != TranslateLanguage.ENGLISH && sourceLanguage != TranslateLanguage.CHINESE) {
+                add(TranslateLanguage.ENGLISH)
+            }
+        }
+        return downloaded.containsAll(need)
+    }
+
+    /** 已下载的语言包语言码集合。设置页"语言包管理"用。 */
+    suspend fun downloadedModels(): Set<String> {
+        val models = RemoteModelManager.getInstance()
+            .getDownloadedModels(TranslateRemoteModel::class.java)
+            .awaitTask()
+            ?: return emptySet()
+        return models.map { it.language }.toSet()
+    }
+
+    /**
+     * 下载源语言 + 中文（+ 英语 pivot）语言包。
+     *
+     * @param requireWifi 仅 WiFi 下载（默认 true，30MB×N 不该走流量）
+     * @param timeoutMs 看门狗超时——ML Kit 无进度回调，没有它就可能永远转圈
+     * @return true=已就绪；false=超时或失败（调用方据此给明确文案，不静默卡住）
+     */
+    suspend fun ensureModelDownloaded(
+        requireWifi: Boolean = true,
+        timeoutMs: Long = 120_000L,
+    ): Boolean {
+        val conditions = DownloadConditions.Builder()
+            .apply { if (requireWifi) requireWifi() }
+            .build()
+        val ok = withTimeoutOrNull(timeoutMs) {
+            runCatching { client().downloadModelIfNeeded(conditions).awaitTask() }.isSuccess
+        }
+        if (ok != true) {
+            Log.w(TAG, "language pack download failed/timeout: src=$sourceLanguage wifi=$requireWifi")
+        }
+        return ok == true
+    }
+
+    /** 删除已下载语言包（设置页语言包管理用）。 */
+    suspend fun deleteModel(language: String): Boolean =
+        runCatching {
+            RemoteModelManager.getInstance()
+                .deleteDownloadedModel(TranslateRemoteModel.Builder(language).build())
+                .awaitTask()
+        }.isSuccess
+
+    /**
+     * 翻译一段文本（调用方应传**已拼接的句组**，不是单行——句级模型逐行喂会丢上下文）。
+     *
+     * 缓解官方未修 bug（issuetracker 369752306）：`translate()` 偶发**原样返回不翻译**。
+     * 检出"输出 == 输入"则重试一次；仍失败返回 null（调用方按"该组未译"处理）。
+     */
+    suspend fun translate(text: String): String? {
+        val src = text.trim()
+        if (src.isEmpty()) return null
+
+        val first = runCatching { client().translate(src).awaitTask() }.getOrNull()?.trim()
+        if (!first.isNullOrEmpty() && first != src) return first
+
+        // 原样返回（或空）→ 重试一次。源语言是中文时"相同"是正常结果，不重试。
+        if (sourceLanguage == TranslateLanguage.CHINESE) return first
+        Log.w(TAG, "translate returned input verbatim, retrying once: src=$sourceLanguage")
+        val second = runCatching { client().translate(src).awaitTask() }.getOrNull()?.trim()
+        return second?.takeIf { it.isNotEmpty() && it != src }
+    }
+
+    fun close() {
+        runCatching { translator?.close() }
+        translator = null
+    }
+
+    private companion object {
+        const val TAG = "MlKitTranslate"
+    }
+}
+
+/** ML Kit `Task` → 协程。取消时只放弃等待，不取消底层任务（Task 无取消语义）。 */
+private suspend fun <T> Task<T>.awaitTask(): T? = suspendCancellableCoroutine { cont ->
+    val c: CancellableContinuation<T?> = cont
+    addOnSuccessListener { if (c.isActive) c.resume(it) }
+    addOnFailureListener { e ->
+        Log.w("MlKitTranslate", "task failed: ${e.message}")
+        if (c.isActive) c.resumeWithException(e)
+    }
+    addOnCanceledListener { if (c.isActive) c.resume(null) }
+}

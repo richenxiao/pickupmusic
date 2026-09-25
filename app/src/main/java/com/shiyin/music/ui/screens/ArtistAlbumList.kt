@@ -169,7 +169,11 @@ fun ArtistAlbumList(
                                     val n = vm.fetchArtistAlbumDates(artistName, triples) { aiStatus = it }
                                     aiBusy = false
                                     dragOrder = null
-                                    aiStatus = if (n > 0) null else (aiStatus ?: "未能获取发布时间")
+                                    // v1.3.6 修补:aiStatus 在 progress 回调里被设为空串(完成信号)
+                                    // 时,这里直接保留最后一次非空状态——原实现 `aiStatus ?: "未能获取
+                                    // 发布时间"` 把空串当"无状态"处理,用户看到的只有"AI 正在联网
+                                    // 获取…"一直挂着,完成后也没任何反馈(连报错都没有)。
+                                    aiStatus = if (n > 0) null else (aiStatus.takeIf { !it.isNullOrBlank() } ?: "未能获取发布时间")
                                 }
                             },
                         )

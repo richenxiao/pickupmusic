@@ -14,4 +14,8 @@
     <files-path
         name="backup_snapshots"
         path="backup_snapshots/" />
+    <!-- v1.3.x: 使用日志（设置 → 数据管理 → 日志）导出后走分享面板发给开发者。 -->
+    <files-path
+        name="usage_logs"
+        path="usage_logs/" />
 </paths>

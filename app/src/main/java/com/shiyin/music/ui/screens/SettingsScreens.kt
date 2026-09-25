@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -75,11 +76,17 @@ import com.shiyin.music.ui.theme.Caprasimo
 import com.shiyin.music.ui.theme.LocalOrganic
 
 @Composable
-fun SettingsHost(vm: MainViewModel, view: FilesView) {
+fun SettingsHost(
+    vm: MainViewModel,
+    view: FilesView,
+    // v1.3.x 第4项:各设置页共用的滚动状态表(在 AppRoot 里 remember,换路由不销毁)。
+    // 按页面名分键,各页互不共享。
+    scrollStates: MutableMap<String, ScrollState> = remember { mutableMapOf() },
+) {
     // view 来自 AnimatedContent 的 settings:* key 快照(见 AppRoot),不是实时 vm.filesView
     // ——转场期间旧层持有的旧 view 不随 vm.filesView 一起重组,各自渲染各自页面。
     when (view) {
-        FilesView.Root -> SettingsRoot(vm)
+        FilesView.Root -> SettingsRoot(vm, scrollStates)
         FilesView.Clean -> CleanScreen(vm)
         FilesView.Trash -> CleanScreen(vm)   // v1.3.x: 回收站并入清理建议页,旧入口重定向
         FilesView.Folders -> FoldersScreen(vm)
@@ -89,8 +96,13 @@ fun SettingsHost(vm: MainViewModel, view: FilesView) {
         FilesView.About -> AboutScreen(vm)
         FilesView.Merges -> MergesScreen(vm)
         FilesView.ImageSources -> ImageSourcesScreen(vm)
-        FilesView.LyricsBook -> LyricsBookScreen(vm)
-        FilesView.CloudBackup -> CloudBackupScreen(vm)
+        FilesView.LyricsBook -> LyricsBookScreen(vm, scrollStates)
+        FilesView.CloudBackup -> CloudBackupScreen(vm, scrollStates)
+        FilesView.PlaySettings -> PlaySettingsScreen(vm, scrollStates)
+        FilesView.Equalizer -> EqualizerScreen(vm, scrollStates)
+        FilesView.Logs -> LogsScreen(vm, scrollStates)
+        FilesView.DataManage -> DataManageScreen(vm, scrollStates)
+        FilesView.FilesManage -> FilesManageScreen(vm, scrollStates)
     }
 }
 
@@ -101,17 +113,26 @@ fun SettingsHost(vm: MainViewModel, view: FilesView) {
  * 且与本项目"用户自配地址 + 凭据"的既有范式一致（写真源就是这么做的）。
  *
  * 凭据只存 DataStore，**刻意不进备份文件** —— 否则备份包泄露等于云盘账号泄露。
+ *
+ * v22 第3版重做(用户两轮打回:①"杂乱无比,按钮乱摆,小字标注乱来不严谨";
+ * ②"说是云备份结果都在扯坚果云,装了坚果云APP却无法联动"):
+ *  - 布局严格对齐设置子页体系(眉题 + 28dp 圆角卡片 + SettingRow 间距);
+ *  - 文案通用化:WebDAV 是公开协议,任何兼容网盘/服务器都能用,坚果云只是
+ *    其中一个例子;并明确写出**不需要安装网盘 APP**(WebDAV 走服务器地址
+ *    直连,与手机上装没装 APP 无关——用户误解的直接来源);
+ *  - 操作归位:配置卡里只有输入框和「保存凭据」;「测试连接」「备份到云端」
+ *    是操作卡的两个同级按钮;状态信息单独成行,不跟按钮挤。
  */
 @Composable
-private fun CloudBackupScreen(vm: MainViewModel) {
+private fun CloudBackupScreen(vm: MainViewModel, scrollStates: MutableMap<String, ScrollState>) {
     val c = LocalOrganic.current
-    val context = androidx.compose.ui.platform.LocalContext.current
     // 进页时载入已保存的凭据（一次性）
     androidx.compose.runtime.LaunchedEffect(Unit) { vm.loadWebDavConfig() }
 
     var url by remember { mutableStateOf("") }
     var user by remember { mutableStateOf("") }
     var pass by remember { mutableStateOf("") }
+    var passVisible by remember { mutableStateOf(false) }
     var loaded by remember { mutableStateOf(false) }
     // 凭据异步载入后回填输入框（只填一次，避免覆盖用户正在输入的内容）
     androidx.compose.runtime.LaunchedEffect(vm.webDavUrl, vm.webDavUser, vm.webDavPassword) {
@@ -119,105 +140,141 @@ private fun CloudBackupScreen(vm: MainViewModel) {
             url = vm.webDavUrl; user = vm.webDavUser; pass = vm.webDavPassword; loaded = true
         }
     }
+    val tfColors = OutlinedTextFieldDefaults.colors(
+        focusedTextColor = c.text, unfocusedTextColor = c.text, cursorColor = c.accent,
+        focusedBorderColor = c.accent, unfocusedBorderColor = c.n400,
+    )
 
     Column(
-        Modifier.fillMaxSize().verticalScroll(rememberScrollState())
+        Modifier.fillMaxSize().verticalScroll(scrollStateOf(scrollStates, "cloudbackup"))
             .padding(horizontal = 20.dp).padding(top = 22.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        SubPageHeader("云备份") { vm.filesView = FilesView.Root }
+        SubPageHeader("云备份") { vm.navFilesBack() }
 
+        // ── 服务器配置 ──────────────────────────────────────────────────
+        SectionLabel("服务器")
         Column(
-            Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(c.surface).padding(16.dp),
+            Modifier.fillMaxWidth().shadowSm(RoundedCornerShape(28.dp))
+                .clip(RoundedCornerShape(28.dp)).background(c.surface)
+                .padding(horizontal = 16.dp, vertical = 14.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Text("WebDAV 地址", style = body(13f, FontWeight.ExtraBold, c.text))
             Text(
-                "支持坚果云（https://dav.jianguoyun.com/dav/）、Nextcloud、群晖等。" +
-                    "坚果云请用「应用密码」而不是登录密码。",
-                style = body(11.5f, FontWeight.Normal, c.n600).copy(lineHeight = 17.sp),
+                "任何兼容 WebDAV 协议的网盘或服务器都可以存放备份（坚果云、Nextcloud、" +
+                    "群晖 NAS 等）。备份通过服务器地址直连传输，不需要安装对应的网盘 APP。",
+                style = body(12f, FontWeight.Normal, c.n600).copy(lineHeight = 18.sp),
             )
             OutlinedTextField(
                 value = url, onValueChange = { url = it },
-                label = { Text("地址", style = body(12f, FontWeight.Normal, c.n600)) },
+                label = { Text("服务器地址", style = body(12f, FontWeight.Normal, c.n600)) },
+                placeholder = { Text("例如 https://dav.jianguoyun.com/dav/", style = body(13f, FontWeight.Normal, c.n500)) },
+                supportingText = {
+                    Text(
+                        "坚果云固定填 https://dav.jianguoyun.com/dav/（只填主机名会自动补 /dav/）。" +
+                            "备份会存进这个地址下的 PickUpMusic 文件夹，没有会自动创建；" +
+                            "想自己指定位置，就写成 …/dav/文件夹名/（该文件夹需已存在）。" +
+                            "「测试连接」会真的写一个临时文件再删掉，通过即代表备份能成。",
+                        style = body(11f, FontWeight.Normal, c.n500),
+                    )
+                },
                 singleLine = true, modifier = Modifier.fillMaxWidth(),
-                textStyle = body(13f, FontWeight.Normal, c.text),
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedTextColor = c.text, unfocusedTextColor = c.text, cursorColor = c.accent,
-                    focusedBorderColor = c.accent, unfocusedBorderColor = c.n400,
-                ),
+                textStyle = body(13f, FontWeight.Normal, c.text), colors = tfColors,
             )
             OutlinedTextField(
                 value = user, onValueChange = { user = it },
                 label = { Text("账号", style = body(12f, FontWeight.Normal, c.n600)) },
                 singleLine = true, modifier = Modifier.fillMaxWidth(),
-                textStyle = body(13f, FontWeight.Normal, c.text),
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedTextColor = c.text, unfocusedTextColor = c.text, cursorColor = c.accent,
-                    focusedBorderColor = c.accent, unfocusedBorderColor = c.n400,
-                ),
+                textStyle = body(13f, FontWeight.Normal, c.text), colors = tfColors,
             )
             OutlinedTextField(
                 value = pass, onValueChange = { pass = it },
                 label = { Text("密码 / 应用密码", style = body(12f, FontWeight.Normal, c.n600)) },
+                supportingText = {
+                    Text(
+                        "坚果云等网盘要求在网页端生成「应用密码」，不要填登录密码。",
+                        style = body(11f, FontWeight.Normal, c.n500),
+                    )
+                },
                 singleLine = true, modifier = Modifier.fillMaxWidth(),
                 textStyle = body(13f, FontWeight.Normal, c.text),
-                visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedTextColor = c.text, unfocusedTextColor = c.text, cursorColor = c.accent,
-                    focusedBorderColor = c.accent, unfocusedBorderColor = c.n400,
-                ),
+                visualTransformation = if (passVisible) androidx.compose.ui.text.input.VisualTransformation.None
+                    else androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                trailingIcon = {
+                    Box(
+                        Modifier.size(36.dp).clip(CircleShape).clickable { passVisible = !passVisible },
+                        contentAlignment = Alignment.Center,
+                    ) { OIcon(if (passVisible) Lucide.EyeOff else Lucide.Eye, 16.dp, c.n500) }
+                },
+                colors = tfColors,
             )
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                Box(
-                    Modifier.clip(RoundedCornerShape(999.dp)).background(c.accent)
-                        .clickable(enabled = !vm.cloudBusy) {
-                            vm.saveWebDavConfig(url, user, pass)
-                            vm.cloudTest()
-                        }
-                        .padding(horizontal = 16.dp, vertical = 9.dp),
-                ) {
-                    Text(
-                        if (vm.cloudBusy) "处理中…" else "保存并测试连接",
-                        style = body(12.5f, FontWeight.Bold, androidx.compose.ui.graphics.Color.White),
-                    )
-                }
-                Box(
-                    Modifier.clip(RoundedCornerShape(999.dp)).background(c.n100)
-                        .clickable(enabled = !vm.cloudBusy) { vm.cloudUpload() }
-                        .padding(horizontal = 16.dp, vertical = 9.dp),
-                ) { Text("上传当前备份", style = body(12.5f, FontWeight.Bold, c.text)) }
-            }
-            vm.cloudMsg?.let {
-                Text(it, style = body(11.5f, FontWeight.Normal, c.a700).copy(lineHeight = 17.sp))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                PillButton(
+                    "保存凭据", onClick = { vm.saveWebDavConfig(url, user, pass) },
+                    bg = c.accent, textColor = Color.White,
+                )
             }
         }
 
+        // ── 操作 ───────────────────────────────────────────────────────
+        SectionLabel("备份")
+        Column(
+            Modifier.fillMaxWidth().shadowSm(RoundedCornerShape(28.dp))
+                .clip(RoundedCornerShape(28.dp)).background(c.surface)
+                .padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                PillButton(
+                    if (vm.cloudBusy) "处理中…" else "测试连接",
+                    onClick = { vm.cloudTest() },
+                    bg = null, textColor = c.text, borderColor = c.divider,
+                )
+                PillButton(
+                    "备份到云端",
+                    onClick = { vm.cloudUpload() },
+                    bg = c.accent, textColor = Color.White,
+                )
+            }
+            vm.cloudMsg?.let {
+                Text(it, style = body(12f, FontWeight.Normal, c.a700).copy(lineHeight = 18.sp))
+            }
+        }
+
+        // ── 云端备份列表 ────────────────────────────────────────────────
         if (vm.cloudFiles.isNotEmpty()) {
             SectionLabel("云端备份 · ${vm.cloudFiles.size} 个")
             Column(
-                Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(c.surface).padding(12.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp),
+                Modifier.fillMaxWidth().shadowSm(RoundedCornerShape(28.dp))
+                    .clip(RoundedCornerShape(28.dp)).background(c.surface)
+                    .padding(horizontal = 16.dp, vertical = 6.dp),
             ) {
-                for (f in vm.cloudFiles.sortedByDescending { it.name }) {
+                vm.cloudFiles.sortedByDescending { it.name }.forEachIndexed { idx, f ->
                     Row(
-                        Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).background(c.n100)
+                        Modifier.fillMaxWidth()
                             .clickable(enabled = !vm.cloudBusy) { vm.cloudRequestRestore(f.name) }
-                            .padding(horizontal = 10.dp, vertical = 8.dp),
+                            .padding(vertical = 13.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Text(f.name, style = body(11.5f, FontWeight.Normal, c.text), modifier = Modifier.weight(1f))
-                        Text(
-                            if (f.size > 0) "%.1f MB".format(f.size / 1024.0 / 1024.0) else "",
-                            style = body(10.5f, FontWeight.Normal, c.n500),
-                        )
-                        Spacer(Modifier.size(8.dp))
-                        Text("恢复", style = body(11.5f, FontWeight.Bold, c.accent))
+                        Column(Modifier.weight(1f)) {
+                            Text(f.name, style = body(13.5f, FontWeight.SemiBold, c.text),
+                                maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            if (f.size > 0) {
+                                Text(
+                                    "%.1f MB".format(f.size / 1024.0 / 1024.0),
+                                    style = body(11f, FontWeight.Normal, c.n500),
+                                )
+                            }
+                        }
+                        Text("恢复", style = body(12.5f, FontWeight.Bold, c.accent))
+                    }
+                    if (idx < vm.cloudFiles.size - 1) {
+                        Box(Modifier.fillMaxWidth().height(1.dp).background(c.divider))
                     }
                 }
             }
         }
-        Box(Modifier.height(60.dp))
+        Box(Modifier.height(114.dp))
     }
 
     // v22: 云端恢复也要**先预览再写库** —— 与本地恢复同一道闸。
@@ -260,6 +317,226 @@ private fun CloudBackupScreen(vm: MainViewModel) {
     }
 }
 
+/**
+ * v1.3.x: 使用日志页（设置 → 数据管理 → 日志）。
+ *
+ * 给**开发排查**用：用户遇到"点了没反应/结果不对/备份失败"时，让他把这一页的内容
+ * 分享出来，就不必再靠来回猜。因此这一页的设计重点是"能看懂 + 能一键发出去"，
+ * 不是给用户日常看的，不做花哨呈现。
+ *
+ * 内容的边界写在数据层（[com.shiyin.music.data.log.UsageLog]）：只记"做了什么、
+ * 结果如何、数量多少"，**不记歌词文本/搜索词/密钥**——这个文件是要被分享出去的。
+ */
+@Composable
+private fun LogsScreen(vm: MainViewModel, scrollStates: MutableMap<String, ScrollState>) {
+    val c = LocalOrganic.current
+    val context = LocalContext.current
+    var text by remember { mutableStateOf("") }
+    var crashCount by remember { mutableStateOf(0) }
+    var bytes by remember { mutableStateOf(0L) }
+    var msg by remember { mutableStateOf<String?>(null) }
+    // 实际落盘的日志文件清单——用户明确要求"打开就有可以看到的文件"，
+    // 所以除了内容，也把文件本身列出来（文件名 + 大小 + 行数）。
+    var files by remember { mutableStateOf<List<java.io.File>>(emptyList()) }
+    var crashFiles by remember { mutableStateOf<List<java.io.File>>(emptyList()) }
+
+    fun reload() {
+        com.shiyin.music.data.log.UsageLog.prune(context)
+        text = com.shiyin.music.data.log.UsageLog.readAll(context)
+        files = com.shiyin.music.data.log.UsageLog.files(context)
+        crashFiles = com.shiyin.music.data.log.UsageLog.crashFiles(context)
+        crashCount = crashFiles.size
+        bytes = com.shiyin.music.data.log.UsageLog.sizeBytes(context)
+    }
+    // 实时刷新：这一页开着时每 1.5s 重读一次。日志是**追加写**的小文件，重读代价
+    // 可忽略；原来只在进页面时读一次，用户必须退出重进才能看到新记录——用户明确
+    // 要求"实时展示"，这里就不能是一次性快照。
+    androidx.compose.runtime.LaunchedEffect(Unit) {
+        while (true) {
+            reload()
+            kotlinx.coroutines.delay(1500)
+        }
+    }
+
+    fun share() {
+        try {
+            val dir = java.io.File(context.filesDir, "usage_logs").apply { mkdirs() }
+            val f = java.io.File(
+                dir,
+                "pickupmusic-log-" + java.text.SimpleDateFormat(
+                    "yyyyMMdd-HHmm", java.util.Locale.CHINA,
+                ).format(java.util.Date()) + ".txt",
+            )
+            val body = buildString {
+                append("拾音 使用日志\n")
+                append("设备：${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL} (API ${android.os.Build.VERSION.SDK_INT})\n")
+                append("版本：v${vm.currentVersion}\n\n")
+                append(text.ifBlank { "(没有使用记录)" })
+                val crashes = com.shiyin.music.data.log.UsageLog.crashFiles(context)
+                if (crashes.isNotEmpty()) {
+                    append("\n\n=== 崩溃报告（${crashes.size} 份）===\n")
+                    crashes.forEach { cf ->
+                        append("\n--- ${cf.name} ---\n")
+                        runCatching { append(cf.readText()) }
+                    }
+                }
+            }
+            f.writeText(body)
+            val uri = androidx.core.content.FileProvider.getUriForFile(
+                context, "${context.packageName}.coverprovider", f,
+            )
+            val send = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                type = "text/plain"
+                putExtra(android.content.Intent.EXTRA_STREAM, uri)
+                addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            context.startActivity(android.content.Intent.createChooser(send, "分享日志"))
+            msg = "已导出 ${"%.0f".format(body.toByteArray().size / 1024.0)} KB"
+        } catch (e: Exception) {
+            msg = "分享失败：${e.message}"
+        }
+    }
+
+    Column(
+        Modifier.fillMaxSize().verticalScroll(scrollStateOf(scrollStates, "logs"))
+            .padding(horizontal = 20.dp).padding(top = 22.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        SubPageHeader("日志") { vm.navFilesBack() }
+
+        SectionLabel("说明")
+        Column(
+            Modifier.fillMaxWidth().shadowSm(RoundedCornerShape(28.dp))
+                .clip(RoundedCornerShape(28.dp)).background(c.surface)
+                .padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text(
+                "记录本机的使用情况（启动、扫描、歌词匹配、AI 翻译、备份等的结果），" +
+                    "用于遇到问题时定位原因。只记「做了什么」，不记录歌词内容、搜索词、" +
+                    "账号与密钥。",
+                style = body(12f, FontWeight.Normal, c.n600).copy(lineHeight = 18.sp),
+            )
+            Text(
+                "按天分文件，只保留最近 ${com.shiyin.music.data.log.UsageLog.KEEP_DAYS} 天" +
+                    if (crashCount > 0) "；另有 $crashCount 份崩溃报告（同样按此保留期清理）" else "",
+                style = body(11.5f, FontWeight.Normal, c.n500),
+            )
+            Text(
+                "当前占用 ${"%.0f".format(bytes / 1024.0)} KB",
+                style = body(11.5f, FontWeight.Normal, c.n500),
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                PillButton(
+                    "分享日志", onClick = { share() },
+                    bg = c.accent, textColor = Color.White,
+                )
+                PillButton(
+                    "清空", onClick = {
+                        com.shiyin.music.data.log.UsageLog.clear(context)
+                        reload(); msg = "已清空使用日志"
+                    },
+                    bg = null, textColor = c.text, borderColor = c.divider,
+                )
+            }
+            msg?.let { Text(it, style = body(12f, FontWeight.Normal, c.a700)) }
+        }
+
+        // 文件清单放在内容之前——用户原话"打开就有可以看到的文件了才对"：
+        // 先看到有哪些文件（按天一个 + 崩溃报告），再看内容。
+        SectionLabel("日志文件")
+        Column(
+            Modifier.fillMaxWidth().shadowSm(RoundedCornerShape(28.dp))
+                .clip(RoundedCornerShape(28.dp)).background(c.surface)
+                .padding(horizontal = 16.dp, vertical = 6.dp),
+        ) {
+            if (files.isEmpty() && crashFiles.isEmpty()) {
+                Text(
+                    "还没有日志文件。首次启动就会生成一份（usage-日期.log）。",
+                    style = body(12.5f, FontWeight.Normal, c.n600).copy(lineHeight = 18.sp),
+                    modifier = Modifier.padding(vertical = 10.dp),
+                )
+            }
+            files.forEachIndexed { i, f ->
+                Row(
+                    Modifier.fillMaxWidth().padding(vertical = 11.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    OIcon(Lucide.History, 17.dp, c.n700)
+                    Spacer(Modifier.width(10.dp))
+                    Text(
+                        f.name,
+                        style = body(13f, FontWeight.SemiBold, c.text),
+                        modifier = Modifier.weight(1f),
+                    )
+                    Text(
+                        "${"%.1f".format(f.length() / 1024.0)} KB",
+                        style = body(12f, FontWeight.Normal, c.n600),
+                    )
+                }
+                if (i < files.size - 1 || crashFiles.isNotEmpty()) {
+                    Box(Modifier.fillMaxWidth().height(1.dp).background(c.divider))
+                }
+            }
+            crashFiles.forEachIndexed { i, f ->
+                Row(
+                    Modifier.fillMaxWidth().padding(vertical = 11.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    OIcon(Lucide.CircleInfo, 17.dp, c.a700)
+                    Spacer(Modifier.width(10.dp))
+                    Text(
+                        f.name,
+                        style = body(13f, FontWeight.SemiBold, c.text),
+                        modifier = Modifier.weight(1f),
+                    )
+                    Text(
+                        "${"%.1f".format(f.length() / 1024.0)} KB",
+                        style = body(12f, FontWeight.Normal, c.n600),
+                    )
+                }
+                if (i < crashFiles.size - 1) {
+                    Box(Modifier.fillMaxWidth().height(1.dp).background(c.divider))
+                }
+            }
+        }
+
+        SectionLabel("最近记录")
+        Column(
+            Modifier.fillMaxWidth().shadowSm(RoundedCornerShape(28.dp))
+                .clip(RoundedCornerShape(28.dp)).background(c.surface)
+                .padding(horizontal = 16.dp, vertical = 14.dp),
+        ) {
+            if (text.isBlank()) {
+                Text(
+                    "还没有记录。这一页会随着使用自动积累。",
+                    style = body(12.5f, FontWeight.Normal, c.n600).copy(lineHeight = 18.sp),
+                )
+            } else {
+                Text(
+                    "实时刷新中 · 最新在最上面",
+                    style = body(11f, FontWeight.Normal, c.n500),
+                )
+                Spacer(Modifier.height(8.dp))
+                // 最新在上：日志是追加写的，正序看的话新记录永远落在可视区之外，
+                // "实时"就白做了。分享出去的那份仍是正序（按时间线读）。
+                // 整段一次性渲染（单 Text，不是每行一个 composable）——日志可能有上千行，
+                // 逐行组合会明显拖慢这一页的滚动。
+                Text(
+                    text.lines().reversed().joinToString("\n"),
+                    style = androidx.compose.ui.text.TextStyle(
+                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                        fontSize = 11.sp,
+                        color = c.n700,
+                        lineHeight = 16.sp,
+                    ),
+                )
+            }
+        }
+        Box(Modifier.height(114.dp))
+    }
+}
+
 @Composable
 private fun SectionLabel(text: String) {
     val c = LocalOrganic.current
@@ -280,6 +557,62 @@ private fun SubPageHeader(title: String, onBack: () -> Unit) {
     }
 }
 
+/**
+ * v23: 设置页行骨架 —— 所有设置行的**唯一**排版来源。
+ * 统一 padding(vertical=13.dp)、图标位 19dp、行内间距 13dp、副标题 12.5sp + top 2dp。
+ * 抽出来的原因:手写行(识别缓存 11.5sp、备份与恢复 11sp,且都没有 top padding)与
+ * SettingRow/CardEntryRow 各自为政,同类型行高度不一致(用户反馈"各个功能占据的
+ * 高度都不统一")。此后新增设置行一律走这里,不要再手写 Row。
+ */
+@Composable
+private fun SettingsRowScaffold(
+    title: String,
+    sub: String? = null,
+    subColor: Color? = null,
+    leading: @Composable () -> Unit,
+    trailing: @Composable () -> Unit = {},
+    divider: Boolean = false,
+    onClick: (() -> Unit)? = null,
+) {
+    val c = LocalOrganic.current
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
+            // padding 在前、heightIn 在后：56dp 是"带开关行的实际高度"(开关 30dp +
+            // 上下 padding 各 13dp)。普通行只有一行标题(21dp)，原本只有 47dp、比开关
+            // 行矮——heightIn 把它抬到同一高度，内容垂直居中，行高节奏统一(第5项)。
+            .padding(vertical = 13.dp)
+            .heightIn(min = 56.dp),
+        horizontalArrangement = Arrangement.spacedBy(13.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            // 图标并入标题这一行(与标题同行居中)，副标题缩进 32dp 与标题左缘对齐
+            // (19 图标 + 13 间距)。这样"图标对齐名字"在单行/双行、有无控件下都成立。
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(13.dp),
+            ) {
+                leading()
+                Text(title, style = body(15f, FontWeight.SemiBold, c.text))
+            }
+            // 副标题只在这一行确实有短话要说时出现，且必须短到一行放得下(见设置页定稿)。
+            if (sub != null) {
+                Text(
+                    sub,
+                    style = body(12.5f, FontWeight.Normal, subColor ?: c.n600),
+                    modifier = Modifier.padding(top = 2.dp, start = 32.dp),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+        Box(Modifier.align(Alignment.CenterVertically)) { trailing() }
+    }
+    if (divider) Box(Modifier.fillMaxWidth().height(1.dp).background(c.divider))
+}
+
 @Composable
 private fun CardEntryRow(
     icon: ImageVector,
@@ -291,37 +624,246 @@ private fun CardEntryRow(
     onClick: () -> Unit,
 ) {
     val c = LocalOrganic.current
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick)
-            .padding(vertical = 13.dp),
-        horizontalArrangement = Arrangement.spacedBy(13.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        OIcon(icon, 19.dp, iconTint)
-        Column(Modifier.weight(1f)) {
-            Text(title, style = body(15f, FontWeight.SemiBold, c.text))
-            if (sub != null) {
-                Text(sub, style = body(12.5f, FontWeight.Normal, c.n600), modifier = Modifier.padding(top = 2.dp), maxLines = 1, overflow = TextOverflow.Ellipsis)
+    SettingsRowScaffold(
+        title = title,
+        sub = sub,
+        leading = { OIcon(icon, 19.dp, iconTint) },
+        divider = divider,
+        onClick = onClick,
+        trailing = {
+            // 尾注文字 + 箭头必须**横排**——骨架把 trailing 包进了一个 Box
+            // （Box 会叠放子项），直接并列两个 composable 会叠在一起（用户实测：
+            // 睡眠/云备份/日志的尾注文字和箭头重叠）。
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                if (trailingText != null) {
+                    Text(trailingText, style = body(12.5f, FontWeight.Normal, c.n600), maxLines = 1)
+                }
+                OIcon(Lucide.ChevronRight, 18.dp, c.n500)
             }
-        }
-        if (trailingText != null) {
-            Text(trailingText, style = body(12.5f, FontWeight.Normal, c.n600), maxLines = 1)
-        }
-        OIcon(Lucide.ChevronRight, 18.dp, c.n500)
-    }
-    if (divider) Box(Modifier.fillMaxWidth().height(1.dp).background(c.divider))
+        },
+    )
 }
+
+/**
+ * v1.3.x 第4项：取（或建）某个设置页共用的滚动状态。
+ *
+ * 状态表本身在 AppRoot 里 `remember`（在 AnimatedContent 之上），所以换路由把
+ * 这个页面销毁再回来时，ScrollState 实例还在、scrollOffset 还在——这就是
+ * "从列表较下方进入子页，返回后仍停在原位置"的实现。键按页面名区分，
+ * 各页各一份，不共享。
+ */
+private fun scrollStateOf(states: MutableMap<String, ScrollState>, key: String): ScrollState =
+    states.getOrPut(key) { ScrollState(0) }
 
 // ── settings root (v2.0: 文件管理 card ← 已忽略/重新扫描, 通用 cleaned) ──────
 @Composable
-private fun SettingsRoot(vm: MainViewModel) {
+private fun SettingsRoot(vm: MainViewModel, scrollStates: MutableMap<String, ScrollState>) {
+    val c = LocalOrganic.current
+    // v1.1+: 进入设置页时统计识别缓存占用
+    androidx.compose.runtime.LaunchedEffect(Unit) { vm.refreshRecognitionCacheSize() }
+    Column(
+        Modifier
+            .fillMaxSize()
+            .verticalScroll(scrollStateOf(scrollStates, "root"))
+            .padding(horizontal = 20.dp)
+            .padding(top = 22.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            BackButton { vm.settingsOpen = false; vm.sel = emptyMap() }
+            Text("设置", style = heading(24))
+        }
+
+        // ── 通用:全局项(深色 / 睡眠) ────────────────────────────────────────
+        // 用户定稿:这一组要有「通用」眉题——没有眉题的裸卡片会让它看起来不像一个分区。
+        SectionLabel("通用")
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .shadowSm(RoundedCornerShape(28.dp))
+                .clip(RoundedCornerShape(28.dp))
+                .background(c.surface)
+                .padding(horizontal = 16.dp, vertical = 6.dp),
+        ) {
+            SettingRow(Lucide.Moon, "深色模式", null, divider = true) {
+                OrganicSwitch(vm.darkTheme) { vm.setDark(!vm.darkTheme) }
+            }
+            // v1.3.x: 睡眠定时可编辑——整行点击弹窗(时长档位/本曲结束/关闭),
+            // 复用播放菜单同套 PlayerController 接口;不再只读展示。
+            var sleepEditOpen by remember { mutableStateOf(false) }
+            CardEntryRow(
+                Lucide.Clock, c.n700, "睡眠定时",
+                null, divider = false, trailingText = vm.player.sleepStatusText(),
+            ) { sleepEditOpen = true }
+            if (sleepEditOpen) SleepTimerEditDialog(vm) { sleepEditOpen = false }
+        }
+
+        // ── 资源管理:文件 / 识别 / 写真 / 歌词 / 歌手 ────────────────────────
+        SectionLabel("资源管理")
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .shadowSm(RoundedCornerShape(28.dp))
+                .clip(RoundedCornerShape(28.dp))
+                .background(c.surface)
+                .padding(horizontal = 16.dp, vertical = 6.dp),
+        ) {
+                        // v1.3.x 第3项:「文件管理」是一个**真正的二级入口**——点进去
+            // 才是它的四项（自动保存识别资源/文件夹管理/清理建议/重新识别），
+            // 不再平铺在一级页里（此前平铺导致一级界面太乱、层级错位）。
+            CardEntryRow(
+                Lucide.Folder, c.n700, "文件管理",
+                null,
+                divider = true,
+            ) { vm.navFilesTo(FilesView.FilesManage) }
+            CardEntryRow(
+                Lucide.User, c.n700, "写真源",
+                null,
+                divider = true,
+            ) { vm.navFilesTo(FilesView.ImageSources) }
+            // v1.3.x 图标审计:歌词本入口用 Library(书本=歌词本,未占用);振假名默认
+            // 行保留 Captions(注音语义),两处不再撞图标。
+            CardEntryRow(
+                Lucide.Library, c.n700, "歌词本",
+                null,
+                divider = true,
+            ) { vm.navFilesTo(FilesView.LyricsBook) }
+            CardEntryRow(
+                Lucide.Users, c.n700, "歌手合并",
+                null,
+                divider = false,
+            ) { vm.navFilesTo(FilesView.Merges) }
+        }
+
+        // 播放 / 数据管理各只有一个入口——第3项明确:不为只有一个子项的类别建独立
+        // 栏目标题（空壳分类）。两项共用一张卡，从设置列表直接进。
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .shadowSm(RoundedCornerShape(28.dp))
+                .clip(RoundedCornerShape(28.dp))
+                .background(c.surface)
+                .padding(horizontal = 16.dp, vertical = 6.dp),
+        ) {
+            CardEntryRow(
+                Lucide.PlayOutline, c.n700, "播放",
+                null,
+                divider = true,
+            ) { vm.navFilesTo(FilesView.PlaySettings) }
+            CardEntryRow(
+                Lucide.Database, c.n700, "数据管理",
+                null, divider = false,
+            ) { vm.navFilesTo(FilesView.DataManage) }
+        }
+
+        // v1.5: about entry
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .shadowSm(RoundedCornerShape(28.dp))
+                .clip(RoundedCornerShape(28.dp))
+                .background(c.surface)
+                .clickable { vm.navFilesTo(FilesView.About) }
+                .padding(horizontal = 16.dp, vertical = 13.dp),
+            horizontalArrangement = Arrangement.spacedBy(13.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            OIcon(Lucide.CircleInfo, 19.dp, c.n700)
+            Text("关于我们", style = body(15f, FontWeight.SemiBold, c.text), modifier = Modifier.weight(1f))
+            // v22: 版本号改读 BuildConfig（原来写死 "拾音 v1.3.0"，bump 版本后这里不会跟着变）；
+            // 同时把「发现更新」透出来，不用进关于页也能看到。
+            val aboutHasUpdate = vm.updateAvailable()
+            if (aboutHasUpdate) {
+                Box(Modifier.size(6.dp).clip(CircleShape).background(c.a700))
+            }
+            Text(
+                if (aboutHasUpdate) "v${vm.currentVersion} · 发现更新" else "拾音 v${vm.currentVersion}",
+                style = body(12.5f, if (aboutHasUpdate) FontWeight.Bold else FontWeight.Normal,
+                    if (aboutHasUpdate) c.a700 else c.n600),
+            )
+            OIcon(Lucide.ChevronRight, 18.dp, c.n500)
+        }
+
+        Box(Modifier.height(114.dp))
+    }
+
+}
+
+/**
+ * v1.3.x 第3项:「文件管理」二级页 —— 一级界面只剩一个入口，四项集中在这里。
+ *
+ * 内容 = 自动保存识别资源（保留"AI 翻译结果始终保存"备注）+ 文件夹管理 +
+ * 清理建议 + 重新扫描文件。此前它们平铺在一级页导致层级错位、一级界面太乱。
+ */
+@Composable
+private fun FilesManageScreen(vm: MainViewModel, scrollStates: MutableMap<String, ScrollState>) {
+    val c = LocalOrganic.current
+    Column(
+        Modifier
+            .fillMaxSize()
+            .verticalScroll(scrollStateOf(scrollStates, "filesmanage"))
+            .padding(horizontal = 20.dp)
+            .padding(top = 22.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        SubPageHeader("文件管理") { vm.navFilesBack() }
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .shadowSm(RoundedCornerShape(28.dp))
+                .clip(RoundedCornerShape(28.dp))
+                .background(c.surface)
+                .padding(horizontal = 16.dp, vertical = 6.dp),
+        ) {
+            // 「识别资源」= 联网识别到的歌词/封面。副标题只留**用户不知道的那一条**：
+            // AI 翻译结果不受这个开关影响、总是保存（token 是用户明确花掉的）。
+            SettingRow(
+                Lucide.Download, "自动保存识别资源",
+                "AI 翻译结果始终保存",
+                divider = true,
+            ) {
+                OrganicSwitch(vm.autoSaveRecognition) { vm.setAutoSaveRecognition(!vm.autoSaveRecognition) }
+            }
+            CardEntryRow(
+                Lucide.Folder, c.n700, "文件夹管理",
+                null,
+                divider = true,
+            ) { vm.navFilesTo(FilesView.Folders) }
+            CardEntryRow(
+                // v22 缝补:原用 Brush(画笔)表示"清理",语义不搭——清理建议页里主要是
+                // 重复文件/短音频/回收站,Trash(垃圾桶)才对得上。
+                Lucide.Trash, c.a700, "清理建议",
+                null,
+                divider = true,
+            ) { vm.openClean() }
+            // 名字直接说清动作（用户："如果功能过于模糊，如「重新识别」，那就结合备注
+            // 提示小字改为「重新扫描文件」即可"）——改名之后就不需要那行小字了。
+            CardEntryRow(
+                Lucide.RotateCcw, c.n700, "重新扫描文件",
+                null,
+                divider = false,
+            ) { vm.rescanWithAnimation() }
+        }
+        Box(Modifier.height(114.dp))
+    }
+}
+
+/**
+ * v1.3.x: 「数据管理」子页 —— 从设置一级界面整体搬下来（用户："数据管理也要跟
+ * 播放一样，是点进去才有更多设置的"）。
+ *
+ * 内容与一级界面时期逐字一致：识别缓存（占用 + 清理）、备份与恢复（导出/恢复 +
+ * 状态行 + 本地快照）、云备份入口、日志入口。备份相关的状态与启动器跟着一起搬
+ * ——它们只服务这一页，留在一级界面只会让那个 Composable 继续背着一堆用不到的变量。
+ */
+@Composable
+private fun DataManageScreen(vm: MainViewModel, scrollStates: MutableMap<String, ScrollState>) {
     val c = LocalOrganic.current
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    // v1.1+: 进入设置页时统计识别缓存占用
-    androidx.compose.runtime.LaunchedEffect(Unit) { vm.refreshRecognitionCacheSize() }
     // v1.2.0 阶段三：备份/恢复的提示文本（导出成功/导入统计/失败）
     var backupMsg by remember { mutableStateOf<String?>(null) }
     // v22: 恢复前的预览与确认（原来选完文件直接覆盖写库，误点一个旧备份就冲掉当前数据）
@@ -359,6 +901,7 @@ private fun SettingsRoot(vm: MainViewModel) {
                 // 所以导出后必须明确提醒一句"含密钥"，让用户知道这个文件不能随便发。
                 backupMsg = "已备份（${"%.1f".format(bytes.size / 1024.0 / 1024.0)} MB）· " +
                     "含密钥，请妥善保管"
+                lastExport = null
             } catch (e: Exception) { backupMsg = "备份失败：${e.message}" }
         }
     }
@@ -377,20 +920,19 @@ private fun SettingsRoot(vm: MainViewModel) {
             } catch (e: Exception) { backupMsg = "无法读取备份：${e.message}" }
         }
     }
+
     Column(
         Modifier
             .fillMaxSize()
-            .verticalScroll(rememberScrollState())
+            .verticalScroll(scrollStateOf(scrollStates, "datamanage"))
             .padding(horizontal = 20.dp)
             .padding(top = 22.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            BackButton { vm.settingsOpen = false; vm.sel = emptyMap() }
-            Text("设置", style = heading(24))
-        }
+        SubPageHeader("数据管理") { vm.navFilesBack() }
 
-        SectionLabel("文件管理")
+        // ── 缓存 ──────────────────────────────────────────────────────────
+        SectionLabel("缓存")
         Column(
             Modifier
                 .fillMaxWidth()
@@ -399,137 +941,102 @@ private fun SettingsRoot(vm: MainViewModel) {
                 .background(c.surface)
                 .padding(horizontal = 16.dp, vertical = 6.dp),
         ) {
-            // v1.3.x 设置重组:回收站并入清理建议页(页顶统一入口),这里不再单列。
-            // 副文案短排列(可清理·回收站·体积),maxLines=1 不再省略号截断。
-            CardEntryRow(
-                // v22 缝补:原用 Brush(画笔)表示"清理",语义不搭——清理建议页里主要是
-                // 重复文件/短音频/回收站,Trash(垃圾桶)才对得上。Brush 与歌词本页的
-                // 色样图标也曾撞过,一并解开。
-                Lucide.Trash, c.a700, "清理建议",
-                "${vm.cleanCount()} 个可清理 · 回收站 ${vm.trashMirror.size} · ${formatSizeMb(vm.cleanSizeBytes())}",
-                divider = true,
-            ) { vm.openClean() }
-            // v1.3.x 设置重组:音频文件夹+已忽略的文件夹归入新"文件夹管理"页。
-            CardEntryRow(
-                Lucide.Folder, c.n700, "文件夹管理",
-                "${vm.foldersMap().size} 个文件夹 · ${vm.ignored.size} 个已忽略",
-                divider = true,
-            ) { vm.filesView = FilesView.Folders }
-            // v2.0: 重新扫描 moved from 通用 into 文件管理
-            CardEntryRow(
-                Lucide.RotateCcw, c.n700, "重新扫描音频",
-                "再次扫描全部文件夹",
-                divider = true,
-            ) { vm.rescanWithAnimation() }
-            CardEntryRow(
-                Lucide.Users, c.n700, "歌手合并",
-                if (vm.aliases.isEmpty()) "暂无合并" else "${vm.aliases.size} 条记录",
-                divider = false,
-            ) { vm.filesView = FilesView.Merges }
-        }
-
-        SectionLabel("通用")
-        Column(
-            Modifier
-                .fillMaxWidth()
-                .shadowSm(RoundedCornerShape(28.dp))
-                .clip(RoundedCornerShape(28.dp))
-                .background(c.surface)
-                .padding(horizontal = 16.dp, vertical = 6.dp),
-        ) {
-            SettingRow(Lucide.Moon, "深色模式", null, divider = true) {
-                OrganicSwitch(vm.darkTheme) { vm.setDark(!vm.darkTheme) }
-            }
-            SettingRow(Lucide.Infinity, "无缝播放", "专辑连播时曲目间不留空隙", divider = true) {
-                OrganicSwitch(vm.gapless) { vm.setGapless(!vm.gapless) }
-            }
-            // v22 缝补:原用 Mic(麦克风)表示"自动匹配歌词",语义不搭——麦克风是录音
-            // 输入,这里是在线抓歌词。改用 Captions(字幕/歌词),与播放菜单的
-            // 「歌词来源」同一套图标语言。
-            SettingRow(Lucide.Captions, "自动匹配歌词", "无歌词时自动在线获取，确认后保存到本地", divider = true) {
-                OrganicSwitch(vm.autoMatch) { vm.setAutoMatch(!vm.autoMatch) }
-            }
-            // v1.1+: 自动保存识别结果（默认开）+ 缓存占用 + 清理按钮
-            SettingRow(Lucide.Download, "自动保存识别结果", "联网识别成功的歌词/封面默认持久化，关闭则仅临时展示", divider = true) {
-                OrganicSwitch(vm.autoSaveRecognition) { vm.setAutoSaveRecognition(!vm.autoSaveRecognition) }
-            }
-            Row(
-                Modifier.fillMaxWidth().padding(vertical = 13.dp),
-                horizontalArrangement = Arrangement.spacedBy(13.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
+            SettingsRowScaffold(
+                title = "识别缓存",
                 // v1.3.x:识别缓存用 Database(存储/数据库语义),与文件夹管理(Folder)去重
-                OIcon(Lucide.Database, 19.dp, c.n700)
-                Column(Modifier.weight(1f)) {
-                    Text("识别缓存", style = body(15f, FontWeight.SemiBold, c.text))
-                    Text(
-                        "已缓存歌词/封面 ${formatCacheSize(vm.recognitionCacheBytes)}（不含人工修正）",
-                        style = body(11.5f, FontWeight.Normal, c.n600),
-                    )
-                }
-                Box(
-                    Modifier
-                        .clip(RoundedCornerShape(999.dp))
-                        .background(c.n100)
-                        .clickable { vm.clearRecognitionCache() }
-                        .padding(horizontal = 12.dp, vertical = 7.dp),
-                ) { Text("清理缓存", style = body(12.5f, FontWeight.Bold, c.text)) }
-            }
-            // v22 缝补:本卡内其余行(深色模式/无缝播放/自动匹配歌词/自动保存识别结果/
-            // 睡眠定时/写真源)都由 SettingRow·CardEntryRow 画了分隔线,唯独"识别缓存"与
-            // "备份我的修正数据"是手写 Row、漏了线——同一张卡里有的有线有的没线,很扎眼。
-            // 这里补上与 SettingRow(divider=true) 逐像素一致的那条 1dp 线。
-            Box(Modifier.fillMaxWidth().height(1.dp).background(c.divider))
+                leading = { OIcon(Lucide.Database, 19.dp, c.n700) },
+                divider = false,
+                // 占用大小是"要不要清"的唯一判断依据，所以留——但走右侧尾注（与标题
+                // 同一行），不再占一整行副标题；"不含人工修正"那半句是自证型说明，删。
+                trailing = {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        Text(
+                            formatCacheSize(vm.recognitionCacheBytes),
+                            style = body(12.5f, FontWeight.Normal, c.n600),
+                        )
+                        Box(
+                            Modifier
+                                .clip(RoundedCornerShape(999.dp))
+                                .background(c.n200)
+                                .clickable { vm.clearRecognitionCache() }
+                                .padding(horizontal = 12.dp, vertical = 7.dp),
+                        ) { Text("清理缓存", style = body(12.5f, FontWeight.Bold, c.text)) }
+                    }
+                },
+            )
+        }
+
+        // ── 本地备份 ──────────────────────────────────────────────────────
+        SectionLabel("本地备份")
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .shadowSm(RoundedCornerShape(28.dp))
+                .clip(RoundedCornerShape(28.dp))
+                .background(c.surface)
+                .padding(horizontal = 16.dp, vertical = 6.dp),
+        ) {
             // v22: 备份范围从"修正数据"扩到**用户资产** —— 歌单（含「我的喜欢」）、
             // 手动导入的歌词、手动曲序、忽略的文件夹、全部设置与 API Key 都进了备份包。
             // 包格式升级为 zip（本地手选的歌手写真/专辑封面要跟着走，否则换机后是裂图）。
-            Row(
-                Modifier.fillMaxWidth().padding(vertical = 13.dp),
-                horizontalArrangement = Arrangement.spacedBy(13.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                OIcon(Lucide.Shield, 19.dp, c.n700)
-                Column(Modifier.weight(1f)) {
-                    Text("备份与恢复", style = body(15f, FontWeight.SemiBold, c.text))
-                    Text(
-                        if (restoreBusy) "正在恢复…"
-                        else backupMsg ?: "歌单 · 歌词 · 排序 · 设置与密钥 · 本地图片",
-                        style = body(11f, FontWeight.Normal, if (backupMsg != null) c.a700 else c.n600),
+            SettingsRowScaffold(
+                title = "备份与恢复",
+                // 默认那行"歌单 · 歌词 · 排序 · 设置与密钥 · 本地图片"是**二级界面的
+                // 内容摘要**，按规矩不在入口行重复；状态信息改到行下方（见下）。
+                leading = { OIcon(Lucide.Shield, 19.dp, c.n700) },
+                trailing = {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    // v1.3.x UI 一致性:三个动作改用项目统一的**描边胶囊按钮**
+                    // (PillButton bg=null+borderColor)——原 c.n100 实心浅块在米色卡片上
+                    // 读作"白按钮",与新设计语言(云备份页/各处次要按钮)不一致。
+                    if (lastExport != null) {
+                        PillButton(
+                            "分享", onClick = { lastExport?.let { shareFile(it) } },
+                            bg = null, textColor = c.text, borderColor = c.divider,
+                            fontSize = 12.5f, padH = 14.dp, padV = 7.dp,
+                        )
+                    }
+                    PillButton(
+                        "备份",
+                        onClick = {
+                            backupMsg = null
+                            exportLauncher.launch(
+                                "pickupmusic-backup-" + java.text.SimpleDateFormat(
+                                    "yyyyMMdd-HHmm", java.util.Locale.CHINA,
+                                ).format(java.util.Date()) + ".zip"
+                            )
+                        },
+                        bg = null, textColor = c.text, borderColor = c.divider,
+                        fontSize = 12.5f, padH = 14.dp, padV = 7.dp,
+                    )
+                    PillButton(
+                        "恢复",
+                        onClick = {
+                            backupMsg = null
+                            // v22: 不过滤 MIME —— 有些文件来源会把 .zip 报成
+                            // application/octet-stream，按 application/zip 过滤会让用户
+                            // **在选择器里看不到自己的备份文件**。反正读入端
+                            // （BackupArchive.read）本来就自动识别 zip / 纯 JSON。
+                            importLauncher.launch(arrayOf("*/*"))
+                        },
+                        bg = null, textColor = c.text, borderColor = c.divider,
+                        fontSize = 12.5f, padH = 14.dp, padV = 7.dp,
                     )
                 }
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    if (lastExport != null) {
-                        Box(
-                            Modifier.clip(RoundedCornerShape(999.dp)).background(c.n100)
-                                .clickable { lastExport?.let { shareFile(it) } }
-                                .padding(horizontal = 12.dp, vertical = 7.dp),
-                        ) { Text("分享", style = body(12.5f, FontWeight.Bold, c.text)) }
-                    }
-                    Box(
-                        Modifier.clip(RoundedCornerShape(999.dp)).background(c.n100)
-                            .clickable {
-                                backupMsg = null
-                                exportLauncher.launch(
-                                    "pickupmusic-backup-" + java.text.SimpleDateFormat(
-                                        "yyyyMMdd-HHmm", java.util.Locale.CHINA,
-                                    ).format(java.util.Date()) + ".zip"
-                                )
-                            }
-                            .padding(horizontal = 12.dp, vertical = 7.dp),
-                    ) { Text("备份", style = body(12.5f, FontWeight.Bold, c.text)) }
-                    Box(
-                        Modifier.clip(RoundedCornerShape(999.dp)).background(c.n100)
-                            .clickable {
-                                backupMsg = null
-                                // v22: 不过滤 MIME —— 有些文件来源会把 .zip 报成
-                                // application/octet-stream，按 application/zip 过滤会让用户
-                                // **在选择器里看不到自己的备份文件**。反正读入端
-                                // （BackupArchive.read）本来就自动识别 zip / 纯 JSON。
-                                importLauncher.launch(arrayOf("*/*"))
-                            }
-                            .padding(horizontal = 12.dp, vertical = 7.dp),
-                    ) { Text("恢复", style = body(12.5f, FontWeight.Bold, c.text)) }
-                }
+                },
+            )
+            // 状态信息**单独占一行**：这一行右侧并排三个胶囊按钮，副标题位置只剩很窄
+            // 一条，"已备份 12.3 MB · 含密钥，请妥善保管"这种必然被省略号截断——而
+            // "含密钥"恰恰是最不能被截断的一句。放到整行宽度下就没有截断问题。
+            (if (restoreBusy) "正在恢复…" else backupMsg)?.let { msg ->
+                Text(
+                    msg,
+                    style = body(11.5f, FontWeight.Normal, if (backupMsg != null) c.a700 else c.n600),
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 10.dp),
+                )
             }
             // v22: 本地自动快照（每次启动超过 24h 自动写一份，滚动保留 3 份）——
             // 防手滑/防误操作，与"云备份"互补。
@@ -547,7 +1054,7 @@ private fun SettingsRoot(vm: MainViewModel) {
                         Row(
                             Modifier.fillMaxWidth()
                                 .clip(RoundedCornerShape(8.dp))
-                                .background(c.n100)
+                                .background(c.n200)
                                 .clickable {
                                     scope.launch {
                                         try {
@@ -570,68 +1077,33 @@ private fun SettingsRoot(vm: MainViewModel) {
                     }
                 }
             }
-            // v22 缝补:同上——手写 Row 漏的分隔线。
-            Box(Modifier.fillMaxWidth().height(1.dp).background(c.divider))
-            // v22: 云备份入口（WebDAV：坚果云 / Nextcloud / 群晖）。
-            // 图标用 ArrowUpDown（上传/下载），与「备份与恢复」的 Shield 区分开。
-            CardEntryRow(
-                Lucide.ArrowUpDown, c.n700, "云备份（WebDAV）",
-                if (vm.webDavUrl.isBlank()) "未配置 · 可备份到坚果云等" else "已配置 · 上传 / 恢复",
-                divider = true,
-            ) { vm.filesView = FilesView.CloudBackup }
-            // v1.3.x: 睡眠定时可编辑——整行点击弹窗(时长档位/本曲结束/关闭),
-            // 复用播放菜单同套 PlayerController 接口;不再只读展示。
-            // v1.3.x 设计打磨:本卡三行(睡眠定时/写真源/歌词本)统一走 CardEntryRow,
-            // 消掉此前手写 Row 与卡片行的漂移(padding/字号/箭头逐像素一致)。
-            var sleepEditOpen by remember { mutableStateOf(false) }
-            CardEntryRow(
-                Lucide.Clock, c.n700, "睡眠定时",
-                null, divider = true, trailingText = vm.player.sleepStatusText(),
-            ) { sleepEditOpen = true }
-            if (sleepEditOpen) SleepTimerEditDialog(vm) { sleepEditOpen = false }
-            // v1.3.x: 写真源从独立卡片并入通用栏(设计语言统一,一张卡一段落;
-            // 入口语义不变)。歌词本设置同段新增(见下)。
-            CardEntryRow(
-                Lucide.User, c.n700, "写真源",
-                "配置 · ${vm.disabledImageSources.size} 关",
-                divider = true,
-            ) { vm.filesView = FilesView.ImageSources }
-            // v1.3.x: 歌词本设置(振假名默认开关/自动校验/歌词颜色)入口。
-            // v1.3.x 图标审计:歌词本入口用 Library(书本=歌词本,未占用);振假名默认
-            // 行保留 Captions(注音语义),两处不再撞图标。
-            CardEntryRow(
-                Lucide.Library, c.n700, "歌词本",
-                "振假名 · 歌词颜色",
-                divider = false,
-            ) { vm.filesView = FilesView.LyricsBook }
         }
 
-        // v1.5: about entry
-        Row(
+        // ── 云端与记录 ────────────────────────────────────────────────────
+        SectionLabel("云端与记录")
+        Column(
             Modifier
                 .fillMaxWidth()
                 .shadowSm(RoundedCornerShape(28.dp))
                 .clip(RoundedCornerShape(28.dp))
                 .background(c.surface)
-                .clickable { vm.filesView = FilesView.About }
-                .padding(horizontal = 16.dp, vertical = 13.dp),
-            horizontalArrangement = Arrangement.spacedBy(13.dp),
-            verticalAlignment = Alignment.CenterVertically,
+                .padding(horizontal = 16.dp, vertical = 6.dp),
         ) {
-            OIcon(Lucide.CircleInfo, 19.dp, c.n700)
-            Text("关于我们", style = body(15f, FontWeight.SemiBold, c.text), modifier = Modifier.weight(1f))
-            // v22: 版本号改读 BuildConfig（原来写死 "拾音 v1.3.0"，bump 版本后这里不会跟着变）；
-            // 同时把「发现更新」透出来，不用进关于页也能看到。
-            val aboutHasUpdate = vm.updateAvailable()
-            if (aboutHasUpdate) {
-                Box(Modifier.size(6.dp).clip(CircleShape).background(c.a700))
-            }
-            Text(
-                if (aboutHasUpdate) "v${vm.currentVersion} · 发现更新" else "拾音 v${vm.currentVersion}",
-                style = body(12.5f, if (aboutHasUpdate) FontWeight.Bold else FontWeight.Normal,
-                    if (aboutHasUpdate) c.a700 else c.n600),
-            )
-            OIcon(Lucide.ChevronRight, 18.dp, c.n500)
+            // v22: 云备份入口（WebDAV：坚果云 / Nextcloud / 群晖）。
+            // 图标用 ArrowUpDown（上传/下载），与「备份与恢复」的 Shield 区分开。
+            // "有没有配置"是一眼要看的状态 → 走右侧尾注，不占一整行小字。
+            CardEntryRow(
+                Lucide.ArrowUpDown, c.n700, "云备份（WebDAV）",
+                null, divider = true,
+                trailingText = if (vm.webDavUrl.isBlank()) "未配置" else "已配置",
+            ) { vm.navFilesTo(FilesView.CloudBackup) }
+            // v1.3.x: 使用日志（开发排查用）—— 记录本机使用事件，按天分文件。
+            // 只记"发生了什么"（页面/技能/识别/备份），不记歌词内容与密钥。
+            CardEntryRow(
+                Lucide.History, c.n700, "日志",
+                null, divider = false,
+                trailingText = "保留 ${com.shiyin.music.data.log.UsageLog.KEEP_DAYS} 天",
+            ) { vm.navFilesTo(FilesView.Logs) }
         }
 
         Box(Modifier.height(114.dp))
@@ -759,17 +1231,22 @@ private fun SleepTimerEditDialog(vm: MainViewModel, onDismiss: () -> Unit) {
 // 三个设置都只影响全屏歌词本页:振假名两项仅对日语歌生效(hasKana 判定,
 // 中英文歌开关不可见、永不触发联网校验);歌词颜色 default=跟随封面取色。
 @Composable
-private fun LyricsBookScreen(vm: MainViewModel) {
+private fun LyricsBookScreen(vm: MainViewModel, scrollStates: MutableMap<String, ScrollState>) {
     val c = LocalOrganic.current
     Column(
         Modifier
             .fillMaxSize()
-            .verticalScroll(rememberScrollState())
+            .verticalScroll(scrollStateOf(scrollStates, "lyricsbook"))
             .padding(horizontal = 20.dp)
             .padding(top = 22.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        SubPageHeader("歌词本") { vm.filesView = FilesView.Root }
+        SubPageHeader("歌词本") { vm.navFilesBack() }
+
+        // 用户定稿：这一页按**歌词 / 翻译**两块分开（"一个设置两栏区分歌词、翻译两个
+        // 板块，这样视觉上才不会挤在一起"）。此前六行挤在一张卡里，振假名与翻译两组
+        // 语义完全不同的开关混排，读起来没有边界。
+        SectionLabel("歌词")
         Column(
             Modifier
                 .fillMaxWidth()
@@ -778,40 +1255,36 @@ private fun LyricsBookScreen(vm: MainViewModel) {
                 .background(c.surface)
                 .padding(horizontal = 16.dp, vertical = 6.dp),
         ) {
-            // v1.3.x:图标语义贴合——振假名默认开用"ア"(片假名,furigana 本体,与
-            // 歌词页 あ 开关联动但设置页用片假名区分);自动校验换 BadgeCheck(徽章
-            // +勾=已验证;原 Check 单勾语义太弱,用户两轮反馈仍觉不符)。
+            // v1.3.x:图标语义贴合——自动匹配歌词用 Captions(字幕/歌词,从设置主页
+            // 挪过来:用户指定放歌词本页最上面);振假名默认开用"ア"(片假名,furigana
+            // 本体,与歌词页 あ 开关联动但设置页用片假名区分);自动校验换 BadgeCheck
+            // (徽章+勾=已验证;原 Check 单勾语义太弱,用户两轮反馈仍觉不符)。
             // 单行布局:图标与文字同行居中,不再错位。
+            // 名字已自证——"无歌词时自动在线获取，确认后保存到本地"那行小字既不完整
+            // 也不必要（用户点名它"长长一段根本显示不完"）。
+            SettingRow(Lucide.Captions, "自动匹配歌词", null, divider = true) {
+                OrganicSwitch(vm.autoMatch) { vm.setAutoMatch(!vm.autoMatch) }
+            }
             SettingRowGlyph(glyph = "ア", "日语歌默认开振假名", divider = true) {
                 OrganicSwitch(vm.furiganaDefaultOn) { vm.setFuriganaDefaultOn(!vm.furiganaDefaultOn) }
             }
             SettingRow(Lucide.BadgeCheck, "日语歌自动校验振假名", null, divider = true) {
                 OrganicSwitch(vm.furiganaAutoVerify) { vm.setFuriganaAutoVerify(!vm.furiganaAutoVerify) }
             }
-            // ── v1.3.x 反馈:翻译小节(紧接振假名之下)─────────────────────────
-            // 外语自动翻译:进入歌词本时外语歌自动触发 AI 翻译(默认关——AI 永远
-            // 用户主动触发,不静默烧 token)。默认显示译文:有保存译文时进页面直接
-            // 给看(译完即存的恢复逻辑,默认开)。图标区分(用户反馈:两个不能一模
-            // 一样):自动翻译=Languages(双语对照),显示译文=Captions(字幕)。
-            SettingRow(Lucide.Languages, "外语歌自动翻译", null, divider = true) {
-                OrganicSwitch(vm.translateAutoForeign) { vm.setTranslateAutoForeign(!vm.translateAutoForeign) }
-            }
-            SettingRow(Lucide.Captions, "默认显示译文", null, divider = true) {
-                OrganicSwitch(vm.translateDefaultShow) { vm.setTranslateDefaultShow(!vm.translateDefaultShow) }
-            }
             // 歌词颜色三档:默认(跟随封面)/白色/黑色。
             // v1.3.x 设计打磨:文字 pill 换色样 swatch——选颜色的控件直接展示颜色
             // 本身(白=白圆、黑=黑圆、跟随封面=黑白双色对拼),选中态 accent 描边环。
             // 色样自带白/黑底描边(n300)保证在任何卡面(浅/深主题)上都看得见。
-            Row(
-                Modifier.fillMaxWidth().padding(vertical = 13.dp),
-                horizontalArrangement = Arrangement.spacedBy(13.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
+            SettingsRowScaffold(
+                title = "歌词颜色",
                 // v1.3.x 图标审计:歌词颜色用 CircleFilled(色样圆,行内已有三色样
                 // 呼应;原 Brush 与清理建议重复)。清理建议保留 Brush(清洁刷)。
-                OIcon(Lucide.CircleFilled, 19.dp, c.n700)
-                Text("歌词颜色", style = body(15f, FontWeight.SemiBold, c.text), modifier = Modifier.weight(1f))
+                leading = { OIcon(Lucide.CircleFilled, 19.dp, c.n700) },
+                // v1.3.x 行高统一:这里原来是手写 Row——横竖都照抄了骨架的数值
+                // (13dp/19dp/15sp),但没有骨架的"副标题占位行",于是同一张卡里
+                // 比上下邻居矮一整行(用户反复反馈的高度不齐)。改走骨架。
+                divider = false,
+                trailing = {
                 Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                     for ((mode, label, showWhite) in listOf(
                         Triple("default", "跟随封面", false),
@@ -847,6 +1320,151 @@ private fun LyricsBookScreen(vm: MainViewModel) {
                         }
                     }
                 }
+                },
+            )
+        }
+
+        // ── 翻译 ──────────────────────────────────────────────────────────
+        // 外语自动翻译:进入歌词本时外语歌自动触发 AI 翻译(默认关——AI 永远用户主动
+        // 触发,不静默烧 token)。默认显示译文:有保存译文时进页面直接给看(译完即存
+        // 的恢复逻辑,默认开)。图标区分(两个不能一模一样):自动翻译=Languages
+        // (双语对照),显示译文=Captions(字幕)。
+        SectionLabel("翻译")
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .shadowSm(RoundedCornerShape(28.dp))
+                .clip(RoundedCornerShape(28.dp))
+                .background(c.surface)
+                .padding(horizontal = 16.dp, vertical = 6.dp),
+        ) {
+            SettingRow(Lucide.Languages, "外语歌自动翻译", null, divider = true) {
+                OrganicSwitch(vm.translateAutoForeign) { vm.setTranslateAutoForeign(!vm.translateAutoForeign) }
+            }
+            SettingRow(Lucide.Captions, "默认显示译文", null, divider = false) {
+                OrganicSwitch(vm.translateDefaultShow) { vm.setTranslateDefaultShow(!vm.translateDefaultShow) }
+            }
+        }
+        Box(Modifier.height(114.dp))
+    }
+}
+
+// ── v1.3.x 播放设置子页(用户 2026-09-22 指定分组)────────────────────────────
+// 六项:无缝播放(从设置主页搬来)/音量均衡/单声道音频/允许与其他应用同时播放/均衡器。
+// 均衡器是 5 段 EQ 开关;具体曲线走系统 Equalizer(需要播放器持有 audioSessionId)。
+@Composable
+private fun PlaySettingsScreen(vm: MainViewModel, scrollStates: MutableMap<String, ScrollState>) {
+    val c = LocalOrganic.current
+    Column(
+        Modifier
+            .fillMaxSize()
+            .verticalScroll(scrollStateOf(scrollStates, "playsettings"))
+            .padding(horizontal = 20.dp)
+            .padding(top = 22.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        SubPageHeader("播放") { vm.navFilesBack() }
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .shadowSm(RoundedCornerShape(28.dp))
+                .clip(RoundedCornerShape(28.dp))
+                .background(c.surface)
+                .padding(horizontal = 16.dp, vertical = 6.dp),
+        ) {
+            // 名字就是行业通行说法，不需要那行"专辑连播时曲目间不留空隙"的解释；
+            // 本卡其余行都没有副标题，单独一行带小字会让卡片内高度参差。
+            SettingRow(Lucide.Infinity, "无缝播放", null, divider = true) {
+                OrganicSwitch(vm.gapless) { vm.setGapless(!vm.gapless) }
+            }
+            SettingRow(Lucide.Volume2, "音量均衡", null, divider = true) {
+                OrganicSwitch(vm.volumeNormalize) { vm.setVolumeNormalize(!vm.volumeNormalize) }
+            }
+            // 单声道**再次下线**(2026-09-23 实测):官方 ChannelMixingAudioProcessor +
+            // 与 media3 默认实现逐行一致的 buildAudioSink 覆写,装机后依然"播不了"。
+            // 两次实测同一结论——这条 ExoPlayer 管线上任何 buildAudioSink 覆写都会
+            // 让音频渲染失效。用户规矩:宁可缺,不能给一个"开了播不了"的开关。
+            // 详见 PlaybackService 顶部的撤回说明。
+            SettingRow(Lucide.Layers, "允许与其他应用同时播放", null, divider = true) {
+                OrganicSwitch(vm.allowConcurrentPlayback) { vm.setAllowConcurrentPlayback(!vm.allowConcurrentPlayback) }
+            }
+            CardEntryRow(
+                Lucide.SlidersVertical, c.n700, "均衡器", null,
+                divider = false,
+            ) { vm.navFilesTo(FilesView.Equalizer) }
+        }
+        Box(Modifier.height(114.dp))
+    }
+}
+
+// ── v1.3.x 均衡器子页(用户反馈"均衡器不是开关,是多频段调节")──────────────────
+// 5 段 EQ:每段一条滑杆调增益(±15 dB),顶部总开关。增益单位毫贝(mB),
+// 经 AUDIO_SETTINGS 命令下发到服务进程的 android.media.audiofx.Equalizer。
+private val EQ_BAND_LABELS = listOf("60Hz", "230Hz", "910Hz", "3.6kHz", "14kHz")
+
+@Composable
+private fun EqualizerScreen(vm: MainViewModel, scrollStates: MutableMap<String, ScrollState>) {
+    val c = LocalOrganic.current
+    Column(
+        Modifier
+            .fillMaxSize()
+            .verticalScroll(scrollStateOf(scrollStates, "equalizer"))
+            .padding(horizontal = 20.dp)
+            .padding(top = 22.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        SubPageHeader("均衡器") { vm.navFilesBack() }
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .shadowSm(RoundedCornerShape(28.dp))
+                .clip(RoundedCornerShape(28.dp))
+                .background(c.surface)
+                .padding(horizontal = 16.dp, vertical = 6.dp),
+        ) {
+            SettingRow(Lucide.SlidersVertical, "启用均衡器", null, divider = true) {
+                OrganicSwitch(vm.equalizerOn) { vm.setEqualizerOn(!vm.equalizerOn) }
+            }
+            // 5 段增益滑杆:每段一行(标签 + 滑杆 + 当前 dB)。
+            for (i in EQ_BAND_LABELS.indices) {
+                val stored = vm.equalizerBands.getOrElse(i) { 0 }
+                // v23:拖动期间只改**本地** state,松手(onValueChangeFinished)才提交一次。
+                // 原实现把 setEqualizerBand 挂在 onValueChange 上——那是连续回调(约
+                // 60-120 次/秒),每次都写一遍 DataStore、并因设置流发射再发一条跨进程
+                // AUDIO_SETTINGS,服务端每帧重设 5 个频段 + 重配 LoudnessEnhancer。
+                // 一次拖动 = 上百次磁盘写 + 上百次 IPC,拖起来明显卡。
+                var drag by remember(stored) { mutableStateOf<Float?>(null) }
+                val mB = (drag ?: stored.toFloat()).toInt()
+                Column(Modifier.fillMaxWidth().padding(vertical = 13.dp)) {
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(EQ_BAND_LABELS[i], style = body(12.5f, FontWeight.SemiBold, c.text), modifier = Modifier.width(56.dp))
+                        androidx.compose.material3.Slider(
+                            value = drag ?: stored.toFloat(),
+                            onValueChange = { drag = it },
+                            onValueChangeFinished = {
+                                drag?.let { vm.setEqualizerBand(i, it.toInt()) }
+                                drag = null
+                            },
+                            valueRange = -1500f..1500f,
+                            enabled = vm.equalizerOn,
+                            colors = androidx.compose.material3.SliderDefaults.colors(
+                                thumbColor = c.accent,
+                                activeTrackColor = c.accent,
+                                inactiveTrackColor = c.n200,
+                            ),
+                            modifier = Modifier.weight(1f),
+                        )
+                        Text(
+                            if (mB == 0) "0 dB" else "%+.1f dB".format(mB / 100f),
+                            style = body(11f, FontWeight.Normal, c.n600),
+                            modifier = Modifier.width(56.dp),
+                            textAlign = TextAlign.End,
+                        )
+                    }
+                }
             }
         }
         Box(Modifier.height(114.dp))
@@ -862,23 +1480,13 @@ private fun SettingRow(
     trailing: @Composable () -> Unit,
 ) {
     val c = LocalOrganic.current
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .padding(vertical = 13.dp),
-        horizontalArrangement = Arrangement.spacedBy(13.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        OIcon(icon, 19.dp, c.n700)
-        Column(Modifier.weight(1f)) {
-            Text(title, style = body(15f, FontWeight.SemiBold, c.text))
-            if (sub != null) {
-                Text(sub, style = body(12.5f, FontWeight.Normal, c.n600), modifier = Modifier.padding(top = 2.dp))
-            }
-        }
-        trailing()
-    }
-    if (divider) Box(Modifier.fillMaxWidth().height(1.dp).background(c.divider))
+    SettingsRowScaffold(
+        title = title,
+        sub = sub,
+        leading = { OIcon(icon, 19.dp, c.n700) },
+        trailing = trailing,
+        divider = divider,
+    )
 }
 
 /** [SettingRow] 的字符变体:图标位渲染文字字符(如振假名"ア"),与图标行视觉等重。 */
@@ -890,20 +1498,16 @@ private fun SettingRowGlyph(
     trailing: @Composable () -> Unit,
 ) {
     val c = LocalOrganic.current
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .padding(vertical = 13.dp),
-        horizontalArrangement = Arrangement.spacedBy(13.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Box(Modifier.size(19.dp), contentAlignment = Alignment.Center) {
-            Text(glyph, style = body(17f, FontWeight.ExtraBold, c.n700))
-        }
-        Text(title, style = body(15f, FontWeight.SemiBold, c.text), modifier = Modifier.weight(1f))
-        trailing()
-    }
-    if (divider) Box(Modifier.fillMaxWidth().height(1.dp).background(c.divider))
+    SettingsRowScaffold(
+        title = title,
+        leading = {
+            Box(Modifier.size(19.dp), contentAlignment = Alignment.Center) {
+                Text(glyph, style = body(17f, FontWeight.ExtraBold, c.n700))
+            }
+        },
+        trailing = trailing,
+        divider = divider,
+    )
 }
 
 // ── v1.4 audio folders subpage · v1.3.x 合并已忽略 = 「文件夹管理」页 ────────
@@ -919,7 +1523,7 @@ private fun FoldersScreen(vm: MainViewModel) {
             .padding(top = 22.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        SubPageHeader("文件夹管理") { vm.filesView = FilesView.Root }
+        SubPageHeader("文件夹管理") { vm.navFilesBack() }
 
         // ── 段1: 音频文件夹 ──
         SectionLabel("音频文件夹 · ${vm.foldersMap().size}")
@@ -931,7 +1535,7 @@ private fun FoldersScreen(vm: MainViewModel) {
                         .shadowSm(RoundedCornerShape(28.dp))
                         .clip(RoundedCornerShape(28.dp))
                         .background(c.surface)
-                        .clickable { vm.folderKey = path; vm.filesView = FilesView.FolderContent }
+                        .clickable { vm.folderKey = path; vm.navFilesTo(FilesView.FolderContent) }
                         .padding(horizontal = 16.dp, vertical = 14.dp),
                     horizontalArrangement = Arrangement.spacedBy(13.dp),
                     verticalAlignment = Alignment.CenterVertically,
@@ -1045,7 +1649,7 @@ private fun FolderContentScreen(vm: MainViewModel) {
     val c = LocalOrganic.current
     val folder = vm.folderKey
     if (folder == null) {
-        androidx.compose.runtime.LaunchedEffect(Unit) { vm.filesView = FilesView.Folders }
+        androidx.compose.runtime.LaunchedEffect(Unit) { vm.navFilesBack() }
         return
     }
     val tracks = vm.foldersMap()[folder].orEmpty()
@@ -1055,7 +1659,7 @@ private fun FolderContentScreen(vm: MainViewModel) {
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
         item {
-            SubPageHeader(folder) { vm.folderKey = null; vm.filesView = FilesView.Folders }
+            SubPageHeader(folder) { vm.folderKey = null; vm.navFilesBack() }
         }
         item {
             Text(
@@ -1109,7 +1713,7 @@ private fun DevicesScreen(vm: MainViewModel) {
             .padding(top = 22.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        SubPageHeader("播放设备") { vm.filesView = FilesView.Root }
+        SubPageHeader("播放设备") { vm.navFilesBack() }
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             for (d in devices) {
                 val active = d.id == activeId
@@ -1174,7 +1778,7 @@ private fun MergesScreen(vm: MainViewModel) {
             .padding(top = 22.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        SubPageHeader("歌手合并") { vm.filesView = FilesView.Root }
+        SubPageHeader("歌手合并") { vm.navFilesBack() }
         if (vm.aliases.isEmpty()) {
             Column(
                 Modifier
@@ -1249,7 +1853,7 @@ private fun AboutScreen(vm: MainViewModel) {
                 .padding(top = 22.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
-        SubPageHeader("关于我们") { vm.filesView = FilesView.Root }
+        SubPageHeader("关于我们") { vm.navFilesBack() }
         Column(
             Modifier
                 .fillMaxWidth()
@@ -1283,7 +1887,7 @@ private fun AboutScreen(vm: MainViewModel) {
             Row(
                 Modifier
                     .clip(RoundedCornerShape(999.dp))
-                    .background(if (hasUpdate) c.accent.copy(alpha = 0.12f) else c.n100)
+                    .background(if (hasUpdate) c.accent.copy(alpha = 0.12f) else c.surface)
                     .clickable {
                         if (hasUpdate) updateDialogOpen = true else vm.checkForUpdate(force = true)
                     }
@@ -1318,7 +1922,7 @@ private fun AboutScreen(vm: MainViewModel) {
                     .fillMaxWidth()
                     .padding(top = 14.dp)
                     .clip(RoundedCornerShape(16.dp))
-                    .background(c.n100)
+                    .background(c.surface)
                     .padding(horizontal = 16.dp, vertical = 14.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
@@ -1397,7 +2001,7 @@ private fun AboutScreen(vm: MainViewModel) {
         Box(
             Modifier.fillMaxWidth()
                 .clip(RoundedCornerShape(16.dp))
-                .background(c.n100)
+                .background(c.surface)
                 .clickable { supportSheetOpen = true }
                 .padding(horizontal = 16.dp, vertical = 14.dp),
         ) {
@@ -1523,7 +2127,16 @@ private fun CleanScreen(vm: MainViewModel) {
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
         item {
-            SubPageHeader("清理建议") { vm.filesView = FilesView.Root; vm.sel = emptyMap() }
+            // 清理建议从设置「资源管理」进来时是正常下钻(返回走栈);从首页清理卡
+            // 直达时是 cleanEntry(栈空)——按钮返回与系统返回一致:关设置回来源 tab。
+            SubPageHeader("清理建议") {
+                vm.sel = emptyMap()
+                if (vm.cleanEntry) {
+                    vm.cleanEntry = false
+                    vm.settingsOpen = false
+                    vm.restoreTabIfDrillFullyClosed()
+                } else vm.navFilesBack()
+            }
         }
         // ── 回收站段(并入;原独立 TrashScreen)──
         item { SectionLabel("回收站 · ${vm.trashMirror.size} 个文件") }
@@ -1654,7 +2267,7 @@ private fun ImageSourcesScreen(vm: MainViewModel) {
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).padding(top = 22.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        SubPageHeader("写真源") { vm.filesView = FilesView.Root }
+        SubPageHeader("写真源") { vm.navFilesBack() }
 
         // ── 内置源(无需 Key 的;Fanart/Last.fm 移入下方「自定义源」)──
         Column(
@@ -1668,15 +2281,12 @@ private fun ImageSourcesScreen(vm: MainViewModel) {
             for (key in order) {
                 val enabled = key !in vm.disabledImageSources
                 Row(
-                    Modifier.fillMaxWidth().padding(vertical = 7.dp),
+                    Modifier.fillMaxWidth().padding(vertical = 13.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Text(labels[key] ?: key, style = body(14f, FontWeight.SemiBold, c.text), modifier = Modifier.weight(1f))
-                    androidx.compose.material3.Switch(
-                        checked = enabled,
-                        onCheckedChange = { vm.setImageSourceEnabled(key, it) },
-                        colors = androidx.compose.material3.SwitchDefaults.colors(checkedTrackColor = c.accent),
-                    )
+                    OrganicSwitch(enabled) { vm.setImageSourceEnabled(key, !enabled) }
                 }
             }
         }
@@ -1703,7 +2313,8 @@ private fun ImageSourcesScreen(vm: MainViewModel) {
             for ((key, label, savedKey) in keyedSources) {
                 val enabled = key !in vm.disabledImageSources
                 Row(
-                    Modifier.fillMaxWidth().padding(vertical = 7.dp),
+                    Modifier.fillMaxWidth().padding(vertical = 13.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -1720,11 +2331,7 @@ private fun ImageSourcesScreen(vm: MainViewModel) {
                     ) {
                         OIcon(Lucide.Pencil, 15.dp, if (savedKey.isBlank()) c.n500 else c.accent)
                     }
-                    androidx.compose.material3.Switch(
-                        checked = enabled,
-                        onCheckedChange = { vm.setImageSourceEnabled(key, it) },
-                        colors = androidx.compose.material3.SwitchDefaults.colors(checkedTrackColor = c.accent),
-                    )
+                    OrganicSwitch(enabled) { vm.setImageSourceEnabled(key, !enabled) }
                 }
             }
 
@@ -1733,19 +2340,15 @@ private fun ImageSourcesScreen(vm: MainViewModel) {
                 val key = "custom-${def.id}"
                 val enabled = key !in vm.disabledImageSources
                 Row(
-                    Modifier.fillMaxWidth().padding(vertical = 7.dp),
+                    Modifier.fillMaxWidth().padding(vertical = 13.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Text(def.name, style = body(14f, FontWeight.SemiBold, c.text), modifier = Modifier.weight(1f))
                     Box(Modifier.size(30.dp).clip(CircleShape).clickable { vm.removeCustomImageSource(def.id) }, contentAlignment = Alignment.Center) {
                         OIcon(Lucide.Trash, 15.dp, c.n500)
                     }
-                    androidx.compose.material3.Switch(
-                        checked = enabled,
-                        onCheckedChange = { vm.setImageSourceEnabled(key, it) },
-                        colors = androidx.compose.material3.SwitchDefaults.colors(checkedTrackColor = c.accent),
-                        modifier = Modifier.padding(start = 6.dp),
-                    )
+                    OrganicSwitch(enabled) { vm.setImageSourceEnabled(key, !enabled) }
                 }
             }
         }

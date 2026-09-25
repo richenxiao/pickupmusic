@@ -140,7 +140,11 @@ fun AgentScreen(vm: MainViewModel) {
             Box(Modifier.size(38.dp).clip(CircleShape).background(c.surface).clickable { vm.agentOpen = false }, contentAlignment = Alignment.Center) {
                 OIcon(Lucide.ChevronLeft, 20.dp, c.text)
             }
-            Text("Agent", style = heading(22), modifier = Modifier.weight(1f))
+            Text("拾光Agent", style = heading(22), modifier = Modifier.weight(1f))
+            // v1.3.8: 历史入口 —— 与设置键同尺寸/同底色/同圆角/同间距,只是多一颗。
+            Box(Modifier.size(38.dp).clip(CircleShape).background(c.surface).clickable { vm.agentHistoryOpen = true }, contentAlignment = Alignment.Center) {
+                OIcon(Lucide.History, 18.dp, c.text)
+            }
             Box(Modifier.size(38.dp).clip(CircleShape).background(c.surface).clickable { vm.openAgentSettings() }, contentAlignment = Alignment.Center) {
                 OIcon(Lucide.Settings, 18.dp, c.text)
             }
@@ -162,23 +166,27 @@ fun AgentScreen(vm: MainViewModel) {
             }
             if (vm.agentMessages.isEmpty()) {
                 item {
-                    // v1.3.x:空态提示居中占满消息区(fillParentMaxHeight),去掉
-                    // "例如:…"示例语——只留一句主提示,不罗列填空式话术。
+                    // v1.3.8 欢迎空态重做(用户规格):纵向三段式,不再把 Logo 和文字
+                    // 横向拼在一起。
+                    //  - 品牌标独占视觉主体(88dp,与 agent_brand.xml 自带建议尺寸一致);
+                    //  - 下方 20dp 一句话,不重复"拾光Agent"品牌名、不加说明/宣传语;
+                    //  - 上下配重 1 : 1.3 —— 整块落在可用区约 43% 处,即"中间略偏上",
+                    //    与底部输入区形成稳定的上下层次。
                     Column(
-                        Modifier.fillParentMaxHeight().fillMaxWidth(),
+                        Modifier.fillParentMaxHeight().fillMaxWidth().padding(horizontal = 32.dp),
                         horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.Center,
                     ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        ) {
-                            // v1.3.x 反馈:Sparkles 图标与文字同色(涂黑)——原用 n500(灰)
-                            // 与 heading 文字的 c.text 不协调,视觉上"图标是装饰、文字是正文"
-                            // 两截。同色后图标与文字是一个整体。
-                            OIcon(Lucide.Sparkles, 20.dp, LocalOrganic.current.text)
-                            Text("告诉 Agent 你想做什么", style = heading(18))
-                        }
+                        Spacer(Modifier.weight(1f))
+                        androidx.compose.foundation.Image(
+                            painter = androidx.compose.ui.res.painterResource(
+                                com.shiyin.music.R.drawable.agent_brand,
+                            ),
+                            contentDescription = null,
+                            modifier = Modifier.size(88.dp),
+                        )
+                        Spacer(Modifier.height(20.dp))
+                        Text("有什么想让我帮你做的？", style = heading(18))
+                        Spacer(Modifier.weight(1.3f))
                     }
                 }
             }
@@ -265,6 +273,9 @@ fun AgentScreen(vm: MainViewModel) {
         }
     }
     if (vm.agentSettingsOpen) AgentSettingsDialog(vm) { vm.agentSettingsOpen = false }
+    // v1.3.8: 历史页做成与设置页同构的全屏 Dialog —— 改动全部留在 Agent 页内,
+    // 不动 AppRoot 的路由。系统返回键由 Dialog 自己吃掉(dismissOnBackPress 默认 true)。
+    if (vm.agentHistoryOpen) AgentHistoryDialog(vm) { vm.agentHistoryOpen = false }
 }
 
 /**
@@ -312,7 +323,7 @@ private fun AgentSettingsDialog(vm: MainViewModel, onDismiss: () -> Unit) {
                     Modifier.size(38.dp).clip(CircleShape).background(c.surface).clickable { onDismiss() },
                     contentAlignment = Alignment.Center,
                 ) { OIcon(Lucide.ChevronLeft, 20.dp, c.text) }
-                Text("Agent 设置", style = heading(20), modifier = Modifier.weight(1f))
+                Text("拾光Agent 设置", style = heading(20), modifier = Modifier.weight(1f))
                 // v22: 保存移到顶栏右上。原来挂在滚动内容的最底部 —— 改了 API Key 之后
                 // 要一路滚到底才能保存（展开「使用统计」面板时尤其明显），而且它看起来
                 // 像页面正文的一部分而不是动作按钮。顶栏固定可见，不用滚。
@@ -680,6 +691,17 @@ private fun AgentBubble(
                 }
             } else {
                 AgentReplyText(msg.text, streaming = vm.agentRunning && isLast && !isUser)
+                // v1.3.x: 回复署名 —— 每条 Agent 回复末尾一枚品牌 logo。
+                // 尺寸**按场景定**（用户要求"不要全部默认小图标"）：
+                // 空态是整页主视觉 80dp，正文回复末尾是落款 30dp——比首版的 22dp
+                // 更明确地"签个名"，又不至于和正文抢读。
+                androidx.compose.foundation.Image(
+                    painter = androidx.compose.ui.res.painterResource(
+                        com.shiyin.music.R.drawable.agent_brand,
+                    ),
+                    contentDescription = null,
+                    modifier = Modifier.padding(top = 8.dp).size(30.dp),
+                )
             }
         } else if (!isUser && msg.steps.isNullOrEmpty() && msg.thinking.isNullOrBlank()) {
             // v1.3.4: 占位气泡换成与思考链同一套呼吸语言(圆点 + "正在思考…"),

@@ -79,7 +79,15 @@ class ArtistImageResolver(private val dao: ShiyinDao) {
         //    的条目视作未命中——继续走 photo 层重解析,别把封面横幅塞进小圆框截成
         //    半张脸。photo/thumb/background 类型照常命中。album 缓存绕过不算失败,
         //    personOnly 搜空时上层保留已有 URL(见 fetchArtistAvatarPerson)。
-        val cacheHit = cached != null && cached.isValid(now) &&
+        //    v1.3.6: 缓存条目 URL 有效但 w/h=0(旧版本没存尺寸)时,也直接信任——
+        //    尺寸缺失不等于 URL 失效,先加载试试,加载失败才会被下层探测拦下;
+        //    旧实现把"有 URL 无尺寸"视作未验证直接丢,导致明明本地有图却空框
+        //    (收听记录页 personOnly 场景的直接根因之一)。
+        // v23 整理:原先第三个合取项是 `(cached.isValid(now) || cached.url.isNotBlank())`,
+        // 而第二个合取项已经是 `cached.url.isNotBlank()` —— 该析取恒为 true,isValid
+        // 从未起作用(死代码)。按上面 v1.3.6 的既定语义收敛为「URL 非空即信任」,
+        // 行为不变,只是不再留一个看起来在判时效、实际不判的条件。
+        val cacheHit = cached != null && cached.url.isNotBlank() &&
             !(personOnly && cached.imageType.equals("album", ignoreCase = true))
         if (cacheHit && cached != null) {
             android.util.Log.d("AIM", "cache valid: ${cached.source} ${cached.url.take(60)}")

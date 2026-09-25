@@ -235,17 +235,23 @@ object LlmClient {
                     val payload = line.removePrefix("data:").trim()
                     if (payload == "[DONE]") break
                     val chunk = runCatching { JsonParser.parseString(payload).asJsonObject }.getOrNull() ?: continue
-                    // 流式 usage 通常在最后一个 chunk;usage 可能为 null(不抛、跳过)
-                    chunk.getAsJsonObject("usage")?.let { u ->
+                    // 流式 usage 通常在最后一个 chunk;usage 可能为 **JsonNull**(部分网关
+                    // 每个 chunk 都带 "usage": null)——必须 takeIf{isJsonObject},
+                    // 直接 getAsJsonObject 会强转 JsonNull 抛 ClassCastException,
+                    // 被外层 catch 归成「网络异常」把成功响应变成失败。
+                    chunk.get("usage")?.takeIf { it.isJsonObject }?.asJsonObject?.let { u ->
                         pt = u.get("prompt_tokens")?.takeIf { it.isJsonPrimitive }?.asInt ?: pt
                         ct = u.get("completion_tokens")?.takeIf { it.isJsonPrimitive }?.asInt ?: ct
                         // v1.3.6: 缓存命中 token(OpenAI prompt_tokens_details.cached_tokens;
                         // DeepSeek 用顶层 prompt_cache_hit_tokens)——都认,取其一。
-                        cacheTk = u.getAsJsonObject("prompt_tokens_details")?.get("cached_tokens")?.takeIf { it.isJsonPrimitive }?.asInt
+                        cacheTk = u.get("prompt_tokens_details")?.takeIf { it.isJsonObject }?.asJsonObject
+                            ?.get("cached_tokens")?.takeIf { it.isJsonPrimitive }?.asInt
                             ?: u.get("prompt_cache_hit_tokens")?.takeIf { it.isJsonPrimitive }?.asInt
                             ?: cacheTk
                     }
-                    val delta = chunk.getAsJsonArray("choices")?.firstOrNull()?.asJsonObject?.getAsJsonObject("delta") ?: continue
+                    val delta = chunk.get("choices")?.takeIf { it.isJsonArray }?.asJsonArray
+                        ?.firstOrNull { el -> el.isJsonObject }?.asJsonObject
+                        ?.get("delta")?.takeIf { it.isJsonObject }?.asJsonObject ?: continue
                     val reasoning = delta.get("reasoning_content")?.asString ?: delta.get("reasoning")?.asString
                     val content = delta.get("content")?.asString
                     if (reasoning != null || content != null) {
@@ -329,7 +335,7 @@ object LlmClient {
                     return@withContext null
                 }
 
-                val choices = json.getAsJsonArray("choices") ?: run {
+                val choices = json.get("choices")?.takeIf { it.isJsonArray }?.asJsonArray ?: run {
                     android.util.Log.w(TAG, "LLM resp 无 choices 字段: ${json.keySet()}")
                     lastError = "响应缺少 choices(检查 baseUrl 是否为 OpenAI 兼容端点)"
                     return@withContext null
@@ -345,7 +351,8 @@ object LlmClient {
                 // reasoning_content 时回 "content": null)——getAsJsonObject 语义的
                 // 空安全判空,JsonNull.asString 会抛 UnsupportedOperationException,
                 // 整个成功响应又被当"网络异常"烧三轮重试。
-                val msgObj = choices[0].asJsonObject.getAsJsonObject("message") ?: run {
+                val msgObj = choices.get(0)?.takeIf { it.isJsonObject }?.asJsonObject
+                    ?.get("message")?.takeIf { it.isJsonObject }?.asJsonObject ?: run {
                     lastError = "响应缺少 message"
                     return@withContext null
                 }
@@ -356,10 +363,11 @@ object LlmClient {
                 val thinking = msgObj.get("reasoning")?.takeIf { it.isJsonPrimitive }?.asString
                     ?: msgObj.get("reasoning_content")?.takeIf { it.isJsonPrimitive }?.asString
 
-                val usage = json.getAsJsonObject("usage")
+                val usage = json.get("usage")?.takeIf { it.isJsonObject }?.asJsonObject
                 val pt = usage?.get("prompt_tokens")?.takeIf { it.isJsonPrimitive }?.asInt ?: 0
                 val ct = usage?.get("completion_tokens")?.takeIf { it.isJsonPrimitive }?.asInt ?: 0
-                val cacheTk = usage?.getAsJsonObject("prompt_tokens_details")?.get("cached_tokens")?.takeIf { it.isJsonPrimitive }?.asInt
+                val cacheTk = usage?.get("prompt_tokens_details")?.takeIf { it.isJsonObject }?.asJsonObject
+                    ?.get("cached_tokens")?.takeIf { it.isJsonPrimitive }?.asInt
                     ?: usage?.get("prompt_cache_hit_tokens")?.takeIf { it.isJsonPrimitive }?.asInt
                     ?: 0
                 LlmResponse(content, pt, ct, thinking, cacheTk)
@@ -404,6 +412,188 @@ object LlmClient {
             android.util.Log.w(TAG, "callWithTools 网络异常,重试 ${attempt + 1}/$retries: ${err.message}")
         }
         last
+    }
+
+    /** v1.3.8: 流式工具调用的分片累积器。tool_calls 在 SSE 里是**分片**到达的:
+     *  首块带 id + name + 空 arguments,后续块 id/name 为空、只带 arguments 片段。
+     *  按 `index` 归并(index 不同 = 并行工具调用)。 */
+    private class ToolCallAcc {
+        var id: String? = null
+        var name: String? = null
+        val args = StringBuilder()
+    }
+
+    /**
+     * v1.3.8: 流式 + 工具调用(SSE)。技能分发的唯一入口。
+     *
+     * **为什么必须流式**:非流式会让聊天打字机退化成"整段生成完才显示"——那正是本版
+     * 要消除的卡顿感。工具调用本身不需要打字机(JSON 不该透出),但**同一路请求里
+     * 的聊天回复需要**,所以两者必须共用一次调用。
+     *
+     * 0.3 实测形状(deepseek-v4-flash / sensenova-6.8-flash-lite @ token.sensenova.cn):
+     *  - 两家都支持 `stream:true` + `tools`,均以 `data: [DONE]` 收尾
+     *  - tool_calls 分片:首块 `{"index":0,"id":"call_x","function":{"name":"...","arguments":""}}`,
+     *    后续块 `{"index":0,"id":"","function":{"name":"","arguments":"晴天"}}`
+     *  - 两家都是推理模型:tool-call 轮的 content 为 `""` / `"\n\n"`,思考在
+     *    `reasoning_content`(deepseek)/ `reasoning`(sensenova)
+     *
+     * 错误随结果返回([LlmToolResult.Err]),调用方**不要**读 [lastError] 判定回退
+     * (共享状态,并发下会被覆盖,详见 [LlmToolResult])。
+     */
+    suspend fun callWithToolsStream(
+        config: LlmProviderConfig,
+        messages: JsonArray,
+        tools: JsonArray?,
+        temperature: Double = 0.0,
+        maxTokens: Int = 4096,
+        callSec: Long = 120,
+        retries: Int = 1,
+        onDelta: (contentDelta: String?, reasoningDelta: String?) -> Unit = { _, _ -> },
+    ): LlmToolResult = withContext(Dispatchers.IO) {
+        var last: LlmToolResult = LlmToolResult.Err(null, "未发起调用")
+        for (attempt in 0..retries) {
+            last = callWithToolsStreamOnce(config, messages, tools, temperature, maxTokens, callSec, onDelta)
+            if (last is LlmToolResult.Ok) break
+            val err = last as LlmToolResult.Err
+            // 只重试"网络层失败"(无 HTTP 码):HTTP 错误重发同样请求只会再被拒一次
+            if (err.httpCode != null || attempt == retries) break
+            android.util.Log.w(TAG, "callWithToolsStream 网络异常,重试 ${attempt + 1}/$retries: ${err.message}")
+            kotlinx.coroutines.delay(1500)
+            // 重试轮开始时清空调用方已积累的展示缓冲(重试成功会从头重发全量),
+            // 与 callStream 的 (null,null) 约定一致。
+            onDelta(null, null)
+        }
+        last
+    }
+
+    /** [callWithToolsStream] 的单次实现(不含重试)。 */
+    private fun callWithToolsStreamOnce(
+        config: LlmProviderConfig,
+        messages: JsonArray,
+        tools: JsonArray?,
+        temperature: Double,
+        maxTokens: Int,
+        callSec: Long,
+        onDelta: (contentDelta: String?, reasoningDelta: String?) -> Unit,
+    ): LlmToolResult {
+        if (!config.isConfigured) {
+            val m = "供应商未配置(缺 API Key 或模型名)"
+            lastError = m
+            return LlmToolResult.Err(null, m)
+        }
+        try {
+            val body = JsonObject().apply {
+                addProperty("model", config.model)
+                add("messages", messages)
+                if (tools != null && tools.size() > 0) {
+                    add("tools", tools)
+                    addProperty("tool_choice", "auto")
+                }
+                addProperty("max_tokens", maxTokens)
+                addProperty("temperature", temperature)
+                addProperty("stream", true)
+            }.toString()
+
+            val req = Request.Builder()
+                .url(config.endpoint)
+                .header("Authorization", "Bearer ${config.apiKey}")
+                .header("Content-Type", "application/json")
+                .header("Accept", "text/event-stream")
+                .post(body.toRequestBody(JSON))
+                .build()
+            val perCallClient = if (callSec == 120L) client else client.newBuilder()
+                .readTimeout(callSec, TimeUnit.SECONDS)
+                .build()
+
+            val resp = perCallClient.newCall(req).execute()
+            if (!resp.isSuccessful) {
+                val respBody = resp.body?.string()
+                val msg = errorMessage(respBody ?: "")
+                val m = "HTTP ${resp.code}" + if (msg.isNullOrBlank()) "" else ": ${msg.take(140)}"
+                lastError = m
+                return LlmToolResult.Err(resp.code, m)
+            }
+
+            val contentSb = StringBuilder()
+            val reasoningSb = StringBuilder()
+            val tcAcc = LinkedHashMap<Int, ToolCallAcc>()
+            var pt = 0; var ct = 0; var cacheTk = 0
+            java.io.BufferedReader(java.io.InputStreamReader(resp.body!!.byteStream(), Charsets.UTF_8)).useLines { lines ->
+                for (line in lines) {
+                    if (!line.startsWith("data:")) continue
+                    val payload = line.removePrefix("data:").trim()
+                    if (payload == "[DONE]") break
+                    val chunk = runCatching { JsonParser.parseString(payload).asJsonObject }.getOrNull() ?: continue
+                    // 流式 usage 通常在最后一个 chunk;值可能为 null(不抛、跳过)
+                    // ⚠️ 必须走 takeIf{isJsonObject} 而不是 getAsJsonObject():
+                    // Gson 的 getAsJsonObject/getAsJsonArray 内部是 (JsonObject) members.get(k)
+                    // 强转,成员为 **JsonNull** 时抛 ClassCastException。而部分 OpenAI 兼容
+                    // 网关(如 DeepSeek 官方)会在每个 chunk 里带 "usage": null → 异常被外层
+                    // catch(Exception) 归成「网络异常:…JsonNull」,成功响应变失败。这正是
+                    // callWithToolsOnce 里已经修过的同一类 bug,这里补上。
+                    chunk.get("usage")?.takeIf { it.isJsonObject }?.asJsonObject?.let { u ->
+                        pt = u.get("prompt_tokens")?.takeIf { it.isJsonPrimitive }?.asInt ?: pt
+                        ct = u.get("completion_tokens")?.takeIf { it.isJsonPrimitive }?.asInt ?: ct
+                        cacheTk = u.get("prompt_tokens_details")?.takeIf { it.isJsonObject }?.asJsonObject
+                            ?.get("cached_tokens")?.takeIf { it.isJsonPrimitive }?.asInt
+                            ?: u.get("prompt_cache_hit_tokens")?.takeIf { it.isJsonPrimitive }?.asInt
+                            ?: cacheTk
+                    }
+                    // 逐字段空安全:choices 元素可能是 JsonNull(见 callWithToolsOnce 的同款修复)
+                    val delta = chunk.get("choices")?.takeIf { it.isJsonArray }?.asJsonArray
+                        ?.firstOrNull { el -> el.isJsonObject }
+                        ?.asJsonObject?.get("delta")?.takeIf { it.isJsonObject }?.asJsonObject ?: continue
+                    val reasoning = delta.get("reasoning_content")?.takeIf { it.isJsonPrimitive }?.asString
+                        ?: delta.get("reasoning")?.takeIf { it.isJsonPrimitive }?.asString
+                    val content = delta.get("content")?.takeIf { it.isJsonPrimitive }?.asString
+                    delta.get("tool_calls")?.takeIf { it.isJsonArray }?.asJsonArray?.forEach { el ->
+                        val o = el?.takeIf { it.isJsonObject }?.asJsonObject ?: return@forEach
+                        val idx = o.get("index")?.takeIf { it.isJsonPrimitive }?.asInt ?: 0
+                        val acc = tcAcc.getOrPut(idx) { ToolCallAcc() }
+                        // id/name 只在首块出现,后续块是空串——非空才覆盖
+                        o.get("id")?.takeIf { it.isJsonPrimitive }?.asString?.takeIf { it.isNotBlank() }
+                            ?.let { acc.id = it }
+                        o.get("function")?.takeIf { it.isJsonObject }?.asJsonObject?.let { fn ->
+                            fn.get("name")?.takeIf { it.isJsonPrimitive }?.asString?.takeIf { it.isNotBlank() }
+                                ?.let { acc.name = it }
+                            fn.get("arguments")?.takeIf { it.isJsonPrimitive }?.asString
+                                ?.let { acc.args.append(it) }
+                        }
+                    }
+                    if (reasoning != null || content != null) {
+                        reasoning?.let { reasoningSb.append(it) }
+                        content?.let { contentSb.append(it) }
+                        onDelta(content, reasoning)
+                    }
+                }
+            }
+            lastError = null
+            val toolCalls = tcAcc.entries.sortedBy { it.key }.mapIndexedNotNull { i, e ->
+                val name = e.value.name ?: return@mapIndexedNotNull null
+                LlmToolCall(
+                    // 与 callWithToolsOnce 同因:少数网关不回 id,回显时 tool_call_id
+                    // 必须与 assistant 消息一致,空串会被严格网关判 400。合成稳定 id。
+                    id = e.value.id ?: "call_$i",
+                    name = name,
+                    argumentsJson = e.value.args.toString().ifBlank { "{}" },
+                )
+            }
+            return LlmToolResult.Ok(
+                LlmToolResponse(
+                    content = contentSb.toString().ifBlank { null },
+                    toolCalls = toolCalls,
+                    promptTokens = pt,
+                    completionTokens = ct,
+                    cacheTokens = cacheTk,
+                    thinking = reasoningSb.toString().ifBlank { null },
+                )
+            )
+        } catch (e: Exception) {
+            if (e is kotlinx.coroutines.CancellationException) throw e
+            val m = "网络异常: ${e.message ?: e.javaClass.simpleName}"
+            lastError = m
+            return LlmToolResult.Err(null, m)
+        }
     }
 
     /** [callWithTools] 的单次实现(不含重试)。 */
@@ -459,16 +649,24 @@ object LlmClient {
                 lastError = m
                 return LlmToolResult.Err(null, m)
             }
-            val msgObj = json.getAsJsonArray("choices")?.firstOrNull()?.asJsonObject
-                ?.getAsJsonObject("message") ?: run {
-                val m = "响应缺少 message"
+            // v1.3.x 修复(用户反馈⑪:官方 DeepSeek 报"网络异常JSONNULL"、翻译却正常):
+            // 翻译走 call()(解析路径有完整 JsonNull 防御),agent 走 callWithTools()
+            // ——这条路径的解析防御不全:choices 数组元素是 JsonNull 时 .asJsonObject
+            // 直接抛 Gson 强转异常,message 以 "JsonNull" 开头,被 catch(Exception)
+            // 捕获归类为"网络异常"——成功响应被当成网络错误,重试也救不了。
+            // 解析段逐字段空安全,不再抛任何强转异常。
+            val msgObj = json.get("choices")?.takeIf { it.isJsonArray }?.asJsonArray
+                ?.firstOrNull { el -> el.isJsonObject }
+                ?.asJsonObject
+                ?.get("message")?.takeIf { it.isJsonObject }?.asJsonObject ?: run {
+                val m = "响应缺少 message(检查 baseUrl 是否为 OpenAI 兼容端点)"
                 lastError = m
                 return LlmToolResult.Err(null, m)
             }
             val content = msgObj.get("content")?.takeIf { it.isJsonPrimitive }?.asString
-            val toolCalls = msgObj.getAsJsonArray("tool_calls")?.mapIndexedNotNull { idx, el ->
-                val o = el?.asJsonObject ?: return@mapIndexedNotNull null
-                val fn = o.getAsJsonObject("function") ?: return@mapIndexedNotNull null
+            val toolCalls = msgObj.get("tool_calls")?.takeIf { it.isJsonArray }?.asJsonArray?.mapIndexedNotNull { idx, el ->
+                val o = el?.takeIf { it.isJsonObject }?.asJsonObject ?: return@mapIndexedNotNull null
+                val fn = o.get("function")?.takeIf { it.isJsonObject }?.asJsonObject ?: return@mapIndexedNotNull null
                 val name = fn.get("name")?.takeIf { it.isJsonPrimitive }?.asString ?: return@mapIndexedNotNull null
                 LlmToolCall(
                     // 少数网关不回 id;回显时 tool_call_id 必须与 assistant 消息里的 id 一致,
@@ -481,10 +679,11 @@ object LlmClient {
             } ?: emptyList()
             val thinking = msgObj.get("reasoning")?.takeIf { it.isJsonPrimitive }?.asString
                 ?: msgObj.get("reasoning_content")?.takeIf { it.isJsonPrimitive }?.asString
-            val usage = json.getAsJsonObject("usage")
+            val usage = json.get("usage")?.takeIf { it.isJsonObject }?.asJsonObject
             val pt = usage?.get("prompt_tokens")?.takeIf { it.isJsonPrimitive }?.asInt ?: 0
             val ct = usage?.get("completion_tokens")?.takeIf { it.isJsonPrimitive }?.asInt ?: 0
-            val cacheTk = usage?.getAsJsonObject("prompt_tokens_details")?.get("cached_tokens")?.takeIf { it.isJsonPrimitive }?.asInt
+            val cacheTk = usage?.get("prompt_tokens_details")?.takeIf { it.isJsonObject }?.asJsonObject
+                ?.get("cached_tokens")?.takeIf { it.isJsonPrimitive }?.asInt
                 ?: usage?.get("prompt_cache_hit_tokens")?.takeIf { it.isJsonPrimitive }?.asInt
                 ?: 0
             lastError = null
@@ -517,7 +716,7 @@ object LlmClient {
             android.util.Log.d(TAG, "listModels http=${resp.code} url=$url n=${if (resp.isSuccessful) body.length else 0}")
             if (!resp.isSuccessful) return@withContext emptyList()
             val json = JsonParser.parseString(body).asJsonObject
-            val arr = json.getAsJsonArray("data") ?: return@withContext emptyList()
+            val arr = json.get("data")?.takeIf { it.isJsonArray }?.asJsonArray ?: return@withContext emptyList()
             arr.mapNotNull { el ->
                 el?.asJsonObject?.get("id")?.asString?.takeIf { it.isNotBlank() }
             }

@@ -21,7 +21,34 @@ import kotlinx.coroutines.withContext
  */
 object TrackRenameSkill : AgentEngine.AgentSkill {
     override val key = "track_rename"
-    override val description = "修正专辑/曲目的歌曲名识别错误(联网核对官方曲目名后修正单曲标题);指令里可点名任意专辑名"
+    override val description = "修改曲目的【歌名】。两类需求:①点名把某一首歌名改成另一个名字(track + new_title);②给出统一变换规则、批量改整张专辑的歌名(如去掉歌名里的后缀/繁转简/去编号,填 rule)。只改歌名,不改歌手名。"
+    // v1.3.8: rule 的措辞按 0.3 实测调整——模型会把「原话」改写成更规整的说法
+    // (deepseek 实测把「把《魔杰座》里每首歌名后面的-歌手名后缀去掉」改写成
+    // 「把每首歌名后面的 - 歌手名 后缀去掉」),这是可接受的自然语言改写。
+    // 故 description 写「需求描述」而非暗示必须逐字照抄。
+    override val parameters = """
+        {"type":"object","properties":{"album":{"type":"string","description":"要改歌名的专辑名"},"track":{"type":"string","description":"要改的旧歌名。仅当用户点名把某一首歌改成另一个名字时填"},"new_title":{"type":"string","description":"新的歌名。仅当用户点名了具体的新名字时填"},"rule":{"type":"string","description":"用户对歌名变换规则的描述(如「去掉歌名后面的-歌手名后缀」「繁体转简体」)。当用户描述的是「怎么改」而不是「改成什么」时填这里"}},"required":[]}
+    """.trimIndent()
+
+    /**
+     * v1.3.8(P2):三条执行路径的步骤清单——判定顺序必须与 [execute] 里完全一致
+     * (new_title 优先于 rule,因为快速路径会给点名直改同时带上 rule)。
+     */
+    override fun panelSteps(args: Map<String, String>) = when {
+        !args["new_title"].isNullOrBlank() -> listOf(
+            AgentEngine.PanelStep("locate", "定位歌曲"),
+            AgentEngine.PanelStep("rename", "写回新歌名"),
+        )
+        !args["rule"].isNullOrBlank() -> listOf(
+            AgentEngine.PanelStep("analyze", "分析需求与修改清单"),
+            AgentEngine.PanelStep("writeback", "写回并验收"),
+        )
+        else -> listOf(
+            AgentEngine.PanelStep("search", "联网搜证"),
+            AgentEngine.PanelStep("analyze", "AI 分析修正"),
+            AgentEngine.PanelStep("writeback", "写回本地"),
+        )
+    }
 
     override suspend fun execute(
         ctx: AgentEngine.SkillContext,
@@ -281,8 +308,10 @@ object TrackRenameSkill : AgentEngine.AgentSkill {
     private fun parseFixesJson(raw: String): List<Pair<Long, String>> = try {
         val direct = runCatching { JsonParser.parseString(raw.trim()).asJsonObject }.getOrNull()
         val obj = direct ?: run {
-            val m = Regex("""\{.*}""", RegexOption.DOT_MATCHES_ALL).find(raw) ?: return emptyList()
-            runCatching { JsonParser.parseString(m.value).asJsonObject }.getOrNull()
+            // v1.3.8: 原为 Regex("""\{.*}""")——裸 '}' 在 Android 上编译抛
+            // PatternSyntaxException(JVM 单测用桌面正则,测不出来)。
+            val json = com.shiyin.music.data.firstBalancedJsonObject(raw) ?: return emptyList()
+            runCatching { JsonParser.parseString(json).asJsonObject }.getOrNull()
         } ?: return emptyList()
         val arr = obj.getAsJsonArray("fixes") ?: return emptyList()
         arr.mapNotNull { el ->

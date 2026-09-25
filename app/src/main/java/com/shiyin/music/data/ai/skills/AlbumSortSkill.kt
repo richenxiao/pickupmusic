@@ -19,6 +19,15 @@ import com.shiyin.music.data.ai.LlmProviderConfig
 object AlbumSortSkill : AgentEngine.AgentSkill {
     override val key = "album_sort"
     override val description = "把专辑曲目按官方顺序排序;指令里可点名任意专辑名(如「把《魔杰座》排成正确顺序」),也可作用于当前打开的专辑"
+    override val parameters = """
+        {"type":"object","properties":{"album":{"type":"string","description":"要排序的专辑名。用户点名了专辑就填;没点名则不要填(作用于当前打开的专辑)"}},"required":[]}
+    """.trimIndent()
+    override fun panelSteps(args: Map<String, String>) = listOf(
+        AgentEngine.PanelStep("tracks", "读取专辑曲目"),
+        AgentEngine.PanelStep("search", "联网搜索官方顺序"),
+        AgentEngine.PanelStep("analyze", "AI 核对生成顺序"),
+        AgentEngine.PanelStep("writeback", "写回排序"),
+    )
 
     override suspend fun execute(
         ctx: AgentEngine.SkillContext,

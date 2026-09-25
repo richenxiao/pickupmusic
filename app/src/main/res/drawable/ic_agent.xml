@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 拾音音乐 · 拾光Agent 单色图标（小尺寸用，接受 tint）
+     侧边栏 / 菜单入口用。v1.3.x 第2项:由品牌标的核心识别元素**重绘为等线宽 Mono
+     Icon**——stroke 2 / round cap，与 Lucide 图标体系同线宽、同留白、同视觉重量；
+     省略了缩小后无法分辨的细碎音轨与音符（原来那版是从线稿逐点描摹的填充图形，
+     线细、细节密，降到侧边栏尺寸后发虚、比别的图标轻一档）。
+     核心识别元素保留：黑胶盘面 + 中心轴 + 右上闪光。
+     ⚠️ Agent 页面用的彩色 Brand Logo 是 agent_brand.xml，不受这里影响。 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <!-- 唱片外圈 -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#000000"
+        android:strokeWidth="2"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M 3.3 13.4 a 7 7 0 1 0 14 0 a 7 7 0 1 0 -14 0" />
+    <!-- 内音轨 -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#000000"
+        android:strokeWidth="2"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M 6.4 13.4 a 3.9 3.9 0 1 0 7.8 0 a 3.9 3.9 0 1 0 -7.8 0" />
+    <!-- 中心轴 -->
+    <path
+        android:fillColor="#000000"
+        android:pathData="M 10.3 13.4 m -1.4 0 a 1.4 1.4 0 1 1 2.8 0 a 1.4 1.4 0 1 1 -2.8 0" />
+    <!-- 右上闪光（四角星） -->
+    <path
+        android:fillColor="#000000"
+        android:pathData="M 19.3 2.2 Q 19.9 4.0 21.7 4.6 Q 19.9 5.2 19.3 7.0 Q 18.7 5.2 16.9 4.6 Q 18.7 4.0 19.3 2.2 Z" />
+</vector>

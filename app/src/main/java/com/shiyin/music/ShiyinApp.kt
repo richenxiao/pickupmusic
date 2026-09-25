@@ -26,6 +26,9 @@ class ShiyinApp : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        // v1.3.x: 使用日志（设置 → 数据管理 → 日志）。只记"发生了什么"，不记内容；
+        // 写盘在后台单线程，顺带清理超过保留期的日志与崩溃报告。
+        com.shiyin.music.data.log.UsageLog.event(this, "启动", "冷启动")
         // v4.3: ensure media playback notification channel exists
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(

@@ -394,6 +394,14 @@ interface ShiyinDao {
     @Query("INSERT INTO saved_lyrics(mediaId, lyrics, source, offsetMs, savedAt, autoSaved) VALUES (:mediaId, :lyrics, :source, :offsetMs, :savedAt, 1) ON CONFLICT(mediaId) DO UPDATE SET lyrics=:lyrics, source=:source, offsetMs=:offsetMs, savedAt=:savedAt WHERE autoSaved=1")
     suspend fun upsertAutoSavedLyric(mediaId: Long, lyrics: String, source: String, offsetMs: Long, savedAt: Long)
 
+    // v1.3.x 需求6(翻译持久化修复):只在**该曲还没有任何歌词行**时写入。
+    // 用途见 MainViewModel 的翻译落库块——译文绑的是"这份歌词文本"的 hash，
+    // 文本不落库 → 重启后重新联网匹配到不同文本 → 译文永远查不到。
+    // 用 INSERT OR IGNORE 而**不是** upsert：已有行（无论手动还是更晚的自动匹配）
+    // 一律不动，绝不把用户更新的歌词版本覆盖回旧文本。
+    @Query("INSERT OR IGNORE INTO saved_lyrics(mediaId, lyrics, source, offsetMs, savedAt, autoSaved) VALUES (:mediaId, :lyrics, :source, :offsetMs, :savedAt, 1)")
+    suspend fun insertAutoSavedLyricIfAbsent(mediaId: Long, lyrics: String, source: String, offsetMs: Long, savedAt: Long)
+
     @Query("DELETE FROM saved_lyrics WHERE mediaId = :mediaId")
     suspend fun deleteLyric(mediaId: Long)
 
@@ -679,7 +687,11 @@ interface ShiyinDao {
 
     // v4: store/refresh the iTunes releaseDate for an album without rewriting
     // url/source/colors. Used by the artist album list for sort-by-release-date.
-    @Query("UPDATE album_art_cache SET releaseDate = :iso WHERE albumId = :albumId")
+    // v1.3.x 修补(用户反馈⑤"返回了时间,结果也录入不进去"):原 UPDATE 只更新
+    // 已有行——专辑封面还没缓存过(album_art_cache 无该 albumId 的行)时 UPDATE
+    // 影响行数=0,日期根本没写进去。改用 UPSERT:无行时插入占位行(只含日期),
+    // 有行时只更 releaseDate(保留封面/取色)。
+    @Query("INSERT INTO album_art_cache(albumId, url, source, fetchedAt, bgArgb, fgArgb, releaseDate) VALUES (:albumId, '', 'ai_date', 0, 0, 0, :iso) ON CONFLICT(albumId) DO UPDATE SET releaseDate = :iso")
     suspend fun updateAlbumReleaseDate(albumId: Long, iso: String)
 
     // v3.0: bulk-load persisted dominant colors at startup so the player/lyrics
