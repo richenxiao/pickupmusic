@@ -55,6 +55,7 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -2403,13 +2404,21 @@ private fun SidebarItem(icon: androidx.compose.ui.graphics.vector.ImageVector, l
  * 重载：矢量 drawable（`painterResource`）——拾光Agent 的品牌图标走这条。
  * 见 `OIcon(Painter…)` 注释：本 Compose 版本没有可用的 `vectorResource`。
  *
- * 尺寸与图标行一致（20dp）：v1.3.x 第2项把 ic_agent 重绘成了标准 24×24 实占的等线宽
- * Mono 图标，视觉重量与 Lucide 图标相同，所以不再需要为旧的"宽而扁"线稿做尺寸补偿。
+ * 槽位仍 20dp（行高与文字位置和 Lucide 行一致）；图标画 28.8dp 并
+ * `wrapContentSize(unbounded)` 允许溢出——logo 是宽椭圆（内容 23.5×15.8 / 24），
+ * 按 20dp 画出来上下只有 13.2dp，比邻居（Bell 18.98dp）矮三成。
  */
 @Composable
 private fun SidebarItem(icon: androidx.compose.ui.graphics.painter.Painter, label: String, onClick: () -> Unit) =
     SidebarItemRow(
-        icon = { com.shiyin.music.ui.components.OIcon(icon, 20.dp, LocalOrganic.current.n700) },
+        icon = {
+            Box(Modifier.size(20.dp), contentAlignment = Alignment.Center) {
+                com.shiyin.music.ui.components.OIcon(
+                    icon, 28.8.dp, LocalOrganic.current.n700,
+                    modifier = Modifier.wrapContentSize(unbounded = true),
+                )
+            }
+        },
         label = label,
         onClick = onClick,
     )

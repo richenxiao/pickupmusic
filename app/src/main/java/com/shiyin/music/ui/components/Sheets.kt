@@ -29,6 +29,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
@@ -224,8 +225,8 @@ fun SheetActionRow(
  * 重载：矢量 drawable（`painterResource`）——拾光Agent 的品牌图标走这条。
  * 见 `OIcon(Painter…)` 注释：本 Compose 版本没有可用的 `vectorResource`。
  *
- * 尺寸与图标行一致（19dp）：ic_agent 已重绘为标准 24×24 实占的等线宽 Mono 图标
- * （v1.3.x 第2项），不需要再为旧的"宽而扁"线稿补偿尺寸。
+ * 槽位仍 19dp（与 Lucide 行一致）；图标画 27.4dp 并 `wrapContentSize(unbounded)`
+ * 允许溢出，理由同 `AppRoot.kt` 的 `SidebarItem(Painter)`。
  */
 @Composable
 fun SheetActionRow(
@@ -235,7 +236,14 @@ fun SheetActionRow(
     trailing: (@Composable () -> Unit)? = null,
     onClick: () -> Unit,
 ) = SheetActionRowImpl(
-    icon = { OIcon(icon, 19.dp, tint ?: LocalOrganic.current.n700) },
+    icon = {
+        Box(Modifier.size(19.dp), contentAlignment = Alignment.Center) {
+            OIcon(
+                icon, 27.4.dp, tint ?: LocalOrganic.current.n700,
+                modifier = Modifier.wrapContentSize(unbounded = true),
+            )
+        }
+    },
     label = label,
     labelColor = tint ?: LocalOrganic.current.text,
     trailing = trailing,
