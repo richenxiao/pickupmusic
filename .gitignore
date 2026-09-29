@@ -77,3 +77,6 @@ docs/photos/
 
 # WorkBuddy agent 的工作目录（项目数据 + 记忆），不入库
 .workbuddy-ai/
+
+# 图标/矢量生成脚本（tools/*.py）产生的 Python 字节码缓存
+tools/__pycache__/
