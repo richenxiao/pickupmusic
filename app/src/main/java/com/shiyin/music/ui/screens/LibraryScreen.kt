@@ -92,6 +92,7 @@ import com.shiyin.music.Tab
 import com.shiyin.music.data.Track
 import com.shiyin.music.data.formatDuration
 import com.shiyin.music.ui.components.CoverArt
+import com.shiyin.music.ui.components.clickableNoRipple
 import com.shiyin.music.ui.components.CoverArtMosaic
 import com.shiyin.music.ui.components.DialogAction
 import com.shiyin.music.ui.components.DialogActionsRow
@@ -180,7 +181,9 @@ fun BackButton(onClick: () -> Unit) {
             .size(38.dp)
             .clip(CircleShape)
             .background(c.surface)
-            .clickable(onClick = onClick),
+            // v1.3.10 需求 A20:去涟漪——用户点名"返回键也有灰块反馈,很丑"。
+            // BackButton 是设置子页/歌手页等共用的返回键,改这一处即全站返回键生效。
+            .clickableNoRipple(onClick = onClick),
         contentAlignment = Alignment.Center,
     ) { OIcon(Lucide.ChevronLeft, 18.dp, c.text) }
 }
@@ -561,7 +564,11 @@ private fun heartBrush(): Brush {
 @Composable
 internal fun ArtistAvatarContent(vm: MainViewModel, name: String, fallbackInitial: String, fallbackFg: Color, fontSize: Float, loadSize: Dp = 130.dp) {
     androidx.compose.runtime.LaunchedEffect(name) { vm.fetchArtistAvatarPerson(name) }
-    val bmp = rememberCandidateArt(vm.artistImage(name).ifBlank { null }, loadSize)
+    // v1.3.10: 加载失败(远端 URL 过期/失效)→ 清缓存重解析,不再永久空框。
+    val bmp = rememberCandidateArt(
+        vm.artistImage(name).ifBlank { null }, loadSize,
+        onRemoteLoadFailed = { vm.invalidateArtistImage(name, personOnly = true) },
+    )
     if (bmp != null) AvatarCropImage(bmp)
     else Text(fallbackInitial, fontFamily = Caprasimo, style = body(fontSize, FontWeight.Normal, fallbackFg).copy(fontFamily = Caprasimo))
 }
@@ -1198,61 +1205,13 @@ private fun AlbumDetail(vm: MainViewModel, key: String) {
                 )
             }
         }
-        // ── v23: 拆分专辑 —— 「完整专辑」（整轨）入口，放在曲目列表**之后** ──────
-        // 用户反馈:整轨行放在曲目前面"有点突兀"——它是一条与曲目层级不同的入口,
-        // 排在最后、用分节的细实线与曲目区分开,读作"这张专辑的整轨本体"。
-        // 点击从文件开头完整播到结尾,不受任何拆分区间限制,计「专辑被播放一次」
-        // (kind='album'),绝不产生任何单曲事件。
-        //
-        // v23 方案C(用户定稿):与歌曲行的区分度全部走**结构**信号而非色块——
-        // 整行左缩进(封面左缘对齐歌曲行**文字**左缘,而非序号列)、封面小一号、
-        // 字重降级、眉题点明身份。"完整专辑"入口不由再与序号列比对齐,
-        // "左右中心不稳"随之消失;细实线分隔比歌曲行间 divider 更疏,但同语言。
-        if (vm.albumIsSplit(key)) {
-            item { SplitSectionDivider(c) }
-            item {
-                // 眉题行:唱片图标 + "完整专辑"。图标承担"这是专辑"的符号语义,
-                // 放在眉题行而非内容行——若留在内容行会把封面顶偏、破坏与歌曲行
-                // 文字左缘的对齐(用户定夺:图标保留,只是换条轴线)。16dp 与 11sp
-                // 眉题文字的视觉重量匹配。
-                Row(
-                    Modifier.fillMaxWidth().padding(start = 30.dp, end = 4.dp),
-                    horizontalArrangement = Arrangement.spacedBy(5.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    OIcon(Lucide.Disc, 16.dp, c.n600)
-                    Text(
-                        "完整专辑",
-                        style = body(11f, FontWeight.Bold, c.n600).copy(letterSpacing = 1.2.sp),
-                    )
-                }
-            }
-            item {
-                val albumName = first.album
-                Row(
-                    Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp))
-                        .clickable { vm.playAlbum(key) }
-                        // 歌曲行布局 = 4dp 页面内边距 + 20dp 序号列 + 6dp 间距 → 歌曲标题
-                        // 左缘位于 30dp 处。整轨行的封面左缘对齐到同一坐标。
-                        .padding(start = 30.dp, end = 4.dp, top = 2.dp, bottom = 10.dp),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    CoverArt(
-                        first, 36.dp, RoundedCornerShape(6.dp),
-                        modifier = Modifier.size(36.dp).shadowSm(RoundedCornerShape(6.dp)),
-                        coverScope = trackCoverScope,
-                    )
-                    Column(Modifier.weight(1f)) {
-                        Text(albumName, style = body(15f, FontWeight.Medium, c.n800), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    }
-                    Text(
-                        "整轨 · ${tracks.size} 首",
-                        style = body(11.5f, FontWeight.Normal, c.n600),
-                    )
-                }
-            }
-        }
+        // ── v1.3.10 需求 A22:移除「完整专辑（整轨）」入口 ────────────────────
+        // 用户实测:分轨之后这条整轨行在歌曲列表下方**显示错乱**,而且"未分轨版本
+        // (整轨)"与分轨后的单曲在体验上并没有区别 → 决定**暂时不显示整轨入口**。
+        // 原来的实现(v23 方案C:分节细线 + 眉题 + 缩进对齐)整段删除;
+        // 专门的 SplitSectionDivider 也随之成为死代码,一并删掉。
+        // 注意:整轨曲目本身**没有被删除**——它仍在 libById 里、专辑页的"播放整轨"
+        // 能力(菜单里的整轨拆分为单曲等)也不受影响,只是不再单独列出一行。
         // 5: footer summary — "X 首 · XX 分钟" (left-aligned)
         item {
             Text(
@@ -1445,23 +1404,9 @@ private fun NumberedTrackRow(
 }
 
 /**
- * v23 方案C: 分节分隔线 —— 区隔「曲目列表」与「完整专辑（整轨）」。
- * 1dp 细实线,左右缩进 4dp(与歌曲行间 1dp divider 同语言),但上下各留 14dp
- * 并额外加 6dp 空档 → 比歌曲行之间的分隔更疏、更像"分节"而非"下一行"。
- * 取代早先的圆点虚线(用户反馈"显得随意、与整体风格不统一")。
+ * v1.3.10 需求 A22:原「完整专辑（整轨）」入口的分节分隔线已随该入口一并删除
+ * ——整轨行不再显示,分隔线自然没有存在意义(留着就是死代码)。
  */
-@Composable
-private fun SplitSectionDivider(c: com.shiyin.music.ui.theme.OrganicColors) {
-    Column(Modifier.fillMaxWidth().padding(top = 20.dp, bottom = 14.dp)) {
-        Box(
-            Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 4.dp)
-                .height(1.dp)
-                .background(c.divider),
-        )
-    }
-}
 
 /**
  * v1.2.0 #6: 歌手名自适应字号——短名(卢广仲)大字、长名(揽佬 SKAI ISYOURGOD)自动缩小或换两行。
@@ -1571,7 +1516,11 @@ private fun ArtistDetail(vm: MainViewModel, name: String) {
     // 性能：折叠量走 graphicsLayer 内 deferred 读 listState，滚动时主体不重组，故不卡。
     androidx.compose.runtime.LaunchedEffect(name) { vm.fetchArtistAvatar(name) }
     val avatarUrl = vm.artistImage(name)
-    val avatarBmp = rememberCandidateArt(avatarUrl.ifBlank { null }, 360.dp)
+    // v1.3.10: 写真大图同样接自愈——远端 URL 失效时清缓存重解析,而不是永久空白。
+    val avatarBmp = rememberCandidateArt(
+        avatarUrl.ifBlank { null }, 360.dp,
+        onRemoteLoadFailed = { vm.invalidateArtistImage(name, personOnly = false) },
+    )
     val density = LocalDensity.current
     // 沉浸式: 外层已去掉 statusBarsPadding, 内容画到屏幕顶 y=0; 状态栏高度用于 overlay 定位
     val sbTopPx = WindowInsets.statusBars.asPaddingValues().calculateTopPadding().let { with(density) { it.toPx() } }
@@ -1674,7 +1623,9 @@ private fun ArtistDetail(vm: MainViewModel, name: String) {
                     val displayTracks = if (sortedTracks.size > songCap) sortedTracks.take(songCap) else sortedTracks
                     displayTracks.forEachIndexed { i, t ->
                         Box(Modifier.padding(horizontal = 16.dp)) {
-                            NumberedTrackRow(vm = vm, track = t, idx = i + 1, sub = t.album, onClick = { vm.playArtist(name, t.id) }, showMenu = true, showCover = true)
+                            // v1.3.10 需求 A15:热门行点播走 playArtistHot——队列按**热度序**
+                            // (与上面这个列表的展示顺序同口径),而不是 playArtist 的专辑曲序。
+                            NumberedTrackRow(vm = vm, track = t, idx = i + 1, sub = t.album, onClick = { vm.playArtistHot(name, t.id) }, showMenu = true, showCover = true)
                         }
                     }
                     if (sortedTracks.size > songCap) {

@@ -118,6 +118,7 @@ import com.shiyin.music.data.Track
 import com.shiyin.music.data.formatDuration
 import com.shiyin.music.ui.components.ArtCache
 import com.shiyin.music.ui.components.CoverArt
+import com.shiyin.music.ui.components.CoverTransition
 import com.shiyin.music.ui.components.DialogAction
 import com.shiyin.music.ui.components.DialogActionsRow
 import com.shiyin.music.ui.components.FavIcon
@@ -603,6 +604,12 @@ fun AppRoot(vm: MainViewModel) {
                         // null/0 重新起步,首帧死层/闪屏类时序坑从结构上消失。
                         com.shiyin.music.ui.screens.LyricsMorphOverlay(vm, vm.morph, interactive = true)
                     }
+                    // v1.3.11: **播放页/歌词本上也要看得见提示**。
+                    // ToastHost 原先只挂在主窗口(AppRoot:750),而 ModalBottomSheet 是**独立窗口**
+                    // —— 播放页与歌词本上的任何提示都被它压在下面。用户实测症状:"点翻译按钮
+                    // 转圈,没返回就直接停止动画、回到没按过的样式,而且**没有报错**"
+                    // (代码确实调了 showToast,但那个 toast 渲染在歌词本下面,根本看不见)。
+                    ToastHost(vm)
                 }
             }
         }
@@ -774,6 +781,9 @@ private fun ArtistPickerDialog(vm: MainViewModel) {
                     val avatarUrl = vm.artistImage(name)
                     val avatarBmp = com.shiyin.music.ui.components.rememberCandidateArt(
                         avatarUrl.ifBlank { null }, 40.dp,
+                        // v1.3.10: 弹窗头像同样接自愈——失败就清缓存重解析(personOnly=false,
+                        // 与上面的 fetchArtistAvatar 语义一致)。
+                        onRemoteLoadFailed = { vm.invalidateArtistImage(name, personOnly = false) },
                     )
                     Row(
                         Modifier
@@ -836,8 +846,13 @@ private fun LyricsSourcePickerDialog(vm: MainViewModel) {
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 // ── 在线歌词库(秒级,与自动匹配同链路) ──
-                for (src in com.shiyin.music.data.lyrics.LyricsFetcher.SOURCES) {
-                    SourcePickerRow(label = src, active = src == curSrc, enabled = true) {
+                // v1.3.10 A29:用**当前可用源**(内置去掉关掉的 + 用户自定义源)
+                for (src in com.shiyin.music.data.lyrics.LyricsFetcher.activeSources()) {
+                    SourcePickerRow(
+                        label = src,
+                        active = src == curSrc,
+                        enabled = true,
+                    ) {
                         vm.lyricsSourcePicker = false
                         vm.rematchSource(src)
                     }
@@ -883,22 +898,33 @@ private fun SourcePickerRow(
         Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(12.dp))
-            .background(if (active) c.a100 else Color.Transparent)
+            // v1.3.10 需求 A31:选中态加实——底色 a100→a200。
+            .background(if (active) c.a200 else Color.Transparent)
             .clickable(enabled = enabled, onClick = onClick)
-            .padding(vertical = 10.dp),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
+            .padding(horizontal = 10.dp, vertical = 11.dp),
+        horizontalArrangement = Arrangement.spacedBy(11.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        // v1.3.10 需求 A31(二改):**去掉每源图标**——用户指出"图标跟供应商完全无关",
+        // 语义图标反而误导。改成用户给的方案:**选中项前面一个实心圆点**。
+        // 非选中项保留等宽空位(9dp),保证所有标签左缘对齐。
+        Box(Modifier.size(9.dp), contentAlignment = Alignment.Center) {
+            if (active) Box(Modifier.size(8.dp).clip(CircleShape).background(c.accent))
+        }
         Text(
             label,
-            style = body(14f, FontWeight.SemiBold, when {
-                !enabled -> c.n400
-                active -> c.a700
-                else -> c.n600
-            }),
+            style = body(
+                14f,
+                // 选中态:更重的字重 + 更深的强调色
+                if (active) FontWeight.ExtraBold else FontWeight.SemiBold,
+                when {
+                    !enabled -> c.n400
+                    active -> c.a800
+                    else -> c.n600
+                },
+            ),
             modifier = Modifier.weight(1f),
         )
-        if (active) OIcon(Lucide.Check, 16.dp, c.accent)
     }
 }
 
@@ -980,7 +1006,7 @@ private fun RootBackHandler(vm: MainViewModel) {
             vm.recentOpen -> vm.recentOpen = false
             vm.statsOpen -> vm.statsOpen = false
             vm.updatesOpen -> vm.updatesOpen = false
-            vm.agentOpen -> vm.agentOpen = false
+            vm.agentOpen -> { vm.persistAgentConversation(); vm.agentOpen = false }
             vm.splitEditFor != null -> vm.splitCancel()
             vm.saveSheetFor != null -> vm.saveSheetFor = null
             vm.lyricsImportDialog -> vm.lyricsImportDialog = false
@@ -1205,10 +1231,9 @@ private fun MiniPlayer(vm: MainViewModel, track: Track) {
                 // 固定三槽:0=左(prev) 1=中(当前) 2=右(next)。槽位必须固定——若用
                 // listOfNotNull 压掉空槽,"当前页"会落到槽 0 而被整体左移一整页。
                 val slots = listOf(prevPage, currentTrack, nextPage)
-                val currentAlbumId = currentTrack.albumId
-                // 邻曲是否同专辑:决定封面跟不跟页走(需求:同专辑封面必须完全稳定)。
-                val prevSameAlbum = prevPage != null && prevPage.albumId == currentAlbumId
-                val nextSameAlbum = nextPage != null && nextPage.albumId == currentAlbumId
+                // v1.3.10 需求 A17:封面不再需要 prevSameAlbum/nextSameAlbum(它曾用来决定
+                // 封面跟不跟页走)。现在封面**恒定不动**,跨专辑的切换由 CoverArt 的淡化承担,
+                // 所以那对判断连同 currentAlbumId 一并删掉,不留死代码。
                 // 文字页轨道:三页各宽 = 信息区宽,页位 = (槽 - 1) * 页宽,整体跟手 offsetX。
                 // 页内前导留白 = 封面宽 + 间距,给独立的封面轨道让位。
                 slots.forEachIndexed { slotIndex, pageTrack ->
@@ -1243,37 +1268,44 @@ private fun MiniPlayer(vm: MainViewModel, track: Track) {
                                     ) { vm.playerOpen = true },
                             ) {
                                 Text(pageTrack.title, style = body(13.5f, FontWeight.Bold, c.text), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                Text(pageTrack.artist, style = body(11.5f, FontWeight.Normal, c.n600), maxLines = 1)
+                                // v1.3.10: 补 overflow——原实现只有 maxLines,Compose 默认 Clip,
+                                // "揽佬SKAI ISYOURGOD" 这类长名被硬裁成"揽佬SKAI"且无省略号,
+                                // 看起来像名字只剩一半(用户反馈"歌手名显示不全")。与上一行同款省略号。
+                                Text(pageTrack.artist, style = body(11.5f, FontWeight.Normal, c.n600), maxLines = 1, overflow = TextOverflow.Ellipsis)
                             }
                         }
                     }
                 }
-                // 封面轨道:独立于文字页,自己的一份位移。同专辑(拖动方向上的邻曲与当前曲
-                // albumId 相同)时封面位移恒为 0 → 封面绝对静止(不位移、不缩放、不淡入淡出),
-                // 只有歌名/歌手横移;跨专辑时封面跟页一起横移,新旧封面横向替换。
-                // 同专辑时左右两槽的封面被推到 ∓一页宽(屏外),不会叠出重影。
+                // ── 封面轨道:封面**位置固定,永不跟拖动走** ──────────────────────────
+                // 设计意图(用户 2026-09-28 明确):左右滑切歌时"走的是歌名/歌手,封面不动"
+                // ——所以封面的切换效果必须由 CoverArt 自己的**跨专辑交叉淡化**承担
+                // (crossFade=true),而不是让它横移跟着页面替换。
+                //
+                // 因此三个槽位只按 pageBaseX 静态摆位(中间槽可见,左右槽在屏外),
+                // **不加 offsetX**:拖动/回弹期间封面纹丝不动。
+                // 邻槽仍然要被组合——它们的封面会在后台加载进内存 LruCache,
+                // 于是提交切换后新封面第一帧就能拿到,淡化才有东西可淡(不会落到首字占位)。
                 slots.forEachIndexed { slotIndex, pageTrack ->
                     if (pageTrack == null) return@forEachIndexed
                     val pageBaseX = (slotIndex - 1) * pageW
-                    // key 必须含槽位!仅用 track.id 会在"上一首/下一首回绕到同一首"时
-                    // 产生重复 key(单曲队列 + REPEAT_ALL:previousMediaItemIndex 回绕到
-                    // 自身;双曲队列:prev 与 next 是同一首)——Compose 对同层重复 key
-                    // 直接抛 IllegalArgumentException 崩溃。槽位唯一,加上即无碰撞;
-                    // 同时保留"该槽换曲即重建"的语义。
-                    key(slotIndex, pageTrack.id) {
+                    // v1.3.10 需求 A17:封面槽的 key **只含槽位,不含 track.id**。
+                    // 为什么:换歌时若 key 变化,这个 CoverArt 实例会被重建 → 它 `remember`
+                    // 里的"上一张已就绪封面"(lastArt)被清空 → 跨专辑淡化失去垫底的旧封面,
+                    // 且新曲封面未就绪时会落到**首字占位**(用户报的"原封面→首字→新封面"闪烁)。
+                    // 只按槽位作 key(0/1/2 天然唯一)保留实例与 lastArt,淡化才成立。
+                    key(slotIndex) {
                         Box(
                             Modifier
                                 .align(Alignment.CenterStart)
-                                .graphicsLayer {
-                                    val off = offsetX
-                                    val towardNext = off < 0f
-                                    val neighborSameAlbum =
-                                        if (towardNext) nextSameAlbum else prevSameAlbum
-                                    translationX = pageBaseX + (if (neighborSameAlbum) 0f else off)
-                                }
+                                .graphicsLayer { translationX = pageBaseX }
                                 .clickable { vm.playerOpen = true },
                         ) {
-                            CoverArt(pageTrack, MiniCoverSize, RoundedCornerShape(8.dp), fontSize = 16)
+                            // v1.3.10 需求 A17:封面**固定不动**(见上方注释),跨专辑换封面
+                            // 用**翻面**动画交代——用户明确要的"翻面过渡效果"。
+                            CoverArt(
+                                pageTrack, MiniCoverSize, RoundedCornerShape(8.dp), fontSize = 16,
+                                transition = CoverTransition.FLIP,
+                            )
                         }
                     }
                 }

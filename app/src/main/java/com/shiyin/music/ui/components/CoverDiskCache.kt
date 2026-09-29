@@ -54,6 +54,15 @@ internal class CoverDiskCache {
         } catch (_: Exception) { }
     }
 
+    /** v1.3.10: 删掉某个 artUrl 在指定 bucket 的缓存文件。
+     *  用途:盘上存的是解不开的字节(旧版本把 403/404 错误页也落了盘)→ 清掉让下次重新下载,
+     *  坏缓存不再永久占住这一格。 */
+    fun delete(ctx: android.content.Context, artUrl: String, bucket: Int) = synchronized(LOCK) {
+        try {
+            keyFile(dirOf(ctx), artUrl, bucket).takeIf { it.exists() }?.delete()
+        } catch (_: Exception) { }
+    }
+
     // ── v1.2.2: 持久化落盘双 key(专辑级 / 曲目级) ─────────────────────────────
     // 目标:"只要成功获取过一次封面,就必须永久本地化,断网也可读"。
     // 旧 artUrl key 只覆盖"走完 iTunes 下载末尾才落盘"的局部路径,且内嵌/custom 从不落盘。

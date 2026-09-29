@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -34,6 +35,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -68,11 +70,20 @@ import com.shiyin.music.ui.components.OrganicSwitch
 import com.shiyin.music.ui.components.PasswordField
 import com.shiyin.music.ui.components.PillButton
 import com.shiyin.music.ui.components.body
+import com.shiyin.music.ui.components.clickableNoRipple
 import com.shiyin.music.ui.components.heading
 import com.shiyin.music.ui.components.shadowMd
 import com.shiyin.music.ui.components.shadowSm
 import com.shiyin.music.ui.icons.Lucide
 import com.shiyin.music.ui.theme.Caprasimo
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChanged
+import kotlin.math.roundToInt
 import com.shiyin.music.ui.theme.LocalOrganic
 
 @Composable
@@ -97,6 +108,7 @@ fun SettingsHost(
         FilesView.Merges -> MergesScreen(vm)
         FilesView.ImageSources -> ImageSourcesScreen(vm)
         FilesView.LyricsBook -> LyricsBookScreen(vm, scrollStates)
+        FilesView.LyricsSources -> LyricsSourcesScreen(vm, scrollStates)
         FilesView.CloudBackup -> CloudBackupScreen(vm, scrollStates)
         FilesView.PlaySettings -> PlaySettingsScreen(vm, scrollStates)
         FilesView.Equalizer -> EqualizerScreen(vm, scrollStates)
@@ -578,7 +590,8 @@ private fun SettingsRowScaffold(
     Row(
         Modifier
             .fillMaxWidth()
-            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
+            // v1.3.10 需求 A20:整行点击去涟漪(用户不喜欢灰块反馈)
+            .then(if (onClick != null) Modifier.clickableNoRipple(onClick = onClick) else Modifier)
             // padding 在前、heightIn 在后：56dp 是"带开关行的实际高度"(开关 30dp +
             // 上下 padding 各 13dp)。普通行只有一行标题(21dp)，原本只有 47dp、比开关
             // 行矮——heightIn 把它抬到同一高度，内容垂直居中，行高节奏统一(第5项)。
@@ -738,21 +751,38 @@ private fun SettingsRoot(vm: MainViewModel, scrollStates: MutableMap<String, Scr
             ) { vm.navFilesTo(FilesView.Merges) }
         }
 
-        // 播放 / 数据管理各只有一个入口——第3项明确:不为只有一个子项的类别建独立
-        // 栏目标题（空壳分类）。两项共用一张卡，从设置列表直接进。
+        // v1.3.11:「拾光记忆」已移到「拾光 Agent 设置」里(用户定调:它属于 Agent 域,
+        // 不该混在文件/资源设置里)。这里不再保留第二个入口,避免同一页两处可达。
+
+        // v1.3.10 需求 A24:「播放」与「数据管理」**拆成两张卡**。
+        // 此前两项共用一张卡(理由是"不为只有一个子项的类别建独立栏目标题"),但用户
+        // 明确觉得"两个不相关的组件连在一起"很怪 → 各占一张卡、各一行,视觉上断开。
+        // 仍然不给它们加栏目标题(避免空壳分类,与原决定的意图一致)。
+        // v1.3.10(二改):用户反馈"两张卡太大了,应该和其他选项一样大小"——单行卡原来
+        // 沿用了多行卡的 6dp 上下留白,单行时显胖。压到 2dp,与其它单行行高节奏一致。
         Column(
             Modifier
                 .fillMaxWidth()
                 .shadowSm(RoundedCornerShape(28.dp))
                 .clip(RoundedCornerShape(28.dp))
                 .background(c.surface)
-                .padding(horizontal = 16.dp, vertical = 6.dp),
+                .padding(horizontal = 16.dp, vertical = 2.dp),
         ) {
             CardEntryRow(
                 Lucide.PlayOutline, c.n700, "播放",
                 null,
-                divider = true,
+                divider = false,
             ) { vm.navFilesTo(FilesView.PlaySettings) }
+        }
+
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .shadowSm(RoundedCornerShape(28.dp))
+                .clip(RoundedCornerShape(28.dp))
+                .background(c.surface)
+                .padding(horizontal = 16.dp, vertical = 2.dp),
+        ) {
             CardEntryRow(
                 Lucide.Database, c.n700, "数据管理",
                 null, divider = false,
@@ -1265,6 +1295,15 @@ private fun LyricsBookScreen(vm: MainViewModel, scrollStates: MutableMap<String,
             SettingRow(Lucide.Captions, "自动匹配歌词", null, divider = true) {
                 OrganicSwitch(vm.autoMatch) { vm.setAutoMatch(!vm.autoMatch) }
             }
+            // v1.3.10 需求 A29:歌词源管理入口(用户指定位置:就在「自动匹配歌词」下面)
+            SettingsRowScaffold(
+                title = "歌词源管理",
+                sub = "开关内置歌词源 / 添加你自己的歌词 API",
+                leading = { OIcon(Lucide.ListMusic, 19.dp, c.n700) },
+                divider = true,
+                trailing = { OIcon(Lucide.ChevronRight, 16.dp, c.n400) },
+                onClick = { vm.navFilesTo(FilesView.LyricsSources) },
+            )
             SettingRowGlyph(glyph = "ア", "日语歌默认开振假名", divider = true) {
                 OrganicSwitch(vm.furiganaDefaultOn) { vm.setFuriganaDefaultOn(!vm.furiganaDefaultOn) }
             }
@@ -1283,7 +1322,7 @@ private fun LyricsBookScreen(vm: MainViewModel, scrollStates: MutableMap<String,
                 // v1.3.x 行高统一:这里原来是手写 Row——横竖都照抄了骨架的数值
                 // (13dp/19dp/15sp),但没有骨架的"副标题占位行",于是同一张卡里
                 // 比上下邻居矮一整行(用户反复反馈的高度不齐)。改走骨架。
-                divider = false,
+                divider = true,
                 trailing = {
                 Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                     for ((mode, label, showWhite) in listOf(
@@ -1322,9 +1361,16 @@ private fun LyricsBookScreen(vm: MainViewModel, scrollStates: MutableMap<String,
                 }
                 },
             )
+            // v1.3.10 需求 A26:时间轴校对入口常显。
+            // 默认行为:只有**未同步**(无时间戳、需要人工打轴)的歌词显示校对入口;
+            // 开了这个开关后,已同步的歌词也常显(校准未必一次到位,方便反复微调)。
+            SettingRow(
+                Lucide.Crosshair, "始终显示时间轴校对",
+                "已同步的歌词也能随时进入校对", divider = false,
+            ) {
+                OrganicSwitch(vm.lyricsCalibAlwaysOn) { vm.setLyricsCalibAlwaysOn(!vm.lyricsCalibAlwaysOn) }
+            }
         }
-
-        // ── 翻译 ──────────────────────────────────────────────────────────
         // 外语自动翻译:进入歌词本时外语歌自动触发 AI 翻译(默认关——AI 永远用户主动
         // 触发,不静默烧 token)。默认显示译文:有保存译文时进页面直接给看(译完即存
         // 的恢复逻辑,默认开)。图标区分(两个不能一模一样):自动翻译=Languages
@@ -1338,6 +1384,9 @@ private fun LyricsBookScreen(vm: MainViewModel, scrollStates: MutableMap<String,
                 .background(c.surface)
                 .padding(horizontal = 16.dp, vertical = 6.dp),
         ) {
+            // v1.3.10:「翻译按钮显示」三档(不显示/外文较多时显示/检测到外文就显示)。
+            // 按用户定稿:标题 + 副标题 + 下方**三段式离散滑动**控件——不是三个按钮堆叠。
+            TranslateButtonModeRow(vm)
             SettingRow(Lucide.Languages, "外语歌自动翻译", null, divider = true) {
                 OrganicSwitch(vm.translateAutoForeign) { vm.setTranslateAutoForeign(!vm.translateAutoForeign) }
             }
@@ -2498,4 +2547,725 @@ private fun DeepSeekKeyDialog(vm: MainViewModel, onDismiss: () -> Unit) {
             )
         },
     )
+}
+
+/**
+ * v1.3.10:「翻译按钮显示」三档行——标题 + 副标题 + 下方**三段式离散**滑动控件。
+ * 按用户定稿:不做三个独立按钮堆叠,也不用可停在任意位置的连续 Slider。
+ */
+@Composable
+private fun TranslateButtonModeRow(vm: MainViewModel) {
+    val c = LocalOrganic.current
+    val modes = listOf(
+        "never" to "不显示",
+        "majority" to "外文较多时显示",
+        "any" to "检测到外文就显示",
+    )
+    val idx = modes.indexOfFirst { it.first == vm.translateButtonMode }.coerceAtLeast(0)
+    Column(Modifier.fillMaxWidth().padding(vertical = 13.dp)) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(13.dp),
+        ) {
+            // 与「外语歌自动翻译」的 Languages 图标区分:这一条管的是"按钮显不显示"→眼睛。
+            OIcon(Lucide.Eye, 19.dp, c.n700)
+            Text("翻译按钮显示", style = body(15f, FontWeight.SemiBold, c.text))
+        }
+        Text(
+            "根据外文数量决定是否开启",
+            style = body(12.5f, FontWeight.Normal, c.n600),
+            modifier = Modifier.padding(top = 2.dp, start = 32.dp),
+        )
+        Spacer(Modifier.height(10.dp))
+        ThreeStopSegmentedControl(
+            labels = modes.map { it.second },
+            selectedIndex = idx,
+            onSelect = { vm.setTranslateButtonMode(modes[it].first) },
+        )
+    }
+    Box(Modifier.fillMaxWidth().height(1.dp).background(c.divider))
+}
+
+/**
+ * v1.3.10: 三段式**离散**选择控件——只能停在三档,不存在"停在两档之间"的中间态。
+ *
+ * 交互:点击某段 → 选中该档;横向拖动 → 指示器跟手,松手吸附到最近档位。
+ * 指示器(thumb)在档位间用动画平滑过渡(视觉像滑块在滑动),语义上是三选一。
+ *
+ * 为什么不用 Material3 Slider:它的轨道/刻度是连续数值模型,档位标签还得另画一层;
+ * 本控件直接以"段"为单位,和其它设置行里的自绘控件同一套语言。
+ */
+@Composable
+private fun ThreeStopSegmentedControl(
+    labels: List<String>,
+    selectedIndex: Int,
+    onSelect: (Int) -> Unit,
+) {
+    val c = LocalOrganic.current
+    val n = labels.size
+    BoxWithConstraints(
+        Modifier
+            .fillMaxWidth()
+            .height(38.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(c.n200),
+    ) {
+        val segWDp = maxWidth / n
+        val segPx = constraints.maxWidth.toFloat() / n
+        // 拖动中的指示器左缘(null = 未拖动,指示器由动画控制)。
+        var dragX by remember { mutableStateOf<Float?>(null) }
+        val thumb = remember { Animatable(0f) }
+        val scope = rememberCoroutineScope()
+        // 非拖动时:平滑滑到选中档——"看起来像滑块在滑动"就是这一段。
+        LaunchedEffect(selectedIndex, segPx) {
+            if (dragX == null) thumb.animateTo(selectedIndex * segPx, tween(190))
+        }
+        // 指示器:写在 graphicsLayer 里延迟读值,拖动逐帧只重画这一层、零重组。
+        Box(
+            Modifier
+                .graphicsLayer { translationX = dragX ?: thumb.value }
+                .width(segWDp)
+                .fillMaxHeight()
+                .padding(3.dp)
+                .clip(RoundedCornerShape(9.dp))
+                // v1.3.10 需求 A18:选中指示器用**实心 accent**——与各"开"状态控件
+                // (OrganicSwitch 开态、播放主键)同一套语言。旧版是 accent 0.20 淡橙,
+                // 用户反馈"和其他打开状态的按钮颜色不一致"。
+                .background(c.accent),
+        )
+        Row(
+            Modifier
+                .fillMaxSize()
+                .pointerInput(n) {
+                    val seg = size.width.toFloat() / n
+                    detectHorizontalDragGestures(
+                        onDragStart = { off ->
+                            dragX = (off.x - seg / 2f).coerceIn(0f, size.width - seg)
+                        },
+                        onDragEnd = {
+                            val i = (((dragX ?: 0f) + seg / 2f) / seg).roundToInt().coerceIn(0, n - 1)
+                            // 先把指示器钉在手指位置再交回动画,否则松手瞬间会先弹回旧档再滑。
+                            scope.launch {
+                                thumb.snapTo(dragX ?: thumb.value)
+                                dragX = null
+                                onSelect(i)
+                            }
+                        },
+                        onDragCancel = { dragX = null },
+                    ) { change, delta ->
+                        if (change.positionChanged()) {
+                            dragX = ((dragX ?: 0f) + delta).coerceIn(0f, size.width.toFloat() - seg)
+                            change.consume()
+                        }
+                    }
+                },
+        ) {
+            labels.forEachIndexed { i, label ->
+                val active = i == selectedIndex
+                Box(
+                    // v1.3.10 需求 A20:分段本身去涟漪——按下态由指示器/描边承担,不要灰块
+                    Modifier.weight(1f).fillMaxHeight().clickableNoRipple { onSelect(i) },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        label,
+                        style = body(
+                            10.5f,
+                            if (active) FontWeight.Bold else FontWeight.Normal,
+                            // 选中项文字用 c.bg(与"实心 accent 底上的文字"同惯例,见播放主键),
+                            // 保证在实心橙底上可读;未选中仍用次级灰。
+                            if (active) c.bg else c.n600,
+                        ),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        textAlign = TextAlign.Center,
+                    )
+                }
+            }
+        }
+    }
+}
+
+// ── v1.3.10 需求 P3:「拾光记忆」管理 ────────────────────────────────────────
+
+/** 记忆类型 → 中文标签(分组筛选用)。与 data 层的 MemoryType 白名单一一对应。 */
+/**
+ * v1.3.12:「拾光记忆」—— **列表页 ↔ 详情页** 两级(参考 Claude memories 的**信息架构**,
+ * 落成 Android 原生页面:桌面 Hover → 常驻图标;桌面 Modal → 独立详情页)。
+ *
+ * 列表结构:
+ * ```
+ * ←  拾光记忆
+ *     拾光会记住一些关于你的信息,让之后的对话更自然。
+ *     你
+ *       个人信息  用户叫御晨晓
+ *                 你告诉我的 · 2026/09/29          ✎  🗑
+ *     ──────────────────────────────────────────────
+ *     主题
+ *       音乐      用户喜欢《Pretender》 …
+ * ```
+ *
+ * 刻意不做(用户定调):不做卡片 / 彩色分类块、不加搜索·筛选·排序、不新增分类;
+ * **空分组直接不显示**(没有"关系"就不出现"关系·暂无");类型与来源全部翻成中文,
+ * 页面上不出现 `personal` / `explicit` 这类库内取值。
+ */
+@Composable
+internal fun MemoryScreen(vm: MainViewModel, onBack: () -> Unit) {
+    androidx.compose.runtime.LaunchedEffect(Unit) { vm.ensureMemoriesLoaded() }
+    // 详情页用 **id** 定位而不是持有快照:保存/删除后列表刷新,详情读到的仍是最新状态。
+    var detailId by remember { mutableStateOf<String?>(null) }
+    var detailEditing by remember { mutableStateOf(false) }
+    var pendingDelete by remember { mutableStateOf<com.shiyin.music.data.memory.Memory?>(null) }
+    var adding by remember { mutableStateOf(false) }
+
+    val detail = detailId?.let { id -> vm.memories.firstOrNull { it.id == id } }
+    if (detail != null) {
+        MemoryDetailScreen(
+            memory = detail,
+            startEditing = detailEditing,
+            onBack = { detailId = null; detailEditing = false },
+            onSave = { vm.updateMemory(detail.id, it) },
+            onDelete = { pendingDelete = detail },
+        )
+    } else {
+        MemoryListScreen(
+            memories = vm.memories,
+            onBack = onBack,
+            onOpen = { m -> detailId = m.id; detailEditing = false },
+            onEdit = { m -> detailId = m.id; detailEditing = true },
+            onDelete = { m -> pendingDelete = m },
+            onAdd = { adding = true },
+        )
+    }
+
+    // 删除一律走确认(用户定调:不允许点一下就没了)
+    pendingDelete?.let { mem ->
+        MemoryDeleteDialog(
+            content = mem.content,
+            onDismiss = { pendingDelete = null },
+            onConfirm = {
+                vm.forgetMemory(mem.id)
+                if (detailId == mem.id) { detailId = null; detailEditing = false }
+                pendingDelete = null
+            },
+        )
+    }
+    if (adding) {
+        AddMemoryDialog(
+            onDismiss = { adding = false },
+            onAdd = { content, type -> vm.addMemory(content, type); adding = false },
+        )
+    }
+}
+
+/**
+ * 列表页:标题 + 两句说明 + 分组(Section Header / Row / Divider)。
+ *
+ * 滚动结构:`Column { 固定标题; LazyColumn(weight(1f)) }`——标题钉住、内容自己滚,
+ * 不会出现"外层 Column + 内层列表"两层滚动打架。**不硬编码状态栏高度**:
+ * 顶部 inset 由承载本页的容器统一处理(见 AgentScreen 里 agentMemoryScreenOpen 的 Dialog)。
+ */
+@Composable
+private fun MemoryListScreen(
+    memories: List<com.shiyin.music.data.memory.Memory>,
+    onBack: () -> Unit,
+    onOpen: (com.shiyin.music.data.memory.Memory) -> Unit,
+    onEdit: (com.shiyin.music.data.memory.Memory) -> Unit,
+    onDelete: (com.shiyin.music.data.memory.Memory) -> Unit,
+    onAdd: () -> Unit,
+) {
+    val c = LocalOrganic.current
+    val groups = com.shiyin.music.data.memory.MemoryPresentation.group(memories)
+    Column(Modifier.fillMaxSize()) {
+        SubPageHeader("拾光记忆") { onBack() }
+        LazyColumn(
+            Modifier.weight(1f).fillMaxWidth(),
+            contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 8.dp, bottom = 40.dp),
+        ) {
+            item(key = "intro") {
+                Text(
+                    "拾光会记住一些关于你的信息,让之后的对话更自然。",
+                    style = body(13f, FontWeight.Normal, c.n600).copy(lineHeight = 19.sp),
+                    modifier = Modifier.padding(bottom = 18.dp),
+                )
+            }
+            if (groups.isEmpty()) {
+                item(key = "empty") {
+                    Text("还没有拾光记忆", style = body(15f, FontWeight.SemiBold, c.text))
+                    Text(
+                        "在聊天里直接告诉拾光就行(例如「记住我喜欢 aiko」),也可以用下面的按钮自己加一条。",
+                        style = body(13f, FontWeight.Normal, c.n600).copy(lineHeight = 19.sp),
+                        modifier = Modifier.padding(top = 6.dp),
+                    )
+                }
+            } else {
+                for ((section, rows) in groups) {
+                    item(key = "sec-${section.title}") {
+                        Column(Modifier.padding(top = 10.dp, bottom = 6.dp)) { SectionLabel(section.title) }
+                    }
+                    items(rows, key = { it.id }) { m ->
+                        MemoryRowView(
+                            memory = m,
+                            onOpen = { onOpen(m) },
+                            onEdit = { onEdit(m) },
+                            onDelete = { onDelete(m) },
+                        )
+                        MemoryRowDivider()
+                    }
+                }
+            }
+            item(key = "add") {
+                Spacer(Modifier.height(16.dp))
+                PillButton("添加一条", onClick = onAdd)
+            }
+        }
+    }
+}
+
+/** Row 之间的分隔线(§:用 Divider 区分,而不是把每条做成卡片)。 */
+@Composable
+private fun MemoryRowDivider() {
+    val c = LocalOrganic.current
+    Box(Modifier.fillMaxWidth().height(1.dp).background(c.divider))
+}
+
+/**
+ * 一条记忆(Row):
+ *
+ * ```
+ * 个人信息   用户叫御晨晓                        ✎  🗑
+ *            你告诉我的 · 2026/09/29
+ * ```
+ *
+ * 信息层级(用户定调):**内容**是最主要的视觉信息,分类次之,来源/时间最弱。
+ * 整行可点(进详情)。编辑/删除**常驻**——Android 没有 Hover,不能藏在长按或点击之后。
+ */
+@Composable
+private fun MemoryRowView(
+    memory: com.shiyin.music.data.memory.Memory,
+    onOpen: () -> Unit,
+    onEdit: () -> Unit,
+    onDelete: () -> Unit,
+) {
+    val c = LocalOrganic.current
+    val P = com.shiyin.music.data.memory.MemoryPresentation
+    Row(
+        Modifier.fillMaxWidth().clickableNoRipple(onClick = onOpen).padding(vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Text(P.typeLabel(memory.type), style = body(12.5f, FontWeight.Bold, c.n600))
+                Text(
+                    memory.content,
+                    style = body(14f, FontWeight.SemiBold, c.text),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            Text(
+                "${P.sourceLabel(memory.source)} · ${P.formatDate(memory.updatedAt)}",
+                style = body(11.5f, FontWeight.Normal, c.n500),
+                modifier = Modifier.padding(top = 3.dp),
+            )
+        }
+        MemoryIconAction(Lucide.Pencil, onEdit)
+        MemoryIconAction(Lucide.Trash, onDelete)
+    }
+}
+
+/** 列表行 / 详情页用的**小图标键**(不用文字按钮、不用大按钮)。 */
+@Composable
+private fun MemoryIconAction(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    onClick: () -> Unit,
+) {
+    val c = LocalOrganic.current
+    Box(
+        Modifier.size(36.dp).clip(CircleShape).clickableNoRipple(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) { OIcon(icon, 17.dp, c.n500) }
+}
+
+/**
+ * 详情页(独立页面,不是弹窗——桌面 Modal → Android 独立 Screen)。
+ *
+ * ```
+ * ←  个人信息                      ✎  🗑
+ *    最后更新
+ *    2026年9月29日
+ *    记忆内容
+ *    用户叫御晨晓。
+ *    来源
+ *    你告诉我的
+ * ```
+ *
+ * 编辑是**同一页面的另一个状态**(点 ✎ 进入 → 右上角变 ✓ 保存),不是突然弹一个大输入框。
+ * 不存在 Summary / Details 这类库里没有的字段 —— 详情主体就是记忆内容本身。
+ */
+@Composable
+private fun MemoryDetailScreen(
+    memory: com.shiyin.music.data.memory.Memory,
+    startEditing: Boolean,
+    onBack: () -> Unit,
+    onSave: (String) -> Unit,
+    onDelete: () -> Unit,
+) {
+    val c = LocalOrganic.current
+    val P = com.shiyin.music.data.memory.MemoryPresentation
+    var editing by remember { mutableStateOf(startEditing) }
+    var draft by remember { mutableStateOf(memory.content) }
+
+    Column(Modifier.fillMaxSize()) {
+        Row(
+            Modifier.fillMaxWidth().padding(start = 8.dp, end = 8.dp, bottom = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            // 编辑态下返回 = 放弃本次修改(不做"未保存就丢"的额外确认——改动只在草稿里)
+            BackButton { if (editing) editing = false else onBack() }
+            Text(P.typeLabel(memory.type), style = heading(22), modifier = Modifier.weight(1f))
+            if (editing) {
+                MemoryIconAction(Lucide.Check) { onSave(draft); editing = false }
+            } else {
+                MemoryIconAction(Lucide.Pencil) { draft = memory.content; editing = true }
+                MemoryIconAction(Lucide.Trash, onDelete)
+            }
+        }
+        Column(
+            Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState())
+                .padding(horizontal = 20.dp).padding(bottom = 40.dp),
+        ) {
+            if (editing) {
+                SectionLabel("记忆内容")
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = draft,
+                    onValueChange = { draft = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    textStyle = body(14f, FontWeight.Normal, c.text),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = c.text, unfocusedTextColor = c.text, cursorColor = c.accent,
+                        focusedBorderColor = c.accent, unfocusedBorderColor = c.divider,
+                    ),
+                )
+                Spacer(Modifier.height(10.dp))
+                Text(
+                    "改完点右上角的 ✓ 保存。",
+                    style = body(11.5f, FontWeight.Normal, c.n500),
+                )
+            } else {
+                SectionLabel("最后更新")
+                Spacer(Modifier.height(6.dp))
+                Text(P.formatDateLong(memory.updatedAt), style = body(14f, FontWeight.Normal, c.text))
+
+                Spacer(Modifier.height(22.dp))
+                SectionLabel("记忆内容")
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    memory.content,
+                    style = body(15f, FontWeight.Normal, c.text).copy(lineHeight = 23.sp),
+                )
+
+                Spacer(Modifier.height(22.dp))
+                SectionLabel("来源")
+                Spacer(Modifier.height(6.dp))
+                Text(P.sourceLabel(memory.source), style = body(14f, FontWeight.Normal, c.text))
+
+                Spacer(Modifier.height(22.dp))
+                SectionLabel("类型")
+                Spacer(Modifier.height(6.dp))
+                Text(P.typeLabel(memory.type), style = body(14f, FontWeight.Normal, c.text))
+            }
+        }
+    }
+}
+
+/** 删除确认(列表页与详情页共用;`取消` 在左、`删除` 在右)。 */
+@Composable
+private fun MemoryDeleteDialog(content: String, onDismiss: () -> Unit, onConfirm: () -> Unit) {
+    val c = LocalOrganic.current
+    Dialog(onDismissRequest = onDismiss) {
+        Column(
+            Modifier.fillMaxWidth().clip(RoundedCornerShape(24.dp)).background(c.surface).padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Text("删除这条记忆?", style = body(16f, FontWeight.ExtraBold, c.text))
+            Text(
+                content,
+                style = body(13f, FontWeight.Normal, c.n600),
+                maxLines = 3,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text("删除后拾光就不再记得它,不能撤销。", style = body(12f, FontWeight.Normal, c.n500))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                TextButton(onClick = onDismiss) { Text("取消", style = body(13f, FontWeight.Bold, c.n600)) }
+                TextButton(onClick = onConfirm) { Text("删除", style = body(13f, FontWeight.Bold, c.a700)) }
+            }
+        }
+    }
+}
+/** 记忆分组筛选 chip(选中 = 实心 accent,与全站选中态同语言)。 */
+@Composable
+private fun MemoryChip(text: String, active: Boolean, onClick: () -> Unit) {
+    val c = LocalOrganic.current
+    Box(
+        Modifier.clip(RoundedCornerShape(999.dp))
+            .background(if (active) c.accent else c.divider)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 6.dp),
+    ) {
+        Text(
+            text,
+            style = body(12f, if (active) FontWeight.Bold else FontWeight.Normal, if (active) c.bg else c.n700),
+        )
+    }
+}
+
+/** 手加一条记忆:内容 + 类型。空内容不给提交。 */
+@Composable
+private fun AddMemoryDialog(onDismiss: () -> Unit, onAdd: (String, String) -> Unit) {
+    val c = LocalOrganic.current
+    var content by remember { mutableStateOf("") }
+    var type by remember { mutableStateOf("preference") }
+    Dialog(onDismissRequest = onDismiss) {
+        Column(
+            Modifier.fillMaxWidth().clip(RoundedCornerShape(24.dp)).background(c.surface).padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text("添加一条记忆", style = body(16f, FontWeight.ExtraBold, c.text))
+            OutlinedTextField(
+                value = content,
+                onValueChange = { content = it },
+                modifier = Modifier.fillMaxWidth(),
+                placeholder = {
+                    Text("例如:喜欢在雨天听 City Pop", style = body(12f, FontWeight.Normal, c.n500))
+                },
+                textStyle = body(13.5f, FontWeight.Normal, c.text),
+                singleLine = true,
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedTextColor = c.text, unfocusedTextColor = c.text, cursorColor = c.accent,
+                    focusedBorderColor = c.accent, unfocusedBorderColor = c.divider,
+                ),
+            )
+            Text("属于哪类", style = body(12.5f, FontWeight.Bold, c.text))
+            FlowRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                // 类型清单与中文标签来自 MemoryPresentation(单一真源,页面与列表同一套说法)
+                com.shiyin.music.data.memory.MemoryPresentation.ALL_TYPES.forEach { t ->
+                    MemoryChip(
+                        com.shiyin.music.data.memory.MemoryPresentation.typeLabel(t),
+                        type == t,
+                    ) { type = t }
+                }
+            }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                TextButton(onClick = onDismiss) { Text("取消", style = body(13f, FontWeight.Bold, c.n600)) }
+                TextButton(
+                    onClick = { if (content.isNotBlank()) onAdd(content.trim(), type) },
+                ) {
+                    Text(
+                        "添加",
+                        style = body(13f, FontWeight.Bold, if (content.isBlank()) c.n500 else c.a700),
+                    )
+                }
+            }
+        }
+    }
+}
+
+// ── v1.3.10 需求 A29:歌词源管理 ─────────────────────────────────────────────
+
+/**
+ * 「歌词源管理」——把歌词来源从"写死的几个"变成**用户可管**:
+ *  · 内置源(LRCLIB / 网易云音乐 / LrcShare)可单独开关(关掉的不再参与自动匹配与来源菜单);
+ *  · 可以添加**自己的歌词 API**(URL 模板 + JSON 路径 + 可选请求头)。
+ *
+ * 设计要点(用户原话:"不能说用户到时候要填什么参数找不到能填写的地方"):
+ * 表单里**每个字段都有中文标签 + 一行说明 + 示例**,照着任何"GET 返回 JSON"的歌词 API
+ * 文档都能填完即可用,不需要看代码。
+ */
+@Composable
+private fun LyricsSourcesScreen(vm: MainViewModel, scrollStates: MutableMap<String, ScrollState>) {
+    val c = LocalOrganic.current
+    var editing by remember { mutableStateOf<com.shiyin.music.data.lyrics.CustomLyricsSourceDef?>(null) }
+    var adding by remember { mutableStateOf(false) }
+    Column(
+        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp),
+    ) {
+        SubPageHeader("歌词源管理") { vm.navFilesBack() }
+        Text(
+            "自动匹配与「歌词来源」菜单会按下面的顺序依次尝试。关掉的源不再参与,也不出现在菜单里。",
+            style = body(12.5f, FontWeight.Normal, c.n600).copy(lineHeight = 18.sp),
+            modifier = Modifier.padding(bottom = 6.dp),
+        )
+        SectionLabel("内置歌词源")
+        Column(
+            Modifier.fillMaxWidth().shadowSm(RoundedCornerShape(28.dp)).clip(RoundedCornerShape(28.dp))
+                .background(c.surface).padding(horizontal = 16.dp, vertical = 6.dp),
+        ) {
+            val builtins = com.shiyin.music.data.lyrics.LyricsFetcher.SOURCES
+            builtins.forEachIndexed { i, src ->
+                SettingRow(Lucide.Music, src, null, divider = i != builtins.lastIndex) {
+                    val on = src !in vm.lyricsDisabledSources
+                    OrganicSwitch(on) { vm.setLyricsSourceEnabled(src, !on) }
+                }
+            }
+        }
+        SectionLabel("自定义歌词源")
+        Column(
+            Modifier.fillMaxWidth().shadowSm(RoundedCornerShape(28.dp)).clip(RoundedCornerShape(28.dp))
+                .background(c.surface).padding(horizontal = 16.dp, vertical = 6.dp),
+        ) {
+            if (vm.customLyricsSources.isEmpty()) {
+                Text(
+                    "还没有。按你的歌词 API 文档填几个字段就能加一个——下面写了每个字段怎么填。",
+                    style = body(12.5f, FontWeight.Normal, c.n600).copy(lineHeight = 18.sp),
+                    modifier = Modifier.padding(vertical = 10.dp),
+                )
+            } else {
+                vm.customLyricsSources.forEachIndexed { i, def ->
+                    Row(
+                        Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                def.name, style = body(14f, FontWeight.SemiBold, c.text),
+                                maxLines = 1, overflow = TextOverflow.Ellipsis,
+                            )
+                            Text(
+                                def.searchUrl, style = body(11f, FontWeight.Normal, c.n600),
+                                maxLines = 1, overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                        TextButton(onClick = { editing = def }) {
+                            Text("编辑", style = body(13f, FontWeight.Bold, c.a700))
+                        }
+                        TextButton(onClick = { vm.removeCustomLyricsSource(def.id) }) {
+                            Text("删除", style = body(13f, FontWeight.Bold, c.n600))
+                        }
+                    }
+                    if (i != vm.customLyricsSources.lastIndex) {
+                        Box(Modifier.fillMaxWidth().height(1.dp).background(c.divider))
+                    }
+                }
+            }
+        }
+        Spacer(Modifier.height(12.dp))
+        PillButton("添加自定义歌词源", onClick = { adding = true })
+        Spacer(Modifier.height(10.dp))
+        Text(
+            "填写说明:\n" +
+                "· 名称:显示在「歌词来源」菜单里的名字;\n" +
+                "· 搜索地址:你的接口地址,用 {title} {artist} 作占位符(会自动做 URL 编码);\n" +
+                "· 取歌曲 id 的路径:从搜索响应里指出歌曲 id 在哪,例如 data.items[0].id;\n" +
+                "· 歌词地址:用 {id} 作占位符,例如 https://api.example.com/lyric/{id};\n" +
+                "· 取歌词的路径:例如 data.lrc 或 lyric;\n" +
+                "· 请求头:需要鉴权时一行一个(如 Authorization: Bearer xxx);不需要就留空。",
+            style = body(11.5f, FontWeight.Normal, c.n600).copy(lineHeight = 17.sp),
+        )
+        Spacer(Modifier.height(120.dp))
+    }
+    if (adding || editing != null) {
+        CustomLyricsSourceDialog(
+            initial = editing,
+            onDismiss = { adding = false; editing = null },
+            onSave = { def -> vm.saveCustomLyricsSource(def); adding = false; editing = null },
+        )
+    }
+}
+
+/** 表单字段:标签 + 说明占位符(用户要求"参数要有地方填")。 */
+@Composable
+private fun LyricSourceField(label: String, hint: String, value: String, onChange: (String) -> Unit) {
+    val c = LocalOrganic.current
+    Text(label, style = body(12.5f, FontWeight.Bold, c.text), modifier = Modifier.padding(top = 10.dp))
+    OutlinedTextField(
+        value = value,
+        onValueChange = onChange,
+        modifier = Modifier.fillMaxWidth(),
+        placeholder = { Text(hint, style = body(11.5f, FontWeight.Normal, c.n500)) },
+        singleLine = true,
+        textStyle = androidx.compose.ui.text.TextStyle(color = c.text, fontSize = 13.sp),
+        colors = OutlinedTextFieldDefaults.colors(
+            focusedBorderColor = c.accent, unfocusedBorderColor = c.divider,
+            focusedTextColor = c.text, unfocusedTextColor = c.text,
+        ),
+    )
+}
+
+@Composable
+private fun CustomLyricsSourceDialog(
+    initial: com.shiyin.music.data.lyrics.CustomLyricsSourceDef?,
+    onDismiss: () -> Unit,
+    onSave: (com.shiyin.music.data.lyrics.CustomLyricsSourceDef) -> Unit,
+) {
+    val c = LocalOrganic.current
+    var name by remember { mutableStateOf(initial?.name ?: "") }
+    var searchUrl by remember { mutableStateOf(initial?.searchUrl ?: "") }
+    var idPath by remember { mutableStateOf(initial?.idJsonPath ?: "data.items[0].id") }
+    var lyricUrl by remember { mutableStateOf(initial?.lyricUrl ?: "") }
+    var lyricPath by remember { mutableStateOf(initial?.lyricJsonPath ?: "data.lrc") }
+    var headers by remember { mutableStateOf(initial?.headers ?: "") }
+    // 保存前最小校验:把"填错了自己也不知道"变成明确提示
+    val missing = buildList {
+        if (name.isBlank()) add("名称")
+        if (!searchUrl.contains("{title}")) add("搜索地址(必须含 {title})")
+        if (idPath.isBlank()) add("取歌曲 id 的路径")
+        if (!lyricUrl.contains("{id}")) add("歌词地址(必须含 {id})")
+        if (lyricPath.isBlank()) add("取歌词的路径")
+    }
+    Dialog(onDismissRequest = onDismiss) {
+        Column(
+            Modifier.clip(RoundedCornerShape(24.dp)).background(c.surface)
+                .padding(horizontal = 18.dp, vertical = 16.dp)
+                .verticalScroll(rememberScrollState()),
+        ) {
+            Text(
+                if (initial == null) "添加自定义歌词源" else "编辑自定义歌词源",
+                style = heading(18),
+            )
+            LyricSourceField("名称", "显示在来源菜单里的名字", name) { name = it }
+            LyricSourceField("搜索地址", "如 https://api.x.com/search?q={title}&a={artist}", searchUrl) { searchUrl = it }
+            LyricSourceField("取歌曲 id 的路径", "如 data.items[0].id", idPath) { idPath = it }
+            LyricSourceField("歌词地址", "如 https://api.x.com/lyric/{id}", lyricUrl) { lyricUrl = it }
+            LyricSourceField("取歌词的路径", "如 data.lrc 或 lyric", lyricPath) { lyricPath = it }
+            LyricSourceField("请求头(可选)", "一行一个,如 Authorization: Bearer xxx", headers) { headers = it }
+            if (missing.isNotEmpty()) {
+                Text(
+                    "还缺:" + missing.joinToString("、"),
+                    style = body(11.5f, FontWeight.Normal, c.n600),
+                    modifier = Modifier.padding(top = 8.dp),
+                )
+            }
+            Spacer(Modifier.height(12.dp))
+            DialogActionsRow(
+                listOf(
+                    DialogAction("取消") { onDismiss() },
+                    DialogAction("保存", emphasized = true) {
+                        if (missing.isEmpty()) {
+                            onSave(
+                                com.shiyin.music.data.lyrics.CustomLyricsSourceDef(
+                                    id = initial?.id ?: "custom-" + System.currentTimeMillis(),
+                                    name = name.trim(),
+                                    searchUrl = searchUrl.trim(),
+                                    idJsonPath = idPath.trim(),
+                                    lyricUrl = lyricUrl.trim(),
+                                    lyricJsonPath = lyricPath.trim(),
+                                    headers = headers.trim(),
+                                ),
+                            )
+                        }
+                    },
+                ),
+            )
+        }
+    }
 }

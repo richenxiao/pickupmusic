@@ -51,6 +51,48 @@ class TokenPricingTest {
         assertTrue(TokenPricing.estimateCny("custom-42", 1_000_000, 0, 0) > 0)
     }
 
+    // ── v1.3.10 A19：价表是否登记的判定 + 缓存省下的钱 ──────────────────────────
+
+    @Test fun hasKnownRate_separatesRegisteredFromFallback() {
+        assertTrue(TokenPricing.hasKnownRate("deepseek"))
+        assertTrue(TokenPricing.hasKnownRate("openrouter"))
+        // 自定义/未知 = 兜底价。面板据此把成本标成"量级参考",不假装算得准。
+        assertTrue(!TokenPricing.hasKnownRate("custom-42"))
+        assertTrue(!TokenPricing.hasKnownRate(""))
+    }
+
+    @Test fun unknownProvider_assumptionText_saysFallback() {
+        // 用户反馈"准度不够"——自定义供应商的成本必须明说是兜底价,而不是无声地用假设值。
+        assertTrue(TokenPricing.assumptionText("custom-42").contains("兜底"))
+        assertTrue(!TokenPricing.assumptionText("deepseek").contains("兜底"))
+    }
+
+    @Test fun cacheSavings_isTheDiscountDelta() {
+        // DeepSeek 输入 ¥2/M,缓存只按 1/10 计 → 每命中 token 省 2×0.9 = ¥1.8/M
+        assertEquals(0.9, TokenPricing.cacheSavingsCny("deepseek", 500_000, 500_000), 0.0001)
+        // 没有命中 → 一分没省
+        assertEquals(0.0, TokenPricing.cacheSavingsCny("deepseek", 1_000_000, 0), 0.0001)
+    }
+
+    @Test fun cacheSavings_isClampedToInput() {
+        // 脏数据(cache > input)不能报出比实际支出还大的节省。
+        assertEquals(
+            100.0 * 2.0 * 0.9 / 1_000_000.0,
+            TokenPricing.cacheSavingsCny("deepseek", 100, 999_999),
+            0.0000001,
+        )
+    }
+
+    @Test fun cacheSavings_plusActualCost_equalsFullPrice() {
+        // 节约是相对**原价**而言的,不是相对已付成本。全部命中时:
+        // 原价 1M×¥2 = ¥2.0;实付按 1/10 = ¥0.2;省下 ¥1.8 —— 三者自洽。
+        val cost = TokenPricing.estimateCny("deepseek", 1_000_000, 0, 1_000_000)
+        val savings = TokenPricing.cacheSavingsCny("deepseek", 1_000_000, 1_000_000)
+        assertEquals(0.2, cost, 0.0001)
+        assertEquals(1.8, savings, 0.0001)
+        assertEquals("实付 + 节省 = 不打折的输入价", 2.0, cost + savings, 0.0001)
+    }
+
     @Test fun assumptionText_isTransparent() {
         val text = TokenPricing.assumptionText("deepseek")
         assertTrue(text.contains("输入"))

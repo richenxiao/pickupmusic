@@ -126,13 +126,24 @@ class AgentSkillSchemaTest {
             listOf("search", "analyze", "writeback"),
             AgentEngine.skillByKey("artist_fix")!!.panelSteps(emptyMap()).map { it.id },
         )
+        // v1.3.10: library_query 不再做第二次 LLM 润色(输出改成带 track_id 的候选,
+        // "人话"由模型在同一次对话里自己组织)→ answer 步骤随之删除。
         assertEquals(
-            listOf("search", "answer"),
+            listOf("search"),
             AgentEngine.skillByKey("library_query")!!.panelSteps(emptyMap()).map { it.id },
         )
         assertEquals(
             listOf("search"),
             AgentEngine.skillByKey("lyrics_fetch")!!.panelSteps(emptyMap()).map { it.id },
+        )
+        // v1.3.10 自主选曲:discover_music 给候选 → play_track 按 id 落地。
+        assertEquals(
+            listOf("search"),
+            AgentEngine.skillByKey("discover_music")!!.panelSteps(emptyMap()).map { it.id },
+        )
+        assertEquals(
+            listOf("apply"),
+            AgentEngine.skillByKey("play_track")!!.panelSteps(emptyMap()).map { it.id },
         )
     }
 

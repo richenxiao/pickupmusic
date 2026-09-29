@@ -52,6 +52,27 @@ object TokenPricing {
         CNY[providerKey] ?: USD[providerKey] ?: FALLBACK
 
     /**
+     * v1.3.10 A19: 该供应商是否有**登记过的**价表。
+     * false = 走 [FALLBACK] 兜底价 —— 面板必须把这类成本标成"量级参考",
+     * 不能让用户以为自定义供应商的"约 ¥x"是算准的(用户反馈"准度不够")。
+     */
+    fun hasKnownRate(providerKey: String): Boolean =
+        CNY.containsKey(providerKey) || USD.containsKey(providerKey)
+
+    /**
+     * v1.3.10 A19: 缓存命中**省下的钱**(命中部分本按输入原价计,实际只按 1/10 计)。
+     * 面板作为一个正面数字展示("缓存省了 ¥x"),而不是只画一条没人看得懂的灰线。
+     *
+     * [cacheTok] 是输入的子集,先夹到 [inTok] 内——脏数据(缓存数大于输入数)不该报出超额节省。
+     */
+    fun cacheSavingsCny(providerKey: String, inTok: Long, cacheTok: Long): Double {
+        val r = rateFor(providerKey)
+        val fx = if (r.currency == "USD") USD_TO_CNY else 1.0
+        val cached = cacheTok.coerceIn(0L, inTok.coerceAtLeast(0L))
+        return cached * r.inputPerM * (1 - CACHE_DISCOUNT) / 1_000_000.0 * fx
+    }
+
+    /**
      * 估算成本（统一折算成元，便于与曲线同一坐标轴）。
      *
      * 注意 [cacheTok] 是**输入 token 的子集**（`prompt_tokens_details.cached_tokens`），
@@ -71,7 +92,9 @@ object TokenPricing {
         val r = rateFor(providerKey)
         val sym = r.symbol
         val fxNote = if (r.currency == "USD") "，按 $USD_TO_CNY 折算" else ""
-        return "按输入 $sym${trim(r.inputPerM)}/百万、输出 $sym${trim(r.outputPerM)}/百万估算$fxNote"
+        // v1.3.10 A19: 自定义/未知供应商走的是兜底价,明说,别让数字显得比实际可信。
+        val fallbackNote = if (hasKnownRate(providerKey)) "" else "（未登记价表，按兜底价）"
+        return "按输入 $sym${trim(r.inputPerM)}/百万、输出 $sym${trim(r.outputPerM)}/百万估算$fxNote$fallbackNote"
     }
 
     private fun trim(v: Double): String =

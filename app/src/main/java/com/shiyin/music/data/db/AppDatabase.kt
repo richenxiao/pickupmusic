@@ -5,6 +5,7 @@ import androidx.room.ColumnInfo
 import androidx.room.Dao
 import androidx.room.Database
 import androidx.room.Entity
+import androidx.room.Fts4
 import androidx.room.Index
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
@@ -168,6 +169,44 @@ data class ArtistImageOverrideEntity(
     val chosenAt: Long = 0,
 )
 
+// ── v1.3.10 Agent 长期记忆(P1:数据层)────────────────────────────────────────
+// Persona 是"拾光是谁",本表是"拾光认识这个用户什么"——两者架构分离,记忆永不写进人格。
+// **写入裁决(校验/去重/冲突)与检索(门槛/top-k)全在 data/memory/MemoryRules + MemoryManager
+// (纯逻辑、纯 JVM 单测)**;本表只负责存,不做任何业务判断。
+@Entity(tableName = "agent_memory", indices = [Index(value = ["id"], unique = true)])
+data class AgentMemoryEntity(
+    @PrimaryKey(autoGenerate = true) val rowId: Long = 0,
+    /** 稳定业务标识(UUID)——对外引用/更新/删除都用它,不暴露 rowId。 */
+    val id: String = "",
+    val type: String = "",
+    val content: String = "",
+    val createdAt: Long = 0,
+    val updatedAt: Long = 0,
+    val importance: Int = 2,
+    val source: String = "",
+    /** 逗号分隔的检索标签(由内容派生)。 */
+    val tags: String = "",
+    /** 冲突时旧条目指向新条目;null = 当前有效。 */
+    val supersededBy: String? = null,
+    /** 预留:语义检索向量。**本阶段恒为 null,只占列**——将来接 embedding 不必改表。 */
+    val embedding: String? = null,
+)
+
+// v1.3.10: FTS4 检索表。content/tags 存的是**CJK 二元切分展开后**的文本
+// (见 MemoryRules.ftsText)——FTS4 默认分词器不切中文,不展开的话"专辑"这类关键词永远搜不到。
+// 与主表由**应用层同步**(写/删一起动),刻意不用 `content=` 外部内容表:那需要触发器,
+// 而手写触发器 DDL 与 Room 期望的 schema 很难对齐,风险大于收益。
+@Entity(tableName = "agent_memory_fts")
+@Fts4
+data class AgentMemoryFtsEntity(
+    // 刻意**不声明 rowid 主键**:FTS4 表的 rowid 是 SQLite 隐式管理的(Room 生成的 DDL 里
+    // 并没有 rowid 列)。若声明成普通 Long 主键,应用层每次插入都得自己保证唯一,
+    // 否则第二行就撞键——那属于自找麻烦。删除/去重一律按 memoryId 走。
+    val memoryId: String = "",
+    val content: String = "",
+    val tags: String = "",
+)
+
 // v1.2.2 Agent: LLM tokens 消耗日志。每次 LLM 调用记一行,供 Agent 页显示本次/累计消耗。
 // v1.3.6: 加 cacheTokens(缓存命中 token)——用量面板的"缓存命中"曲线。
 @Entity(tableName = "token_usage_log")
@@ -186,15 +225,22 @@ data class TokenUsageLogEntity(
 /** v1.2.2 Agent: token 累计查询的 POJO(Room 双列 SUM 不能直接映射数组)。 */
 data class TokenTotals(val promptTotal: Long = 0, val completionTotal: Long = 0)
 
-/** v1.3.5: 逐日 token 总量(用量曲线;day=timestamp/86400000 的天序号)。 */
-data class DailyTokens(val day: Long = 0, val tokens: Long = 0)
-
-/** v1.3.6: 用量面板逐日多指标(输入/输出/缓存命中)。 */
+/** v1.3.10 A19: 用量面板逐日多指标(输入/输出/缓存命中)。 */
 data class DailyMetrics(
     val day: Long = 0,
     val inputTokens: Long = 0,
     val outputTokens: Long = 0,
     val cacheTokens: Long = 0,
+)
+
+/** v1.3.10 A19: 按功能(skill)归因的用量。用户看得懂"哪个功能在花钱",比一根总量曲线有用。 */
+data class SkillUsage(
+    val skill: String = "",
+    val inputTokens: Long = 0,
+    val outputTokens: Long = 0,
+    val cacheTokens: Long = 0,
+    /** 该功能的 LLM 调用次数。 */
+    val calls: Long = 0,
 )
 
 @Entity(tableName = "song_artist", primaryKeys = ["mediaId", "artistId"])
@@ -379,6 +425,21 @@ data class LyricsTranslationEntity(
     val translatedAt: Long,
 )
 
+// v1.3.9: Agent 对话持久化——历史按「对话」组织（与 ChatGPT/Claude 一致），
+// 不再随进程退出即丢。一行 = 一次对话；消息列表（含步骤/思考链/过程历史）
+// 整体 Gson 序列化存 messagesJson（对话体小，不做行级分表）。
+@Entity(tableName = "agent_conversation")
+data class AgentConversationEntity(
+    @PrimaryKey val id: String,
+    val title: String,
+    /** 1 = 收藏置顶。 */
+    val pinned: Int = 0,
+    val createdAt: Long,
+    val updatedAt: Long,
+    /** Gson 序列化的 List<MainViewModel.AgentMessage>。 */
+    val messagesJson: String,
+)
+
 @Dao
 interface ShiyinDao {
     // Lyrics
@@ -513,13 +574,25 @@ interface ShiyinDao {
     @Query("SELECT COALESCE(SUM(promptTokens),0) AS promptTotal, COALESCE(SUM(completionTokens),0) AS completionTotal FROM token_usage_log")
     suspend fun tokenUsageTotals(): TokenTotals
 
-    /** v1.3.5: 近 N 天逐日 token 总量(设置页用量曲线;day=epoch 天序号,本地零点)。 */
-    @Query("SELECT (timestamp / 86400000) AS day, SUM(promptTokens + completionTokens) AS tokens FROM token_usage_log WHERE timestamp >= :since GROUP BY day ORDER BY day")
-    suspend fun tokenUsageDaily(since: Long): List<DailyTokens>
+    /**
+     * v1.3.10 A19: 近 N 天逐日多指标(用量面板:输入/输出/缓存命中)。
+     *
+     * ⚠️ `day = (timestamp + :tzOffsetMs) / 86400000` —— **必须加时区偏移**。原实现是
+     * `timestamp / 86400000`(纯 UTC 天序号),注释却写着"本地零点":对 UTC+8 用户,天边界
+     * 落在本地 08:00,凌晨 0-8 点的用量被算进"昨天",而"今天"又漏掉这 8 小时 ——
+     * 用户看到的"当天/今天"数字与实际不符(用户反馈"准度不够"的来源之一)。
+     * 偏移由 TokenUsageWindow 按当前时区算出(中国无夏令时,取今天偏移即可)。
+     */
+    @Query("SELECT ((timestamp + :tzOffsetMs) / 86400000) AS day, SUM(promptTokens) AS inputTokens, SUM(completionTokens) AS outputTokens, SUM(cacheTokens) AS cacheTokens FROM token_usage_log WHERE timestamp >= :since GROUP BY day ORDER BY day")
+    suspend fun tokenUsageMetrics(since: Long, tzOffsetMs: Long): List<DailyMetrics>
 
-    /** v1.3.6: 近 N 天逐日多指标(用量面板:输入/输出/缓存命中)。 */
-    @Query("SELECT (timestamp / 86400000) AS day, SUM(promptTokens) AS inputTokens, SUM(completionTokens) AS outputTokens, SUM(cacheTokens) AS cacheTokens FROM token_usage_log WHERE timestamp >= :since GROUP BY day ORDER BY day")
-    suspend fun tokenUsageMetrics(since: Long): List<DailyMetrics>
+    /** v1.3.10 A19: 按功能归因(哪个功能在花钱)。按 token 量降序,便于直接渲染榜单。 */
+    @Query("SELECT skill AS skill, SUM(promptTokens) AS inputTokens, SUM(completionTokens) AS outputTokens, SUM(cacheTokens) AS cacheTokens, COUNT(*) AS calls FROM token_usage_log WHERE timestamp >= :since GROUP BY skill ORDER BY SUM(promptTokens + completionTokens) DESC")
+    suspend fun tokenUsageBySkill(since: Long): List<SkillUsage>
+
+    /** v1.3.10 A19: 范围内 LLM 调用次数(用于"平均每次"与让总量可被核对)。 */
+    @Query("SELECT COUNT(*) FROM token_usage_log WHERE timestamp >= :since")
+    suspend fun tokenUsageCalls(since: Long): Long
 
     // ── v1.2.0 #6 backup：写真 cache + override 导出/导入 ──────────────────────
     /** 导出成功的 cache 行（跳过失败 TTL 行，避免把旧网络的失败态毒到新设备）。 */
@@ -833,6 +906,52 @@ interface ShiyinDao {
     @Query("DELETE FROM lyrics_translation WHERE mediaId = :mediaId")
     suspend fun deleteLyricsTranslationForMedia(mediaId: Long)
 
+    // ── v1.3.9: Agent 对话持久化 ──────────────────────────────────────────
+    /** 全部对话，收藏置顶 + 最近更新在前。 */
+    @Query("SELECT * FROM agent_conversation ORDER BY pinned DESC, updatedAt DESC")
+    suspend fun allAgentConversations(): List<AgentConversationEntity>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertAgentConversation(e: AgentConversationEntity)
+
+    @Query("DELETE FROM agent_conversation WHERE id = :id")
+    suspend fun deleteAgentConversation(id: String)
+
+    @Query("UPDATE agent_conversation SET title = :title WHERE id = :id")
+    suspend fun renameAgentConversation(id: String, title: String)
+
+    @Query("UPDATE agent_conversation SET pinned = :pinned WHERE id = :id")
+    suspend fun setAgentConversationPinned(id: String, pinned: Int)
+
+    // ── v1.3.10: Agent 长期记忆（P1：数据层；裁决逻辑在 data/memory/） ────────
+    @Query("SELECT * FROM agent_memory")
+    suspend fun agentMemories(): List<AgentMemoryEntity>
+
+    @Query("SELECT * FROM agent_memory WHERE id = :id")
+    suspend fun agentMemory(id: String): AgentMemoryEntity?
+
+    /** 写一条记忆。
+     *  ⚠️ REPLACE 语义:与唯一索引 `index_agent_memory_id` 冲突时,SQLite 会**删旧行再插新行**
+     *  —— 即"更新"在物理上是换了一行(rowId 会变)。当前没有任何逻辑依赖 rowId(FTS 行按
+     *  memoryId 关联、按 memoryId 删),所以这是有意为之;若将来要用 rowId,须先改这里。 */
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertAgentMemory(e: AgentMemoryEntity)
+
+    @Query("DELETE FROM agent_memory WHERE id = :id")
+    suspend fun deleteAgentMemory(id: String)
+
+    /** FTS 行:content/tags 存的是**二元切分展开后**的文本(见 MemoryRules.ftsText)。 */
+    @Insert
+    suspend fun insertAgentMemoryFts(e: AgentMemoryFtsEntity)
+
+    @Query("DELETE FROM agent_memory_fts WHERE memoryId = :memoryId")
+    suspend fun deleteAgentMemoryFts(memoryId: String)
+
+    /** FTS 预筛:返回命中的 memoryId。matchQuery 必须是 [MemoryRules.ftsMatchQuery] 生成的安全表达式
+     *  (FTS 的 MATCH 有自己的语法,裸关键词里的符号会让它报错)。 */
+    @Query("SELECT memoryId FROM agent_memory_fts WHERE agent_memory_fts MATCH :matchQuery LIMIT :limit")
+    suspend fun searchAgentMemoryFts(matchQuery: String, limit: Int): List<String>
+
     // ── v1.1+: 自动识别缓存清理 ─────────────────────────────────────────────
     /** 清理「自动识别」持久化的歌词（autoSaved=1）与全部封面缓存。保留：手动保存/导入的
      *  歌词(autoSaved=0)、Song Override(reading_override)、外部假名 evidence、track_info_override。
@@ -980,8 +1099,12 @@ data class PlayEventKey(val mediaId: Long, val playedAt: Long)
         LyricsTranslationEntity::class,
         // v22: 专辑整轨拆分为单曲（方案 + 拆分曲目）
         AlbumSplitEntity::class, SplitTrackEntity::class,
+        // v1.3.9: Agent 对话持久化（按对话组织的历史）
+        AgentConversationEntity::class,
+        // v1.3.10: Agent 长期记忆（数据层 + FTS4 检索表）
+        AgentMemoryEntity::class, AgentMemoryFtsEntity::class,
     ],
-    version = 23,
+    version = 25,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -1350,9 +1473,7 @@ abstract class AppDatabase : RoomDatabase() {
                     )
                 """.trimIndent())
             }
-        }
-
-        // v22: 专辑整轨拆分为单曲 —— 两张新表 + play_event 的两套统计口径隔离位。
+        }        // v22: 专辑整轨拆分为单曲 —— 两张新表 + play_event 的两套统计口径隔离位。
         //
         // ⚠️ 为什么是 22→23 而不是并进上面的 21→22：
         // 「歌词翻译」（21→22）与「专辑拆分」（本迁移）是**两条并行开发线**，各自都把
@@ -1394,9 +1515,49 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        // v1.3.9: Agent 对话持久化表。历史按「对话」组织（主流 AI 产品同构），
+        // 消息列表整体 Gson 存 messagesJson。新建表，存量设备无数据迁移负担。
+        private val MIGRATION_23_24 = object : Migration(23, 24) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS agent_conversation (
+                        id TEXT PRIMARY KEY NOT NULL,
+                        title TEXT NOT NULL,
+                        pinned INTEGER NOT NULL DEFAULT 0,
+                        createdAt INTEGER NOT NULL,
+                        updatedAt INTEGER NOT NULL,
+                        messagesJson TEXT NOT NULL
+                    )
+                """.trimIndent())
+            }
+        }
+
+        // v1.3.10: Agent 长期记忆(P1:数据层)——记忆表 + FTS4 检索表。
+        //
+        // ⚠️ 本段 DDL **逐字取自 Room 自己生成的 schema**(临时开 exportSchema 编译后从
+        // 25.json 抄出)。Room 在打开数据库时会校验实际结构与期望结构是否一致,不一致直接抛异常
+        // (且本项目刻意不用 fallbackToDestructiveMigration —— 迁移失败宁可崩也不删用户数据)。
+        // 所以这里不要"顺手美化"SQL,不要调整列序/NOT NULL/AUTOINCREMENT。
+        // 将来改动这两张表时,同样先导出 schema 再抄。
+        private val MIGRATION_24_25 = object : Migration(24, 25) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `agent_memory` (`rowId` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                        "`id` TEXT NOT NULL, `type` TEXT NOT NULL, `content` TEXT NOT NULL, " +
+                        "`createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, `importance` INTEGER NOT NULL, " +
+                        "`source` TEXT NOT NULL, `tags` TEXT NOT NULL, `supersededBy` TEXT, `embedding` TEXT)",
+                )
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_agent_memory_id` ON `agent_memory` (`id`)")
+                db.execSQL(
+                    "CREATE VIRTUAL TABLE IF NOT EXISTS `agent_memory_fts` USING FTS4(" +
+                        "`memoryId` TEXT NOT NULL, `content` TEXT NOT NULL, `tags` TEXT NOT NULL)",
+                )
+            }
+        }
+
         fun get(context: Context): AppDatabase = instance ?: synchronized(this) {
             instance ?: Room.databaseBuilder(context.applicationContext, AppDatabase::class.java, "shiyin.db")
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21, MIGRATION_21_22, MIGRATION_22_23)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21, MIGRATION_21_22, MIGRATION_22_23, MIGRATION_23_24, MIGRATION_24_25)
                 // 不使用 fallbackToDestructiveMigration：迁移失败时宁可崩溃也不要删全库。
                 // 之前该选项导致迁移异常时删除所有用户数据（排序、专辑名、播放历史等）。
                 .addCallback(object : Callback() {

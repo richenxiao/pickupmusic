@@ -206,10 +206,18 @@ class PlaybackService : MediaSessionService() {
     private fun handleSplitSeek(player: Player, forward: Boolean): Boolean {
         val item = player.currentMediaItem ?: return false
         val carry = SplitCarry.read(item) ?: return false
+        // v1.3.10 诊断(A23):这条路径的 seek **不经过 PlayerController**,此前完全无日志。
+        // "位置每 3 秒被拉回上一段起点"的第一嫌疑就是它被反复触发。
+        android.util.Log.i(
+            "PlayerDiag",
+            "handleSplitSeek forward=$forward idx=${carry.index}/${carry.plan.tracks.size} " +
+                "pos=${player.currentPosition} 当前段=[${carry.current?.startMs},${carry.current?.endMs})",
+        )
         if (forward) {
             val nextIdx = carry.index + 1
             if (nextIdx >= carry.plan.tracks.size) return false   // 已是最后一首 → 交回默认
             val nc = carry.copy(index = nextIdx)
+            android.util.Log.i("PlayerDiag", "  → 前进到 idx=$nextIdx seek=${SplitCarry.startMsOf(nc)}")
             player.replaceMediaItem(player.currentMediaItemIndex, SplitCarry.itemFor(item, nc))
             player.seekTo(SplitCarry.startMsOf(nc))
             player.play()
@@ -218,6 +226,7 @@ class PlaybackService : MediaSessionService() {
         val cur = carry.current
         // 与 setMaxSeekToPreviousPositionMs(4000) 的既有语义一致：播过 3 秒回本曲开头
         if (cur != null && player.currentPosition - cur.startMs > 3000L) {
+            android.util.Log.i("PlayerDiag", "  → 回本段开头 seek=${cur.startMs}(段内已播 ${player.currentPosition - cur.startMs}ms)")
             player.seekTo(cur.startMs)
             player.play()
             return true
@@ -226,6 +235,7 @@ class PlaybackService : MediaSessionService() {
         if (prevIdx != carry.index) {
             player.replaceMediaItem(player.currentMediaItemIndex, SplitCarry.itemFor(item, carry.copy(index = prevIdx)))
         }
+        android.util.Log.i("PlayerDiag", "  → 回到上一段 idx=$prevIdx seek=${SplitCarry.startMsOf(carry.copy(index = prevIdx))}")
         player.seekTo(SplitCarry.startMsOf(carry.copy(index = prevIdx)))
         player.play()
         return true

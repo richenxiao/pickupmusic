@@ -16,7 +16,16 @@ import kotlinx.coroutines.withContext
  */
 object LyricsFetchSkill : AgentEngine.AgentSkill {
     override val key = "lyrics_fetch"
-    override val description = "为当前播放的歌曲找歌词(LRCLIB→网易云)"
+    /**
+     * v1.3.10 需求 A27:描述不再把自己说成"找歌词"这件事的**全部**。
+     * 旧描述是 `为当前播放的歌曲找歌词(LRCLIB→网易云)`——等于把"找歌词 = 这个技能"
+     * 钉死在模型脑子里,内置源搜不到它就只会回"无此资源",不会想到还有其他路
+     * (用户实测:"死死限定住,那就是 workflow 不是 agent")。
+     */
+    override val description =
+        "从**内置**歌词源(LRCLIB → 网易云音乐 → LrcShare)检索当前播放歌曲的歌词。" +
+            "注意:这只是来源之一,不是「找歌词」的全部——**内置源都没有时别就此收手**: " +
+            "改用 web_search 上网找,找到歌词后用 save_lyrics 落地(可撤销,歌词本里能删/换源)。"
     override val parameters = """{"type":"object","properties":{},"required":[]}"""
     override fun panelSteps(args: Map<String, String>) = listOf(
         AgentEngine.PanelStep("search", "搜索歌词源"),

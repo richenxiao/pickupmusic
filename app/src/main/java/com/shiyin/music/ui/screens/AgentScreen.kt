@@ -1,11 +1,15 @@
 package com.shiyin.music.ui.screens
 
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -27,6 +31,7 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
@@ -52,11 +57,18 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.BlendMode
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -66,18 +78,164 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import com.shiyin.music.MainViewModel
 import com.shiyin.music.data.ai.AgentEngine
+import com.shiyin.music.data.ai.ChartCurves
 import com.shiyin.music.data.ai.LlmClient
 import com.shiyin.music.data.ai.LlmProviderConfig
+import com.shiyin.music.data.ai.blendCurves
+import com.shiyin.music.data.ai.resampleTo
+import com.shiyin.music.ui.components.AgentLogoThinking
 import com.shiyin.music.ui.components.EqBars
 import com.shiyin.music.ui.components.OIcon
 import com.shiyin.music.ui.components.PasswordField
+import com.shiyin.music.ui.components.clickableNoRipple
 import com.shiyin.music.ui.components.body
 import com.shiyin.music.ui.components.heading
+import com.shiyin.music.ui.components.shadowMd
 import com.shiyin.music.ui.icons.Lucide
 import com.shiyin.music.ui.theme.LocalOrganic
+import kotlin.math.roundToInt
 import kotlinx.coroutines.launch
+
+/**
+ * v1.3.10: 模型「选择题」卡片(参照 Claude 的选择弹窗,移动端适配)。
+ *
+ * 结构(自上而下):标题行(问题左对齐加粗 + 右侧关闭) / 选项行(圆角方块数字徽章 + 文字,
+ * 行间细分隔线,按下时 accent 描边 + 略深底色) / 「其他」出口行(铅笔 + 占位文字 + 跳过)。
+ *
+ * 刻意的取舍:
+ * - **单问题单组**,不做分页(用户 2026-09-28 定调;schema 也只支持一个 question)。
+ * - 「其他」出口**始终存在**——模型给的选项再周全也可能没覆盖用户的真实想法,
+ *   只有封闭选项会把用户卡死。
+ * - 移动端没有键盘 ↑↓ 导航,所以"高亮"落在**按下态**(手指按住哪行哪行亮),
+ *   不引入桌面端的焦点模型。
+ * - 强调色一律取主题 accent,不引入新的蓝。
+ */
+@Composable
+private fun AgentClarifyCard(
+    question: String,
+    options: List<String>,
+    onPick: (String) -> Unit,
+    onDismiss: () -> Unit,
+    onOther: () -> Unit,
+) {
+    val c = LocalOrganic.current
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(start = 12.dp, end = 12.dp, bottom = 8.dp)
+            .shadowMd(RoundedCornerShape(16.dp))
+            .clip(RoundedCornerShape(16.dp))
+            .background(c.surface)
+            .padding(vertical = 6.dp),
+    ) {
+        // 标题行:问题 + 关闭(× = 跳过这次选择)
+        Row(
+            Modifier.fillMaxWidth().padding(start = 14.dp, end = 4.dp, top = 6.dp, bottom = 4.dp),
+            verticalAlignment = Alignment.Top,
+        ) {
+            Text(question, style = body(14f, FontWeight.Bold, c.text), modifier = Modifier.weight(1f))
+            Box(
+                Modifier.size(30.dp).clip(CircleShape).clickable { onDismiss() },
+                contentAlignment = Alignment.Center,
+            ) { OIcon(Lucide.Close, 16.dp, c.n600) }
+        }
+        // 选项:整行可点;按下态 = accent 描边 + 略深底色 + 徽章反色
+        options.forEachIndexed { i, opt ->
+            if (i > 0) Box(Modifier.fillMaxWidth().padding(horizontal = 12.dp).height(1.dp).background(c.divider))
+            val interaction = remember { MutableInteractionSource() }
+            val pressed by interaction.collectIsPressedAsState()
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 8.dp, vertical = 2.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(if (pressed) c.a100 else androidx.compose.ui.graphics.Color.Transparent)
+                    .border(
+                        1.5.dp,
+                        if (pressed) c.accent else androidx.compose.ui.graphics.Color.Transparent,
+                        RoundedCornerShape(10.dp),
+                    )
+                    .clickable(interactionSource = interaction, indication = null) { onPick(opt) }
+                    .padding(horizontal = 10.dp, vertical = 11.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(11.dp),
+            ) {
+                Box(
+                    Modifier
+                        .size(22.dp)
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(if (pressed) c.accent else c.n200),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        "${i + 1}",
+                        style = body(
+                            11.5f,
+                            FontWeight.Bold,
+                            if (pressed) androidx.compose.ui.graphics.Color.White else c.n700,
+                        ),
+                    )
+                }
+                Text(opt, style = body(14f, FontWeight.Normal, c.text), modifier = Modifier.weight(1f))
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        // 「其他」出口:点它把焦点交给真正的输入框(卡片留着,问题还能看见)
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 8.dp)
+                .clip(RoundedCornerShape(12.dp))
+                .background(c.n100)
+                .clickableNoRipple { onOther() }
+                .padding(start = 12.dp, end = 6.dp, top = 6.dp, bottom = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(9.dp),
+        ) {
+            OIcon(Lucide.Pencil, 15.dp, c.n600)
+            Text(
+                "其他/我自己说",
+                style = body(13.5f, FontWeight.Normal, c.n500),
+                modifier = Modifier.weight(1f),
+            )
+            Box(
+                Modifier
+                    .clip(RoundedCornerShape(999.dp))
+                    .background(c.n200)
+                    .clickableNoRipple { onDismiss() }
+                    .padding(horizontal = 12.dp, vertical = 5.dp),
+            ) { Text("跳过", style = body(12f, FontWeight.Bold, c.n700)) }
+        }
+        Spacer(Modifier.height(4.dp))
+    }
+}
+
+/** v1.3.9: THINKING/TOOL 阶段的实时耗时（"思考中 · 3s"）。0 秒算启动中,显示 0.0。 */
+@Composable
+private fun rememberElapsedSeconds(active: Boolean): Long {
+    var startMs by remember { mutableStateOf(0L) }
+    var elapsedSec by remember { mutableStateOf(0L) }
+    LaunchedEffect(active) {
+        if (!active) return@LaunchedEffect
+        startMs = System.currentTimeMillis()
+        while (true) {
+            elapsedSec = (System.currentTimeMillis() - startMs) / 1000
+            kotlinx.coroutines.delay(500)
+        }
+    }
+    return elapsedSec
+}
 
 /**
  * v1.2.2 Agent: 独立对话页。
@@ -137,10 +295,17 @@ fun AgentScreen(vm: MainViewModel) {
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Box(Modifier.size(38.dp).clip(CircleShape).background(c.surface).clickable { vm.agentOpen = false }, contentAlignment = Alignment.Center) {
+            Box(Modifier.size(38.dp).clip(CircleShape).background(c.surface).clickable {
+                vm.persistAgentConversation()
+                vm.agentOpen = false
+            }, contentAlignment = Alignment.Center) {
                 OIcon(Lucide.ChevronLeft, 20.dp, c.text)
             }
             Text("拾光Agent", style = heading(22), modifier = Modifier.weight(1f))
+            // v1.3.9: 新对话 —— 当前对话先落库再清屏(与主流产品的 New Chat 同构)。
+            Box(Modifier.size(38.dp).clip(CircleShape).background(c.surface).clickable(enabled = !vm.agentRunning) { vm.newAgentConversation() }, contentAlignment = Alignment.Center) {
+                OIcon(Lucide.Plus, 18.dp, c.text)
+            }
             // v1.3.8: 历史入口 —— 与设置键同尺寸/同底色/同圆角/同间距,只是多一颗。
             Box(Modifier.size(38.dp).clip(CircleShape).background(c.surface).clickable { vm.agentHistoryOpen = true }, contentAlignment = Alignment.Center) {
                 OIcon(Lucide.History, 18.dp, c.text)
@@ -162,7 +327,7 @@ fun AgentScreen(vm: MainViewModel) {
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             itemsIndexed(vm.agentMessages) { idx, msg ->
-                AgentBubble(msg, vm, isLast = idx == vm.agentMessages.lastIndex)
+                AgentBubble(msg, vm, isLast = idx == vm.agentMessages.lastIndex, index = idx)
             }
             if (vm.agentMessages.isEmpty()) {
                 item {
@@ -178,14 +343,24 @@ fun AgentScreen(vm: MainViewModel) {
                     ) {
                         Spacer(Modifier.weight(1f))
                         androidx.compose.foundation.Image(
-                            painter = androidx.compose.ui.res.painterResource(
-                                com.shiyin.music.R.drawable.agent_brand,
-                            ),
+                            painter = androidx.compose.ui.res.painterResource(agentBrandRes(c.isDark)),
                             contentDescription = null,
-                            modifier = Modifier.size(88.dp),
+                            // v1.3.9: 40→56dp。参考 Claude 欢迎页层级:Logo 是点睛,
+                            // 视觉主体让位给大字号问候语。
+                            modifier = Modifier.size(56.dp),
                         )
                         Spacer(Modifier.height(20.dp))
-                        Text("有什么想让我帮你做的？", style = heading(18))
+                        // 18→24:问候语是这屏的主角(参照 Claude "How can I help")。
+                        // v1.3.10 用户反馈"欢迎语句要和 LOGO 对齐居中":24sp 下这句话在
+                        // 多数机型上会折成两行,而 Text 默认 textAlign=Start → 两行都靠左,
+                        // 整块看着跟上方居中的 LOGO 不在一条中轴上。改 Center + fillMaxWidth
+                        // 让折行也居中,和 LOGO 共用同一条中轴。
+                        Text(
+                            "有什么想让我帮你做的？",
+                            style = heading(24),
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
                         Spacer(Modifier.weight(1.3f))
                     }
                 }
@@ -216,6 +391,34 @@ fun AgentScreen(vm: MainViewModel) {
             }
         }
 
+        // v1.3.10: 选择题卡片「其他」出口要能把焦点交回真正的输入框
+        val clarifyFocus = remember { FocusRequester() }
+        // v1.3.10: 模型发起的「选择题」卡片——悬浮在输入框正上方、紧贴输入框,不占对话气泡区。
+        //
+        // 为什么需要 [lastClarify] 缓存:选项点选/跳过会把 vm.agentClarify 立刻置空,
+        // 若直接渲染 state,退出动画期间内容已没了 → 卡片"瞬间消失"而不是滑出。
+        var lastClarify by remember {
+            mutableStateOf<com.shiyin.music.data.ai.AgentTools.ClarifyRequest?>(null)
+        }
+        LaunchedEffect(vm.agentClarify) { if (vm.agentClarify != null) lastClarify = vm.agentClarify }
+        AnimatedVisibility(
+            visible = vm.agentClarify != null,
+            enter = fadeIn() + expandVertically(),
+            exit = fadeOut() + shrinkVertically(),
+        ) {
+            lastClarify?.let { cq ->
+                AgentClarifyCard(
+                    question = cq.question,
+                    options = cq.options,
+                    onPick = { vm.chooseAgentClarify(it) },
+                    onDismiss = { vm.dismissAgentClarify() },
+                    // 「其他」= 去真正的输入框打自己的答案:卡片留着(问题还看得见),
+                    // 发送时 sendAgentMessage 会把它收起(= 选了「其他」,与卡片上的说明一致)。
+                    onOther = { clarifyFocus.requestFocus(); keyboard?.show() },
+                )
+            }
+        }
+
         // v1.3.5: 底部任务清单组件已撤(用户澄清:状态面板跟着对话消息走,不做固定
         // 清单)。输入区(v1.3.3: imePadding 已提到主 Column,这里不再重复)
         Row(
@@ -226,9 +429,12 @@ fun AgentScreen(vm: MainViewModel) {
             OutlinedTextField(
                 value = input,
                 onValueChange = { vm.agentDraft = it },
-                modifier = Modifier.weight(1f),
+                modifier = Modifier.weight(1f).focusRequester(clarifyFocus),
                 // v1.3.3: 删掉执行中占位提示——不需要告诉用户"可打断",停止键本身就说明了。
-                placeholder = null,
+                // v1.3.10: 选择题卡片弹出期间给出绕过提示(直接打字 = 选了「其他」)。
+                placeholder = if (vm.agentClarify != null) {
+                    { Text("或直接回复…", style = body(14f, FontWeight.Normal, c.n500)) }
+                } else null,
                 singleLine = false,
                 maxLines = 3,
                 // v1.3.3: 执行中也可继续码字(草稿暂存),只有发送被闸住。
@@ -276,6 +482,24 @@ fun AgentScreen(vm: MainViewModel) {
     // v1.3.8: 历史页做成与设置页同构的全屏 Dialog —— 改动全部留在 Agent 页内,
     // 不动 AppRoot 的路由。系统返回键由 Dialog 自己吃掉(dismissOnBackPress 默认 true)。
     if (vm.agentHistoryOpen) AgentHistoryDialog(vm) { vm.agentHistoryOpen = false }
+    // v1.3.11:「拾光记忆」管理页 —— 由 Agent 设置页进入(同域,不分家)。
+    // 声明在设置弹窗**之后** → 盖在它上面;页内返回只关这一层,退回设置页。
+    if (vm.agentMemoryScreenOpen) {
+        Dialog(
+            onDismissRequest = { vm.agentMemoryScreenOpen = false },
+            properties = DialogProperties(
+                usePlatformDefaultWidth = false,
+                dismissOnClickOutside = false,
+                decorFitsSystemWindows = false,
+            ),
+        ) {
+            // §34:页面自己处理 Insets(状态栏/导航栏),**不硬编码顶部间距**。
+            // 之前这里只有 background(c.bg),内容会顶到状态栏上(用户实测的 bug)。
+            Column(Modifier.fillMaxSize().background(c.bg).statusBarsPadding().navigationBarsPadding()) {
+                MemoryScreen(vm) { vm.agentMemoryScreenOpen = false }
+            }
+        }
+    }
 }
 
 /**
@@ -417,6 +641,36 @@ private fun AgentSettingsDialog(vm: MainViewModel, onDismiss: () -> Unit) {
                             }) else null,
                             tfColors = tfColors,
                         )
+                    }
+                }
+
+                // ── 拾光记忆(v1.3.12) ─────────────────────────────────────────────
+                // 用户定调:功能区只有一个「拾光记忆」,**不要再套一层"记忆 → 拾光记忆"**
+                // 的重复层级。所以这里不给 SettingsSection 标题,直接做成一个独立设置项。
+                Column(
+                    Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(c.surface)
+                        .padding(horizontal = 16.dp),
+                ) {
+                    Row(
+                        Modifier.fillMaxWidth()
+                            .clickable {
+                                vm.ensureMemoriesLoaded()
+                                vm.agentMemoryScreenOpen = true
+                            }
+                            .padding(vertical = 14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        OIcon(Lucide.Brain, 19.dp, c.n700)
+                        Column(Modifier.weight(1f)) {
+                            Text("拾光记忆", style = body(14.5f, FontWeight.SemiBold, c.text))
+                            Text(
+                                "管理拾光长期记住的关于你的信息",
+                                style = body(12f, FontWeight.Normal, c.n600),
+                                modifier = Modifier.padding(top = 2.dp),
+                            )
+                        }
+                        OIcon(Lucide.ChevronRight, 18.dp, c.n500)
                     }
                 }
 
@@ -649,6 +903,7 @@ private fun AgentBubble(
     msg: MainViewModel.AgentMessage,
     vm: MainViewModel,
     isLast: Boolean = false,
+    index: Int = -1,
 ) {
     val c = LocalOrganic.current
     val isUser = msg.role == "user"
@@ -663,13 +918,36 @@ private fun AgentBubble(
     ) {
         // v1.3.5: 步骤面板回到气泡内(底部固定任务清单组件已撤——用户定调:状态
         // 跟着对话走,聊天流里逐行看;清单概念是给"开发过程"看的,不是 app UI)。
-        if (!isUser && msg.steps?.isNotEmpty() == true) {
+        // v1.3.9(选项2): 动态 Logo 是状态记录的前缀——同一时刻只出现在一处：
+        // 有步骤在执行(TOOL/SEARCH)时归步骤块,否则归思考块(THINKING)。
+        val stepsLive = !isUser && msg.steps?.isNotEmpty() == true &&
+            vm.agentRunning && isLast && msg.text.isBlank()
+        // v1.3.11:记忆运行状态只挂在最新一条 Agent 消息下(与落款 Logo 同一约定:发下一条就换地方)。
+        // **一轮最多一行**:相位在同一条上更新(MemoryTraceFlow.uiRows 保证),不并列显示历史状态。
+        val memTrace = if (!isUser && isLast) vm.agentMemoryTrace else null
+        if (memTrace != null) {
             Column(Modifier.padding(bottom = 6.dp).widthIn(max = 320.dp)) {
-                for (s in msg.steps) StepRow(s, c)
+                MemoryTraceRow(memTrace, c)
+            }
+        }
+        if (!isUser && msg.steps?.isNotEmpty() == true) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (stepsLive) {
+                    AgentLogoThinking(size = 40.dp, speedMultiplier = 2f)
+                    Spacer(Modifier.width(8.dp))
+                }
+                Column(Modifier.padding(bottom = 6.dp).widthIn(max = 320.dp)) {
+                    for (s in msg.steps) StepRow(s, c)
+                }
             }
         }
         if (!isUser && !msg.thinking.isNullOrBlank()) {
-            ThinkingBlock(msg.thinking, live = msg.text.isBlank(), thinkingMs = msg.thinkingMs)
+            ThinkingBlock(
+                msg.thinking,
+                live = msg.text.isBlank(),
+                thinkingMs = msg.thinkingMs,
+                showLogo = !stepsLive,
+            )
         }
         if (msg.text.isNotBlank()) {
             if (isUser) {
@@ -682,7 +960,9 @@ private fun AgentBubble(
                         // 直接 rewind 掉之后的整段对话,用户点一下气泡"对话全没了"
                         // (误触灾难)。改写后点发送 = 以草稿重发一条新消息,历史保留。
                         .clickable(enabled = !vm.agentRunning) {
-                            vm.agentDraft = msg.text
+                            // v1.3.9: 点击用户消息 = 装回输入框 + 置覆盖锚点,
+                            // 发送时**替换**该条起的后续内容(主流产品的编辑重发语义)。
+                            vm.prepareAgentMessageEdit(index)
                             keyboard?.show()
                         }
                         .padding(horizontal = 14.dp, vertical = 10.dp),
@@ -690,45 +970,158 @@ private fun AgentBubble(
                     Text(msg.text, style = body(13.5f, FontWeight.Normal, androidx.compose.ui.graphics.Color.White))
                 }
             } else {
-                AgentReplyText(msg.text, streaming = vm.agentRunning && isLast && !isUser)
-                // v1.3.x: 回复署名 —— 每条 Agent 回复末尾一枚品牌 logo。
-                // 尺寸**按场景定**（用户要求"不要全部默认小图标"）：
-                // 空态是整页主视觉 80dp，正文回复末尾是落款 30dp——比首版的 22dp
-                // 更明确地"签个名"，又不至于和正文抢读。
-                androidx.compose.foundation.Image(
-                    painter = androidx.compose.ui.res.painterResource(
-                        com.shiyin.music.R.drawable.agent_brand,
-                    ),
-                    contentDescription = null,
-                    modifier = Modifier.padding(top = 8.dp).size(30.dp),
+                // v1.3.9: 顺序修正(用户定调)——**思考链在上、最终输出在下**。
+                // 之前是 [已思考] → [正文] → [查看思考过程],正文被夹在中间;
+                // 现在:先思考块(已思考 / 查看思考过程 + 展开记录),再正文。
+                val showProcessHistory = msg.processHistory.size >= 2 ||
+                    msg.processHistory.any { it.summary?.isNotBlank() == true }
+                if (showProcessHistory) {
+                    val expanded = remember { mutableStateOf(false) }
+                    Column(Modifier.padding(bottom = 6.dp).widthIn(max = 320.dp)) {
+                        // 折叠/展开按钮
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(6.dp))
+                                .clickable { expanded.value = !expanded.value }
+                                .padding(horizontal = 8.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            Text(
+                                if (expanded.value) "▲" else "▼",
+                                style = body(11f, FontWeight.Normal, c.n500),
+                            )
+                            Text(
+                                "查看思考过程",
+                                style = body(11.5f, FontWeight.Medium, c.n600),
+                            )
+                        }
+
+                        // 折叠区域内容
+                        androidx.compose.animation.AnimatedVisibility(
+                            visible = expanded.value,
+                            enter = androidx.compose.animation.expandVertically(
+                                animationSpec = tween(200, easing = androidx.compose.animation.core.FastOutSlowInEasing),
+                            ),
+                            exit = androidx.compose.animation.shrinkVertically(
+                                animationSpec = tween(200, easing = androidx.compose.animation.core.FastOutSlowInEasing),
+                            ),
+                        ) {
+                            Column(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .padding(top = 4.dp, start = 8.dp, end = 8.dp, bottom = 6.dp),
+                                verticalArrangement = Arrangement.spacedBy(2.dp),
+                            ) {
+                                // v1.3.9(P6): 每条记录 = 类型图标 + 单行极简状态文字(+可选缩进展开)。
+                                // 图标随动作类型切换(思考=方盒/搜索=放大镜/浏览=文档)——"换了图标"
+                                // 本身就是"这是一条新记录"的信号。所有记录共用同一左基线,不加深缩进。
+                                for (step in msg.processHistory) ProcessRecordRow(step, c)
+                            }
+                        }
+                    }
+                }
+
+                // v1.3.8: Agent 回复内容(最终输出——在思考链之下)
+                AgentReplyText(
+                    msg.text,
+                    streaming = vm.agentRunning && isLast && !isUser,
+                    isLast = isLast,
                 )
+
+                // v1.3.8: 状态机 Logo——根据消息状态动态显示
+                // THINKING/TOOL: 无内容但执行中 → 动态 Logo 24dp (period=2800ms)
+                // GENERATING: 有内容且仍在运行 → 动态 Logo 22dp (period=2400ms)
+                // COMPLETED: 有内容且完成 → 静态 Logo 30dp
+                val isExecuting = vm.agentRunning && isLast
+                val hasContent = msg.text.isNotBlank()
+
+                when {
+                    // GENERATING 状态：有内容且仍在运行 → Logo **静止**（规格：生成开始
+                    // 立即完全停止，静止本身就是"轮到文字说话"的语义）。操作栏完成后出现。
+                    isExecuting && hasContent -> {
+                        androidx.compose.foundation.Image(
+                            painter = androidx.compose.ui.res.painterResource(agentBrandRes(c.isDark)),
+                            contentDescription = null,
+                            modifier = Modifier.padding(top = 6.dp).size(44.dp),
+                        )
+                    }
+                    // COMPLETED 状态：有内容且已完成
+                    // 布局严格照 Claude 真机截图：正文 → 操作栏(复制/重试) → **Logo 另起
+                    // 一行在下方**（不与操作栏同行，也不在其上方）。
+                    // v1.3.9: 落款 Logo **只属最新一条回复**（用户定调:署名唯一;发了新
+                    // 消息,旧回复的落款随之消失）;操作栏每条都保留。
+                    hasContent -> {
+                        Column {
+                            Row(
+                                Modifier.padding(top = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            ) {
+                                val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
+                                Box(
+                                    Modifier.size(30.dp).clip(CircleShape)
+                                        .clickable {
+                                            clipboard.setText(androidx.compose.ui.text.AnnotatedString(msg.text))
+                                            vm.showToast("已复制", null)
+                                        },
+                                    contentAlignment = Alignment.Center,
+                                ) { OIcon(Lucide.Copy, 15.dp, c.n500) }
+                                if (isLast && !vm.agentRunning) {
+                                    Box(
+                                        Modifier.size(30.dp).clip(CircleShape)
+                                            .clickable { vm.retryAgentMessage(index) },
+                                        contentAlignment = Alignment.Center,
+                                    ) { OIcon(Lucide.RefreshCw, 15.dp, c.n500) }
+                                }
+                            }
+                            if (isLast) {
+                                androidx.compose.foundation.Image(
+                                    painter = androidx.compose.ui.res.painterResource(agentBrandRes(c.isDark)),
+                                    contentDescription = null,
+                                    // 44dp:drawable 已按裁剪视口重生成,盒子多大图案就多大。
+                                    // 左缘与消息列对齐(x=0);思考中胶囊的 Logo 也对齐到这里。
+                                    modifier = Modifier.padding(top = 6.dp).size(44.dp),
+                                )
+                            }
+                        }
+                    }
+                    // THINKING/TOOL 状态：无内容但执行中（由占位气泡/步骤面板处理，这里不显示）
+                }
             }
-        } else if (!isUser && msg.steps.isNullOrEmpty() && msg.thinking.isNullOrBlank()) {
-            // v1.3.4: 占位气泡换成与思考链同一套呼吸语言(圆点 + "正在思考…"),
-            // 不是三点跳动——用户定调"像呼吸灯一样,没有呼吸就是卡住了"。执行中
-            // 任何流(reasoning/回复/步骤)到达都会替换掉这块。
+        } else if (!isUser && msg.steps.isNullOrEmpty() && msg.thinking.isNullOrBlank() &&
+            // v1.3.11:记忆状态**进行中**时不再叠通用占位气泡——光流那行本身就是加载指示,
+            // 两个动画同时出现会互相打架(与"同一时刻只一处动态 Logo"同一条规矩)。
+            // 终态(已保存/未找到)则允许与"思考中"并存:一个说记忆的结局,一个说还在生成。
+            vm.agentMemoryTrace?.running != true
+        ) {
+            // v1.3.9: 占位气泡（THINKING 进入态：思考链尚未流回之前）
+            // 动态 Logo 40dp + "思考中 · Xs"(随实际耗时增长的计时器，规格要求)。
             val c2 = c
+            var elapsedSec by remember { mutableStateOf(0) }
+            LaunchedEffect(Unit) {
+                while (true) { kotlinx.coroutines.delay(1000); elapsedSec++ }
+            }
             Row(
                 Modifier
                     .widthIn(max = 320.dp)
                     .clip(RoundedCornerShape(8.dp))
                     .background(c2.bg)
-                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                    // v1.3.9: start=0——Logo 左缘对齐到消息列(与署名 Logo 同一垂直线),
+                    // 用户定调"加载 Logo 对齐署名 Logo 的位置"。
+                    .padding(start = 0.dp, end = 10.dp, top = 6.dp, bottom = 6.dp),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                val breathe by rememberInfiniteTransition(label = "waitDot").animateFloat(
-                    initialValue = 0.4f, targetValue = 0.9f,
-                    animationSpec = infiniteRepeatable(
-                        tween(900, easing = androidx.compose.animation.core.EaseInOutSine),
-                        repeatMode = androidx.compose.animation.core.RepeatMode.Reverse,
-                    ),
-                    label = "waitDotA",
+                // 与 ThinkingBlock 内的 Logo 同尺寸(40dp)、同速(1x)——占位气泡到
+                // 思考块的切换不应有任何大小/速度跳变。
+                AgentLogoThinking(size = 40.dp)
+                Text(
+                    // v1.3.9: Kotlin 字符串模板——"$elapsedSec" 后接中文须 ${} 包住变量名。
+                    "思考中 · ${elapsedSec}s",
+                    style = body(12f, FontWeight.Bold, c2.n600),
                 )
-                // v1.3.6e: 圆点 6→9dp + 白色改橙色(c.accent)——白点在浅色气泡上
-                // 几乎看不见(用户反馈"白色不明显");文字 10→12sp 同步放大。
-                Box(Modifier.size(9.dp).clip(CircleShape).background(c2.accent.copy(alpha = breathe)))
-                Text("正在思考…", style = body(12f, FontWeight.Bold, c2.n600))
             }
         }
         // v1.3.5: 消息级"本次 N tokens"删除(用户定调:用量不在对话里报,统计曲线
@@ -747,8 +1140,37 @@ private fun AgentBubble(
  *  卡住降级: live 超过 9s 无新内容(由外部不再更新触发不了,内部用 LaunchedEffect
  *          监测 thinking 文本静止时长)→ 文案切"仍在思考…"。
  */
+/**
+ * v1.3.9: 思考中秒表（规格：THINKING 状态文字 =「思考中 · Ns」，随实际耗时增长）。
+ * 自计时——挂上就每秒自增，不依赖外部传值。
+ */
 @Composable
-private fun ThinkingBlock(thinking: String, live: Boolean, thinkingMs: Long = 0L) {
+private fun AgentElapseText(running: Boolean, cText: androidx.compose.ui.graphics.Color) {
+    var sec by remember { mutableStateOf(0) }
+    if (running) {
+        LaunchedEffect(Unit) {
+            while (true) {
+                kotlinx.coroutines.delay(1000)
+                sec++
+            }
+        }
+    }
+    Text(
+        "思考中（用时 ${sec} 秒）",
+        style = body(12f, FontWeight.Bold, cText),
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+    )
+}
+
+@Composable
+private fun ThinkingBlock(
+    thinking: String,
+    live: Boolean,
+    thinkingMs: Long = 0L,
+    /** v1.3.9: 动态 Logo 是否归本块显示（TOOL 阶段的步骤块已占用时为 false，避免两个动画同时出现）。 */
+    showLogo: Boolean = true,
+) {
     val c = LocalOrganic.current
     // v1.3.5: live 态默认展开(用户定调:思考中就摊开看,像 ChatGPT 的 reasoning
     // 流);回复出来(live=false)自动折叠成"已思考 X 秒"。用户手动点开/收起过
@@ -776,42 +1198,29 @@ private fun ThinkingBlock(thinking: String, live: Boolean, thinkingMs: Long = 0L
                     manualToggle = true
                     expanded = !expanded
                 }
-                .padding(horizontal = 10.dp, vertical = 6.dp),
+                // v1.3.9: start=0——live 态 Logo 左缘对齐消息列(与署名 Logo 同线)。
+                .padding(start = 0.dp, end = 10.dp, top = 6.dp, bottom = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            // 呼吸圆点:透明度 0.4→0.9 ease-in-out 循环(周期 ~1.8s),比旋转圈更"沉思"
-            // v1.3.6e: 6→9dp + 白改橙(c.accent,白点浅色模式下看不见);文字 10→12sp。
+            // v1.3.9: live 态用动态品牌标志替换呼吸圆点（规格：THINKING = 动态 Logo +
+            // 实际耗时计时）；右侧加「思考中 · Ns」秒表。
             if (live) {
-                val breathe by rememberInfiniteTransition(label = "thinkDot").animateFloat(
-                    initialValue = 0.4f, targetValue = 0.9f,
-                    animationSpec = infiniteRepeatable(
-                        tween(900, easing = androidx.compose.animation.core.EaseInOutSine),
-                        repeatMode = androidx.compose.animation.core.RepeatMode.Reverse,
-                    ),
-                    label = "thinkDotA",
-                )
-                Box(
-                    Modifier.size(9.dp).clip(CircleShape)
-                        .background(c.accent.copy(alpha = breathe))
+                if (showLogo) com.shiyin.music.ui.components.AgentLogoThinking(size = 40.dp)
+                AgentElapseText(running = true, cText = c.n600)
+            } else {
+                Text(
+                    "已思考（用时 ${(thinkingMs / 1000).coerceAtLeast(1)} 秒）",
+                    style = body(12f, FontWeight.Bold, c.n600),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false),
                 )
             }
-            Text(
-                when {
-                    live && stalled -> "仍在思考…"
-                    live && thinking.isNotBlank() -> "正在思考 " + thinking.takeLast(24).replace('\n', ' ')
-                    live -> "正在思考…"
-                    else -> "已思考 ${(thinkingMs / 1000).coerceAtLeast(1)} 秒"
-                },
-                style = body(12f, FontWeight.Bold, c.n600),
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f, fill = false),
-            )
             // v1.3.4: live 也给展开箭头(方向随展开态),提示可点。
             OIcon(if (expanded) Lucide.ChevronUp else Lucide.ChevronDown, 12.dp, c.n600)
         }
-        // 展开态:reasoning 按语义分段(首先/然后/所以/但是…转折词分段),段间细分隔线
+        // 展开态(P6):叙述性文字保持**连续段落**,不做项目符号、不按转折词切断。
         androidx.compose.animation.AnimatedVisibility(
             visible = expanded,
             enter = androidx.compose.animation.expandVertically(
@@ -821,22 +1230,11 @@ private fun ThinkingBlock(thinking: String, live: Boolean, thinkingMs: Long = 0L
                 animationSpec = tween(180, easing = androidx.compose.animation.core.FastOutSlowInEasing),
             ) + androidx.compose.animation.fadeOut(tween(150)),
         ) {
-            Column(Modifier.padding(top = 4.dp, start = 10.dp, end = 10.dp)) {
-                val paras = thinking.split(Regex("(?=首先|然后|所以|但是|不过|因此|接下来|另外)"))
-                    .map { it.trim() }.filter { it.isNotEmpty() }
-                for ((i, p) in paras.withIndex()) {
-                    if (i > 0) Box(
-                        Modifier.fillMaxWidth().height(1.dp)
-                            .background(c.divider.copy(alpha = 0.1f))
-                            .padding(vertical = 0.dp)
-                    )
-                    Text(
-                        p,
-                        style = body(11f, FontWeight.Normal, c.n500).copy(lineHeight = 16.sp),
-                        modifier = Modifier.padding(vertical = 4.dp),
-                    )
-                }
-            }
+            Text(
+                thinking,
+                style = body(11.5f, FontWeight.Normal, c.n500).copy(lineHeight = 17.sp),
+                modifier = Modifier.padding(top = 4.dp, start = 19.dp, end = 10.dp, bottom = 4.dp),
+            )
         }
     }
 }
@@ -849,26 +1247,32 @@ private fun ThinkingBlock(thinking: String, live: Boolean, thinkingMs: Long = 0L
  * 字符数推进(视觉节奏一致性够用)。
  */
 @Composable
-private fun AgentReplyText(text: String, streaming: Boolean) {
+private fun AgentReplyText(text: String, streaming: Boolean, isLast: Boolean) {
     val c = LocalOrganic.current
-    // v1.3.x 反馈④(打字机错乱):remember(text) 让每次 text 变化(流式新增量到达)
-    // 都重置 shownCount=0——用户看到"每次都从头开始打"。改 remember(Unit) 不重置,
-    // shownCount 只增不减,LaunchedEffect(text) 重启 effect 继续从当前位置追赶。
-    var shownCount by remember { mutableStateOf(0) }
-    if (streaming) {
-        // 每帧吐字:LaunchedEffect 循环推进游标,追到全量即停(等下一批增量到达
-        // 由 text 变化重启 effect 继续——shownCount 不重置,从上次位置继续)。
-        LaunchedEffect(text) {
-            while (shownCount < text.length) {
-                shownCount = (shownCount + 2).coerceAtMost(text.length)
-                kotlinx.coroutines.delay(30)
-            }
+    // v1.3.9 打字机修复(用户实测"最终回答瞬间输出"):技能类回复的正文是**一次性**
+    // 写入的,`agentRunning` 几乎立刻翻 false——只按 streaming 判断,动画还没跑就已结束。
+    // 现在:首帧决定起点(流式中从 0 开始;历史消息直接整段),末条消息**持续跑到追平**
+    // 为止(与 agentRunning 解耦),不再中途被"瞬间补全"截断。
+    var shownCount by remember { mutableStateOf(if (streaming) 0 else text.length) }
+    LaunchedEffect(text, isLast) {
+        if (!isLast) {
+            shownCount = text.length
+            return@LaunchedEffect
         }
-    } else {
-        // 流结束:立即追平(收尾不拖)
-        shownCount = text.length
+        val breaker = java.text.BreakIterator.getCharacterInstance()
+        breaker.setText(text)
+        while (shownCount < text.length) {
+            val next = breaker.following(shownCount)
+            if (next == java.text.BreakIterator.DONE) break
+            shownCount = next
+            kotlinx.coroutines.delay(45)
+        }
     }
     val shown = text.take(shownCount)
+
+    // v1.3.8: Markdown 渲染——支持 **bold** / *italic* / `code`
+    val annotated = remember(shown) { parseMarkdown(shown, c) }
+
     Box(
         Modifier
             .widthIn(max = 320.dp)
@@ -877,45 +1281,230 @@ private fun AgentReplyText(text: String, streaming: Boolean) {
             .padding(horizontal = 14.dp, vertical = 10.dp),
     ) {
         Text(
-            if (streaming) "$shown▍" else shown,
+            // v1.3.9: 去掉打字光标(用户:黑色粗「▍」难看)——纯文字逐字出现即可。
+            text = annotated,
             style = body(13.5f, FontWeight.Normal, c.text),
         )
     }
 }
 
+/**
+ * v1.3.8: 简化 Markdown 解析器——支持 **bold** / *italic* / `code`。
+ *
+ * 参考主流 AI 产品（ChatGPT/Claude）的格式支持，仅解析最常用的三种内联格式。
+ * 缓冲策略：未闭合的格式标记（如 `**bol`）保持原样，等到配对完成再渲染。
+ */
+private fun parseMarkdown(text: String, c: com.shiyin.music.ui.theme.OrganicColors): androidx.compose.ui.text.AnnotatedString {
+    return androidx.compose.ui.text.buildAnnotatedString {
+        var i = 0
+        while (i < text.length) {
+            when {
+                // **bold** (需要至少 4 个字符才尝试匹配: **X*)
+                text.startsWith("**", i) && i + 4 <= text.length -> {
+                    val end = text.indexOf("**", i + 2)
+                    if (end != -1) {
+                        pushStyle(androidx.compose.ui.text.SpanStyle(fontWeight = FontWeight.Bold))
+                        append(text.substring(i + 2, end))
+                        pop()
+                        i = end + 2
+                    } else {
+                        // 未闭合，保持原样
+                        append(text[i])
+                        i++
+                    }
+                }
+                // *italic* (需要至少 3 个字符: *X*)
+                text.startsWith("*", i) && i + 2 < text.length && text[i + 1] != '*' -> {
+                    val end = text.indexOf("*", i + 1)
+                    if (end != -1 && (end == text.lastIndex || text[end + 1] != '*')) {
+                        pushStyle(androidx.compose.ui.text.SpanStyle(fontStyle = androidx.compose.ui.text.font.FontStyle.Italic))
+                        append(text.substring(i + 1, end))
+                        pop()
+                        i = end + 1
+                    } else {
+                        append(text[i])
+                        i++
+                    }
+                }
+                // `code` (需要至少 3 个字符: `X`)
+                text.startsWith("`", i) && i + 2 <= text.length -> {
+                    val end = text.indexOf("`", i + 1)
+                    if (end != -1) {
+                        pushStyle(androidx.compose.ui.text.SpanStyle(
+                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                            background = c.surface,
+                            color = c.n700,
+                        ))
+                        append(text.substring(i + 1, end))
+                        pop()
+                        i = end + 1
+                    } else {
+                        append(text[i])
+                        i++
+                    }
+                }
+                else -> {
+                    append(text[i])
+                    i++
+                }
+            }
+        }
+    }
+}
+
+/** v1.3.9(P6): 动作类型 → 图标。换图标就是"这是一条新类型的记录"的信号。 */
+private fun processTypeIcon(type: String) = when {
+    type.contains("search") || type.contains("web") || type.contains("fetch") -> Lucide.Search
+    type.contains("browse") || type.contains("page") || type.contains("doc") -> Lucide.FileText
+    else -> Lucide.Box
+}
+
+/**
+ * v1.3.9(P6): 单条中间过程记录 ——「类型图标 + 单行极简状态文字」；
+ * 有展开内容时另起一行、只缩进一层，叙述性文字保持连续段落（不拆项目符号）。
+ * 所有记录共用同一左基线，条数增加不加深层级。
+ */
+@Composable
+private fun ProcessRecordRow(step: MainViewModel.ProcessStep, c: com.shiyin.music.ui.theme.OrganicColors) {
+    val detail = step.summary
+    val hasDetail = !detail.isNullOrBlank()
+    var expanded by remember(step) { mutableStateOf(false) }
+    Column(Modifier.fillMaxWidth()) {
+        Row(
+            Modifier.fillMaxWidth()
+                .clip(RoundedCornerShape(6.dp))
+                .clickable(enabled = hasDetail) { expanded = !expanded }
+                .padding(vertical = 3.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            OIcon(processTypeIcon(step.type), 13.dp, c.n600)
+            Text(
+                step.label,
+                style = body(12f, FontWeight.Bold, c.n700),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f, fill = false),
+            )
+            if (hasDetail) OIcon(if (expanded) Lucide.ChevronUp else Lucide.ChevronDown, 12.dp, c.n500)
+        }
+        if (expanded && detail != null) {
+            Text(
+                detail,
+                style = body(11.5f, FontWeight.Normal, c.n600).copy(lineHeight = 17.sp),
+                modifier = Modifier.padding(start = 19.dp, end = 4.dp, top = 1.dp, bottom = 4.dp),
+            )
+        }
+    }
+}
+
 @Composable
 private fun StepRow(s: AgentEngine.Step, c: com.shiyin.music.ui.theme.OrganicColors) {
-    // v1.3.3: 去掉行入场展开动画——滑动回收重进会重播,行以 0 高出现再撑开造成重叠;
-    // 保留状态色平滑过渡。RUNNING 行首用拾音式音浪(EqBars)表达"进行中"。
+    // v1.3.9(P6): 行首换成**动作类型图标**(与折叠区同一套图标语言),不再用 ✓/✗ 字符——
+    // 类型一眼可辨,状态靠颜色(进行中=accent / 完成=n700 / 失败=n400)。
+    val tint = when (s.status) {
+        AgentEngine.StepStatus.RUNNING -> c.accent
+        AgentEngine.StepStatus.DONE -> c.n700
+        AgentEngine.StepStatus.FAILED -> c.n400
+        else -> c.n500
+    }
+    val animatedTint by animateColorAsState(tint, animationSpec = tween(250), label = "stepTint")
     Row(
         Modifier.fillMaxWidth().padding(vertical = 3.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
+        OIcon(processTypeIcon(s.id), 13.dp, animatedTint)
+        Text(
+            // FAILED 行内直接带出失败原因(错误码/网络异常),不只给一个叉
+            if (s.status == AgentEngine.StepStatus.FAILED && !s.error.isNullOrBlank()) "${s.label}（${s.error}）" else s.label,
+            style = body(12f, FontWeight.Normal, if (s.status == AgentEngine.StepStatus.DONE) c.n700 else c.text),
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f, fill = false),
+        )
         if (s.status == AgentEngine.StepStatus.RUNNING) {
-            Box(Modifier.width(18.dp)) {
-                EqBars(playing = true, barMaxHeight = 12.dp)
-            }
-            Text(s.label, style = body(12.5f, FontWeight.Normal, c.text))
+            Box(Modifier.width(14.dp)) { EqBars(playing = true, barMaxHeight = 10.dp) }
+        }
+    }
+}
+
+/**
+ * v1.3.11:「记忆」状态的运行反馈行 —— 记忆中 / 记忆已保存 / 记忆保存失败 /
+ * 正在回忆 / 已找到记忆 / 未找到相关记忆 / 回忆失败。
+ *
+ * 为什么要它:记忆出问题时从对话里看不出断在哪一步(没存?存失败?没检索到?检索异常?
+ * 没注入?注入了没用?)。这一行把**真实状态**摆出来,让问题可判断。
+ *
+ * 视觉规格(用户定调):
+ *  - **进行中** → 文案上有一道**从左向右流动的光**。实现:把文字渲进自己的离屏层
+ *    (CompositingStrategy.Offscreen),再用 `SrcAtop` 把渐变色带只染在**已有笔画**上
+ *    —— 效果是"光流过字面",而不是一条通用 loading 圈。与步骤行的音浪条刻意区分开:
+ *    一眼能分出"记忆在动"与"工具在跑"。
+ *  - **终态** → 完全静止,一帧动画都不留(状态真假不能靠动画装)。
+ *  - 颜色与步骤行同一套语言:进行中 accent / 成功 n700 / 失败 n400。
+ */
+@Composable
+private fun MemoryTraceRow(
+    trace: com.shiyin.music.data.memory.MemoryTrace,
+    c: com.shiyin.music.ui.theme.OrganicColors,
+) {
+    val phase = trace.phase
+    val tint = when (phase) {
+        com.shiyin.music.data.memory.MemoryTrace.Phase.SAVED,
+        com.shiyin.music.data.memory.MemoryTrace.Phase.FOUND -> c.n700
+        com.shiyin.music.data.memory.MemoryTrace.Phase.SAVE_FAILED,
+        com.shiyin.music.data.memory.MemoryTrace.Phase.RECALL_FAILED -> c.n400
+        // 未找到相关记忆不是错误,用中性色(与"失败"区分开)
+        com.shiyin.music.data.memory.MemoryTrace.Phase.NOT_FOUND -> c.n500
+        else -> c.accent
+    }
+    val animatedTint by animateColorAsState(tint, animationSpec = tween(250), label = "memTint")
+    Row(
+        Modifier.fillMaxWidth().padding(vertical = 3.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        OIcon(Lucide.Brain, 13.dp, animatedTint)
+        if (trace.running) {
+            // 光流:0→1 线性循环(等速,像光扫过;不用缓动,缓动会显得"呼吸")
+            val transition = rememberInfiniteTransition(label = "memFlow")
+            val sweep by transition.animateFloat(
+                0f, 1f,
+                infiniteRepeatable(tween(1200, easing = LinearEasing), RepeatMode.Restart),
+                label = "memSweep",
+            )
+            Text(
+                trace.label,
+                style = body(12f, FontWeight.Normal, c.text),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier
+                    .weight(1f, fill = false)
+                    // 离屏层:让下面的 SrcAtop 只与本行文字混色,不吃到气泡背景
+                    .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
+                    .drawWithContent {
+                        drawContent()
+                        val band = size.width * 0.45f
+                        val x = -band + (size.width + band) * sweep
+                        drawRect(
+                            brush = Brush.horizontalGradient(
+                                colors = listOf(Color.Transparent, animatedTint, Color.Transparent),
+                                startX = x,
+                                endX = x + band,
+                            ),
+                            blendMode = BlendMode.SrcAtop,
+                        )
+                    },
+            )
         } else {
-            val (icon, tint) = when (s.status) {
-                AgentEngine.StepStatus.DONE -> "✓" to c.n700
-                AgentEngine.StepStatus.FAILED -> "✗" to c.n400
-                else -> "○" to c.n500
-            }
-            val animatedTint by animateColorAsState(tint, animationSpec = tween(250), label = "stepTint")
-            Text(icon, style = body(13f, FontWeight.Bold, animatedTint))
-            // v1.3.3: FAILED 行内直接显示失败原因(错误码/网络异常),不只给 ✗
-            if (s.status == AgentEngine.StepStatus.FAILED && !s.error.isNullOrBlank()) {
-                Text(
-                    "${s.label}（${s.error}）",
-                    style = body(12.5f, FontWeight.Normal, c.n500),
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            } else {
-                Text(s.label, style = body(12.5f, FontWeight.Normal, c.text))
-            }
+            Text(
+                trace.label,
+                style = body(12f, FontWeight.Normal, if (tint == c.n700) c.n700 else c.text),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f, fill = false),
+            )
         }
     }
 }
@@ -938,10 +1527,11 @@ private fun StepRow(s: AgentEngine.Step, c: com.shiyin.music.ui.theme.OrganicCol
 private fun TokenTrendPanel(vm: MainViewModel) {
     val c = LocalOrganic.current
     var rangeDays by remember { mutableStateOf(7) }
-    var metrics by remember { mutableStateOf<List<Triple<Long, Long, Long>>?>(null) }
+    // v1.3.10 A19: 一次拉齐(曲线/合计/功能榜/累计同窗口同刻,不各查各的)
+    var snap by remember { mutableStateOf<com.shiyin.music.data.ai.UsageSnapshot?>(null) }
     val ctx = androidx.compose.ui.platform.LocalContext.current
     LaunchedEffect(rangeDays) {
-        metrics = com.shiyin.music.data.ai.TokenUsageStore.dailyMetrics(ctx, rangeDays)
+        snap = com.shiyin.music.data.ai.TokenUsageStore.snapshot(ctx, rangeDays)
     }
     // 曲线配色(accent 橙 + 主题灰阶——两主题下都可读)
     val inColor = c.accent
@@ -955,7 +1545,7 @@ private fun TokenTrendPanel(vm: MainViewModel) {
     val providerName = vm.llmProviders.firstOrNull { it.key == providerKey }?.displayName ?: providerKey
     fun costOf(inTok: Long, outTok: Long, cacheTok: Long): Double =
         com.shiyin.music.data.ai.TokenPricing.estimateCny(providerKey, inTok, outTok, cacheTok)
-    val rangeLabel = when (rangeDays) { 1 -> "当天"; 3 -> "3天"; 7 -> "7天"; 14 -> "14天"; else -> "30天" }
+    val rangeLabel = com.shiyin.music.data.ai.TokenUsageWindow.rangeLabel(rangeDays)
 
     Column(
         // v22: 内层数据卡改用 c.bg（与供应商配置卡同一套语言）。外层段落卡片与标题
@@ -1000,75 +1590,193 @@ private fun TokenTrendPanel(vm: MainViewModel) {
                 }
             }
         }
-        if (metrics == null) {
+        if (snap == null) {
             Box(Modifier.fillMaxWidth().height(140.dp), contentAlignment = Alignment.Center) {
                 Text("加载中…", style = body(11f, FontWeight.Normal, c.n500))
             }
             return@Column
         }
-        val data = metrics!!
+        val s = snap!!
         // v22: 缓存命中是**输入 token 的子集**（prompt_tokens_details.cached_tokens），
         // 不能与输入相加 —— 原来的 in+out+cache 属于重复计数。判断"有无数据"看输入+输出即可。
-        val totalSum = data.sumOf { it.first + it.second }
-        if (totalSum == 0L) {
+        if (!s.hasData) {
             Box(Modifier.fillMaxWidth().height(140.dp), contentAlignment = Alignment.Center) {
                 Text("暂无使用记录", style = body(11f, FontWeight.Normal, c.n500))
             }
             return@Column
         }
+        val data = s.daily
 
-        // v22: 本范围合计 —— 原来头部只有标题，看不出这段到底用了多少。现在把数字直接
-        // 给出来，也让"成本"这条虚线有个可对照的量。
-        val sumIn = data.sumOf { it.first }
-        val sumOut = data.sumOf { it.second }
-        val sumCache = data.sumOf { it.third }
+        // ── 合计区(v1.3.10 A19 按用户"太空泛/准度不够"重做)────────────────────
+        // 联网调研成熟产品(OpenAI/Anthropic 控制台、Cursor 的 Usage、OpenRouter Activity)
+        // 的共识:对**非工程师用户**要钱的数字在前、token 在后;必须有**归因**(哪个功能在花)
+        // 与**可核对的量**(调用次数、平均每次);缓存要当成"省了多少"而不是一条灰线。
+        val sumIn = s.sumInput
+        val sumOut = s.sumOutput
+        val sumCache = s.sumCache
         val sumCost = costOf(sumIn, sumOut, sumCache)
-        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        val calls = s.callsInRange
+        val avgCost = if (calls > 0) sumCost / calls else 0.0
+        val hitRate = if (sumIn > 0) sumCache * 100.0 / sumIn else 0.0
+        val saved = com.shiyin.music.data.ai.TokenPricing.cacheSavingsCny(providerKey, sumIn, sumCache)
+        val allCost = costOf(s.allTimeInput, s.allTimeOutput, 0L)
+
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Bottom) {
+            // 钱在前:普通用户关心的是花了多少,而不是 token 是什么。
+            Text("¥${trimCost(sumCost)}", style = body(21f, FontWeight.ExtraBold, c.accent))
             Text(
-                // ⚠️ 必须写 ${rangeLabel} —— Kotlin 里 CJK 字符也是合法标识符字符，
-                // "$rangeLabel合计" 会被解析成变量名 `rangeLabel合计`。
-                "${rangeLabel}合计：输入 ${shortTok(sumIn)} · 输出 ${shortTok(sumOut)}" +
-                    (if (sumCache > 0) " · 缓存命中 ${shortTok(sumCache)}" else "") +
-                    " · 成本约 ¥${trimCost(sumCost)}",
-                style = body(11f, FontWeight.Bold, c.text),
+                " ${rangeLabel}估算",
+                style = body(9.5f, FontWeight.Bold, c.n500),
+                modifier = Modifier.padding(bottom = 3.dp),
             )
-            // 把"约 ¥x"是按什么价算的写出来，避免成本曲线变成黑箱。
+            Spacer(Modifier.weight(1f))
+            // 调用次数让上面的钱可被核对(如 6 次 × 约 ¥0.007)
             Text(
-                "成本为估算（$providerName）：${com.shiyin.music.data.ai.TokenPricing.assumptionText(providerKey)}",
-                style = body(9.5f, FontWeight.Normal, c.n500),
+                if (calls > 0) "${calls} 次调用 · 平均每次 ¥${trimCost(avgCost)}"
+                else "无调用记录",
+                style = body(10f, FontWeight.Bold, c.n600),
+                modifier = Modifier.padding(bottom = 3.dp),
             )
         }
+        // token 明细退居第二行(想知道细节的人往下看)
+        Text(
+            // ⚠️ 模板里的变量一律用 ${} —— Kotlin 里 CJK 也是合法标识符字符,
+            // "$sumIn字" 会被当成变量名。
+            "输入 ${shortTok(sumIn)} · 输出 ${shortTok(sumOut)}" +
+                (if (sumCache > 0)
+                    " · 缓存命中 ${"%.0f".format(hitRate)}%（省约 ¥${trimCost(saved)}）"
+                else ""),
+            style = body(10.5f, FontWeight.Bold, c.text),
+        )
+        Text(
+            "累计至今 输入 ${shortTok(s.allTimeInput)} · 输出 ${shortTok(s.allTimeOutput)} ≈ ¥${trimCost(allCost)}",
+            style = body(10f, FontWeight.Normal, c.n600),
+        )
+        // 把"约 ¥x"是按什么价算的写出来，避免成本曲线变成黑箱。
+        Text(
+            "成本为估算（$providerName）：${com.shiyin.music.data.ai.TokenPricing.assumptionText(providerKey)}",
+            style = body(9.5f, FontWeight.Normal, c.n500),
+        )
 
         // v22: 按天聚合时"当天"只有今天一个数据点，画不出趋势 —— 原来会渲染出一条退化
         // 的空路径（图表看着是空白）。这种情况直接把上面的合计当结论，不再画图。
         if (rangeDays <= 1) {
             Text(
-                "「当天」按天聚合只有今天一个数据点，画不出趋势；上方合计即今日用量。",
+                "「当天」按天聚合只有今天一个数据点，画不出趋势；上方即今日用量。",
                 style = body(10.5f, FontWeight.Normal, c.n500),
             )
+            TokenFeatureBreakdown(s.bySkill, providerKey)
             return@Column
         }
 
         // ── 双 Y 轴趋势图 ──
-        val maxTok = data.maxOf { maxOf(it.first, it.second, it.third) }.coerceAtLeast(1L)
-        val maxCost = data.maxOf { costOf(it.first, it.second, it.third) }.coerceAtLeast(0.01)
-        val xLabelStart = if (rangeDays == 1) "0时"
-            else java.text.SimpleDateFormat("M/d", java.util.Locale.CHINA).format(
-                java.util.Date(System.currentTimeMillis() - (rangeDays - 1) * 86_400_000L),
+        val maxTok = data.maxOf { maxOf(it.input, it.output, it.cache) }.coerceAtLeast(1L)
+        val maxCost = data.maxOf { costOf(it.input, it.output, it.cache) }.coerceAtLeast(0.01)
+        // v1.3.10 A19(用户要求):切换时间范围导致数据变化时,曲线要**过渡渲染**,不能硬切。
+        // 点数本来是变的(1/3/7/14/30),形状无从对应 —— 所以先把每条曲线**线性重采样到
+        // 统一分辨率**(48 点)再逐点插值,于是"点数变化"也变成一次平滑形变。
+        // 归一化用**目标**上限:轴刻度立刻显示新范围(数字不跳),曲线在归一化空间里过渡。
+        val chartN = 48
+        val targetCurves = ChartCurves(
+            inp = resampleTo(data.map { it.input.toFloat() / maxTok }, chartN),
+            out = resampleTo(data.map { it.output.toFloat() / maxTok }, chartN),
+            cache = resampleTo(data.map { it.cache.toFloat() / maxTok }, chartN),
+            cost = resampleTo(
+                data.map { (costOf(it.input, it.output, it.cache) / maxCost).toFloat() }, chartN,
+            ),
+        )
+        var fromCurves by remember { mutableStateOf<ChartCurves?>(null) }
+        var toCurves by remember { mutableStateOf(targetCurves) }
+        val morph = remember { androidx.compose.animation.core.Animatable(1f) }
+        // 用"汇总值"当键:同一范围里数字变了(比如新用了 token)也重跑动画,不然画面会停旧数据。
+        val chartKey = listOf(rangeDays, data.size, s.sumInput, s.sumOutput, s.sumCache)
+        LaunchedEffect(chartKey) {
+            // 起点 = **此刻正在显示的画面**(不是上一份目标)。这样快速连点范围时
+            // 不会先跳回旧目标再过渡,而是从当前形状继续morph。
+            val displayed = fromCurves?.let { blendCurves(it, toCurves, morph.value) }
+            if (displayed == null) {
+                // 首次显示:直接到位,不做"从零长出来"的动画
+                toCurves = targetCurves
+                morph.snapTo(1f)
+                return@LaunchedEffect
+            }
+            fromCurves = displayed
+            toCurves = targetCurves
+            morph.snapTo(0f)
+            morph.animateTo(
+                1f,
+                androidx.compose.animation.core.tween(
+                    420, easing = androidx.compose.animation.core.FastOutSlowInEasing,
+                ),
             )
+        }
+        val curves = fromCurves?.let { blendCurves(it, toCurves, morph.value) } ?: toCurves
+        // v1.3.10 A19: X 轴起点改用**本地天**标签(TokenUsageWindow),与分桶同一套算术 ——
+        // 原来拿 now-(days-1)*86400000 直接格式化,天边界是 UTC 的,标签会与曲线错一天。
+        val xLabelStart = com.shiyin.music.data.ai.TokenUsageWindow.dayLabel(s.dayRange.first(), s.tzOffsetMs)
         val xLabelEnd = if (rangeDays == 1) "现在" else "今天"
 
-        BoxWithConstraints(Modifier.fillMaxWidth().height(150.dp)) {
+        // v1.3.10 A19(用户反馈):手指在图上移动时,每个位置都要能读到"那一天用了多少"。
+        // null = 没在触摸;否则 = 命中的**原始数据天序号**(不是重采样后的下标——数值必须是
+        // 真实某天的数字,不能是插值出来的)。
+        var hoverIdx by remember { mutableStateOf<Int?>(null) }
+        // 150→250dp(用户:"使用统计在页面最后面的板块,变高也没有任何问题""线太不圆润了,
+        // 估计就是设置的太矮了")。纵向空间多了,同样的数据点铺开后曲线明显更舒展。
+        BoxWithConstraints(
+            Modifier
+                .fillMaxWidth()
+                .height(250.dp)
+                .pointerInput(data.size) {
+                    awaitEachGesture {
+                        val down = awaitFirstDown(requireUnconsumed = false)
+                        val w = size.width.toFloat()
+                        fun idxAt(x: Float): Int = if (data.size <= 1) 0
+                        else ((x / w) * (data.size - 1)).roundToInt().coerceIn(0, data.size - 1)
+                        hoverIdx = idxAt(down.position.x)
+                        // 只有"横向为主"的拖动才接管(纵向留给外层滚动,否则设置页在这块
+                        // 区域会滑不动);判定为纵向就收起卡片并把事件让出去。
+                        var tookOver = false
+                        while (true) {
+                            val ev = awaitPointerEvent()
+                            val ch = ev.changes.firstOrNull { it.id == down.id } ?: break
+                            val dx = kotlin.math.abs(ch.position.x - down.position.x)
+                            val dy = kotlin.math.abs(ch.position.y - down.position.y)
+                            if (!ch.pressed) break
+                            if (!tookOver && dx > viewConfiguration.touchSlop && dx > dy) tookOver = true
+                            if (!tookOver && dy > viewConfiguration.touchSlop && dy >= dx) {
+                                hoverIdx = null
+                                break
+                            }
+                            if (tookOver) {
+                                ch.consume()
+                                hoverIdx = idxAt(ch.position.x)
+                            }
+                        }
+                        hoverIdx = null
+                    }
+                },
+        ) {
             val padTop = 8.dp
-            val chartH = maxHeight - padTop - 14.dp
+            // v1.3.10 A19:底部留白 14→18dp —— X 轴日期字号从 8.5 提到 10sp,原来的
+            // 14dp 塞不下(会与绘图区下沿贴死)。
+            val chartH = maxHeight - padTop - 18.dp
+            // 刻度标签的行位必须**与网格线对齐**:Canvas 里网格线在 plotH-usable*(i/4)
+            // (usable=plotH*0.9,5 条线),即自上而下 10% / 32.5% / 55% / 77.5% / 100%。
+            // 所以标签列只占 [10% .. 100%] 这一段(高度 90%),而不是 fillMaxHeight()——
+            // 原来占满整个 Box,最下方的 "0"/"¥0" 落到 X 轴日期那一行上,两组小字正好
+            // 叠在一起(用户实测"字体重叠了数字")。
+            val axisTop = chartH * 0.1f
+            val axisSpan = chartH * 0.9f
             Canvas(Modifier.fillMaxWidth().height(chartH).padding(top = padTop)) {
-                val n = data.size.coerceAtLeast(2)
+                // 重采样后固定 chartN 点 → x 均匀铺满(morph 过程中点数不变,曲线才连得上)
                 val plotW = size.width
                 val plotH = size.height
-                val stepX = plotW / (n - 1).toFloat()
+                val stepX = plotW / (chartN - 1).toFloat()
                 val usable = plotH * 0.9f
-                for (i in 0..2) {
-                    val y = plotH - usable * (i / 2f)
+                // v1.3.10 A19:3 条 → 5 条网格线(4 等分)。图变高后 3 条太疏,
+                // 读数只能靠两端;5 条给到 1/4 刻度,配 5 个刻度标签。
+                for (i in 0..4) {
+                    val y = plotH - usable * (i / 4f)
                     // v1.3.6: 网格线用主题文字色低透明(两主题自动可读;硬编码 White
                     // 在 light 米白卡上不可见)。
                     drawLine(
@@ -1094,53 +1802,120 @@ private fun TokenTrendPanel(vm: MainViewModel) {
                     p.close()
                     return p
                 }
-                fun yOf(v: Long) = plotH - usable * (v.toFloat() / maxTok)
-                val inPts = data.mapIndexed { i, t -> Offset(i * stepX, yOf(t.first)) }
-                val outPts = data.mapIndexed { i, t -> Offset(i * stepX, yOf(t.second)) }
-                val cachePts = data.mapIndexed { i, t -> Offset(i * stepX, yOf(t.third)) }
+                fun yOfNorm(v: Float) = plotH - usable * v
+                fun pts(series: FloatArray) =
+                    (0 until chartN).map { i -> Offset(i * stepX, yOfNorm(series[i])) }
+                val inPts = pts(curves.inp)
+                val outPts = pts(curves.out)
+                val cachePts = pts(curves.cache)
                 drawPath(areaPath(inPts), inColor.copy(alpha = 0.20f))
                 drawPath(areaPath(outPts), outColor.copy(alpha = 0.16f))
                 drawPath(smoothPath(inPts), inColor, style = Stroke(2.dp.toPx(), cap = StrokeCap.Round))
                 drawPath(smoothPath(outPts), outColor, style = Stroke(2.dp.toPx(), cap = StrokeCap.Round))
-                if (data.any { it.third > 0 }) {
+                if (curves.cache.any { it > 0.0005f }) {
                     drawPath(smoothPath(cachePts), cacheColor, style = Stroke(1.6.dp.toPx(), cap = StrokeCap.Round))
                 }
-                val costPts = data.mapIndexed { i, t ->
-                    Offset(i * stepX, plotH - usable * ((costOf(t.first, t.second, t.third) / maxCost).toFloat()))
-                }
                 drawPath(
-                    smoothPath(costPts), costColor,
+                    smoothPath(pts(curves.cost)), costColor,
                     style = Stroke(
                         1.8.dp.toPx(), cap = StrokeCap.Round,
                         pathEffect = androidx.compose.ui.graphics.PathEffect.dashPathEffect(floatArrayOf(10f, 8f)),
                     ),
                 )
+                // v1.3.10 A19:手指位置的十字准线 + 各序列圆点。
+                // 圆点取**当前正在绘制的曲线**在该处的值(而非原始值单独归一化)——
+                // 这样 morph 过程中圆点始终贴在线上,不会飘到线外。
+                hoverIdx?.let { hi ->
+                    val n = data.size
+                    val fx = if (n > 1) hi.toFloat() / (n - 1) else 0.5f
+                    val x = fx * plotW
+                    drawLine(
+                        color = c.text.copy(alpha = 0.30f),
+                        start = Offset(x, 0f), end = Offset(x, plotH),
+                        strokeWidth = 1.dp.toPx(),
+                    )
+                    fun curveAt(a: FloatArray): Float {
+                        val t = if (n > 1) fx * (chartN - 1) else (chartN - 1) / 2f
+                        val i0 = t.toInt().coerceIn(0, chartN - 1)
+                        val i1 = (i0 + 1).coerceAtMost(chartN - 1)
+                        return a[i0] + (a[i1] - a[i0]) * (t - i0)
+                    }
+                    fun dot(a: FloatArray, col: androidx.compose.ui.graphics.Color) {
+                        val cy = yOfNorm(curveAt(a).coerceIn(0f, 1f))
+                        drawCircle(col, radius = 4.dp.toPx(), center = Offset(x, cy))
+                        drawCircle(c.bg, radius = 1.8.dp.toPx(), center = Offset(x, cy))
+                    }
+                    dot(curves.inp, inColor)
+                    dot(curves.out, outColor)
+                    if (curves.cache.any { it > 0.0005f }) dot(curves.cache, cacheColor)
+                    dot(curves.cost, costColor)
+                }
             }
-            // 左 Y 轴(Token 刻度)
+            // 左 Y 轴(Token 刻度)。字号 8→10sp:8sp 在手机上几乎读不出来,
+            // 用户反馈"XY 轴没有任何内容"有一部分就是字太小看不清。
+            // 5 档刻度(与 4 等分的 5 条网格线一一对应)。
             Column(
-                Modifier.padding(top = padTop).fillMaxHeight(),
+                Modifier.padding(top = padTop + axisTop).height(axisSpan),
                 verticalArrangement = Arrangement.SpaceBetween,
             ) {
-                Text(shortTok(maxTok), style = body(8f, FontWeight.Bold, c.n600))
-                Text(shortTok(maxTok / 2), style = body(8f, FontWeight.Bold, c.n600))
-                Text("0", style = body(8f, FontWeight.Bold, c.n600))
+                Text(shortTok(maxTok), style = body(10f, FontWeight.Bold, c.n700))
+                Text(shortTok(maxTok * 3 / 4), style = body(10f, FontWeight.Bold, c.n600))
+                Text(shortTok(maxTok / 2), style = body(10f, FontWeight.Bold, c.n600))
+                Text(shortTok(maxTok / 4), style = body(10f, FontWeight.Bold, c.n600))
+                Text("0", style = body(10f, FontWeight.Bold, c.n600))
             }
             // 右 Y 轴(成本刻度)
             Column(
-                Modifier.align(androidx.compose.ui.Alignment.TopEnd).padding(top = padTop).fillMaxHeight(),
+                Modifier.align(androidx.compose.ui.Alignment.TopEnd)
+                    .padding(top = padTop + axisTop).height(axisSpan),
                 verticalArrangement = Arrangement.SpaceBetween,
             ) {
-                Text("¥" + trimCost(maxCost), style = body(8f, FontWeight.Bold, costColor.copy(alpha = 0.9f)))
-                Text("¥" + trimCost(maxCost / 2), style = body(8f, FontWeight.Bold, costColor.copy(alpha = 0.9f)))
-                Text("¥0", style = body(8f, FontWeight.Bold, costColor.copy(alpha = 0.9f)))
+                Text("¥" + trimCost(maxCost), style = body(10f, FontWeight.Bold, costColor.copy(alpha = 0.95f)))
+                Text("¥" + trimCost(maxCost * 3 / 4), style = body(10f, FontWeight.Bold, costColor.copy(alpha = 0.9f)))
+                Text("¥" + trimCost(maxCost / 2), style = body(10f, FontWeight.Bold, costColor.copy(alpha = 0.9f)))
+                Text("¥" + trimCost(maxCost / 4), style = body(10f, FontWeight.Bold, costColor.copy(alpha = 0.9f)))
+                Text("¥0", style = body(10f, FontWeight.Bold, costColor.copy(alpha = 0.9f)))
             }
             // X 轴日期(底部)
             Row(
                 Modifier.align(androidx.compose.ui.Alignment.BottomStart).fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
-                Text(xLabelStart, style = body(8.5f, FontWeight.Bold, c.n500))
-                Text(xLabelEnd, style = body(8.5f, FontWeight.Bold, c.n500))
+                Text(xLabelStart, style = body(10f, FontWeight.Bold, c.n600))
+                Text(xLabelEnd, style = body(10f, FontWeight.Bold, c.n600))
+            }
+            // v1.3.10 A19:触摸位置的数据卡(用户参考图:每个位置都要能读到该时间下的用量)。
+            // 显示的是**真实某天**的原始数字,不是重采样后的插值。
+            hoverIdx?.let { rawIdx ->
+                val hi = rawIdx.coerceIn(0, data.size - 1)
+                val d = data[hi]
+                val n = data.size
+                val fx = if (n > 1) hi.toFloat() / (n - 1) else 0.5f
+                val tipW = 156.dp
+                // 准线在右半边时把卡片放左侧(否则会出界);再统一夹进可视区。
+                val rawX = if (fx > 0.55f) maxWidth * fx - tipW - 8.dp else maxWidth * fx + 8.dp
+                val tipX = rawX.coerceIn(0.dp, (maxWidth - tipW).coerceAtLeast(0.dp))
+                Column(
+                    Modifier
+                        .offset(x = tipX, y = padTop)
+                        .width(tipW)
+                        .shadowMd(RoundedCornerShape(14.dp))
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(c.surface)
+                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(3.dp),
+                ) {
+                    Text(
+                        com.shiyin.music.data.ai.TokenUsageWindow.dayLabel(
+                            s.dayRange.getOrElse(hi) { s.dayRange.last() }, s.tzOffsetMs,
+                        ),
+                        style = body(11.5f, FontWeight.ExtraBold, c.text),
+                    )
+                    UsageTipRow(inColor, "输入", "%,d".format(d.input))
+                    UsageTipRow(outColor, "输出", "%,d".format(d.output))
+                    if (d.cache > 0) UsageTipRow(cacheColor, "缓存命中", "%,d".format(d.cache))
+                    UsageTipRow(costColor, "成本", "¥" + trimCost(costOf(d.input, d.output, d.cache)))
+                }
             }
         }
         // 图例:曲线色块 + 成本虚线段
@@ -1153,7 +1928,7 @@ private fun TokenTrendPanel(vm: MainViewModel) {
                 Box(Modifier.size(7.dp).clip(CircleShape).background(outColor))
                 Text("输出 Token", style = body(9.5f, FontWeight.Bold, c.n500))
             }
-            if (data.any { it.third > 0 }) {
+            if (curves.cache.any { it > 0.0005f }) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     Box(Modifier.size(7.dp).clip(CircleShape).background(cacheColor))
                     Text("缓存命中", style = body(9.5f, FontWeight.Bold, c.n500))
@@ -1170,6 +1945,89 @@ private fun TokenTrendPanel(vm: MainViewModel) {
                 Text("成本（估算）", style = body(9.5f, FontWeight.Bold, c.n500))
             }
         }
+        // ── 功能明细:哪个功能在花钱 ──
+        TokenFeatureBreakdown(s.bySkill, providerKey)
+    }
+}
+
+/** v1.3.10 A19:趋势图数据卡里的一行 —— 色点 + 名称 + 数值(与曲线同色,便于对号入座)。 */
+@Composable
+private fun UsageTipRow(
+    color: androidx.compose.ui.graphics.Color,
+    label: String,
+    value: String,
+) {
+    val c = LocalOrganic.current
+    Row(
+        Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Box(Modifier.size(7.dp).clip(CircleShape).background(color))
+        Text(label, style = body(10.5f, FontWeight.Bold, c.n600))
+        Text(
+            value,
+            style = body(10.5f, FontWeight.Bold, c.text),
+            textAlign = TextAlign.End,
+            modifier = Modifier.weight(1f),
+        )
+    }
+}
+
+/**
+ * v1.3.10 A19: 用量按**功能**归因的明细列表。
+ *
+ * 为什么加这个:原来面板只有一根总量曲线 —— 用户看不出"钱花在哪",这正是"太空泛"。
+ * 联网调研里每篇讲 LLM 成本可视化的文章都把"归因(per-feature/per-endpoint)"列为首要
+ * 指标:没有归因,总量只是个令人焦虑的陌生数字;有了归因,用户能立刻做出判断
+ * ("原来是歌词翻译在花,那我少翻几首")。
+ *
+ * 每行:功能名 · 占比条 · 成本 · token 量。占比按**成本**而非 token 算——
+ * 输出 token 比输入贵 3-4 倍,按 token 算会把"贵但量小的功能"显示得无关紧要。
+ */
+@Composable
+private fun TokenFeatureBreakdown(
+    bySkill: List<com.shiyin.music.data.db.SkillUsage>,
+    providerKey: String,
+) {
+    if (bySkill.isEmpty()) return
+    val c = LocalOrganic.current
+    fun costOf(u: com.shiyin.music.data.db.SkillUsage): Double =
+        com.shiyin.music.data.ai.TokenPricing.estimateCny(providerKey, u.inputTokens, u.outputTokens, u.cacheTokens)
+    val total = bySkill.sumOf { costOf(it) }.coerceAtLeast(0.000001)
+    val maxCost = bySkill.maxOf { costOf(it) }.coerceAtLeast(0.000001)
+    Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
+        Text("功能明细", style = body(11.5f, FontWeight.ExtraBold, c.text).copy(letterSpacing = 0.3.sp))
+        for (u in bySkill) {
+            val cost = costOf(u)
+            val share = cost / total
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    com.shiyin.music.data.ai.TokenUsageWindow.skillLabel(u.skill),
+                    style = body(10.5f, FontWeight.Bold, c.text),
+                    modifier = Modifier.width(74.dp),
+                    maxLines = 1,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                )
+                // 占比条(相对最大功能,便于横向比较;右侧数字是实际占比)
+                Box(
+                    Modifier.weight(1f).height(6.dp).clip(RoundedCornerShape(999.dp)).background(c.divider),
+                ) {
+                    Box(
+                        Modifier.fillMaxHeight()
+                            .fillMaxWidth((cost / maxCost).toFloat().coerceIn(0.03f, 1f))
+                            .clip(RoundedCornerShape(999.dp)).background(c.accent.copy(alpha = 0.85f)),
+                    )
+                }
+                Text(
+                    " ¥${trimCost(cost)} · ${"%.0f".format(share * 100)}% · ${u.calls}次",
+                    style = body(9.5f, FontWeight.Bold, c.n600),
+                    modifier = Modifier.width(104.dp),
+                    maxLines = 1,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                )
+            }
+        }
     }
 }
 
@@ -1179,6 +2037,10 @@ private fun shortTok(v: Long): String = when {
     v >= 1000 -> "%.1fk".format(v / 1000f)
     else -> "$v"
 }
+
+/** v1.3.8: 品牌标按主题选盘面变体（浅色=米白盘 agent_brand，深色=黑胶盘 agent_brand_dark）。 */
+private fun agentBrandRes(isDark: Boolean): Int =
+    if (isDark) com.shiyin.music.R.drawable.agent_brand_dark else com.shiyin.music.R.drawable.agent_brand
 
 /** 成本短写:¥0.032(≥100 显示 ¥3.2)。 */
 private fun trimCost(v: Double): String = when {

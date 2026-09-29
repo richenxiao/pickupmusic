@@ -25,6 +25,8 @@ open class FakeSkillContext : AgentEngine.SkillContext {
     override fun setSleepTimer(minutes: Int) = Unit
     override fun setSleepTimerEndOfTrack() = Unit
     override fun sleepTimerStatus(): String = "未开启"
+    /** v1.3.9: 默认播放器已就绪;需要覆盖「控制器未连接」路径的子类可覆写为 false。 */
+    override fun playerReady(): Boolean = true
     override fun playTracks(tracks: List<Track>, startId: Long) = Unit
     override fun pausePlayback() = Unit
     override fun resumePlayback() = Unit
@@ -39,6 +41,10 @@ open class FakeSkillContext : AgentEngine.SkillContext {
     override suspend fun weeklyListeningStats(): com.shiyin.music.data.stats.WeeklyStats =
         com.shiyin.music.data.stats.WeeklyStats()
     override fun trackById(id: Long): Track? = null
+    /** v1.3.10: 全库入口(discover_music 的候选池)。需要它的测试覆写成自己的曲目列表。 */
+    override fun listAllTracks(): List<Track> = emptyList()
+    /** v1.3.10 需求 A27:模型搜到的歌词落地(save_lyrics 技能)。需要断言写入的测试覆写它。 */
+    override fun importLyricsForCurrentTrack(name: String, text: String) = Unit
     override suspend fun sortArtistAlbumsByDate(artistName: String): AgentEngine.AlbumDateOutcome =
         AgentEngine.AlbumDateOutcome(0, "fake")
     override fun logUsage(promptTokens: Int, completionTokens: Int, cacheTokens: Int) = Unit

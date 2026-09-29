@@ -24,9 +24,11 @@ object PlaybackControlSkill : AgentEngine.AgentSkill {
     private val BRACKET_SUFFIX = Regex("[(（\\[【].*?[)）\\]】]")
     override val key = "playback_control"
     override val description =
-        "控制播放:播放指定的歌曲/专辑、暂停、继续、下一首、上一首。" +
-            "用户说「放一下X」「听听X」「来一首X」「暂停」「继续」「下一首」「上一首」时用这个工具。" +
-            "只控制播放,不改音乐库内容。仅询问当前在放什么时不要调用本工具。"
+        "播放/暂停/切歌。用户想听某个具体内容时用它(「放一下X」「我想听X」「来一首X」「放一首X的歌」):" +
+            "它一次调用就完成查找并开始播放,不需要再调别的工具。歌名不必说准——别名、译名、罗马字、" +
+            "只记得片段、记错一两个字都能匹配上。暂停/继续/下一首/上一首也用它。" +
+            "用户没点名内容、要你替他挑时用 discover_music;只是**问**库里有没有某首歌时用 library_query。" +
+            "只控制播放,不改音乐库内容。"
     override val parameters = """
         {"type":"object","properties":{
           "action":{"type":"string","enum":["play","pause","resume","next","previous"],"description":"要做的播放动作:play=播放(可用 target 指定内容),pause=暂停,resume=从暂停处继续,next=下一首,previous=上一首"},
@@ -60,6 +62,7 @@ object PlaybackControlSkill : AgentEngine.AgentSkill {
     ): AgentEngine.SkillResult = withContext(Dispatchers.IO) {
         val action = args["action"]?.trim()?.lowercase().orEmpty()
         val target = args["target"]?.trim().orEmpty()
+        android.util.Log.i("Agent", "playback_control: action=$action target=$target ready=${ctx.playerReady()}")
 
         onStep("apply", AgentEngine.StepStatus.RUNNING)
 
@@ -73,6 +76,14 @@ object PlaybackControlSkill : AgentEngine.AgentSkill {
             return AgentEngine.SkillResult(msg, success = false)
         }
 
+        // v1.3.9: 控制器未连接时后续所有调用都是**无声 no-op**(playQueue 在 controller
+        // 为 null 时直接 return),技能却会回报"开始播放"——用户听不到声音又看不到原因。
+        // 这里前置拦下,给出可读原因。
+        if (!ctx.playerReady()) {
+            android.util.Log.w("Agent", "playback_control: 播放器未连接,拒绝执行 action=$action")
+            return@withContext fail("播放器还没准备好(后台服务未连接),过一会儿再说一次试试。")
+        }
+
         // ── play + 点名了内容:先找专辑,再找单曲/歌手 ──────────────────────
         if (action == "play" && target.isNotBlank()) {
             val albumKey = ctx.findAlbum(target)
@@ -82,20 +93,39 @@ object PlaybackControlSkill : AgentEngine.AgentSkill {
                 ctx.playTracks(tracks, tracks.first().id)
                 return@withContext done("开始播放专辑《${tracks.first().album}》,共 ${tracks.size} 首。")
             }
-            // searchTracks 同时匹配歌名/歌手/专辑,按播放次数排序——
-            // 因此"周杰伦"这种歌手名也能拿到他的歌,且最常听的排最前。
-            val hits = ctx.searchTracks(target, 30)
+            // v1.3.10: 检索改用 [AgentLibrarySearch]——FuzzySearch(全半角/繁简/编辑距离)
+            // + 假名↔罗马字 + 译名/别名写法兜底。旧实现直接 ctx.searchTracks(关键词包含匹配),
+            // 用户说别名/译名/罗马字/记错一个字就"库里没找到",还回一句"请说完整歌名"——
+            // 这正是用户反馈"必须百分百匹配歌名才能播放"的直接来源。弱模型也不会自己再搜一次。
+            val hits = AgentLibrarySearch.resolve(ctx, config, target, 30)
             if (hits.isEmpty()) {
-                return@withContext fail("音乐库里没找到「$target」。换个写法试试,或者说「放一下《完整歌名》」。")
+                return@withContext fail(
+                    "音乐库里确实没有「$target」(改名/译名/罗马字/错别字都试过了)。" +
+                        "换个说法可以再试,或者我按你现在的心情从库里给你挑一首?",
+                )
             }
-            // 精确命中歌名 → 只放这一首;否则当成歌手/关键词,放这批(首位是最常听的)
+            // 精确同名 → 只放这一首。
             val exact = hits.firstOrNull { normalize(it.title) == normalize(target) }
-            val queue = if (exact != null) listOf(exact) else hits
-            ctx.playTracks(queue, queue.first().id)
-            return@withContext done(
-                if (exact != null) "正在播放《${exact.title}》— ${exact.artist}。"
-                else "开始播放「$target」相关的 ${queue.size} 首(最常听的在最前)。",
-            )
+            if (exact != null) {
+                ctx.playTracks(listOf(exact), exact.id)
+                return@withContext done("正在播放《${exact.title}》— ${exact.artist}。")
+            }
+            // 目标是**歌手**(对得上命中曲目里的歌手名)→ 放这个歌手的一批,最常听在前。
+            // 从**命中结果自身**的歌手字段判断(而不是再打一次 searchArtists 桥):能被搜到的
+            // 曲目就是候选,判断自洽;也少一次库扫描。多歌手串按 splitArtists 拆开比。
+            val targetKey = normalize(target)
+            val artistIntent = hits.any { h ->
+                com.shiyin.music.data.MediaScanner.splitArtists(h.artist).any { normalize(it) == targetKey }
+            }
+            if (artistIntent) {
+                ctx.playTracks(hits, hits.first().id)
+                return@withContext done("开始播放「$target」的 ${hits.size} 首(最常听的在最前)。")
+            }
+            // 都不是 → 视作"用户记的歌名不完全准":放**最接近的一首**,并如实说明放了哪首、
+            // 允许纠正。比回一句"请说完整歌名"有用得多(用户要的是听歌,不是被要求改名)。
+            val best = hits.first()
+            ctx.playTracks(listOf(best), best.id)
+            done("库里没有完全同名的《$target》,给你放了最接近的《${best.title}》— ${best.artist}。不对的话说一声,我换。")
         }
 
         // ── 其余动作 ───────────────────────────────────────────────────────

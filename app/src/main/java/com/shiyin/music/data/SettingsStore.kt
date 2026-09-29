@@ -56,6 +56,14 @@ class SettingsStore(private val context: Context) {
     private val keyLyricsColorMode = stringPreferencesKey("lyrics_color_mode")
     /** v1.3.x 歌词本翻译:外语歌进入歌词本时自动触发 AI 翻译(默认 false——AI 永远用户主动)。 */
     private val keyTranslateAutoForeign = booleanPreferencesKey("translate_auto_foreign")
+    /** v1.3.10: 翻译按钮显隐三档 "never"/"majority"/"any"(缺省 majority=现状)。 */
+    private val keyTranslateButtonMode = stringPreferencesKey("translate_button_mode")
+    /** v1.3.10: 时间轴校对入口是否常显(缺省 false = 只有未同步歌词显示)。 */
+    private val keyLyricsCalibAlwaysOn = booleanPreferencesKey("lyrics_calib_always_on")
+    /** v1.3.10 A29: 被用户关掉的歌词源名集合(内置源开关)。 */
+    private val keyLyricsDisabledSources = stringSetPreferencesKey("lyrics_disabled_sources")
+    /** v1.3.10 A29: 用户自定义歌词源列表(JSON,见 CustomLyricsSourceCodec)。 */
+    private val keyCustomLyricsSources = stringPreferencesKey("custom_lyrics_sources")
     /** v1.3.x 歌词本翻译:有保存的译文时默认显示(默认 true——译完即存,进来就给看)。 */
     private val keyTranslateDefaultShow = booleanPreferencesKey("translate_default_show")
 
@@ -99,6 +107,14 @@ class SettingsStore(private val context: Context) {
         val translateAutoForeign: Boolean,
         /** v1.3.x 歌词本翻译:有保存译文时默认显示(默认 true)。 */
         val translateDefaultShow: Boolean,
+        /** v1.3.10 「翻译按钮显示」三档:"never"/"majority"(默认,现状)/"any"。 */
+        val translateButtonMode: String,
+        /** v1.3.10: 已同步歌词是否也始终显示时间轴校对入口(默认 false)。 */
+        val lyricsCalibAlwaysOn: Boolean,
+        /** v1.3.10 A29: 被用户关掉的歌词源名(内置源开关;缺省全开)。 */
+        val lyricsDisabledSources: Set<String>,
+        /** v1.3.10 A29: 用户自定义歌词源。 */
+        val customLyricsSources: List<com.shiyin.music.data.lyrics.CustomLyricsSourceDef>,
         /** v1.3.x 播放设置(设置·播放页)。 */
         val volumeNormalize: Boolean,
         val monoAudio: Boolean,
@@ -134,6 +150,12 @@ class SettingsStore(private val context: Context) {
             lyricsColorMode = (p[keyLyricsColorMode] ?: "default").let { if (it in listOf("default", "white", "black")) it else "default" },
             translateAutoForeign = p[keyTranslateAutoForeign] ?: false,
             translateDefaultShow = p[keyTranslateDefaultShow] ?: true,
+            translateButtonMode = (p[keyTranslateButtonMode] ?: "majority")
+                .let { if (it in listOf("never", "majority", "any")) it else "majority" },
+            lyricsCalibAlwaysOn = p[keyLyricsCalibAlwaysOn] ?: false,
+            lyricsDisabledSources = p[keyLyricsDisabledSources] ?: emptySet(),
+            customLyricsSources =
+                com.shiyin.music.data.lyrics.CustomLyricsSourceCodec.decode(p[keyCustomLyricsSources] ?: ""),
             volumeNormalize = p[keyVolumeNormalize] ?: false,
             monoAudio = p[keyMonoAudio] ?: false,
             allowConcurrentPlayback = p[keyAllowConcurrent] ?: false,
@@ -181,6 +203,25 @@ class SettingsStore(private val context: Context) {
     suspend fun setFuriganaAutoVerify(v: Boolean) = context.dataStore.edit { it[keyFuriganaAutoVerify] = v }
     suspend fun setTranslateAutoForeign(v: Boolean) = context.dataStore.edit { it[keyTranslateAutoForeign] = v }
     suspend fun setTranslateDefaultShow(v: Boolean) = context.dataStore.edit { it[keyTranslateDefaultShow] = v }
+    /** v1.3.10: 翻译按钮显隐档位写入(只收 never/majority/any,其余回 default=majority)。 */
+    suspend fun setTranslateButtonMode(mode: String) =
+        context.dataStore.edit { it[keyTranslateButtonMode] = if (mode in listOf("never", "any")) mode else "majority" }
+
+    /** v1.3.10: 时间轴校对入口常显开关(已同步歌词是否也显示校对入口)。 */
+    suspend fun setLyricsCalibAlwaysOn(v: Boolean) =
+        context.dataStore.edit { it[keyLyricsCalibAlwaysOn] = v }
+
+    /** v1.3.10 A29: 开关某个歌词源(enabled=false → 记入禁用集)。 */
+    suspend fun setLyricsSourceEnabled(source: String, enabled: Boolean) = context.dataStore.edit { p ->
+        val cur = p[keyLyricsDisabledSources] ?: emptySet()
+        p[keyLyricsDisabledSources] = if (enabled) cur - source else cur + source
+    }
+
+    /** v1.3.10 A29: 保存自定义歌词源列表(JSON)。 */
+    suspend fun setCustomLyricsSources(list: List<com.shiyin.music.data.lyrics.CustomLyricsSourceDef>) =
+        context.dataStore.edit {
+            it[keyCustomLyricsSources] = com.shiyin.music.data.lyrics.CustomLyricsSourceCodec.encode(list)
+        }
 
     /** v1.3.x 播放设置写入。 */
     suspend fun setVolumeNormalize(v: Boolean) = context.dataStore.edit { it[keyVolumeNormalize] = v }

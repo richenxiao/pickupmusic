@@ -107,6 +107,13 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
         controller = null
     }
 
+    /**
+     * v1.3.9: 控制器是否已连上服务。Agent 播放技能用它做前置判断——
+     * 此前 controller 为 null 时 playQueue 是**无声 no-op**,技能却回报"开始播放",
+     * 用户看到"我帮你放"却没有声音,排查不到原因。
+     */
+    val isReady: Boolean get() = controller != null
+
     private val listener = object : Player.Listener {
         override fun onEvents(player: Player, events: Player.Events) {
             syncFromPlayer()
@@ -114,6 +121,20 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
 
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
             val id = mediaItem?.mediaId?.toLongOrNull()
+            // v1.3.10 诊断(A23):切歌时把"这首到底是不是拆分单曲 + 落在哪一段 + 当前文件位置"
+            // 一并留痕。排查"某一首特定歌在固定秒数出问题"时,必须先确认它走的是整轨分段
+            // 坐标系还是普通单曲坐标系(两者的 seek 行为完全不同)。
+            run {
+                val carry = SplitCarry.read(mediaItem)
+                val c = controller
+                android.util.Log.i(
+                    "PlayerDiag",
+                    "媒体项切换 reason=$reason title=${mediaItem?.mediaMetadata?.title} " +
+                        "分裂=${carry != null} " +
+                        (carry?.let { " idx=${it.index}/${it.plan.tracks.size} 段=[${it.current?.startMs},${it.current?.endMs})" } ?: "") +
+                        " pos=${c?.currentPosition} dur=${c?.duration}",
+                )
+            }
             // v1.2.1: 任何切歌原因(手动跳过/AUTO 自动推进/单曲循环新一轮)都经 startTracking
             // → tracker.start:先 finalize 上一首/上一轮 playedSec,再为新 session 重置累计与
             // counted。单曲循环同 mediaId 的新一轮因此能独立计数(上一轮已 finalize)。
@@ -183,6 +204,62 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
             }
         }
 
+        /**
+         * v1.3.10 诊断(用户反馈 A23「藤井风《罪の香り》播到 1:37 就静音」):
+         * 此前**没有实现 onPlayerError**——解码/音轨错误被完全静默吞掉,表现就是
+         * "到某一秒突然静音、无提示、日志里也查不到"。这里把错误码、当前位置与
+         * cause 链完整打印出来,便于定位"某一秒静音"这类问题。
+         */
+        override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+            val c = controller
+            android.util.Log.e(
+                "PlayerDiag",
+                "onPlayerError code=${error.errorCode} name=${error.errorCodeName} " +
+                    "pos=${c?.currentPosition} idx=${c?.currentMediaItemIndex} " +
+                    "state=${c?.playbackState} playing=${c?.playWhenReady} msg=${error.message}",
+            )
+            var cause: Throwable? = error.cause
+            var depth = 0
+            while (cause != null && depth < 6) {
+                android.util.Log.e("PlayerDiag", "  cause[$depth] ${cause.javaClass.name}: ${cause.message}")
+                cause = cause.cause
+                depth++
+            }
+        }
+
+        /**
+         * v1.3.10 诊断(A23「罪の香り 播到 1:37 静音、位置在 1:37↔1:40 之间循环」):
+         *
+         * 实测日志显示位置每 ~3 秒从 ~100.17s **无故回退**到 ~97.46s、且 state=READY/
+         * playing=true(播放器自认为正常)→ 既没有 onPlayerError,也没有我们自己 seek 的日志。
+         * 说明有**未记录的 seek 路径**在反复拉回位置(服务端 MediaSession.Callback 的
+         * onPlay/onNext 也会 seek,不经过本类)。
+         *
+         * 所以这里挂上 Media3 官方的"位置不连续"回调:**它带 reason 和旧/新位置**,
+         * 并附一段调用栈——谁在 seek 一目了然(见 logcat 里 PlayerDiag 的堆栈)。
+         */
+        override fun onPositionDiscontinuity(
+            oldPosition: androidx.media3.common.Player.PositionInfo,
+            newPosition: androidx.media3.common.Player.PositionInfo,
+            reason: Int,
+        ) {
+            val reasonName = when (reason) {
+                androidx.media3.common.Player.DISCONTINUITY_REASON_AUTO_TRANSITION -> "AUTO_TRANSITION"
+                androidx.media3.common.Player.DISCONTINUITY_REASON_SEEK -> "SEEK"
+                androidx.media3.common.Player.DISCONTINUITY_REASON_SEEK_ADJUSTMENT -> "SEEK_ADJUSTMENT"
+                androidx.media3.common.Player.DISCONTINUITY_REASON_INTERNAL -> "INTERNAL"
+                androidx.media3.common.Player.DISCONTINUITY_REASON_SILENCE_SKIP -> "SILENCE_SKIP"
+                else -> "OTHER($reason)"
+            }
+            android.util.Log.w(
+                "PlayerDiag",
+                "位置不连续 reason=$reasonName " +
+                    "old(idx=${oldPosition.mediaItemIndex}, pos=${oldPosition.positionMs}) → " +
+                    "new(idx=${newPosition.mediaItemIndex}, pos=${newPosition.positionMs})",
+                Throwable("discontinuity caller"),
+            )
+        }
+
         override fun onPlaybackStateChanged(state: Int) {
             if (state == Player.STATE_ENDED) {
                 // v1.2.1: 队列末尾(REPEAT_MODE_OFF)播完无自动推进,回填当前曲 playedSec。
@@ -250,7 +327,47 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
                     // v22: 先检查拆分区间边界 —— 越过时无缝换 mediaId（引擎层零动作）。
                     // 放在取 positionMs 之前，使这一拍的统计采样落在新曲目的 session 上。
                     checkVirtualBoundary()
-                    positionMs = c.currentPosition.coerceAtLeast(0)
+                    val newPos = c.currentPosition.coerceAtLeast(0)
+                    // v1.3.10 诊断(A23):位置**无故后退**时留痕(没有任何 seek 请求却退回去)。
+                    // 用户实测「1:37 静音 → 1:40 → 又跳回 1:37」正是这类症状。
+                    if (newPos + 1500L < positionMs) {
+                        android.util.Log.w(
+                            "PlayerDiag",
+                            "位置后退: ${positionMs} → $newPos state=${c.playbackState} playing=${c.playWhenReady}",
+                        )
+                    }
+                    positionMs = newPos
+                    // v1.3.10 A23(《罪の香り》1:37 静音、位置 1:37↔1:40 循环)**封存**时留下的
+                    // 最后一件零风险的事:把"引擎自认为在播、实际没输出"这个判据留成**纯日志**。
+                    //
+                    // 已确证的事实(实测日志):循环期间 ①无 onPlayerError ②无媒体项切换
+                    // ③Media3 层面没有报"位置不连续" ④没有任何我们自己的 seek
+                    // ⑤state=READY、playing=true。最自洽的解释是"音频管线卡住不出声,
+                    // 位置回退只是上报值的假象(controller 外推 → 被 PlayerInfo 刷新拉回,
+                    // 周期 3010ms 实测吻合)"——但**尚未确证**,所以只观测、不做任何自动恢复。
+                    //
+                    // 判据用 Media3 现成语义:playWhenReady && STATE_READY && !isPlaying 且
+                    // **无音频焦点抑制**(抑制时 !isPlaying 属正常,不能误判)。
+                    // (曾实现过"卡住就前推 300ms"的自动恢复:未能确证是根因、且会改播放行为,
+                    //  已按"封存时不留风险"撤掉。)
+                    val suppressed = c.playbackSuppressionReason != Player.PLAYBACK_SUPPRESSION_REASON_NONE
+                    val looksStalled = c.playWhenReady && c.playbackState == Player.STATE_READY &&
+                        !c.isPlaying && !suppressed
+                    if (looksStalled) {
+                        stalledMs += TICK_MS
+                        if (stalledMs == STALL_LOG_MS) {
+                            android.util.Log.w(
+                                "PlayerDiag",
+                                "疑似引擎卡死 ${stalledMs}ms: pos=$newPos state=${c.playbackState} " +
+                                    "playing=${c.playWhenReady} suppressed=$suppressed",
+                            )
+                        }
+                    } else {
+                        if (stalledMs >= STALL_LOG_MS) {
+                            android.util.Log.i("PlayerDiag", "卡死已解除(持续 ${stalledMs}ms) pos=$newPos")
+                        }
+                        stalledMs = 0
+                    }
                     val dur = c.duration
                     if (dur > 0) durationMs = dur
                     // v1.2.1: 累计当前曲目有效播放时长,满 30 秒计一次有效播放。
@@ -303,6 +420,8 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
      *  v22: 带上曲目时长 —— 拆分出来的 intro/outro 常常只有十几二十秒，固定 30 秒阈值
      *  会让它们永远不可能被计数。tracker 对 ≤60s 的短曲改用「半程」阈值。 */
     private fun startTracking(id: Long, item: MediaItem? = null) {
+        // 换曲即重置卡死观测状态(见 ticker;纯观测)
+        stalledMs = 0L
         val sid = playTracker.start(id, durationForThreshold(id, item))
         onTrackStarted?.invoke(id, sid)
     }
@@ -360,12 +479,25 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
         val c = controller ?: return
         val item = c.currentMediaItem ?: return
         val carry = SplitCarry.read(item) ?: return
-        val k = carry.plan.indexAt(c.currentPosition)
+        val pos = c.currentPosition
+        val k = carry.plan.indexAt(pos)
+        val cur = carry.current
+        // v1.3.10 诊断(A23):位置落在**当前分段之外**时留痕。
+        // "某一秒静音 + 位置来回跳"的第一嫌疑就是边界判定与真实位置不一致
+        // (分段之间有缝/重叠,或 indexAt 算法在边界上的取整)。这类问题以前完全没有日志。
+        if (cur != null && (pos < cur.startMs || pos >= cur.endMs)) {
+            android.util.Log.w(
+                "PlayerDiag",
+                "boundary 位置越界: pos=$pos 当前段=[${cur.startMs},${cur.endMs}) idx=${carry.index} k=$k",
+            )
+        }
         if (k < 0 || k == carry.index) return
+        android.util.Log.i("PlayerDiag", "boundary 换段: idx=${carry.index} → $k pos=$pos")
         val next = carry.plan.tracks.getOrNull(k) ?: return
         // durationById 只作兜底（durationForThreshold 优先读方案里的分段时长）；
         // 这里顺手登记，供方案被清掉后的降级路径使用。
         durationById[next.id] = next.durationMs
+        android.util.Log.w("PlayerDiag", "replaceMediaItem @boundaryCarry pos=${c.currentPosition}")
         c.replaceMediaItem(c.currentMediaItemIndex, SplitCarry.itemFor(item, carry.copy(index = k)))
         // 兜底：Media3 契约上 onMediaItemTransition 早于 onEvents（此时 currentId 还是旧值，
         // isSelfReplace 守卫放行 → startTracking 已开好新 session）。万一这个顺序变了或被
@@ -430,7 +562,22 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
         val newItem = item.buildUpon()
             .setMediaMetadata(mb.build())
             .build()
+        // 仅日志(零行为):A23 封存后保留的定位线索之一
+        android.util.Log.w("PlayerDiag", "replaceMediaItem @artworkPush pos=${c.currentPosition}")
         c.replaceMediaItem(idx, newItem)
+    }
+
+    /**
+     * 卡死观测状态(见 ticker):累计"自认为在播、实际没输出"的时长。
+     * **纯观测,不改变任何播放行为**。每次换曲重置。
+     */
+    private var stalledMs = 0L
+
+    private companion object {
+        /** ticker 周期(与协程里的 delay 一致)。 */
+        const val TICK_MS = 300L
+        /** 卡满这么久打一条日志(仅观测)。 */
+        const val STALL_LOG_MS = 1500L
     }
 
     /** Starts playback of [tracks] at [startId]. [key] null = normal queue. */
@@ -676,6 +823,7 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
             val nextIdx = carry.index + 1
             if (nextIdx < carry.plan.tracks.size) {
                 val nc = carry.copy(index = nextIdx)
+                android.util.Log.w("PlayerDiag", "replaceMediaItem @splitNext pos=${c.currentPosition}")
                 c.replaceMediaItem(c.currentMediaItemIndex, SplitCarry.itemFor(item, nc))
                 c.seekTo(SplitCarry.startMsOf(nc))
                 c.play()
@@ -708,6 +856,7 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
             }
             val prevIdx = (carry.index - 1).coerceAtLeast(0)
             if (prevIdx != carry.index) {
+                android.util.Log.w("PlayerDiag", "replaceMediaItem @splitPrev pos=${c.currentPosition}")
                 c.replaceMediaItem(c.currentMediaItemIndex, SplitCarry.itemFor(item, carry.copy(index = prevIdx)))
             }
             c.seekTo(SplitCarry.startMsOf(carry.copy(index = prevIdx)))
@@ -746,7 +895,13 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
             return
         }
         val f = fraction.coerceIn(0f, 1f)
-        c.seekTo(t.startMs + ((t.endMs - t.startMs) * f).toLong())
+        val target = t.startMs + ((t.endMs - t.startMs) * f).toLong()
+        // v1.3.10 诊断(A23):seek 留痕(用户实测"拖到 1:38 就正常"→ 需要知道 seek 落在哪)
+        android.util.Log.i(
+            "PlayerDiag",
+            "seek displayFraction=$f → file=$target (段=[${t.startMs},${t.endMs}) 段内=${(target - t.startMs)})",
+        )
+        c.seekTo(target)
         c.play()
     }
 
@@ -783,7 +938,9 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
             return
         }
         val span = (t.endMs - t.startMs).coerceAtLeast(0L)
-        c.seekTo(t.startMs + ms.coerceIn(0L, span))
+        val target = t.startMs + ms.coerceIn(0L, span)
+        android.util.Log.i("PlayerDiag", "seek displayMs=$ms → file=$target (段=[${t.startMs},${t.endMs}))")
+        c.seekTo(target)
         c.play()
     }
 

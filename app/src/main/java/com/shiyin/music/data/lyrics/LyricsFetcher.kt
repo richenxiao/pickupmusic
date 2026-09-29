@@ -1,5 +1,6 @@
 package com.shiyin.music.data.lyrics
 
+import com.google.gson.JsonParser
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -14,7 +15,22 @@ import kotlin.math.abs
  * with a ±2s duration tolerance. Sources rotate LRCLIB → 网易云音乐.
  */
 object LyricsFetcher {
-    val SOURCES = listOf("LRCLIB", "网易云音乐")
+    // v1.3.10 需求 A30:加 LrcShare(api.lrcshare.com,无 key)——覆盖两个内置源搜不到的冷门歌。
+    // 放在最后 = 兜底(不顶替前两个,只补它们搜不到的)。
+    /** **内置**源(静态清单)。用户开关/自定义源见 [activeSources]。 */
+    val SOURCES = listOf("LRCLIB", "网易云音乐", "LrcShare")
+
+    /**
+     * v1.3.10 需求 A29:当前**实际可用**的源 = 内置(去掉用户关掉的) + 用户自定义源。
+     * 取歌词链路(自动匹配级联 / 来源菜单)一律用这个,不再直接用 [SOURCES]。
+     */
+    fun activeSources(): List<String> =
+        SOURCES.filterNot { it in LyricsSourceConfig.disabledBuiltins } +
+            LyricsSourceConfig.customSources.map { it.name }
+
+    /** 该名字对应的自定义源定义(内置源/未知名字 → null)。 */
+    private fun customSource(name: String): CustomLyricsSourceDef? =
+        LyricsSourceConfig.customSources.firstOrNull { it.name == name }
     private const val UA = "Shiyin/1.0 (Android local music player)"
     // v1.3.x 2s→5s:±2s 把"搜到正确歌曲"误判为无结果(用户实测网易云明明有歌词却报
     // 无——本地 tag/VBR 头时长与官方曲库录制时长差 3-5s 是常态:intro 差异、首段静音、
@@ -32,25 +48,76 @@ object LyricsFetcher {
                 when (source) {
                     "LRCLIB" -> fetchLrclib(title, artist, album, durationSec)
                     "网易云音乐" -> fetchNetease(title, artist, durationSec)
-                    else -> null
+                    "LrcShare" -> fetchLrcShare(title, artist, album, durationSec)
+                    // v1.3.10 需求 A29:用户自定义源(URL 模板 + JSON 路径)
+                    else -> customSource(source)?.let { fetchCustom(it, title, artist, album) }
                 }
             } catch (_: Exception) {
                 null
             }
         }
 
-    private fun http(url: String, referer: String? = null): String? {
+    private fun http(
+        url: String,
+        referer: String? = null,
+        headers: List<Pair<String, String>> = emptyList(),
+    ): String? {
         val conn = URL(url).openConnection() as HttpURLConnection
         return try {
             conn.connectTimeout = 8000
             conn.readTimeout = 8000
             conn.setRequestProperty("User-Agent", UA)
             if (referer != null) conn.setRequestProperty("Referer", referer)
+            // v1.3.10 需求 A29:自定义源的附加请求头(如鉴权)——用户填的,原样带上
+            for ((k, v) in headers) runCatching { conn.setRequestProperty(k, v) }
             if (conn.responseCode !in 200..299) null
             else conn.inputStream.bufferedReader().readText()
         } finally {
             conn.disconnect()
         }
+    }
+
+    /**
+     * v1.3.10 需求 A29:自定义源取歌词(两阶段,与内置源同构):
+     *  ① 搜索 URL 模板(`{title}`/`{artist}`/`{album}` 占位)→ JSON → [CustomLyricsSourceDef.idJsonPath] 取 id
+     *  ② 歌词 URL 模板(`{id}`/`{title}`/`{artist}` 占位)→ JSON → [CustomLyricsSourceDef.lyricJsonPath] 取歌词
+     *
+     * 任何一步失败都返回 null(掉给下一个源)。日志**只记哪一步失败**,不打整段响应
+     * (用户自定义接口可能返回隐私内容,不进日志)。
+     */
+    private fun fetchCustom(
+        def: CustomLyricsSourceDef, title: String, artist: String, album: String,
+    ): String? {
+        val hdrs = CustomLyricsSourceCodec.parseHeaders(def.headers)
+        val vars = mapOf("title" to title, "artist" to artist, "album" to album)
+        val searchUrl = CustomLyricsSourceCodec.fillTemplate(def.searchUrl, vars)
+        val searchBody = http(searchUrl, referer = null, headers = hdrs)
+        if (searchBody == null) {
+            android.util.Log.i("Lyrics", "自定义源 ${def.name}: 搜索请求失败")
+            return null
+        }
+        val id = runCatching {
+            CustomLyricsSourceCodec.resolvePath(JsonParser.parseString(searchBody), def.idJsonPath)
+        }.getOrNull()
+        if (id.isNullOrBlank()) {
+            android.util.Log.i("Lyrics", "自定义源 ${def.name}: idJsonPath「${def.idJsonPath}」没取到 id")
+            return null
+        }
+        val lyricUrl = CustomLyricsSourceCodec.fillTemplate(def.lyricUrl, vars + ("id" to id))
+        val lyricBody = http(lyricUrl, referer = null, headers = hdrs)
+        if (lyricBody == null) {
+            android.util.Log.i("Lyrics", "自定义源 ${def.name}: 歌词请求失败")
+            return null
+        }
+        val text = runCatching {
+            CustomLyricsSourceCodec.resolvePath(JsonParser.parseString(lyricBody), def.lyricJsonPath)
+        }.getOrNull()
+        if (text.isNullOrBlank()) {
+            android.util.Log.i("Lyrics", "自定义源 ${def.name}: lyricJsonPath「${def.lyricJsonPath}」没取到歌词")
+            return null
+        }
+        android.util.Log.i("Lyrics", "自定义源 ${def.name}: 取到 ${text.length} 字")
+        return text
     }
 
     private fun enc(s: String) = URLEncoder.encode(s, "UTF-8")
@@ -96,70 +163,235 @@ object LyricsFetcher {
 
     private fun fetchNetease(title: String, artist: String, durationSec: Long): String? {
         val q = enc("$title $artist".trim())
-        val body = http(
-            "https://music.163.com/api/search/get/web?s=$q&type=1&limit=10&offset=0",
-            referer = "https://music.163.com",
-        ) ?: return null
-        val songs = JSONObject(body).optJSONObject("result")?.optJSONArray("songs") ?: return null
+        android.util.Log.i("Lyrics", "netease 查询: title=$title artist=$artist dur=${durationSec}s")
+        // v1.3.9: 网易云会**限流**(实测返回 {"msg":"操作频繁，请稍候再试","code":405}),
+        // 也可能因网络抖动返回空数组。原实现把这两种情况都当成"没有这首歌"直接 return null
+        // → 用户看到"无歌词",而歌其实在网易云有词(中文歌主要靠这个源,LRCLIB 覆盖不到)。
+        // 现在:识别错误/空返回 → 退避重试(0.4s / 1.2s),仍失败才放弃。
+        var songs: JSONArray? = null
+        for (attempt in 0..2) {
+            val body = http(
+                "https://music.163.com/api/search/get/web?s=$q&type=1&limit=10&offset=0",
+                referer = "https://music.163.com",
+            )
+            val root = body?.let { runCatching { JSONObject(it) }.getOrNull() }
+            val arr = root?.optJSONObject("result")?.optJSONArray("songs")
+            android.util.Log.i(
+                "Lyrics",
+                "netease 第${attempt + 1}次: bodyLen=${body?.length ?: -1} songs=${arr?.length() ?: -1} " +
+                    "code=${root?.optInt("code", 0) ?: 0} msg=${root?.optString("msg")?.take(40) ?: "-"}",
+            )
+            if (arr != null && arr.length() > 0) { songs = arr; break }
+            if (attempt < 2) Thread.sleep(if (attempt == 0) 400L else 1200L)
+        }
+        val songList = songs ?: run {
+            android.util.Log.w("Lyrics", "netease 无候选(全部尝试失败)")
+            return null
+        }
         // v1.3.x 鉴权(用户反馈⑧:阴三儿《爽歪歪》vs 大张伟《爽歪歪》同名不同歌,
         // 旧实现只按时长差挑 bestId——同名不同歌手的版本时长恰好更接近时就配错)。
-        // 新规则:
-        //  1. **歌手名是主判据**——返回歌曲的 artists 与本地 artist 模糊匹配
-        //     (normalize 后 contains 任一方向),不匹配的候选直接拒绝;
-        //  2. 时长差只做**同歌手候选内的决胜**,不再跨歌手比时长;
-        //  3. 不过度追求完整匹配:同歌手候选里时长差 ≤10s 就收(本地 tag 时长
-        //     与官方录制差 3-5s 是常态,收窄回 5s 又会把正确歌曲误判为无结果);
-        //     全部 >10s 时才回退"无时长信息凭最高分"的旧行为(保持兜底,不空手)。
-        //  4. title 也做弱校验:normalize 后有交集才收(防同名不同歌的最后一道闸)。
-        val wantNorm = normText("$artist $title")
-        val artistNorm = normText(artist)
-        data class Cand(val id: Long, val diff: Long, val artistHit: Boolean, val titleHit: Boolean)
-        val cands = ArrayList<Cand>()
-        for (i in 0 until songs.length()) {
-            val s = songs.getJSONObject(i)
-            // 搜索返回的 artists: [{name:"歌手"}...],取全部名字归一后判交集
-            val retArtists = s.optJSONArray("artists") ?: continue
-            val retNames = (0 until retArtists.length()).mapNotNull { k ->
-                retArtists.getJSONObject(k).optString("name").takeIf { it.isNotBlank() }
+        // v1.3.9:候选构造与选择抽成 internal 纯函数,单测用**真实抓包数据**覆盖
+        // (见 LyricsMatchTest)——此前这段逻辑只能靠线上复现,回归一次修一次。
+        val cands = (0 until songList.length()).mapNotNull { i ->
+            val s = songList.getJSONObject(i)
+            val names = (s.optJSONArray("artists") ?: return@mapNotNull null).let { arr ->
+                (0 until arr.length()).mapNotNull { k ->
+                    arr.getJSONObject(k).optString("name").takeIf { it.isNotBlank() }
+                }
             }
-            val retNameNorm = retNames.joinToString(" ") { normText(it) }
-            val artistHit = artistNorm.isNotBlank() &&
-                (retNameNorm.contains(artistNorm) || artistNorm.contains(retNameNorm) ||
-                    retNames.any { normText(it).contains(artistNorm) || artistNorm.contains(normText(it)) })
-            val retTitle = s.optString("name").takeIf { it.isNotBlank() } ?: continue
-            val titleHit = normText(retTitle).contains(normText(title).take(6)) ||
-                normText(title).contains(normText(retTitle).take(6))
-            val durSec = s.optLong("duration", -1) / 1000
-            val diff = if (durationSec > 0 && durSec > 0) abs(durSec - durationSec) else Long.MAX_VALUE / 2
-            cands += Cand(s.optLong("id", -1), diff, artistHit, titleHit)
+            val retTitle = s.optString("name").takeIf { it.isNotBlank() } ?: return@mapNotNull null
+            candidateOf(
+                id = s.optLong("id", -1), retNames = names, retTitle = retTitle,
+                retDurSec = s.optLong("duration", -1) / 1000,
+                artist = artist, title = title, durationSec = durationSec,
+            )
         }
-        // 挑选优先级:歌手+歌名都命中 > 歌手命中 > **本地没有歌手信息时**退回按歌名+时长。
-        // 第三档是必需的兜底:本地 tag 没填歌手是常见情况,若此时仍硬性要求 artistHit,
-        // 候选会被全部否决 → 整首歌词永远搜不到(实测回归:注释承诺的兜底并未实现)。
-        // 注意只在 artistNorm 为空时才退——本地**有**歌手却没一个候选对得上,那是
-        // 「同名不同歌」的强信号(如阴三儿《爽歪歪》vs 大张伟《爽歪歪》),必须拒绝。
-        val picked = cands.filter { it.artistHit && it.titleHit }.minByOrNull { it.diff }
-            ?: cands.filter { it.artistHit }.minByOrNull { it.diff }
-            ?: if (artistNorm.isBlank()) cands.filter { it.titleHit }.minByOrNull { it.diff } else null
-        if (picked == null || picked.id < 0) return null
-        // 歌手命中的候选里,时长差 >10s 且本地有时长 → 拒绝(live 版/混音版风险)
-        if (durationSec > 0 && picked.diff > 10 && picked.diff != Long.MAX_VALUE / 2) return null
-        // v1.3.x yrc:部分新歌歌词只有逐字格式(yrc 字段),旧 lv=1 的 lrc 为空串——
+        val picked = selectNeteaseCandidate(cands, artist, durationSec) ?: run {
+            android.util.Log.w(
+                "Lyrics",
+                "netease 候选全被拒: ${cands.joinToString("; ") { "id=${it.id} ah=${it.artistHit} th=${it.titleHit} ex=${it.exactTitleHit} sim=${it.artistSimilar} diff=${it.diff}" }}",
+            )
+            return null
+        }
+        android.util.Log.i("Lyrics", "netease 选中 id=${picked.id} diff=${picked.diff}")
+        // v1.3.x yrc:部分新歌歌词只有逐字格式(yrc 字段),lrc 为空串——
         // 客户端展示的滚动歌词来自 yrc,只读 lrc 会把"明明有歌词"误报为无结果
         // (实测:《虎头奔》揽佬SKAI ISYOURGOD id=2080172427)。yv=1/yrv=1 请求 yrc,
         // lrc 空时解析 yrc 转标准 LRC。
+        // v1.3.9: lv 参数改 -1。PC 端差分测试锁定:同一首歌、同样参数,仅 lv 不同——
+        // lv=1 时 lrc="" 且无 yrc 字段(实测《开波》id=2130715020,以及《虎头奔》),
+        // lv=-1 时完整歌词;UA 换 Mozilla/5.0 不影响(排除 UA 嫌疑)。
+        // 即部分歌曲 lv=1 连 yrc 兜底都拿不到,这类歌此前彻底漏报"无歌词"。
         val lyricBody = http(
-            "https://music.163.com/api/song/lyric?id=${picked.id}&lv=1&kv=-1&tv=-1&yv=1&yrv=1",
+            "https://music.163.com/api/song/lyric?id=${picked.id}&lv=-1&kv=-1&tv=-1&yv=1&yrv=1",
             referer = "https://music.163.com",
         ) ?: return null
         val obj = JSONObject(lyricBody)
         val lrc = obj.optJSONObject("lrc")?.optString("lyric")?.takeIf { it.isNotBlank() }
+        android.util.Log.i("Lyrics", "netease 歌词接口: lrc=${lrc?.length ?: 0}字 有无yrc=${obj.optJSONObject("yrc")?.optString("lyric")?.isNotBlank() == true}")
         if (lrc != null) return lrc
         val yrc = obj.optJSONObject("yrc")?.optString("lyric")?.takeIf { it.isNotBlank() } ?: return null
         return yrcToLrc(yrc) ?: return null
     }
 
-    /** 归一化文本:剥括号注释/空白,lowercase——与 MainViewModel 的 norm 同一逻辑。 */
+    /**
+     * v1.3.10 需求 A30:LrcShare(api.lrcshare.com,无 key、GET、JSON)。
+     *
+     * 两阶段(官方文档明确"不要在搜索阶段取歌词"):
+     *  ① GET /v1/search?type=song&title=…&artist=…(结构化,不把 title+artist 拼成 keyword)
+     *  ② 候选按 title/artist 归一化命中 + album 一致打分,阈值拦"同名异曲"(不盲目取第一条)
+     *  ③ GET /v1/lyric/{id}?lyric_format=line 取 LRC → [LrcShareAttribution.clean] 去署名。
+     *
+     * 失败(网络/无候选/无歌词)一律 null——丢给下一个源,不把异常或半截结果透出去。
+     */
+    private fun fetchLrcShare(title: String, artist: String, album: String, durationSec: Long): String? {
+        android.util.Log.i("Lyrics", "lrcshare 查询: title=$title artist=$artist dur=${durationSec}s")
+        val q = buildString {
+            append("https://api.lrcshare.com/v1/search?type=song")
+            append("&title=${enc(title)}")
+            // LrcShare 支持重复 artist 参数(AND)。只按明确的合作分隔符拆——
+            // 不拆 "/":AC/DC 这类乐队名不能误拆(规格 V)。
+            for (a in artist.split(Regex("""\s*[,,&、]\s*""")).map { it.trim() }.filter { it.isNotBlank() }
+                .ifEmpty { listOf(artist.trim()) }
+            ) append("&artist=${enc(a)}")
+        }
+        val body = http(q, referer = null) ?: return null
+        val items = runCatching { JSONObject(body).optJSONObject("data")?.optJSONArray("items") }.getOrNull()
+        android.util.Log.i("Lyrics", "lrcshare 搜索: 候选 ${items?.length() ?: 0}")
+        if (items == null || items.length() == 0) return null
+        val picked = pickLrcShareCandidate(items, title, artist, album) ?: return null
+        val id = picked.optString("id").takeIf { it.isNotBlank() } ?: return null
+        android.util.Log.i("Lyrics", "lrcshare 选中 id=$id")
+        val lyricBody = http("https://api.lrcshare.com/v1/lyric/$id?lyric_format=line", referer = null) ?: return null
+        val lrc = runCatching { JSONObject(lyricBody).optJSONObject("data")?.optString("lrc") }
+            .getOrNull()?.takeIf { it.isNotBlank() } ?: return null
+        android.util.Log.i("Lyrics", "lrcshare 歌词接口: ${lrc.length}字")
+        return LrcShareAttribution.clean(lrc, title, artist).takeIf { it.isNotBlank() }
+    }
+
+    /**
+     * LrcShare 候选评分。不盲目取第一条(规格 VI):
+     *  - title:完全相等 +50,归一化后互相包含 +40,都不满足 → 这一条直接淘汰;
+     *  - artist:完全相等 +40,归一化后互相包含 +30,全不中 +0;
+     *  - album 一致 +15(加分项,不强制——很多冷门曲没有专辑名)。
+     * 最低可信阈值 = title 命中 + artist 命中(40+30)。缺 artist 信息的候选
+     * (score 只来自 title)到不了阈值 → 同名异曲不会被误配。
+     */
+    private fun pickLrcShareCandidate(items: JSONArray, title: String, artist: String, album: String): JSONObject? {
+        val tN = normText(title)
+        val aK = normArtist(artist)
+        val alN = normText(album)
+        var best: JSONObject? = null
+        var bestScore = -1
+        for (i in 0 until items.length()) {
+            val it = items.optJSONObject(i) ?: continue
+            val rt = normText(it.optString("title"))
+            if (rt.isBlank()) continue
+            var score = 0
+            if (rt == tN) score += 50 else if (rt.contains(tN) || tN.contains(rt)) score += 40 else continue
+            val rn = it.optJSONArray("artists")?.let { arr ->
+                (0 until arr.length())
+                    .mapNotNull { k -> arr.optJSONObject(k)?.optString("name") }
+                    .joinToString(" ")
+            } ?: ""
+            val rK = normArtist(rn)
+            score += when {
+                rK.isBlank() -> 0
+                rK == aK -> 40
+                rK.contains(aK) || aK.contains(rK) -> 30
+                else -> 0
+            }
+            val al = normText(it.optJSONObject("album")?.optString("name").orEmpty())
+            if (alN.isNotBlank() && al.isNotBlank() && (al == alN || al.contains(alN) || alN.contains(al))) score += 15
+            if (score > bestScore) { bestScore = score; best = it }
+        }
+        return best?.takeIf { bestScore >= 70 }
+    }
+
+    /**
+     * v1.3.9: 网易云候选——构造与选择抽成 internal 纯函数,便于用**真实抓包数据**单测
+     * (这段逻辑此前只能靠线上复现,修一次回归一次)。
+     *
+     * @param diff 时长差(未知时长时为 MAX_VALUE/2,不参与"贴近"判定)
+     * @param artistHit 歌手名命中(去标点后双向包含,任一返回歌手名成立即可)
+     * @param titleHit 歌名弱命中(取前 6 字双向包含)
+     * @param exactTitleHit 歌名归一后**完全相等**
+     * @param artistSimilar 与任一返回歌手名有 ≥3 字符公共前缀(受控兜底的安全闸)
+     */
+    internal data class LyricCandidate(
+        val id: Long,
+        val diff: Long,
+        val artistHit: Boolean,
+        val titleHit: Boolean,
+        val exactTitleHit: Boolean,
+        val artistSimilar: Boolean,
+    )
+
+    /** 用一条搜索结果的字段构造候选。 */
+    internal fun candidateOf(
+        id: Long,
+        retNames: List<String>,
+        retTitle: String,
+        retDurSec: Long,
+        artist: String,
+        title: String,
+        durationSec: Long,
+    ): LyricCandidate {
+        val artistNorm = normText(artist)
+        val artistKey = normArtist(artist)
+        val retNameNorm = retNames.joinToString(" ") { normText(it) }
+        // v1.3.9: 歌手比较**去标点**后再双向包含——原实现保留 '/'、'-' 等符号,
+        // 「PlayerJ/步步高先生」这类多歌手串与返回的「Player J / 步步高先生」
+        // 拼串对不上;更致命的变体是「play J」vs「Player J」:归一化后
+        // playj / playerj 双向都不包含 → 歌手闸门拒光候选 → 明明有歌词却报无。
+        val artistHit = (artistKey.isNotBlank() && retNames.any { n ->
+            val k = normArtist(n)
+            k.isNotBlank() && (k.contains(artistKey) || artistKey.contains(k))
+        }) || (artistNorm.isNotBlank() &&
+            (retNameNorm.contains(artistNorm) || artistNorm.contains(retNameNorm)))
+        val retTitleNorm = normText(retTitle)
+        val titleNorm = normText(title)
+        val diff = if (durationSec > 0 && retDurSec > 0) abs(retDurSec - durationSec) else Long.MAX_VALUE / 2
+        return LyricCandidate(
+            id = id,
+            diff = diff,
+            artistHit = artistHit,
+            titleHit = retTitleNorm.contains(titleNorm.take(6)) || titleNorm.contains(retTitleNorm.take(6)),
+            exactTitleHit = retTitleNorm == titleNorm,
+            artistSimilar = artistKey.isNotBlank() && retNames.any { n ->
+                commonPrefixLen(normArtist(n), artistKey) >= 3
+            },
+        )
+    }
+
+    /**
+     * 选出最终候选(含时长闸门)。优先级:
+     *  1. 歌手+歌名都命中 → 取时长最接近;
+     *  2. 仅歌手命中 → 时长最接近;
+     *  3. 本地**无歌手信息**时 → 仅歌名命中 → 时长最接近(兜底,不能空手);
+     *  4. **受控兜底**(v1.3.9 新增):歌手名是变体写法(play J / Player J、aka 名、
+     *     中英文名混用)时前三档全落空 → 归一化歌名**完全相等**、时长差 ≤5s、
+     *     且与返回歌手名有公共前缀的候选**有且仅有一个**时接受。
+     *     唯一性 + 公共前缀共同挡住"同名不同歌"(阴三儿《爽歪歪》vs 大张伟《爽歪歪》)。
+     * 最后:本地有时长且选中候选时长差 >10s → 拒绝(live/混音版风险)。
+     */
+    internal fun selectNeteaseCandidate(
+        cands: List<LyricCandidate>,
+        artist: String,
+        durationSec: Long,
+    ): LyricCandidate? {
+        val artistNorm = normText(artist)
+        val picked = cands.filter { it.artistHit && it.titleHit }.minByOrNull { it.diff }
+            ?: cands.filter { it.artistHit }.minByOrNull { it.diff }
+            ?: if (artistNorm.isBlank()) cands.filter { it.titleHit }.minByOrNull { it.diff } else null
+            ?: cands.filter { it.exactTitleHit && it.diff <= 5 && it.artistSimilar }.let { exact ->
+                if (exact.size == 1) exact.first() else null
+            }
+        if (picked == null || picked.id < 0) return null
+        if (durationSec > 0 && picked.diff > 10 && picked.diff != Long.MAX_VALUE / 2) return null
+        return picked
+    }
+
     /**
      * 归一化:剥括号补充说明(「晴天 (Live)」→「晴天」),再交给 FuzzySearch.normalize
      * 做**全角→半角 + 繁体→简体 + 去空格 + 小写**。
@@ -172,6 +404,23 @@ object LyricsFetcher {
      */
     private fun normText(s: String): String =
         com.shiyin.music.data.search.FuzzySearch.normalize(BRACKET_SUFFIX.replace(s, ""))
+
+    /**
+     * v1.3.9: 歌手名的**去标点**归一——在 [normText] 基础上再剥掉所有非字母数字字符
+     * (保留 CJK,`isLetterOrDigit` 对中文为 true)。
+     * 动机:多歌手串与变体写法里,分隔符差异(「PlayerJ/步步高先生」vs「Player J, 步步高先生」)
+     * 会让双向包含判定失败 → 歌手闸门拒光候选 → 有歌词却报无。
+     */
+    private fun normArtist(s: String): String =
+        normText(s).filter { it.isLetterOrDigit() }
+
+    /** 两串的公共前缀长度(受控兜底的"歌手相似"判据)。 */
+    private fun commonPrefixLen(a: String, b: String): Int {
+        val n = minOf(a.length, b.length)
+        var i = 0
+        while (i < n && a[i] == b[i]) i++
+        return i
+    }
 
     /**
      * v1.3.x: 网易云逐字歌词(yrc)转标准 LRC。

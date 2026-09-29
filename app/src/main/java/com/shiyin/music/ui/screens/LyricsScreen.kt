@@ -189,9 +189,12 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
     }
     // 第6轮:翻译按钮只对**外语歌词**显示。当前版本用户语言只有中文(简/繁),
     // 纯中文歌词没有翻译需求——按钮整个不挂载(与「あ」只对日语歌显示同规则)。
-    // 判定与自动翻译共用 MainViewModel.isForeignLyrics(假名/谚文/非 CJK 字母)。
+    // v1.3.10:改按设置档位判定(never=永不显示 / majority=外文较多时,现状 / any=检测到
+    // 外文就显示)——档位是 key,改设置立即重算;自动翻译仍走占比判定(见 vm.isForeignLyrics)。
     // 未来做多语言版本时,这里要跟用户语言走(如日语用户看中文歌也应显示)。
-    val foreignLyrics = remember(lines) { vm.isForeignLyrics(lines.map { it.text }) }
+    val foreignLyrics = remember(lines, vm.translateButtonMode) {
+        vm.shouldShowTranslateButton(lines.map { it.text })
+    }
     var furiganaOn by remember(track.id) { mutableStateOf(hasKana && vm.furiganaDefaultOn) }
     // V1.1: 跑准确率流水线（Song Override>纠错表>JMdict>Kuromoji>No Reading）。
     // key 含 furiganaRevision，保存/删除 Song Override 后 bump 即重算该曲。
@@ -266,12 +269,25 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
     // 触区内【居中】,字形左/右缘还缩进 ~(38-图标宽)/2 ≈ 7.5dp——视觉上仍没
     // 对齐。改图标贴边:返回键 CenterStart(字形左缘贴内容左边界)、编辑键
     // CenterEnd(字形右缘贴内容右边界),触区大小不变(点击面积不减)。
-    Row(
+    Box(
             Modifier
                 .fillMaxWidth()
                 .padding(start = 22.dp, end = 22.dp, top = 0.dp, bottom = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
         ) {
+            // v1.3.10 需求 A33(第2版,用户实测反馈):**标题居中 + 返回键不挪位**。
+            // 第1版在左侧加 38dp 占位让标题居中,却把返回键一并推右了(用户实测:
+            // "最左侧的返回按钮被往右边移动了")——根因是占位与返回键是 Row 里两个
+            // 独立兄弟,占位占掉了最左的位置。
+            // 现在改 Box + **绝对居中**:标题居中于整行(与左右键数量无关),返回键
+            // 单独 CenterStart 贴内容左边界(位置与无校对键时完全一致);标题左右各留
+            // [titleInset] 对称内边距——对称所以仍严格居中,且长标题不会钻到图标下面。
+            val showCalibKey = vm.tapSyncMode == MainViewModel.TapSyncMode.NotStarted &&
+                ly.canAdjust && (unsynced || vm.lyricsCalibAlwaysOn)
+            // 右侧键总宽(给标题留位);打轴模式右侧是"已锚定 x/y + 退出键",宽度不定→兜底值。
+            val rightKeysW = if (vm.tapSyncMode == MainViewModel.TapSyncMode.NotStarted) {
+                (if (showCalibKey) 38.dp else 0.dp) + (if (ly.canAdjust) 38.dp else 0.dp)
+            } else 132.dp
+            val titleInset = maxOf(rightKeysW, 38.dp) + 4.dp
             // v1.3.x 虚影终版(用户三轮反馈定调):问题从来不是图标描边/实心风格,
             // 是图标外那层圆形色块背景本身不该存在。去掉 background(含全部半透明/
             // 黑纱/实心变体),Box 只保留尺寸+clip+clickable 当触区;图标还原描边
@@ -284,6 +300,7 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
             // Dialog 层,按钮原来直接置 lyricsOn=false 跳过了它)。
             Box(
                 Modifier
+                    .align(Alignment.CenterStart)
                     .size(38.dp)
                     .clip(CircleShape)
                     .then(if (interactive) Modifier.clickable(
@@ -293,7 +310,11 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
                 contentAlignment = Alignment.CenterStart,
             ) { OIcon(Lucide.ChevronDownBold, 23.dp, artFg) }
             Column(
-                Modifier.weight(1f),
+                // A33 第2版:标题**居中于整行**(不再用 weight(1f)——那样会被左右键宽窄
+                // 影响中心);左右对称内边距 = 较宽一侧的键宽,既保持严格居中又避开图标。
+                Modifier.align(Alignment.Center)
+                    .fillMaxWidth()
+                    .padding(horizontal = titleInset),
                 verticalArrangement = Arrangement.spacedBy(2.dp),
             ) {
                 Text(
@@ -314,11 +335,20 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
                 )
             }
             // v1.3.x 打轴模式:入口在顶栏右侧(与编辑键并排)。打轴进行中时替换为
-            // 「进度 + 退出」;普通模式下显示「打轴」按钮(仅未同步歌词可见)。
+            // 「进度 + 退出」。
+            // v1.3.10 需求 A26(终版):校对入口的显示规则——
+            //  · 默认:**只有未同步(无时间戳、需要人工打轴)的歌词**显示;
+            //    正常在线抓到的歌词本来就有时间戳,不该摆一个校对入口在那儿;
+            //  · 用户开了「始终显示时间轴校对」后:已同步歌词也常显(便于反复微调)。
+            // (中途曾一刀切改成"永远显示",用户实测反馈后收敛回这个规则。)
             if (vm.tapSyncMode == MainViewModel.TapSyncMode.NotStarted) {
-                if (unsynced && ly.canAdjust) {
+                if (showCalibKey) {
                     Box(
                         Modifier
+                            // 右端锚定;若编辑键也在,则左移一个键宽与它并排(offset 不占布局,
+                            // 所以标题的 [titleInset] 计算不受影响)。
+                            .align(Alignment.CenterEnd)
+                            .offset(x = if (ly.canAdjust) (-38).dp else 0.dp)
                             .size(38.dp)
                             .clip(CircleShape)
                             .then(if (interactive) Modifier.clickable(
@@ -332,6 +362,7 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
                     // v1.3.x 虚影终版:同关闭按钮——无背景,图标悬浮,clickable 触区。
                     Box(
                         Modifier
+                            .align(Alignment.CenterEnd)
                             .size(38.dp)
                             .clip(CircleShape)
                             .then(if (interactive) Modifier.clickable(
@@ -342,23 +373,29 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
                     ) { OIcon(Lucide.SlidersBold, 19.dp, artFg) }
                 }
             } else {
-                // 打轴模式顶栏:进度 + 退出
-                val tapped = lines.count { it.timeMs != null }
-                Text(
-                    "已锚定 $tapped / ${lines.size}",
-                    style = body(13f, FontWeight.Bold, artFg),
-                )
-                Spacer(Modifier.size(10.dp))
-                Box(
-                    Modifier
-                        .size(38.dp)
-                        .clip(CircleShape)
-                        .then(if (interactive) Modifier.clickable(
-                            interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
-                            indication = null,
-                        ) { vm.tapSyncExit() } else Modifier),
-                    contentAlignment = Alignment.Center,
-                ) { OIcon(Lucide.Close, 19.dp, artFg) }
+                // 打轴模式顶栏:进度 + 退出。A33 第2版:Box 父级下这三个子项必须自己
+                // 横排 + 靠右锚定(原来的 Row 父级已换成 Box,否则会叠在一起)。
+                Row(
+                    Modifier.align(Alignment.CenterEnd),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    val tapped = lines.count { it.timeMs != null }
+                    Text(
+                        "已锚定 $tapped / ${lines.size}",
+                        style = body(13f, FontWeight.Bold, artFg),
+                    )
+                    Spacer(Modifier.size(10.dp))
+                    Box(
+                        Modifier
+                            .size(38.dp)
+                            .clip(CircleShape)
+                            .then(if (interactive) Modifier.clickable(
+                                interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                                indication = null,
+                            ) { vm.tapSyncExit() } else Modifier),
+                        contentAlignment = Alignment.Center,
+                    ) { OIcon(Lucide.Close, 19.dp, artFg) }
+                }
             }
         }
 
@@ -374,9 +411,13 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
             // 与列表该行位置对齐,锚行视觉位移 ≤8dp。旧"切歌回顶"语义由 morph
             // 时代替:overlay 每次进入都是新组合,每次都滚到 activeI。
             // v1.3.x 预组合:预热期也跑这条(把双窗口测量+预滚搬到隐形期)。
+            // v1.3.x 滚动位置修正:计算 scrollOffset 时减去当前行高度的一半,
+            // 让当前行的**中心**（而非顶部）对齐到视口中心,避免"看起来在前1-2行"。
             if (activeI >= 0) {
                 val viewport = listState.layoutInfo.viewportSize.height
-                listState.scrollToItem(activeI, scrollOffset = -(viewport / 2 - 60))
+                val itemHeight = listState.layoutInfo.visibleItemsInfo
+                    .find { it.index == activeI }?.size ?: 0
+                listState.scrollToItem(activeI, scrollOffset = -(viewport / 2 - 60) + itemHeight / 2)
             } else {
                 listState.scrollToItem(0)
             }
@@ -386,10 +427,13 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
         // 在 frame 0(content alpha=0,fracRange(0,.40,.65))做掉,不可见。全新
         // 挂载路径(fallback)与上条 track.id 预滚同目标,第二次 scrollToItem 无
         // 触发位移=无开销。
+        // v1.3.x 滚动位置修正:同上,计算时减去当前行高度的一半。
         LaunchedEffect(interactive) {
             if (interactive && activeI >= 0) {
                 val viewport = listState.layoutInfo.viewportSize.height
-                listState.scrollToItem(activeI, scrollOffset = -(viewport / 2 - 60))
+                val itemHeight = listState.layoutInfo.visibleItemsInfo
+                    .find { it.index == activeI }?.size ?: 0
+                listState.scrollToItem(activeI, scrollOffset = -(viewport / 2 - 60) + itemHeight / 2)
             }
         }
         // v1.3.x 滚动流畅度(用户反馈"逐行切换僵硬、帧率低,想要振假名切换那种

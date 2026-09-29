@@ -86,3 +86,10 @@
 -keepclassmembers class androidx.datastore.preferences.protobuf.** { *; }
 -keep class androidx.datastore.preferences.PreferencesProto$* { *; }
 -keepclassmembers class androidx.datastore.preferences.PreferencesProto$* { *; }
+
+# ── v1.3.9: Agent 对话历史模型(Gson toJson 写入的 JSON 键名 = 字段名,必须恒定)──
+# 读取侧已改 JsonParser 字面键名手动解析(decodeAgentMessages);若字段名被混淆,
+# 写出的键名漂移 → 旧对话永远读不回。锁死三个类的字段名。
+-keep class com.shiyin.music.MainViewModel$AgentMessage { *; }
+-keep class com.shiyin.music.MainViewModel$ProcessStep { *; }
+-keep class com.shiyin.music.data.ai.AgentEngine$Step { *; }

@@ -211,6 +211,23 @@ fun LyricsMorphOverlay(vm: MainViewModel, morph: LyricsMorphState, interactive: 
                             drawContent()
                         }
                     }
+                    // 需求1(2026-09-26 morph 内容呈现优化):内容层加等比 scale,
+                    // 以窗口宽度为基准,让内容"填满窗口"而非"被裁剪遮挡"。
+                    // clipRect 保留作为极端保险(p<0.65 时高度超出被裁),但主观感
+                    // 是"内容跟着窗口缩小"。transformOrigin 中心缩放,与 translationY
+                    // 锚行跟踪独立叠加(先 scale 内部缩、后 translationY 容器移)。
+                    .graphicsLayer {
+                        val pp = morph.progress.value
+                        val b = morph.cardBounds
+                        if (b != null) {
+                            // 缩放:以窗口当前宽度为基准等比
+                            val windowW = lerp01(b.width, size.width, pp)
+                            val s = windowW / size.width  // 内容宽度缩放到等于窗口宽度
+                            scaleX = s
+                            scaleY = s
+                            transformOrigin = androidx.compose.ui.graphics.TransformOrigin(0.5f, 0.5f)
+                        }
+                    }
                     .graphicsLayer {
                         val pp = morph.progress.value
                         // 内容淡入/淡出:展开 0.40→0.65 淡入,收起反向淡出。

@@ -169,6 +169,10 @@ object FuzzySearch {
     /** v1.2.0 #5: 完整查询子串命中的置顶奖励（远大于字段加权，形成明确分层）。 */
     private const val FULL_QUERY_BONUS = 1_000_000
 
+    /** v1.3.10: 罗马字兜底命中(假名↔罗马字)的单 token 计分——刻意低于常规字段命中
+     *  (子串 800 / 模糊 600),保证库内的直接命中永远排在罗马字兜底命中之前。 */
+    private const val ROMAJI_TOKEN_SCORE = 400
+
     /**
      * 在曲库上执行模糊搜索：每个 token 须命中至少一个字段，标题(×4) > 歌手(×3)
      * > 专辑(×5) > 文件夹(×1) 加权求和，按相关度排序。任一字段含完整查询（连写）子串
@@ -193,12 +197,27 @@ object FuzzySearch {
             val albumRanges = ArrayList<IntRange>()
             val folderRanges = ArrayList<IntRange>()
             var ok = true
+            // v1.3.10: 罗马字兜底用,懒算——只有某个 token 常规字段全不中时才转一次。
+            var romajiFields: List<String>? = null
             for (token in tokens) {
                 val mt = matchTokenInField(token, nfTitle)
                 val ma = matchTokenInField(token, nfArtist)
                 val mal = matchTokenInField(token, nfAlbum)
                 val mf = matchTokenInField(token, nfFolder)
-                if (mt == null && ma == null && mal == null && mf == null) { ok = false; break }
+                if (mt == null && ma == null && mal == null && mf == null) {
+                    // v1.3.10 假名↔罗马字兜底:「カブトムシ」↔「kabutomushi」(库里是假名、
+                    // 用户按罗马字找,纯字符串归一永远对不上)。命中只计分、**不给高亮区间**
+                    // ——罗马字串的坐标映射不回原字段,硬给会让高亮错位。
+                    val rf = romajiFields ?: listOf(
+                        KanaRomaji.toRomaji(nfTitle.text),
+                        KanaRomaji.toRomaji(nfArtist.text),
+                        KanaRomaji.toRomaji(nfAlbum.text),
+                        KanaRomaji.toRomaji(nfFolder.text),
+                    ).also { romajiFields = it }
+                    if (rf.none { it.contains(token) }) { ok = false; break }
+                    score += ROMAJI_TOKEN_SCORE
+                    continue
+                }
                 score += (mt?.score ?: 0) * 4 + (ma?.score ?: 0) * 3 + (mal?.score ?: 0) * 5 + (mf?.score ?: 0)
                 mt?.let { titleRanges += it.ranges }
                 ma?.let { artistRanges += it.ranges }

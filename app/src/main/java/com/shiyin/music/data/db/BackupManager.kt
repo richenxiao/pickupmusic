@@ -23,6 +23,7 @@ import com.shiyin.music.data.db.ArtistAlbumOrderEntity as AAO
 import com.shiyin.music.data.db.IgnoredFolderEntity as IF
 import com.shiyin.music.data.db.PlayEventEntity as PE
 import com.shiyin.music.data.db.TokenUsageLogEntity as TU
+import com.shiyin.music.data.db.AgentMemoryEntity as AME
 
 /**
  * 用户数据的导出/导入。
@@ -93,6 +94,14 @@ internal class BackupManager(
         val ignoredFolders: List<IF> = emptyList(),
         val playEvents: List<PE> = emptyList(),
         val tokenUsage: List<TU> = emptyList(),
+        /**
+         * v1.3.11:拾光的**长期记忆**——用户长期积累的"她认识你什么",换机/恢复后不该丢
+         * (丢了就是"新设备上的拾光完全不认识你")。可空 + 默认 null → 兼容旧备份。
+         *
+         * FTS 检索索引**不随备份走**(它是派生数据):导入时按正文重新生成,见 [import]。
+         * 刻意**不备** agent_conversation(聊天记录):本次范围只要记忆,对话留待后续版本。
+         */
+        val agentMemory: List<AME>? = null,
         /** DataStore 白名单设置，值带类型前缀（见 `SettingsValueCodec`）。 */
         val settings: Map<String, String> = emptyMap(),
 
@@ -138,6 +147,7 @@ internal class BackupManager(
             ignoredFolders = dao.allIgnoredFolders(),
             playEvents = dao.allPlayEvents(),
             tokenUsage = dao.allTokenUsage(),
+            agentMemory = dao.agentMemories(),
             settings = settings?.exportBackupSettings().orEmpty(),
             mediaIdPaths = mediaIdPaths,
             albumIdKeys = albumIdKeys,
@@ -255,6 +265,27 @@ internal class BackupManager(
             .map { it.copy(id = 0) }
         if (newUsage.isNotEmpty()) dao.insertAllTokenUsage(newUsage)
 
+        // v1.3.11:长期记忆随备份走。业务标识是 UUID(id)而非自增 rowId → 直接 upsert(REPLACE),
+        // 重复导入同一份备份不会翻倍(同 id 覆盖)。
+        // FTS 是**派生索引**,刻意不随备份走:逐条先删旧索引行、再按正文重建——否则导入进来的
+        // 记忆检索不到,表现为"恢复完备份,你问她我叫什么她还是不知道"(数据在、索引空)。
+        val memories = data.agentMemory.orEmpty()
+        for (m in memories) {
+            dao.upsertAgentMemory(m)
+            dao.deleteAgentMemoryFts(m.id)
+            // 已被取代的条目不参与检索,不必建索引(与 RoomMemoryStore.syncFts 的语义一致)
+            if (m.supersededBy != null) continue
+            dao.insertAgentMemoryFts(
+                AgentMemoryFtsEntity(
+                    memoryId = m.id,
+                    content = com.shiyin.music.data.memory.MemoryRules.ftsText(m.content),
+                    tags = com.shiyin.music.data.memory.MemoryRules.ftsText(
+                        m.tags.split(',').map { it.trim() }.filter { it.isNotBlank() }.joinToString(" "),
+                    ),
+                ),
+            )
+        }
+
         val settingsWritten = settings?.importBackupSettings(data.settings.orEmpty()) ?: 0
 
         return ImportStats(
@@ -280,6 +311,7 @@ internal class BackupManager(
             playEvents = newEvents.size,
             playEventsSkipped = data.playEvents.orEmpty().size - newEvents.size,
             tokenUsage = newUsage.size,
+            agentMemory = memories.size,
             settings = settingsWritten,
         )
     }
@@ -317,6 +349,8 @@ internal class BackupManager(
         /** 因为本机已有同一条（mediaId + 时间戳）而跳过的播放记录数。 */
         val playEventsSkipped: Int = 0,
         val tokenUsage: Int = 0,
+        /** v1.3.11:恢复进来的长期记忆条数(含已被取代的历史条目)。 */
+        val agentMemory: Int = 0,
         val settings: Int = 0,
         // v22: 重解析（跨设备）结果
         /** 备份里没有重解析表（v1 老备份）→ 未做重映射，行为与旧版一致。 */
@@ -337,6 +371,7 @@ internal class BackupManager(
             "歌单$playlists / 歌单曲目$playlistTracks / 歌词$manualLyrics / " +
             "专辑曲序$albumOrders / 歌手专辑序$artistAlbumOrders / 忽略文件夹$ignoredFolders / " +
             "播放记录$playEvents" + (if (playEventsSkipped > 0) "(跳过$playEventsSkipped)" else "") + " / " +
+            "拾光记忆$agentMemory / " +
             "Token用量$tokenUsage / 设置$settings" +
             (if (tracksDropped > 0 || albumsDropped > 0) " / ⚠找不到文件而跳过：曲目$tracksDropped 专辑$albumsDropped" else "")
     }

@@ -89,4 +89,43 @@ class BackupDataRoundTripTest {
         assertNull(back.lyricsTranslation)
         assertEquals(0, back.lyricsTranslation.orEmpty().size)
     }
+
+    // ── v1.3.11:长期记忆随备份走(换机/恢复后拾光不该忘了你是谁) ──────────────
+
+    private val memoryJson = """
+        {"version":1,"app":"com.shiyin.music","exportedAt":123,
+         "albumOverride":[],"albumInfoOverride":[],"trackInfoOverride":[],"trackAlbumMove":[],
+         "artists":[],"songArtist":[],"readingOverride":[],"externalReadingEvidence":[],
+         "agentMemory":[{"rowId":1,"id":"m1","type":"personal","content":"用户叫 Richen",
+           "createdAt":10,"updatedAt":20,"importance":3,"source":"explicit",
+           "tags":"richen","supersededBy":null,"embedding":null},
+          {"rowId":2,"id":"m2","type":"music","content":"用户喜欢 aiko",
+           "createdAt":30,"updatedAt":30,"importance":2,"source":"inferred",
+           "tags":"aiko","supersededBy":"m3","embedding":null}]}
+    """.trimIndent()
+
+    @Test fun agentMemory_survivesRoundTrip() {
+        val back = Gson().fromJson(memoryJson, BackupManager.BackupData::class.java)
+        assertEquals(2, back.agentMemory!!.size)
+        val m = back.agentMemory!![0]
+        assertEquals("m1", m.id)
+        assertEquals("personal", m.type)
+        assertEquals("用户叫 Richen", m.content)
+        assertEquals(3, m.importance)
+        assertEquals("explicit", m.source)
+        assertEquals("richen", m.tags)
+        // supersededBy 也必须保住 —— 丢掉它会让"被新说法取代的旧条目"复活成有效记忆
+        assertEquals("m3", back.agentMemory!![1].supersededBy)
+        // 二次往返不丢
+        val back2 = Gson().fromJson(Gson().toJson(back), BackupManager.BackupData::class.java)
+        assertEquals("用户叫 Richen", back2.agentMemory!![0].content)
+        assertEquals("explicit", back2.agentMemory!![0].source)
+        assertEquals("m3", back2.agentMemory!![1].supersededBy)
+    }
+
+    @Test fun oldBackup_missingAgentMemory_isNullAndOrEmptySafe() {
+        val back = Gson().fromJson(oldJson, BackupManager.BackupData::class.java)
+        assertNull(back.agentMemory)
+        assertEquals(0, back.agentMemory.orEmpty().size)
+    }
 }

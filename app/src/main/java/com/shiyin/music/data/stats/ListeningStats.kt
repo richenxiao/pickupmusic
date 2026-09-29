@@ -38,11 +38,17 @@ data class WeeklyStats(
 fun currentWeekStartMillis(now: Long = System.currentTimeMillis()): Long {
     val cal = java.util.Calendar.getInstance()
     cal.timeInMillis = now
-    cal.set(java.util.Calendar.DAY_OF_WEEK, java.util.Calendar.MONDAY)
+    // v1.3.9 修复「周日当天本周统计为空」:原实现用 cal.set(DAY_OF_WEEK, MONDAY),
+    // 而 Calendar 的"一周从哪天开始"由 locale 决定(默认常为**周日**)——
+    // 周日调用时它会把日期**向后**拨到明天(下周一) → 起点 > now → 本周事件全被过滤掉。
+    // 改为:先清到当天零点,再按 DAY_OF_WEEK 数值回退到本周一(不依赖 locale)。
     cal.set(java.util.Calendar.HOUR_OF_DAY, 0)
     cal.set(java.util.Calendar.MINUTE, 0)
     cal.set(java.util.Calendar.SECOND, 0)
     cal.set(java.util.Calendar.MILLISECOND, 0)
+    val dow = cal.get(java.util.Calendar.DAY_OF_WEEK)  // SUNDAY=1 … SATURDAY=7
+    val daysSinceMonday = (dow + 5) % 7                // 周一=0 … 周日=6
+    cal.add(java.util.Calendar.DAY_OF_YEAR, -daysSinceMonday)
     return cal.timeInMillis
 }
 

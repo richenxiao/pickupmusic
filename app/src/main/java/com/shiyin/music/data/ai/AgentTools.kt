@@ -34,7 +34,7 @@ object AgentTools {
         addProperty("type", "function")
         add("function", JsonObject().apply {
             addProperty("name", WEB_SEARCH)
-            addProperty("description", "联网搜索网页资料。遇到实时信息、事实核查、发行日期、曲目表、人物/作品资料等你不确定或训练数据没有的内容时调用。")
+            addProperty("description", "联网搜索网页资料。**下面几类必须调用本工具,不要凭记忆答**:① 用户明确要求联网(「搜一下」「帮我查查」「网上查」);② 答案会随时间变化、或你的知识可能过时的话题(最新/最近/今年/目前、新歌新专辑、发行与出道时间、巡演演唱会、榜单销量、新闻近况);③ 你没有把握的具体事实(某歌手什么时候出道、某首歌哪一年发行、这个版本是谁唱的、歌词出处)。搜不到也没关系,系统会把结果如实告诉用户。**不要**为了音乐观点/感想/闲聊去搜(「你觉得 X 怎么样」「这首歌很适合秋天」)——那些直接聊。")
             add("parameters", JsonObject().apply {
                 addProperty("type", "object")
                 add("properties", JsonObject().apply {
@@ -101,6 +101,7 @@ object AgentTools {
      *
      * @param maxSearchRounds 允许的**成功搜索**轮数上限。超限后摘掉 tools 再要一次最终回答。
      * @param onSearch 每次真正发起 Tavily 搜索时回调查询词(UI 步骤行用)。
+     * @param onSearchComplete 每次搜索完成（获得结果或失败）时回调，用于更新 UI 状态为 DONE/FAILED。
      * @return **永不为 null**。失败看 [WebLoopResult.failed] / [WebLoopResult.error]；
      *         [WebLoopResult.toolsSupported]=false 表示供应商不支持 tools。
      */
@@ -112,6 +113,7 @@ object AgentTools {
         maxTokens: Int = 4096,
         maxSearchRounds: Int = 4,
         onSearch: (String) -> Unit = {},
+        onSearchComplete: (String, Boolean) -> Unit = { _, _ -> },
     ): WebLoopResult {
         val tools = JsonArray().apply { add(webSearchTool()) }
         val messages = JsonArray().apply {
@@ -154,6 +156,18 @@ object AgentTools {
             if (!resp.thinking.isNullOrBlank()) thinking = resp.thinking
 
             if (resp.toolCalls.isEmpty()) {
+                // v1.3.9: 空 content 不是终态(推理模型偶发把正文全写进思考链)——
+                // 追问一轮要最终回答,硬上限兜底,与 dispatch 同一契约。
+                if (resp.content.isNullOrBlank() && rounds < hardRoundCap) {
+                    android.util.Log.w("Agent", "web 循环第 $rounds 轮无工具无正文,追问最终回答")
+                    messages.add(JsonObject().apply {
+                        addProperty("role", "assistant"); addProperty("content", "(上一轮未输出正文)")
+                    })
+                    messages.add(JsonObject().apply {
+                        addProperty("role", "user"); addProperty("content", "请基于已有信息直接给出最终回答,不要再调用工具。")
+                    })
+                    continue
+                }
                 return WebLoopResult(resp.content, searches, contexts, pt, ct, cache, thinking, toolsSupported = true)
             }
             // 已达上限后摘掉 tools 的那一轮,模型仍执意要工具 → 直接收尾,
@@ -198,6 +212,8 @@ object AgentTools {
                             val ctx = runCatchingCancellable {
                                 TavilyService.search(tavilyKey, q, includeAnswer = true)
                             }.getOrNull()
+                            val success = ctx != null
+                            onSearchComplete(q, success)
                             (ctx ?: "(本次搜索没有返回资料)").also { contexts += it }
                         }
                     }
@@ -226,6 +242,15 @@ object AgentTools {
     // 最后一行... 全部不再需要(见 AgentEngine.route 的删除)。
 
     const val CLARIFY = "clarify"
+
+    /**
+     * ⚠️ v1.3.10 **临时诊断开关**——用途唯一:验证"模型触发的 clarify → VM 状态 → UI 渲染"
+     * 这条链路确实接通(用户要求实测,不接受只读代码推断)。用户发这句就强制返回一次澄清,
+     * 不调模型、不花钱。
+     *
+     * **验证完成、截图确认后必须删除**:本常量 + [dispatch] 里的 PROBE 分支。
+     */
+    private const val CLARIFY_PROBE = "⚡clarify自检"
 
     /** 模型选中的技能调用。args 已从 JSON 抽成字符串表。 */
     data class SkillInvocation(val key: String, val args: Map<String, String>)
@@ -265,25 +290,65 @@ object AgentTools {
      * clarify 的边界写进 prompt + 工具 description 双处(用户 D3 的硬性要求):
      * clarify 只解决"多个技能都成立、无从选择",不解决"你没看清工具说明"。
      */
-    private fun dispatchSystemPrompt(contextBlock: String): String = buildString {
-        appendLine("你是「拾音 PickUpMusic」音乐播放器里的 Agent,用户的听歌伙伴。性格:懂音乐、随和、有点幽默、说话像朋友,不说客服腔,不复述自己的功能清单(用户主动问才介绍)。中文回复简洁自然,一般 1-3 句。")
+    internal fun dispatchSystemPrompt(contextBlock: String, memoryBlock: String = ""): String = buildString {
+        // v1.3.10: 人设改用 AgentEngine.persona 单一真源(与 AgentEngine.route 同一份)。
+        // 人格是长期资产,两处各写一份会漂移成两个人;行为准则/工具说明仍留在本函数。
+        appendLine(AgentEngine.persona)
         appendLine()
         appendLine("行为准则:")
-        appendLine("1. 用户想对音乐库做操作(排曲序/改歌名/改歌手名/找歌词/查库里有没有)→ 调用对应工具。调用后不要再用文字描述你打算怎么做,系统会执行。")
-        appendLine("2. 纯聊天、问候、感慨、聊音乐感受 → 直接自然回复,不要调用任何工具。")
-        appendLine("3. 需要实时信息、事实核查、作品或人物资料 → 调用 web_search。")
-        appendLine("4. 只有当你确实无法在可用工具之间做出可靠选择时,才调用 clarify 追问。**不要**用 clarify 掩盖没看清工具说明——看完工具描述能判断该用哪个,就必须直接调用那个工具;也不要为寒暄、确认、征求许可而追问。")
+        // v1.3.10 需求 A27(去 workflow 化):旧写法是"关键词 → 对应工具"的映射表
+        // ("排曲序/改歌名/…→调用对应工具"),把模型降级成了规则分发器。改成**能力优先**:
+        // 工具清单与参数在 tools 里,由模型自己判断用哪个、必要时连续调用多个。
+        appendLine("1. 用你认为合适的工具达成用户目标:工具清单与参数见 tools,**自己判断该用哪个**;必要时**连续调用多个**(例:先查库里有什么再决定播哪首;先搜内置歌词源 → 都没有再上网搜 → 找到后用 save_lyrics 落地)。调用工具后不要再用文字描述你打算怎么做,系统会执行。")
+        // v1.3.12(真机 bug):弱模型把"语义上和歌有关"当成"用户要我播放"——上一轮刚放过
+        // Pretender,这一轮「秋天就喜欢听些苦情歌」又放了一遍。规则 2 原有措辞挡不住,
+        // 这里把**执行意图门槛**写死:感想≠命令,上一轮的动作不构成本轮的执行理由。
+        appendLine("2. 纯聊天、问候、感慨、聊音乐感受 → 直接自然回复,不要调用任何工具。**用户表达感想/评论/心情(「秋天就喜欢听些苦情歌」「这首歌很适合秋天」「这首歌前奏很好听」)时只在文字里回应——那不是播放指令。上一轮刚播放过某首歌,不构成这一轮执行播放的理由:只有**本轮这条消息**里出现明确动作词(播放/放一下/来一首/我想听/换一首/暂停/下一首…)才算命令。**")
+        appendLine("3. 遇到**你不确定、或本来就随时会变的事实**(人物近况、作品发行、销量、榜单、新闻、年份/日期、任何你没有把握的细节)→ **必须先调用 web_search**,不要凭记忆猜、不要编。搜不到就如实说没查到。宁可多搜一次,也不要在用户能一眼看穿的地方猜错。另两类同样**必须搜**:用户**明确要求**联网(「搜一下」「帮我查查」「网上查」),以及问到**时效信息**(最新/最近/今年/目前、新歌新专辑、发行与出道时间、巡演、榜单、近况)。反之,音乐观点与感想(「你觉得 X 怎么样」「这首歌很适合秋天」)不要为了搜而搜。")
+        // v1.3.10: 旧措辞只有"什么时候不要用",且没堵住"正文文字反问"这条阻力最小的捷径
+        // (模型不确定时写一句"你是想A还是B?"即可绕开工具)——这是 clarify 从未被触发的
+        // 主因。现在改成:不确定**必须**用工具问;同时保留"能推断就别问"防止走向另一个极端。
+        appendLine("4. 不确定用户要哪一种(两种以上理解都说得通、且从上下文推断不出来)时:**用 clarify 提一个选择题,不要用正文反问**——正文里的选择用户点不了。能从上下文合理推断的直接做,不要打断他;寒暄、确认、征求许可也不要问。")
         appendLine("5. 各工具能做什么、参数怎么填,以工具描述为准。")
-        if (contextBlock.isNotEmpty()) {
+        appendLine("6. 你只能做到工具列表里的事。用户想听歌/暂停/切歌 → 直接调 playback_control 执行,不要只说「要不要我帮你播放」却不调用工具;工具列表之外的能力(如改系统设置、删文件)不要承诺,明说做不到即可。**幂等:点名的那首歌如果已经在播放,不要重新从头放——直接说「已经在放了」(进度见 [当前播放]);只有用户明确说「重新播放/从头/再放一遍」才重来。**")
+        appendLine("7. [当前上下文] 只有在用户的话确实指向它时才能用。用户问的对象(歌名/歌手/专辑)与上下文对不上时,就当上下文不存在——**不要**把当前播放的歌硬套到用户的问题上,更不要基于这种错配编答案。")
+        // v1.3.10 自主选曲:一句话点到即止。具体怎么用写在各工具的 description 里
+        // (那里是模型"读"的地方,不会变成对用户的演示);规则本身不过度说教。
+        appendLine("8. 用户想听歌但没点名内容(「你自己挑一首」「按我现在的心情放一首」)→ 用 discover_music 挑一首放上,不要反问歌名。")
+        // v1.3.10 需求 A21(P2):记忆注入块的使用纪律——相关才用、没检索到别编。
+        // v1.3.11:明确要求记住的落库**已经在这一轮开始前完成**(确定性路径,见
+        // MainViewModel 的 explicit 保存)。所以这里的措辞必须跟着改成"已真正写入",
+        // 并且必须交代失败态——否则用户在保存失败时会听到"好的我记住了"(假状态)。
+        appendLine("9. [关于这位用户,你记得的事] 是系统检索到的**真实历史记忆**:与当前话题相关时自然用上(别复述成资料朗读),没有这一块或没相关内容就说没印象,**绝不编造「我记得」。** 用户让你记住某事时,系统在回复前就已经**真正写入了**:若下方状态说保存失败,**必须如实说没记住,不许说你已经记住**。")
+        // v1.3.11 第二阶段(真机实测):模型在思考里写「The user is asking me to remember
+        // something, but I don't have a memory tool available in my function list...」——
+        // 它把"工具列表里没有记忆工具"读成了"这个产品没有长期记忆"。记忆是 runtime 能力,
+        // 不经工具、也由系统在回复前完成;这句必须正面纠正,否则同一个人会时不时否认记得用户。
+        appendLine("10. **记忆是系统能力,不是 Agent 工具**:用户的长期记忆由系统在生成回复前自动完成检索与保存,你不需要、也不通过工具去读写记忆;当 [关于这位用户,你记得的事] 出现时直接使用它。**绝不要因为工具列表里没有记忆相关的工具,就声称自己没有长期记忆能力或记不住用户**——那与事实不符。系统没有提供相关记忆时,不得凭空虚构用户过去的信息。")
+        // v1.3.12(真机反馈"冷漠、敷衍、几乎没有颜文字"):人设里本来就写着"不要频繁用
+        // 「……」""颜文字真的会偶尔使用"——不是人设缺规则,而是**没被遵守**。所以不动人设,
+        // 在这里把"克制≠敷衍"落成可执行的几条,并把省略号滥用单列出来。
+        appendLine("11. **语气(克制 ≠ 冷淡)**:默认用自然完整的句子。**不要每句都带「……」**——它只用在真正需要停顿、犹豫、轻微无奈的少数场合;连着来「好的……」「我知道了……」「这个嘛……」会显得敷衍。轻松闲聊、被夸、小小得意、被调侃时,可以**偶尔**自然带一个颜文字(如「这首确实挺适合秋天的 (´-ω-`)」),但绝不每条都加、也不堆砌。简洁是把话说清楚,不是把话咽回去:该有的回应要有,只是不啰嗦。")
+        // v1.3.12:出错时的语气——一次说清原因就够,不反复道歉(与"不哭闹卖惨"同源)。
+        appendLine("12. **出错时**:直接说清是哪儿判断错了、怎么改,一次讲完(如「你说得对,那句只是感想,我误判成播放指令了」)。不要连续道歉、不要「对不起……」式堆叠,也不要找借口。")
+        // v1.3.11:领域上下文与记忆分层(见 AgentEngine.contextSections)——记忆不是领域上下文。
+        val sections = AgentEngine.contextSections(contextBlock, memoryBlock)
+        if (sections.isNotEmpty()) {
             appendLine()
-            appendLine("[当前上下文]")
-            appendLine(contextBlock)
+            appendLine(sections)
         }
     }.trimEnd()
 
-    /** 组装工具表:全部技能 + (可选)web_search + clarify。 */
-    private fun buildTools(includeWebSearch: Boolean): JsonArray = JsonArray().apply {
+    /**
+     * 组装工具表:全部技能 + (可选)web_search + clarify。
+     *
+     * [blockPlayback] = true → **摘掉播放类技能**。用于确定性闸门判定"这句不是播放指令"
+     * 之后的兜底:模型手里没有播放工具,就只能按普通聊天回应(见 MainViewModel 的播放闸门)。
+     * 这是"弱模型误判感想=命令"的最后一道保护,不指望模型自己守规矩。
+     */
+    private fun buildTools(includeWebSearch: Boolean, blockPlayback: Boolean = false): JsonArray = JsonArray().apply {
         for (s in AgentEngine.skills) {
+            if (blockPlayback && s.key in AgentEngine.PLAYBACK_EXEC_SKILLS) continue
             add(JsonObject().apply {
                 addProperty("type", "function")
                 add("function", JsonObject().apply {
@@ -313,9 +378,15 @@ object AgentTools {
             addProperty("name", CLARIFY)
             addProperty(
                 "description",
-                "向用户追问以澄清意图。硬性边界:仅当【多个操作工具的语义都成立、你无法从中做出可靠选择】时才使用。" +
-                    "不要用它弥补某个工具描述不清——若能依据现有工具描述做出可靠判断,必须直接调用那个工具。" +
-                    "也不要为寒暄、确认、征求许可而调用它。",
+                // v1.3.10: 从"通篇禁令"改成**正向授权**。旧措辞只有三条"不要",且把触发场景
+                // 限死在"多个操作工具冲突"(=技能选哪个),对"用户意图本身有歧义"没有任何授权
+                // ——模型读到的全是"别用",于是实际使用中一次都没触发过(用户实测反馈)。
+                "当你不确定用户到底想要哪一种时,向他提一个选择题。" +
+                    "**必须用本工具,不要用正文文字反问**——只有经它提出的问题才能变成可点的选项。" +
+                    "什么时候问(两条都满足):① 用户这句话确实有两种以上都说得通的理解,选错就会做错事;" +
+                    "② 你无法从当前对话/上下文/当前播放状态合理推断出他想要哪个。" +
+                    "**能从上下文合理推断的直接做,不要问**;也不要为寒暄、确认、征求许可而提问。" +
+                    "问题简短直接;选项 2-4 个,互斥、具体、有区分度,不要写「其他」这类兜底选项(兜底出口由界面统一提供)。",
             )
             add("parameters", JsonObject().apply {
                 addProperty("type", "object")
@@ -359,7 +430,13 @@ object AgentTools {
         val opts = obj?.getAsJsonArray("options")?.mapNotNull {
             if (it?.isJsonPrimitive == true) it.asString.takeIf { s -> s.isNotBlank() } else null
         } ?: emptyList()
-        return ClarifyRequest(q, opts)
+        // v1.3.10: 选项上限 4(规格:2-4 个)。模型偶尔一次给十几条——卡片会变成一屏菜单,
+        // 与"选择题"的定位不符。超出部分丢弃并留痕(可诊断),不静默变形。
+        val capped = opts.distinct()
+        if (capped.size > 4) {
+            android.util.Log.w("Agent", "clarify 选项 ${capped.size} 个,截断到 4:${capped.drop(4)}")
+        }
+        return ClarifyRequest(q, capped.take(4))
     }
 
     /** assistant 的 tool_calls 原样回显(OpenAI 协议要求,下一轮请求要带)。
@@ -401,17 +478,37 @@ object AgentTools {
         tavilyKey: String,
         userText: String,
         contextBlock: String = "",
+        /** v1.3.11:记忆块(独立于 [contextBlock] 的领域上下文)——见 AgentEngine.contextSections。 */
+        memoryBlock: String = "",
         history: List<Pair<String, String>> = emptyList(),
         maxSearchRounds: Int = 2,
+        /**
+         * v1.3.12:摘掉播放类技能后再问一次 —— 用于播放执行闸门判定"这句不是播放指令"的兜底。
+         * 传 true 时模型没有播放工具可调,只能按普通聊天回应(见 MainViewModel 的播放闸门)。
+         */
+        blockPlayback: Boolean = false,
         onThinking: (String?) -> Unit = {},
         onContent: (String) -> Unit = {},
         onSearch: (String) -> Unit = {},
+        onSearchComplete: (String, Boolean) -> Unit = { _, _ -> },
     ): DispatchResult {
-        val tools = buildTools(includeWebSearch = tavilyKey.isNotBlank())
+        // ⚠️ 临时诊断分支(见 [CLARIFY_PROBE],验证后删除)
+        // 两种写法都认:带 ⚡ 的原串,或纯文字 "clarify自检"(手机上少打一个 emoji)。
+        val probeText = userText.trim()
+        if (probeText == CLARIFY_PROBE || probeText.equals("clarify自检", ignoreCase = true)) {
+            android.util.Log.i("Agent", "clarify PROBE: 强制返回一次澄清(未调模型)")
+            return DispatchResult(
+                clarify = ClarifyRequest(
+                    question = "要我把这首加进队列,还是直接播放?",
+                    options = listOf("加进队列", "直接播放", "换一首风格接近的"),
+                ),
+            )
+        }
+        val tools = buildTools(includeWebSearch = tavilyKey.isNotBlank(), blockPlayback = blockPlayback)
         val messages = JsonArray().apply {
             add(JsonObject().apply {
                 addProperty("role", "system")
-                addProperty("content", dispatchSystemPrompt(contextBlock))
+                addProperty("content", dispatchSystemPrompt(contextBlock, memoryBlock))
             })
             for ((role, text) in history) {
                 add(JsonObject().apply {
@@ -466,20 +563,43 @@ object AgentTools {
 
             // 无工具调用 = 这一轮就是最终回复(闲聊 / 问答 / 搜索后的总结)
             if (resp.toolCalls.isEmpty()) {
-                return snap().copy(chatReply = contentSb.toString().trim().takeIf { it.isNotBlank() })
+                val finalText = contentSb.toString().trim()
+                if (finalText.isNotBlank()) return snap().copy(chatReply = finalText)
+                // v1.3.9: 模型既没调工具也没吐正文(推理模型偶发:正文全进思考链、content
+                // 为空)。这**不是终态**——直接返回 null 会让用户停在中间步骤永远等不到
+                // 回答。回灌一条追问让模型再给最终回答;硬上限兜底防死循环烧钱。
+                if (rounds < hardCap) {
+                    android.util.Log.w("Agent", "dispatch: 第 $rounds 轮无工具调用且无正文,追问要求最终回答")
+                    messages.add(JsonObject().apply {
+                        addProperty("role", "assistant")
+                        addProperty("content", "(上一轮未输出正文)")
+                    })
+                    messages.add(JsonObject().apply {
+                        addProperty("role", "user")
+                        addProperty("content", "请基于已有信息直接给出最终回答,不要再调用工具。")
+                    })
+                    contentSb.clear()
+                    continue
+                }
+                return snap().copy(chatReply = null)
             }
 
-            val skillCall = resp.toolCalls.firstOrNull { AgentEngine.skillByKey(it.name) != null }
+            // v1.3.10 仲裁顺序反转:**澄清优先于技能**。
+            // 模型明确表示"不确定"时,它顺手附带选的那个技能恰恰是最不可信的猜测——
+            // 拿猜测覆盖掉诚实的那一半,用户会看到"答非所问地执行了"。
+            // (用户 2026-09-28 定调;旧顺序是"技能优先、clarify 被丢"。)
             val clarifyCall = resp.toolCalls.firstOrNull { it.name == CLARIFY }
-            val searchCalls = resp.toolCalls.filter { it.name == WEB_SEARCH }
-
-            // 技能优先:它是用户真实意图。澄清只在没有技能可执行时才有意义。
+            if (clarifyCall != null) {
+                val req = parseClarify(clarifyCall.argumentsJson)
+                // 可诊断点:此前"clarify 从未触发"只能靠推断,就是因为缺这一行。
+                android.util.Log.i("Agent", "clarify: q=「${req.question}」 opts=${req.options}")
+                return snap().copy(clarify = req)
+            }
+            val skillCall = resp.toolCalls.firstOrNull { AgentEngine.skillByKey(it.name) != null }
             if (skillCall != null) {
                 return snap().copy(skill = SkillInvocation(skillCall.name, parseArgs(skillCall.argumentsJson)))
             }
-            if (clarifyCall != null) {
-                return snap().copy(clarify = parseClarify(clarifyCall.argumentsJson))
-            }
+            val searchCalls = resp.toolCalls.filter { it.name == WEB_SEARCH }
 
             // 到这里只剩 web_search(或模型编造的工具名)。先把 assistant 回显出去,
             // 再逐条给 tool 响应——顺序必须成对,否则严格网关(DeepSeek)下一轮 400。
@@ -494,8 +614,11 @@ object AgentTools {
                         else {
                             searchRounds++
                             onSearch(q)
-                            runCatchingCancellable { TavilyService.search(tavilyKey, q, includeAnswer = true) }
-                                .getOrNull() ?: "(本次搜索没有返回资料)"
+                            val ctx = runCatchingCancellable { TavilyService.search(tavilyKey, q, includeAnswer = true) }
+                                .getOrNull()
+                            val success = ctx != null
+                            onSearchComplete(q, success)
+                            ctx ?: "(本次搜索没有返回资料)"
                         }
                     }
                 }

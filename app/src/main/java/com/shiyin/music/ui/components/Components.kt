@@ -15,6 +15,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -33,6 +34,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
@@ -670,6 +672,12 @@ object ArtCache {
                 diskCache.read(context, artUrl, bucket(px))?.let { bytes ->
                     android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.also {
                         android.util.Log.d("ArtCache", "disk hit artUrl=${artUrl.takeLast(40)} px=$px bucket=${bucket(px)}")
+                    } ?: run {
+                        // v1.3.10: 盘上是解不开的字节(旧版本把 403/404 错误页也落了盘)→
+                        // 删掉并当作未命中继续重新下载,坏缓存不再永久占住这一格。
+                        android.util.Log.d("AIM", "disk bytes decode FAIL → drop ${artUrl.take(50)}")
+                        diskCache.delete(context, artUrl, bucket(px))
+                        null
                     }
                 } ?: run {
                     // 2) 未命中：联网下载，落盘，解码
@@ -684,14 +692,23 @@ object ArtCache {
                         .build()
                     val resp = client.newCall(req).execute()
                     val bytes = resp.body?.bytes()
-                    if (bytes == null) {
-                        android.util.Log.d("AIM", "img download null body code=${resp.code} ${artUrl.take(50)}")
+                    // v1.3.10: 非 2xx 不落盘也不解码。Discogs 的图片 URL 带签名会过期,
+                    // 过期后返回 403 错误页;旧实现不校验状态码,把错误页当图片字节写进
+                    // 磁盘缓存 → 这一格此后永远解不开(用户反馈"部分歌手头像显示不出来"
+                    // 且"改几次都没修好"的直接原因:坏字节被永久缓存)。
+                    if (bytes == null || !resp.isSuccessful) {
+                        android.util.Log.d("AIM", "img download fail code=${resp.code} ${artUrl.take(50)}")
+                        return@run null
+                    }
+                    val bmp = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                    if (bmp == null) {
+                        android.util.Log.d("AIM", "img decode FAIL bytes=${bytes.size} code=${resp.code} ${artUrl.take(50)}")
                         return@run null
                     }
                     // 只对歌手写真(discogs)记成功日志，专辑封面不打扰
-                    if (artUrl.contains("discogs")) android.util.Log.d("AIM", "img ok bytes=${bytes.size} code=${resp.code} ${artUrl.take(50)}")
+                    if (artUrl.contains("discogs")) android.util.Log.d("AIM", "img ok bytes=${bytes.size} ${artUrl.take(50)}")
                     diskCache.write(context, artUrl, bucket(px), bytes) // 落盘供下次冷启动命中
-                    android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                    bmp
                 }
             } catch (e: Exception) {
                 android.util.Log.d("AIM", "img download FAIL ${artUrl.take(50)}: ${e.javaClass.simpleName} ${e.message?.take(80)}")
@@ -747,15 +764,25 @@ internal fun rememberAlbumArtState(
 
 /** v9: load an iTunes candidate thumbnail by its remote artUrl for the cover
  *  picker grid. v1.2.0 起磁盘缓存，翻过的候选下次秒出；throws nothing —
- *  null until the fetch resolves. */
+ *  null until the fetch resolves.
+ *
+ *  v1.3.10: 加 [onRemoteLoadFailed]——远端 URL 加载失败(典型:Discogs 签名过期 403、
+ *  源站删图)时通知调用方清缓存重新解析。此前失败后缓存行仍在、URL 仍指向死链,
+ *  头像永久空白(用户反馈"部分歌手头像显示不出来,改几次都没修好")。
+ *  同一 URL 只上报一次,重组/重试不会打成风暴;本地 file://、content:// 不上报
+ *  (多为文件缺失,重解析无意义)。 */
 @Composable
-fun rememberCandidateArt(artUrl: String?, sizeDp: Dp): ImageBitmap? {
+fun rememberCandidateArt(artUrl: String?, sizeDp: Dp, onRemoteLoadFailed: (() -> Unit)? = null): ImageBitmap? {
     val context = LocalContext.current
     val px = with(LocalDensity.current) { sizeDp.roundToPx() }.coerceAtLeast(32)
+    val reported = remember(artUrl) { java.util.concurrent.atomic.AtomicBoolean(false) }
     val state = produceState<ImageBitmap?>(null, artUrl) {
         value = artUrl?.let {
             val bmp = ArtCache.loadCandidateBitmap(context, it, px)
             android.util.Log.d("AIM", "rememberCandidateArt url=${it.take(55)} px=$px bmp=${bmp != null}")
+            if (bmp == null && it.startsWith("http") && reported.compareAndSet(false, true)) {
+                onRemoteLoadFailed?.invoke()
+            }
             bmp?.asImageBitmap()
         }
     }
@@ -828,6 +855,17 @@ fun rememberCoverPalette(track: Track?): Pair<Color, Color> {
  * the Fit margins as the "green/orange default background"). The background
  * only shows for cover-free tracks, using the generative palette.
  */
+/**
+ * v1.3.10 需求 A17:封面"换了一张"时的过渡方式。
+ *
+ * - [CROSS_FADE] 旧封面垫底淡出、新封面淡入(默认;播放页/列表等处)。
+ * - [FLIP] **翻面**:沿 Y 轴 0°→180°,过 90°(侧面不可见)时换画,后半程补 `scaleX=-1`
+ *   抵消镜像。用于**封面位置固定**的场景——迷你条的设计是"封面不跟拖动走,只有歌名/歌手滑",
+ *   所以换封面必须靠它自己的动效交代,否则就是硬切/闪一下。
+ * - [NONE] 直接换,不做过渡。
+ */
+enum class CoverTransition { CROSS_FADE, FLIP, NONE }
+
 @Composable
 fun CoverArt(
     track: Track?,
@@ -838,6 +876,8 @@ fun CoverArt(
     fillToParent: Boolean = false,
     modifier: Modifier = Modifier,
     coverScope: ArtCache.CoverScope = ArtCache.CoverScope.AUTO,
+    /** 专辑切换时的过渡方式,见 [CoverTransition]。 */
+    transition: CoverTransition = CoverTransition.CROSS_FADE,
 ) {
     val artState = rememberAlbumArtState(track, size, coverScope)
     val art = artState.art
@@ -852,29 +892,52 @@ fun CoverArt(
     //        ——旧封面垫底淡出、新封面淡入,两层同时在场,无中间空帧。
     var lastArt by remember { mutableStateOf<ImageBitmap?>(null) }
     var prevArt by remember { mutableStateOf<ImageBitmap?>(null) }
+    /** 翻面的"背面"内容(换掉的那张旧封面);非空 = 正在翻。 */
+    var flipFrom by remember { mutableStateOf<ImageBitmap?>(null) }
     var lastAlbumId by remember { mutableLongStateOf(Long.MIN_VALUE) }
     val fadeAlpha = remember { androidx.compose.animation.core.Animatable(1f) }
+    val flipRot = remember { androidx.compose.animation.core.Animatable(0f) }
+    // 只在跨过 90°(换画的那一瞬)通知重组;旋转角本身走 graphicsLayer 延迟读,逐帧不重组
+    val flipSecondHalf by remember { derivedStateOf { flipRot.value > 90f } }
     LaunchedEffect(art) {
         val target = art ?: run {
-            // art 变 null(加载中 / track 置空):必须清掉交叉淡化的中间态。
-            // 否则在上一轮 240ms 淡化未跑完时再切歌,prevArt 未清、fadeAlpha 停在
-            // 0.2~0.8,下一次绘制就是"半透明封面压在上一张封面上"的冻结重影。
+            // art 变 null(加载中 / track 置空):必须清掉过渡中间态。
+            // 否则在上一轮过渡未跑完时再切歌,残留的 prevArt/翻面态会让下一次绘制变成
+            // "半透明封面压在上一张上"或"翻到一半停住"的重影。
             prevArt = null
+            flipFrom = null
+            flipRot.snapTo(0f)
             fadeAlpha.snapTo(1f)
             return@LaunchedEffect
         }
         val albumChanged = track?.albumId != lastAlbumId
-        if (lastArt != null && albumChanged && target !== lastArt) {
-            prevArt = lastArt
-            lastArt = target
-            lastAlbumId = track?.albumId ?: Long.MIN_VALUE
-            fadeAlpha.snapTo(0f)
-            fadeAlpha.animateTo(1f, tween(240, easing = androidx.compose.animation.core.FastOutSlowInEasing))
-            prevArt = null
-        } else {
-            lastArt = target
-            lastAlbumId = track?.albumId ?: Long.MIN_VALUE
-            fadeAlpha.snapTo(1f)
+        val swapped = lastArt != null && albumChanged && target !== lastArt
+        when {
+            // v1.3.10 需求 A17:翻面——迷你条用。封面位置固定时,靠它交代"换了一张"。
+            swapped && transition == CoverTransition.FLIP -> {
+                flipFrom = lastArt
+                lastArt = target
+                lastAlbumId = track?.albumId ?: Long.MIN_VALUE
+                flipRot.snapTo(0f)
+                flipRot.animateTo(180f, tween(360, easing = androidx.compose.animation.core.FastOutSlowInEasing))
+                // 收尾:此时朝观众的是 lastArt(新封面),180° 与 0° 视觉等价 → 归零不跳变
+                flipFrom = null
+                flipRot.snapTo(0f)
+            }
+            swapped && transition == CoverTransition.CROSS_FADE -> {
+                prevArt = lastArt
+                lastArt = target
+                lastAlbumId = track?.albumId ?: Long.MIN_VALUE
+                fadeAlpha.snapTo(0f)
+                fadeAlpha.animateTo(1f, tween(240, easing = androidx.compose.animation.core.FastOutSlowInEasing))
+                prevArt = null
+            }
+            else -> {
+                lastArt = target
+                lastAlbumId = track?.albumId ?: Long.MIN_VALUE
+                flipRot.snapTo(0f)
+                fadeAlpha.snapTo(1f)
+            }
         }
     }
     // 显示目标:同一首**还在加载** → 沿用上一张(消掉 null→首字的闪烁);
@@ -882,23 +945,49 @@ fun CoverArt(
     // 旧实现是 `art ?: lastArt`,把"没有封面"也当成"加载中",于是无封面的曲目会
     // 永久显示上一首的封面(列表滚动复用 slot 时更明显)。
     val display = art ?: lastArt?.takeIf { !artState.resolved }
+    // v1.3.10 需求 A17 细节修正(用户:"A → B 时先闪 0.1s 的 B 封面,然后才翻面"):
+    // 换歌那一帧 art 往往**已经就绪**(封面早在拖动时就缓存好了),于是会先画出 B,
+    // 而翻面状态是在 LaunchedEffect 里下一帧才建立的 → 中间露一帧 B。
+    // 修法:翻面模式下,只要"专辑已变但翻面尚未开始",这一帧继续画**旧封面**,
+    // 等翻面状态到位再翻过去 → 视觉上从 A 直接翻到 B,没有中间帧。
+    val pendingFlip = transition == CoverTransition.FLIP && flipFrom == null &&
+        lastArt != null && lastAlbumId != (track?.albumId ?: Long.MIN_VALUE)
+    val shown = if (pendingFlip) lastArt else display
     Box(
         modifier = modifier
             .then(sizeMod)
             .clip(shape)
-            .background(if (display != null) Color.Transparent else bg),
+            .background(if (shown != null) Color.Transparent else bg),
         contentAlignment = Alignment.Center,
     ) {
-        if (display != null) {
-            // 旧封面垫底(淡出层):交叉淡化期间两层同时在场。
-            prevArt?.let { p ->
-                Image(p, contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+        if (shown != null) {
+            if (flipFrom != null) {
+                // 翻面中:单层旋转。过 90° 换成新封面并补 scaleX=-1 抵消镜像。
+                // 后半程取新封面;若此刻新封面还没就绪(极冷场景)就继续用旧的那张,
+                // 不要留空帧。
+                val img = if (flipSecondHalf) (display ?: flipFrom) else flipFrom
+                img?.let {
+                    Image(
+                        it, contentDescription = null,
+                        modifier = Modifier.fillMaxSize().graphicsLayer {
+                            rotationY = flipRot.value
+                            cameraDistance = 12f * density
+                            scaleX = if (flipRot.value > 90f) -1f else 1f
+                        },
+                        contentScale = ContentScale.Crop,
+                    )
+                }
+            } else {
+                // 旧封面垫底(淡出层):交叉淡化期间两层同时在场。
+                prevArt?.let { p ->
+                    Image(p, contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+                }
+                Image(
+                    shown, contentDescription = null,
+                    modifier = Modifier.fillMaxSize().graphicsLayer { alpha = fadeAlpha.value },
+                    contentScale = ContentScale.Crop,
+                )
             }
-            Image(
-                display, contentDescription = null,
-                modifier = Modifier.fillMaxSize().graphicsLayer { alpha = fadeAlpha.value },
-                contentScale = ContentScale.Crop,
-            )
         } else {
             if (showDeco) {
                 Box(
@@ -985,6 +1074,28 @@ fun CoverArtMosaic(
 // ── shadows (organic sm/md/lg approximation) ───────────────────────────────
 fun Modifier.shadowSm(shape: Shape) = this.shadow(2.dp, shape, clip = false)
 fun Modifier.shadowMd(shape: Shape) = this.shadow(6.dp, shape, clip = false)
+
+/**
+ * v1.3.10 需求 A20:点击**无涟漪**。
+ *
+ * 用户明确不喜欢默认的灰色涟漪——"点一下灰块占满整个按钮的范围,真的好丑"。
+ * 这里只去掉**视觉反馈**:命中范围、enabled、onClick 时机与 [clickable] 完全一致。
+ *
+ * 需要"看得见的按压反馈"时别用它,而是像设置页三段控件 / clarify 选项行那样,
+ * 自己拿 interactionSource + `indication = null` 自绘按下态(颜色/描边)。
+ */
+@Composable
+fun Modifier.clickableNoRipple(
+    enabled: Boolean = true,
+    onClickLabel: String? = null,
+    onClick: () -> Unit,
+): Modifier = clickable(
+    enabled = enabled,
+    onClickLabel = onClickLabel,
+    interactionSource = remember { MutableInteractionSource() },
+    indication = null,
+    onClick = onClick,
+)
 fun Modifier.shadowLg(shape: Shape) = this.shadow(14.dp, shape, clip = false)
 
 // ── text helpers ───────────────────────────────────────────────────────────

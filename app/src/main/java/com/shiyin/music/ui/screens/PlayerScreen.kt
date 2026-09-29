@@ -325,7 +325,31 @@ fun PlayerScreen(vm: MainViewModel) {
             // positionMs,避免滑块被每帧拉回播放位置。
             var scrubFraction by remember { mutableStateOf<Float?>(null) }
             val pct = if (durMs > 0) (vm.player.displayPositionMs().toFloat() / durMs).coerceIn(0f, 1f) else 0f
-            val shownPct = scrubFraction ?: pct
+            // v1.3.10 B1①(用户反馈"推进动画卡顿"):`positionMs` 每 **300ms** 才更新一次
+            // (PlayerController.TICK_MS=300),直接 `pos/dur` 会让进度条每 300ms 跳一格。
+            // 在两次 tick 之间做**指数逼近**持续推进:目标每 300ms 抬一次,条面每帧平滑追上。
+            //  · 只在实际播放时跑(暂停/停止即退出循环,不在后台空转烧电);
+            //  · 目标差距大(seek/换曲)→ 直接对齐,不演"慢慢滑过去"的假动画(那样看起来才像卡);
+            //  · 时间常数 70ms ≈ 3 帧走完大半,跟手且看不出滞后。
+            // 时间文本仍显示真实位置(见下方 shownPosMs),插值只作用于**条面**。
+            val playing = vm.player.isPlaying
+            var smoothPct by remember { mutableStateOf(pct) }
+            LaunchedEffect(playing, durMs) {
+                if (durMs <= 0 || !playing) return@LaunchedEffect
+                var lastNanos = 0L
+                while (true) {
+                    androidx.compose.runtime.withFrameNanos { now ->
+                        val dtMs = if (lastNanos == 0L) 16.0 else (now - lastNanos) / 1_000_000.0
+                        lastNanos = now
+                        val target =
+                            (vm.player.displayPositionMs().toFloat() / durMs).coerceIn(0f, 1f)
+                        val gap = target - smoothPct
+                        smoothPct = if (kotlin.math.abs(gap) > 0.04f) target
+                        else smoothPct + gap * (1f - kotlin.math.exp(-dtMs / 70.0).toFloat())
+                    }
+                }
+            }
+            val shownPct = scrubFraction ?: if (playing) smoothPct else pct
             val shownPosMs = (scrubFraction?.let { it * durMs } ?: vm.player.displayPositionMs()).toLong()
             Box(
                 Modifier
@@ -475,16 +499,12 @@ fun PlayerScreen(vm: MainViewModel) {
                     contentAlignment = Alignment.Center,
                 ) {
                     OIcon(
-                        Lucide.Repeat, 19.dp,
+                        // v1.3.10 需求 A25:单曲循环用官方 repeat-1 图标,
+                        // 不再在 Repeat 上叠一个 9sp 的"1"(叠字又糊又土)。
+                        if (vm.player.repeatMode == XPlayer.REPEAT_MODE_ONE) Lucide.Repeat1 else Lucide.Repeat,
+                        19.dp,
                         if (vm.player.repeatMode != XPlayer.REPEAT_MODE_OFF) c.a700 else c.n500,
                     )
-                    if (vm.player.repeatMode == XPlayer.REPEAT_MODE_ONE) {
-                        Text(
-                            "1",
-                            style = body(9f, FontWeight.ExtraBold, c.a700),
-                            modifier = Modifier.align(Alignment.Center),
-                        )
-                    }
                 }
             }
 
@@ -656,7 +676,14 @@ private fun LyricsPeekCard(vm: MainViewModel, artBg: Color, artFg: Color, dimC: 
                             style = body(12.5f, FontWeight.Normal, dimC).copy(lineHeight = 18.sp),
                         )
                     }
-                    Row(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    // v1.3.10 需求 A32:三个按钮,「在线匹配歌词」放在**中间**
+                    // (用户定稿:"在他们中间加一个")。用 FlowRow 而不是 Row:
+                    // 三个 pill 在窄屏一行放不下时会自动换行,不挤爆卡片。
+                    androidx.compose.foundation.layout.FlowRow(
+                        Modifier.padding(top = 8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
                         Box(
                             Modifier
                                 .clip(RoundedCornerShape(999.dp))
@@ -664,6 +691,13 @@ private fun LyricsPeekCard(vm: MainViewModel, artBg: Color, artFg: Color, dimC: 
                                 .clickable { vm.lyricsSourcePicker = true }
                                 .padding(horizontal = 16.dp, vertical = 10.dp)
                         ) { Text("切换歌词来源", style = body(12.5f, FontWeight.Bold, artFg)) }
+                        Box(
+                            Modifier
+                                .clip(RoundedCornerShape(999.dp))
+                                .background(btnBg)
+                                .clickable { vm.rematchAuto() }
+                                .padding(horizontal = 16.dp, vertical = 10.dp)
+                        ) { Text("在线匹配歌词", style = body(12.5f, FontWeight.Bold, artFg)) }
                         Box(
                             Modifier
                                 .clip(RoundedCornerShape(999.dp))

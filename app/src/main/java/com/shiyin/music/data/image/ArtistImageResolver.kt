@@ -210,6 +210,11 @@ class ArtistImageResolver(private val dao: ShiyinDao) {
     /** 清除手选，回退到自动源。 */
     suspend fun clearOverride(name: String) = override.clear(name)
 
+    /** v1.3.10: 缓存 URL 已被证明不可用(加载失败,典型:Discogs 签名过期 403)→
+     *  清掉自动源缓存行,下次 [resolve] 重新走源拿新 URL。只清自动缓存,不动用户手选
+     *  (override 是用户资产,不因一次加载失败被抹掉)。 */
+    suspend fun invalidate(name: String) = cache.clear(name)
+
     /** 探测图片真实宽高（只读头部，不解码像素）。失败返回 null（不影响 URL 缓存）。
      *  v1.3.3b review#B9: internal——picker(MainViewModel)也用它预检无尺寸元数据的
      *  候选(百度 middleURL 等),失效链接在入候选列表前就滤掉,不再等用户选完才发现头像空白。 */

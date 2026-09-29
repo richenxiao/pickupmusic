@@ -181,7 +181,11 @@ private fun <T> StatSection(title: String, items: List<Pair<T, Int>>, row: @Comp
 private fun StatsArtistAvatar(vm: MainViewModel, name: String) {
     val c = LocalOrganic.current
     LaunchedEffect(name) { vm.fetchArtistAvatarPerson(name) }
-    val bmp = rememberCandidateArt(vm.artistImage(name).ifBlank { null }, 40.dp)
+    // v1.3.10: 加载失败(远端 URL 过期/失效)→ 清缓存重解析,不再永久空框。
+    val bmp = rememberCandidateArt(
+        vm.artistImage(name).ifBlank { null }, 40.dp,
+        onRemoteLoadFailed = { vm.invalidateArtistImage(name, personOnly = true) },
+    )
     Box(Modifier.size(40.dp).clip(CircleShape).background(c.n200), contentAlignment = Alignment.Center) {
         if (bmp != null) {
             // 与资料库列表头像同一套裁剪(宽图取上部,方/竖图居中)

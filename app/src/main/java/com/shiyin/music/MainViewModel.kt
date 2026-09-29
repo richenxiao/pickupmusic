@@ -49,7 +49,7 @@ import java.util.Locale
 
 enum class Tab { Home, Search, Library }
 enum class ObStage { Perm, Scan, Done }
-enum class FilesView { Root, Clean, Trash, Folders, FolderContent, Ignored, Devices, About, Merges, ImageSources, LyricsBook, CloudBackup, PlaySettings, Equalizer, Logs, DataManage, FilesManage }
+enum class FilesView { Root, Clean, Trash, Folders, FolderContent, Ignored, Devices, About, Merges, ImageSources, LyricsBook, LyricsSources, CloudBackup, PlaySettings, Equalizer, Logs, DataManage, FilesManage }
 enum class LyState { Idle, Searching, Failed }
 enum class LyricsKind { Embedded, Sidecar, Online, Imported }
 
@@ -227,10 +227,51 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     var furiganaAutoVerify by mutableStateOf(true); private set
     /** 歌词本歌词颜色:"default"=跟随封面取色(现状)/"white"/"black"。 */
     var lyricsColorMode by mutableStateOf("default"); private set
+    /** v1.3.10 需求 A26:已同步歌词是否也**始终显示时间轴校对入口**(默认 false)。
+     *  默认行为:只有**未同步**(无时间戳、需要人工打轴)的歌词显示校对入口——正常在线
+     *  抓到的歌词本来就有时间戳,不该摆一个校对入口在那儿。开了这个开关才常显(便于反复微调)。 */
+    var lyricsCalibAlwaysOn by mutableStateOf(false); private set
+    /** v1.3.10 A29:歌词源管理——被关掉的内置源名 + 用户自定义源(设置页可改)。 */
+    var lyricsDisabledSources by mutableStateOf<Set<String>>(emptySet()); private set
+    var customLyricsSources by mutableStateOf<List<com.shiyin.music.data.lyrics.CustomLyricsSourceDef>>(emptyList())
+        private set
+
+    /** v1.3.10 A29:把歌词源配置推给取歌词链路(它零依赖地读这个运行时配置)。 */
+    private fun pushLyricsSourceConfig() {
+        com.shiyin.music.data.lyrics.LyricsSourceConfig.disabledBuiltins = lyricsDisabledSources
+        com.shiyin.music.data.lyrics.LyricsSourceConfig.customSources = customLyricsSources
+    }
+
+    /** v1.3.10 A29:开关内置歌词源(关掉的不再参与自动匹配与来源菜单)。 */
+    fun setLyricsSourceEnabled(source: String, enabled: Boolean) {
+        lyricsDisabledSources = if (enabled) lyricsDisabledSources - source else lyricsDisabledSources + source
+        pushLyricsSourceConfig()
+        viewModelScope.launch { settingsStore.setLyricsSourceEnabled(source, enabled) }
+    }
+
+    /** v1.3.10 A29:新增/更新一个自定义歌词源(同 id 覆盖)。 */
+    fun saveCustomLyricsSource(def: com.shiyin.music.data.lyrics.CustomLyricsSourceDef) {
+        val list = customLyricsSources.filterNot { it.id == def.id } + def
+        customLyricsSources = list
+        pushLyricsSourceConfig()
+        viewModelScope.launch { settingsStore.setCustomLyricsSources(list) }
+    }
+
+    /** v1.3.10 A29:删除一个自定义歌词源。 */
+    fun removeCustomLyricsSource(id: String) {
+        val list = customLyricsSources.filterNot { it.id == id }
+        customLyricsSources = list
+        pushLyricsSourceConfig()
+        viewModelScope.launch { settingsStore.setCustomLyricsSources(list) }
+    }
     /** v1.3.x 歌词本翻译:外语歌进入歌词本时自动触发 AI 翻译(默认 false——AI 永远用户主动触发)。 */
     var translateAutoForeign by mutableStateOf(false); private set
     /** v1.3.x 歌词本翻译:有保存的译文时默认显示(默认 true——译完即存,进来就给看)。 */
     var translateDefaultShow by mutableStateOf(true); private set
+    /** v1.3.10 「翻译按钮显示」三档:never=永不显示 / majority=外文较多时(现状,默认) /
+     *  any=检测到任何外文就显示。**只影响按钮显隐**,不影响「外语歌自动翻译」(那条仍按
+     *  占比判定,见 [isForeignLyrics])。 */
+    var translateButtonMode by mutableStateOf("majority"); private set
 
     // ── v1.3.x 播放设置(设置·播放页,用户 2026-09-22 指定分组)──────────────────
     /** 音量均衡:平衡所有曲目的播放音量(响度归一,ExoPlayer setVolume 实现见 PlaybackService)。 */
@@ -960,9 +1001,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 furiganaDefaultOn = s.furiganaDefaultOn
                 furiganaAutoVerify = s.furiganaAutoVerify
                 lyricsColorMode = s.lyricsColorMode
+                lyricsCalibAlwaysOn = s.lyricsCalibAlwaysOn
+                // v1.3.10 A29:歌词源配置 → 运行时(取歌词链路读它)
+                lyricsDisabledSources = s.lyricsDisabledSources
+                customLyricsSources = s.customLyricsSources
+                pushLyricsSourceConfig()
                 // v1.3.x 歌词本翻译设置同步
                 translateAutoForeign = s.translateAutoForeign
                 translateDefaultShow = s.translateDefaultShow
+                translateButtonMode = s.translateButtonMode
                 // v1.3.x 播放设置同步
                 volumeNormalize = s.volumeNormalize
                 monoAudio = s.monoAudio
@@ -1150,6 +1197,32 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             artistImageResolver.setOverride(name, url)
             val img = artistImageResolver.resolve(name, personOnly = false)
             artistImages = artistImages + (name to (img?.url ?: ""))
+        }
+    }
+
+    /** v1.3.10: 头像 URL 加载失败(典型:Discogs 签名过期返回 403)时的自愈——
+     *  清掉该歌手的自动源缓存行并重新解析,换一个可用的新 URL。
+     *  此前没有这条路:缓存行永远指向死链,头像永久空白("改几次都没修好"的另一半)。
+     *  同一会话同一歌手只自愈一次,源侧若持续给不出可用图也不会反复触网。 */
+    private val artistImageHealed = java.util.Collections.newSetFromMap(
+        java.util.concurrent.ConcurrentHashMap<String, Boolean>(),
+    )
+
+    fun invalidateArtistImage(name: String, personOnly: Boolean) {
+        viewModelScope.launch {
+            val canonical = resolveArtist(name)
+            if (!artistImageHealed.add(canonical)) return@launch
+            android.util.Log.i("AIM", "heal: 清缓存重解析 $canonical (personOnly=$personOnly)")
+            artistImageResolver.invalidate(canonical)
+            val img = artistImageResolver.resolve(canonical, personOnly = personOnly)
+            val url = img?.url ?: ""
+            if (url.isNotBlank()) {
+                val extra = buildMap {
+                    put(name, url)
+                    if (canonical != name) put(canonical, url)
+                }
+                artistImages = artistImages + extra
+            }
         }
     }
 
@@ -1946,6 +2019,18 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 return
             }
             player.syncQueue(collapseSplitRuns(ts, cur))
+        } else if (key != null && key.startsWith("artisthot:")) {
+            // v1.3.10 需求 A15:热门队列按**热度序**重建,与歌手页「热门」列表保持同一顺序。
+            // (key 前缀刻意与 artist: 区分——"artisthot:" 不以 "artist:" 开头,不会误匹配。)
+            val ts = artistQueue(key.removePrefix("artisthot:")).sortedByDescending { heatCountFor(it.id) }
+            if (ts.isEmpty() || cur == null || ts.none { it.id == cur }) {
+                if (player.currentId != null && trackById(player.currentId) == null) {
+                    player.stopAndClear()
+                    playerOpen = false
+                }
+                return
+            }
+            player.syncQueue(collapseSplitRuns(ts, cur))
         } else if (key != null && key.startsWith("artist:")) {
             // v1.3.2: 歌手队列保持歌手范围,与 album: 同样不被同步成全库——
             // 旧逻辑 artist: 队列落进 else 分支,库一变队列就被替换成 sortedSongs()(全库)。
@@ -2254,6 +2339,305 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     var agentTotalTokens by mutableStateOf<Pair<Long, Long>>(0L to 0L); private set
     /** v1.3.2: 默认回复建议(专辑页 Agent 入口带入,Agent 页点一条即发送)。 */
     var agentSuggestions by mutableStateOf<List<String>>(emptyList()); private set
+
+    /**
+     * v1.3.10: 模型发起的「选择题」(clarify)的**独立状态**——非空时输入框上方显示专属卡片。
+     *
+     * 刻意与 [agentSuggestions] 分开(用户 2026-09-28 定调):
+     * - [agentSuggestions] = **专辑页入口建议**(产品预设文案,进来就摆着);
+     * - [agentClarify] = **模型现场生成**的选择题(问题+选项都来自当前对话)。
+     * 两者语义、生命周期、样式都不同;此前共用一个状态,正是"clarify 的选项看起来像
+     * 气泡里的小胶囊"的根源。现在各走各的渲染路径,互不影响。
+     */
+    var agentClarify by mutableStateOf<com.shiyin.music.data.ai.AgentTools.ClarifyRequest?>(null)
+        private set
+
+    // ── v1.3.10 需求 A21:长期记忆(P2 = 接线) ────────────────────────────────
+    /**
+     * 长期记忆管理器——**访问记忆的唯一入口**(Agent 层不碰数据库)。
+     * 写入裁决(类型白名单/长度上限/一次性情绪拒表/去重/冲突取代)与检索(相关度门槛 + top-3)
+     * 全在 [com.shiyin.music.data.memory.MemoryRules] / [MemoryManager](纯逻辑,32 条单测)。
+     */
+    private val memoryManager = com.shiyin.music.data.memory.MemoryManager(
+        com.shiyin.music.data.memory.RoomMemoryStore(dao),
+    )
+
+    // ── v1.3.11:本回合的记忆运行状态(可观测性,UI runtime state) ─────────────
+    /**
+     * 当前回合"记忆这件事"走到哪一步了 —— UI **只渲染这一条**。
+     *
+     * v1.3.11 第二阶段修正:上一版把"保存"和"检索"当成两个独立状态各自成行,于是同一轮会
+     * 并列出现「🧠 记忆已保存」「🧠 已找到记忆」——那是"事件列表",不是"这一轮的状态"。
+     * 现在一轮只有一条,相位在同一条上更新(结构性保证见 [MemoryTraceFlow.uiRows])。
+     *
+     * 为什么是 VM 级状态、不挂在 AgentMessage 上:回合内每一次思考/打字机/步骤回调都会
+     * **重建** AgentMessage,挂在消息上的状态会被反复抹掉;而它本来就不是某个气泡的属性。
+     * 它也不进 messagesJson(不永久占据聊天记录),新一轮开始时清空。
+     */
+    var agentMemoryTrace by mutableStateOf<com.shiyin.music.data.memory.MemoryTrace?>(null)
+        private set
+
+    /** 本轮的状态机:相位推进全部由真实执行结果驱动,模型既不产生也影响不了它。 */
+    private val agentMemoryFlow = com.shiyin.music.data.memory.MemoryTraceFlow()
+
+    /** 把状态机的当前相位同步给 UI。 */
+    private fun publishMemory() {
+        agentMemoryTrace = agentMemoryFlow.current?.takeIf {
+            it.phase != com.shiyin.music.data.memory.MemoryTrace.Phase.IDLE
+        }
+    }
+
+    // ── v1.3.12:最近一次执行型动作(轻量 runtime 状态,不落库、不进 messagesJson) ──
+    /**
+     * 上一轮"真的做了什么"。用途见 [buildAgentContext] —— 弱模型读一句结构化
+     * 「[上一轮动作] 播放:Pretender · 已成功」比读一大段聊天记录更容易理解
+     * "这事已经做完了",从而不会在下一轮重复执行。
+     */
+    private data class AgentAction(val kind: String, val detail: String, val success: Boolean)
+    private var lastAgentAction: AgentAction? = null
+
+    /**
+     * 技能 key → 用户能懂的动作名。
+     *
+     * **刻意不把裸技能 key 写进上下文**:弱模型会把提示词里的机器词原样念给用户
+     * (项目已有实测教训——它连 track_id 都念出来过)。所以这里只给中文动作名。
+     */
+    private fun humanActionLabel(skillKey: String): String = when (skillKey) {
+        "playback_control", "play_track" -> "播放"
+        "discover_music" -> "挑歌播放"
+        "playback_mode" -> "播放模式"
+        "sleep_timer" -> "睡眠定时"
+        "library_query" -> "查音乐库"
+        "lyrics_fetch", "save_lyrics" -> "找歌词"
+        "album_sort" -> "整理专辑曲序"
+        "artist_fix", "track_rename" -> "修改曲目信息"
+        "album_dates" -> "补全专辑日期"
+        "listening_stats" -> "查收听统计"
+        else -> "操作"
+    }
+
+    /** mm:ss(给模型看的播放进度)。 */
+    private fun fmtProgress(ms: Long): String {
+        val total = (ms / 1000).coerceAtLeast(0)
+        return "%d:%02d".format(total / 60, total % 60)
+    }
+
+    /**
+     * v1.3.12:Agent 的动态上下文(领域事实 + 播放状态 + 上一轮动作)。
+     *
+     * 为什么要把播放状态和上一轮动作都摆进来:真机 bug 的根因之一是**模型只能猜**——
+     * 它看不到"Pretender 正在播放",也看不到"刚才那次播放已经成功",于是把用户的感想
+     * 读成"再放一遍"。这里把两者都做成明确事实,再配一条"已完成,别重复"的指令。
+     */
+    private fun buildAgentContext(): String = buildString {
+        albumKey?.let { k -> albumOrder(k).firstOrNull()?.album }?.let { appendLine("当前专辑: $it") }
+        (artistKey ?: player.currentId?.let { trackById(it)?.artist })?.let { appendLine("当前歌手: $it") }
+        player.currentId?.let { id ->
+            trackById(id)?.let { t ->
+                appendLine("当前播放曲目: ${t.title}")
+                appendLine(
+                    "[当前播放] ${t.title} — ${t.artist} · " +
+                        (if (player.isPlaying) "正在播放" else "已暂停") +
+                        " · 进度 ${fmtProgress(player.positionMs)}",
+                )
+            }
+        }
+        lastAgentAction?.let {
+            appendLine(
+                "[上一轮动作] ${it.kind}:${it.detail.ifBlank { "—" }} · " +
+                    (if (it.success) "已成功" else "失败") +
+                    " —— **已完成,除非用户本轮明确要求,不要重复执行**",
+            )
+        }
+    }.trimEnd()
+
+    // ── v1.3.10 需求 P3:「设置→拾光记忆」管理页 ──────────────────────────────
+    /** 当前有效记忆(管理页展示;按 updatedAt 倒序)。 */
+    var memories by mutableStateOf<List<com.shiyin.music.data.memory.Memory>>(emptyList())
+        private set
+    /** 管理页是否已加载过(首次进入才查库,避免每次进设置都读一遍)。 */
+    private var memoriesLoaded = false
+
+    /** 重新读记忆列表(进入管理页时调;增/删后也调)。 */
+    fun refreshMemories() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val list = runCatching { memoryManager.list() }.getOrDefault(emptyList())
+            withContext(Dispatchers.Main) {
+                memories = list
+                memoriesLoaded = true
+            }
+        }
+    }
+
+    /** 管理页进入时按需加载(已加载过就直接显示缓存,不闪)。 */
+    fun ensureMemoriesLoaded() {
+        if (!memoriesLoaded) refreshMemories()
+    }
+
+    /** 用户要求拾光忘记某条(硬删除)。 */
+    fun forgetMemory(id: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { memoryManager.forget(id) }
+            refreshMemories()
+        }
+    }
+
+    /**
+     * v1.3.11:用户改写某条记忆的内容(改错字/写得更准)。
+     *
+     * 复用 [com.shiyin.music.data.memory.MemoryManager.update]——它会重新归一化、截断并重算
+     * 检索标签;空内容/命中不到条目返回 false,**静默不写**(不制造假成功)。
+     */
+    fun updateMemory(id: String, content: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { memoryManager.update(id, content) }
+            refreshMemories()
+        }
+    }
+
+    /** v1.3.11:「拾光记忆」管理页的开关(入口在拾光 Agent 设置页里)。 */
+    var agentMemoryScreenOpen by mutableStateOf(false)
+
+    /**
+     * 用户在管理页手加一条记忆。来源记为 [MemorySource.MANUAL]:
+     * 用户亲自写的,不该被"推断"的名义降级,也不该被一次性情绪拒表挡住
+     * (都点添加了还被拒是说不通的——见 MemoryManager.remember)。
+     */
+    fun addMemory(content: String, type: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching {
+                memoryManager.remember(
+                    com.shiyin.music.data.memory.MemoryCandidate(
+                        type = type,
+                        content = content,
+                        importance = 3,
+                        source = com.shiyin.music.data.memory.MemorySource.MANUAL,
+                        userSaid = content,
+                    ),
+                )
+            }
+            refreshMemories()
+        }
+    }
+
+    // 注:v1.3.11「纯指令词」判定已上移到 MemoryRules.looksLikeCommand(单一真源,
+    // 回复前/回复后两条提取路径共用同一份判据,不再各写一份)。
+
+    /**
+     * 解析提取环节返回的候选(JSON 行或 JSON 数组)。**字面键名手动解析**(项目规矩:
+     * release 包禁用 Gson 反射绑定,见 gson-r8 禁令);解析不出的行直接丢。
+     */
+    private fun parseMemoryCandidates(raw: String): List<com.shiyin.music.data.memory.MemoryCandidate> =
+        runCatching {
+            val body = raw.trim().removePrefix("```json").removePrefix("```").removeSuffix("```").trim()
+            val arr = if (body.startsWith("[")) {
+                org.json.JSONArray(body)
+            } else {
+                org.json.JSONArray().also { a ->
+                    body.lineSequence().filter { it.trim().startsWith("{") }
+                        .forEach { line -> runCatching { a.put(org.json.JSONObject(line.trim())) } }
+                }
+            }
+            (0 until arr.length()).mapNotNull { i ->
+                val o = arr.optJSONObject(i) ?: return@mapNotNull null
+                val type = o.optString("type").trim()
+                val content = o.optString("content").trim()
+                if (type.isBlank() || content.isBlank()) return@mapNotNull null
+                com.shiyin.music.data.memory.MemoryCandidate(
+                    type = type, content = content, importance = o.optInt("importance", 2),
+                )
+            }.take(3)
+        }.getOrDefault(emptyList())
+
+    /**
+     * v1.3.10 需求 A21(P2):**回合后记忆提取**。
+     *
+     * 分工(用户定调):LLM 只负责**提名**"这句有没有长期价值";**入不入库、跟旧记忆什么关系**
+     * 全由确定性规则裁决([MemoryManager] → [MemoryRules])——弱模型不可靠,数据质量不能交给它。
+     *
+     * 为什么用"独立调用"而不是让主对话调工具:实测轻量模型不会稳定地二次调工具;而且这条链路
+     * 必须在**任何**回复路径(闲聊 / 技能 / clarify)之后都能跑,工具形式覆盖不到。
+     */
+    /**
+     * 记忆提取的**单用途调用**:只回答"这句话有没有值得长期记住的用户信息"。
+     *
+     * 两处共用本函数(v1.3.11 第二阶段统一):
+     *  - 回复**前**:消息经 [com.shiyin.music.data.memory.MemoryRules.shouldExtractSave] 预筛命中时
+     *    (自我介绍一类),先把提取做完再回复——用户第一次介绍自己就能看到「记忆已保存」;
+     *  - 回复**后**(兜底):其余轮次仍走异步提取,不丢潜在记忆、也不给回复加延迟。
+     *
+     * @param agentReply 回复后路径传入助手回复;回复前路径传 null(那时还没有回复)。
+     */
+    private suspend fun extractMemoryCandidates(
+        userText: String,
+        agentReply: String?,
+    ): List<com.shiyin.music.data.memory.MemoryCandidate> {
+        val cfg = activeLlmConfig() ?: return emptyList()
+        val t = userText.trim()
+        // 廉价预筛:太短 / 太长(一般在贴东西)/ 纯指令 → 不花这次调用
+        if (t.length < 6 || t.length > 600) return emptyList()
+        if (com.shiyin.music.data.memory.MemoryRules.looksLikeCommand(t)) return emptyList()
+        val replyBlock = if (agentReply.isNullOrBlank()) "" else "\n助手:${agentReply.take(300)}"
+        val prompt = """
+            从下面这轮对话里,挑出**值得长期记住**的用户信息(0-3 条;一条都没有就输出 [])。
+            值得记:稳定偏好、长期习惯、重要个人背景、长期有意义的音乐偏好、用户明确要求记住的事。
+            **不要记**:一次性的情绪(如"今天有点累")、临时计划、当下的指令、助手说过的话。
+            每条一行 JSON:{"type":"preference|personal|episodic|music|relationship","content":"第三人称一句话,以「用户」开头","importance":1-3}
+            只输出 JSON,不要解释、不要代码块。
+
+            用户:${t.take(300)}$replyBlock
+        """.trimIndent()
+        val resp = com.shiyin.music.data.ai.LlmClient.call(
+            cfg, listOf("user" to prompt), temperature = 0.2, maxTokens = 300,
+        ) ?: return emptyList()
+        com.shiyin.music.data.ai.TokenUsageStore.log(
+            getApplication(), llmActiveProvider, "memory_extract",
+            resp.promptTokens, resp.completionTokens, resp.cacheTokens,
+        )
+        return parseMemoryCandidates(resp.content ?: "")
+    }
+
+    /**
+     * 把一批候选交给**确定性规则**落库(去重/冲突取代/拒表全在 MemoryManager)。
+     *
+     * 返回**是否全部成功**:回复前的流程靠它给出真实终态(成功→记忆已保存,失败→记忆保存失败),
+     * 绝不假装保存成功——UI 与给模型的状态提示都以此为准。
+     */
+    private suspend fun rememberAll(
+        cands: List<com.shiyin.music.data.memory.MemoryCandidate>,
+        userSaid: String,
+    ): Boolean = withContext(Dispatchers.IO) {
+        var allOk = true
+        for (c in cands) {
+            // userSaid 传原始话术:MemoryRules 据此判"用户是否明确要求记住"
+            // (命中则抬 importance 并绕过一次性情绪拒表)
+            val res = runCatching { memoryManager.remember(c.copy(userSaid = userSaid)) }
+            val outcome = res.getOrNull()
+            val ok = res.isSuccess && outcome !is com.shiyin.music.data.memory.RememberOutcome.Rejected
+            if (!ok) allOk = false
+            val tag = outcome?.let { it::class.simpleName } ?: "Rejected"
+            android.util.Log.i("Agent", "memory $tag: ${c.type} · ${c.content.take(30)}")
+            com.shiyin.music.data.log.UsageLog.event(getApplication(), "Agent", "memory $tag · ${c.type}")
+        }
+        allOk
+    }
+
+    /**
+     * v1.3.10 需求 A21(P2):**回合后记忆提取**(兜底路径)。
+     *
+     * v1.3.11 第二阶段:回复前流程已处理过的轮次**不再走这里**(避免同一轮两次提取调用);
+     * 其余轮次保持既有行为——异步、不影响回复速度。
+     */
+    private fun extractMemories(userText: String, agentReply: String) {
+        if (activeLlmConfig() == null) return
+        appScope.launch(Dispatchers.IO) {
+            try {
+                val cands = extractMemoryCandidates(userText, agentReply)
+                if (cands.isEmpty()) return@launch
+                rememberAll(cands, userText.trim())
+            } catch (_: Exception) { }
+        }
+    }
     /** v1.3.3: 输入框草稿——离开 Agent 页暂存,回来恢复;执行中也能继续码字。 */
     var agentDraft by mutableStateOf("")
     /** v1.3.3: 当前 Agent 执行协程——供打断(对标 Claude/ChatGPT 的停止按钮)。 */
@@ -2289,6 +2673,136 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** 打开 Agent 设置面板(右上齿轮)。 */
     fun openAgentSettings() { agentSettingsOpen = true }
 
+    // ── v1.3.9: Agent 对话持久化 + 管理 ────────────────────────────────────
+    // 历史按「对话」组织（与 ChatGPT/Claude 一致）：一次对话 = 一行 agent_conversation。
+    // 当前页消息流 agentMessages 属于 agentConversationId 指向的对话；一轮完成/被打断
+    // 时整体落库（Gson 序列化），历史页可读可改名可删可收藏。
+    /** 当前对话的持久化 id；null = 尚未落库的新对话。 */
+    var agentConversationId by mutableStateOf<String?>(null); private set
+    /** 历史页列表（摘要，不含消息体——体在打开时才从 messagesJson 解出）。 */
+    var agentConversations by mutableStateOf<List<com.shiyin.music.data.db.AgentConversationEntity>>(emptyList()); private set
+    /** v1.3.9: 「覆盖重发」锚点。>=0 = 下一次发送将**替换**该下标起的消息
+     *  （点击历史消息/打开历史对话时置位；发送或切走对话时复位）。 */
+    var agentEditFromIndex by mutableStateOf(-1); private set
+
+    /** 历史页打开时刷新对话列表。 */
+    fun loadAgentConversations() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val list = dao.allAgentConversations()
+            kotlinx.coroutines.withContext(Dispatchers.Main) { agentConversations = list }
+        }
+    }
+
+    /** 对话标题：第一条用户消息截断（可随后手动改名）。 */
+    private fun agentConversationTitle(msgs: List<AgentMessage>): String {
+        val first = msgs.firstOrNull { it.role == "user" }?.text?.trim() ?: return "新对话"
+        return if (first.length > 24) first.take(24) + "…" else first
+    }
+
+    /** 当前对话整体落库（一轮完成/被打断/离开页面时调用）。空对话不落。 */
+    fun persistAgentConversation() {
+        val msgs = agentMessages
+        if (msgs.isEmpty()) return
+        val id = agentConversationId ?: java.util.UUID.randomUUID().toString()
+            .also { agentConversationId = it }
+        val now = System.currentTimeMillis()
+        viewModelScope.launch(Dispatchers.IO) {
+            val prev = dao.allAgentConversations().firstOrNull { it.id == id }
+            dao.upsertAgentConversation(
+                com.shiyin.music.data.db.AgentConversationEntity(
+                    id = id,
+                    title = prev?.title?.takeIf { it.isNotBlank() && it != "新对话" }
+                        ?: agentConversationTitle(msgs),
+                    pinned = prev?.pinned ?: 0,
+                    createdAt = prev?.createdAt ?: now,
+                    updatedAt = now,
+                    messagesJson = com.google.gson.Gson().toJson(msgs),
+                ),
+            )
+        }
+    }
+
+    /** 打开一段历史对话：消息装入当前页 + 最后一条用户消息复制进输入框
+     *  （发送时**覆盖**该条起的后续内容——主流产品的「编辑重发」语义，
+     *  不是另起新消息）。 */
+    fun openAgentConversation(id: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val row = dao.allAgentConversations().firstOrNull { it.id == id } ?: return@launch
+            val msgs = decodeAgentMessages(row.messagesJson)
+            kotlinx.coroutines.withContext(Dispatchers.Main) {
+                agentConversationId = id
+                agentMessages = msgs
+                agentHistoryOpen = false
+                // 最后一条用户消息复制进输入框 + 置覆盖锚点（发送 = 替换该条起的后续）
+                val lastUserIdx = msgs.indexOfLast { it.role == "user" }
+                if (lastUserIdx >= 0) {
+                    agentDraft = msgs[lastUserIdx].text
+                    agentEditFromIndex = lastUserIdx
+                } else {
+                    agentEditFromIndex = -1
+                }
+            }
+        }
+    }
+
+    /** 点击用户气泡 = 装回输入框 + 置覆盖锚点（发送时替换该条起的后续内容）。 */
+    fun prepareAgentMessageEdit(index: Int) {
+        val msg = agentMessages.getOrNull(index) ?: return
+        if (msg.role != "user") return
+        agentDraft = msg.text
+        agentEditFromIndex = index
+    }
+
+    /** 新对话：先把当前对话落库，再清屏。 */
+    fun newAgentConversation() {
+        persistAgentConversation()
+        agentMessages = emptyList()
+        agentConversationId = null
+        agentEditFromIndex = -1
+        agentHistoryOpen = false
+        // v1.3.11:清屏也把记忆状态收掉——它属于刚才那一轮,不该跟着新对话留在界面上
+        agentMemoryFlow.reset()
+        publishMemory()
+    }
+
+    fun renameAgentConversation(id: String, title: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            dao.renameAgentConversation(id, title.trim().ifBlank { "新对话" })
+            loadAgentConversations()
+        }
+    }
+
+    fun deleteAgentConversation(id: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            dao.deleteAgentConversation(id)
+            kotlinx.coroutines.withContext(Dispatchers.Main) {
+                if (agentConversationId == id) {
+                    agentMessages = emptyList()
+                    agentConversationId = null
+                    agentEditFromIndex = -1
+                }
+                loadAgentConversations()
+            }
+        }
+    }
+
+    fun toggleAgentConversationPinned(id: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val row = dao.allAgentConversations().firstOrNull { it.id == id } ?: return@launch
+            dao.setAgentConversationPinned(id, if (row.pinned == 1) 0 else 1)
+            loadAgentConversations()
+        }
+    }
+
+    /** 重试某条 Agent 回复：找回它前面的用户消息，覆盖从该用户消息起的后续内容并重新发送。 */
+    fun retryAgentMessage(agentIndex: Int) {
+        if (agentRunning) return
+        val userIdx = (agentIndex - 1 downTo 0).firstOrNull { agentMessages[it].role == "user" } ?: return
+        agentDraft = agentMessages[userIdx].text
+        agentEditFromIndex = userIdx
+        sendAgentMessage(agentMessages[userIdx].text)
+    }
+
     /** 刷新累计 tokens(从 DB 读)。Agent 页/设置页 onAppear 调。
      *  v1.3.3b review#A1: state 写入切主线程(v5.2 #75 同因)。 */
     fun refreshAgentTokens() {
@@ -2308,6 +2822,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val thinking: String? = null,
         /** v1.3.3: 思考耗时 ms(UI 折叠态显示"已思考 X 秒",真实计时不用长度估)。 */
         val thinkingMs: Long = 0L,
+        /** v1.3.8: 中间状态历史(方案C折叠式)——记录 THINKING/TOOL 的时间顺序,
+         *  用于"查看思考过程"折叠区域。只在多轮交替或有 thinking summary 时显示入口。 */
+        val processHistory: List<ProcessStep> = emptyList(),
+    )
+
+    /** v1.3.8: Agent 消息的中间处理步骤(方案C折叠式)。 */
+    data class ProcessStep(
+        val type: String,  // "thinking" / "tool"
+        val label: String, // thinking: "思考中..." / tool: "正在搜索周杰伦的专辑信息..."
+        val durationMs: Long = 0L, // 耗时
+        val summary: String? = null, // thinking summary（如果模型支持）
     )
 
     /** 当前上下文 + 写回桥,供 AgentEngine 技能调用。实现 SkillContext 接口。 */
@@ -2333,19 +2858,19 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             return null
         }
 
-        /** v1.3.6: 全库搜歌——标题/歌手/专辑任一模糊匹配(规范化后 contains),
-         *  按播放次数排序返回前 [limit] 条。"库里有没有XX"类问题不再靠模型瞎编。 */
+        /** v1.3.6: 全库搜歌——标题/歌手/专辑任一模糊匹配,按播放次数排序返回前 [limit] 条。
+         *  v1.3.10: **改走 FuzzySearch**(与 UI 搜索同一套实现)。旧实现是
+         *  `lowercase().filter{isLetterOrDigit()}.contains()`:不做全角→半角、不做繁→简、
+         *  没有编辑距离,更没有假名/罗马字——「カブトムシ」按 kabutomushi 搜、繁体名、
+         *  全角标点全都搜不到,Agent 于是报"库里没有"。归一化层必须全局只有一套。 */
         override fun searchTracks(query: String, limit: Int): List<Track> {
-            val q = query.lowercase().filter { it.isLetterOrDigit() }
-            if (q.isBlank()) return emptyList()
+            if (query.isBlank()) return emptyList()
             val seen = HashSet<Long>()
-            return lib()
-                .filter { t ->
-                    seen.add(t.id) &&
-                        (t.title.lowercase().filter { it.isLetterOrDigit() }.contains(q) ||
-                            t.artist.lowercase().filter { it.isLetterOrDigit() }.contains(q) ||
-                            t.album.lowercase().filter { it.isLetterOrDigit() }.contains(q))
-                }
+            return com.shiyin.music.data.search.FuzzySearch.search(lib(), query)
+                .map { it.track }
+                .filter { seen.add(it.id) }
+                // 契约不变:命中的曲目按"最常听"排序(playback_control 会拿这批当队列,
+                // 首位=最常听的那首)。
                 .sortedByDescending { heatCountFor(it.id) }
                 .take(limit)
         }
@@ -2379,32 +2904,58 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         override fun setSleepTimerEndOfTrack() = player.setSleepEndOfTrack()
         override fun sleepTimerStatus(): String = player.sleepStatusText()
 
+        // v1.3.9: 技能在 IO 线程执行,而 MediaController 只允许在应用主线程调用——
+        // 真机实证:Agent 播放控制从 IO 线程直调 controller 直接报错("没能力执行")。
+        // 所有**写**操作统一 post 到主线程;读的是 Compose 状态快照,跨线程安全。
+        val playbackMain = android.os.Handler(android.os.Looper.getMainLooper())
+        override fun playerReady(): Boolean = player.isReady
         // v1.3.8: 播放控制/模式桥。只动播放状态,不碰音乐库内容。
-        override fun playTracks(tracks: List<Track>, startId: Long) = player.playQueue(tracks, startId, null)
-        override fun pausePlayback() { if (player.isPlaying) player.toggle() }
-        override fun resumePlayback() { if (!player.isPlaying) player.toggle() }
-        override fun nextTrack() = player.next()
-        override fun previousTrack() = player.prev()
+        override fun playTracks(tracks: List<Track>, startId: Long) {
+            android.util.Log.i("Agent", "playTracks: ${tracks.size} 首, startId=$startId, ready=${player.isReady}")
+            playbackMain.post {
+                android.util.Log.i("Agent", "playTracks 已投递主线程执行, ready=${player.isReady}")
+                player.playQueue(tracks, startId, null)
+            }
+        }
+        override fun pausePlayback() { playbackMain.post { if (player.isPlaying) player.toggle() } }
+        override fun resumePlayback() { playbackMain.post { if (!player.isPlaying) player.toggle() } }
+        override fun nextTrack() { playbackMain.post { player.next() } }
+        override fun previousTrack() { playbackMain.post { player.prev() } }
         override fun isPlaying(): Boolean = player.isPlaying
-        override fun setShuffle(on: Boolean) = player.setShuffle(on)
+        override fun setShuffle(on: Boolean) { playbackMain.post { player.setShuffle(on) } }
         override fun isShuffleOn(): Boolean = player.shuffleFlag
         override fun setRepeatMode(mode: com.shiyin.music.data.ai.AgentEngine.RepeatMode) {
-            player.setRepeat(
-                when (mode) {
-                    com.shiyin.music.data.ai.AgentEngine.RepeatMode.OFF -> androidx.media3.common.Player.REPEAT_MODE_OFF
-                    com.shiyin.music.data.ai.AgentEngine.RepeatMode.ALL -> androidx.media3.common.Player.REPEAT_MODE_ALL
-                    com.shiyin.music.data.ai.AgentEngine.RepeatMode.ONE -> androidx.media3.common.Player.REPEAT_MODE_ONE
-                },
-            )
+            playbackMain.post {
+                player.setRepeat(
+                    when (mode) {
+                        com.shiyin.music.data.ai.AgentEngine.RepeatMode.OFF -> androidx.media3.common.Player.REPEAT_MODE_OFF
+                        com.shiyin.music.data.ai.AgentEngine.RepeatMode.ALL -> androidx.media3.common.Player.REPEAT_MODE_ALL
+                        com.shiyin.music.data.ai.AgentEngine.RepeatMode.ONE -> androidx.media3.common.Player.REPEAT_MODE_ONE
+                    },
+                )
+            }
         }
         override fun repeatMode(): com.shiyin.music.data.ai.AgentEngine.RepeatMode = when (player.repeatMode) {
             androidx.media3.common.Player.REPEAT_MODE_ALL -> com.shiyin.music.data.ai.AgentEngine.RepeatMode.ALL
             androidx.media3.common.Player.REPEAT_MODE_ONE -> com.shiyin.music.data.ai.AgentEngine.RepeatMode.ONE
             else -> com.shiyin.music.data.ai.AgentEngine.RepeatMode.OFF
         }
-        override fun setPlaybackSpeed(speed: Float) = setSpeed(speed)
+        override fun setPlaybackSpeed(speed: Float) { playbackMain.post { setSpeed(speed) } }
         override suspend fun weeklyListeningStats() = this@MainViewModel.weeklyListeningStats()
         override fun trackById(id: Long): Track? = this@MainViewModel.trackById(id)
+
+        /** v1.3.10 需求 A27:模型搜到的歌词落地到当前曲目(复用 .lrc 导入通道)。
+         *  切回主线程写 Compose 状态(与播放类桥同惯例),并锚定"发指令时那首"。 */
+        override fun importLyricsForCurrentTrack(name: String, text: String) {
+            playbackMain.post {
+                val id = player.currentId ?: return@post
+                importLrcContent(name, text, id)
+            }
+        }
+
+        /** v1.3.10: 全库曲目按最常听排序——「你自己挑一首」的候选池(discover_music)。
+         *  只读;排序用与搜索/播放队列一致的热度口径。 */
+        override fun listAllTracks(): List<Track> = lib().sortedByDescending { heatCountFor(it.id) }
 
         /**
          * v1.3.8: Agent 的 album_dates 技能走这里。
@@ -2446,11 +2997,25 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** 用户在 Agent 页发指令。 */
     fun sendAgentMessage(text: String) {
         if (agentRunning || text.isBlank()) return
+        // v1.3.11:记忆状态是**本回合**的过程反馈——新一轮开始即清空重来。
+        // 上一轮的终态(记忆已保存/未找到相关记忆)故意保留到这一刻才清:用户回复后
+        // 仍能回头看"刚才到底存下来没有",而不会永久占据聊天记录。
+        agentMemoryFlow.reset()
+        publishMemory()
+        // v1.3.9: 覆盖重发——点击历史用户消息/打开历史对话后,发送 = **替换**锚点起的
+        // 后续内容(主流产品的"编辑重发"语义),不是另起一条。截断后按新消息走正常流程。
+        val editFrom = agentEditFromIndex
+        if (editFrom >= 0) {
+            agentMessages = agentMessages.take(editFrom)
+            agentEditFromIndex = -1
+        }
         // v1.3.3b review#B6: 闸门过即置位——原 agentRunning=true 在消息 append 之后,
         // 双击/IME onSend 与按钮点击并发时两次都能过闸 → 同一句话发两条、烧双份 token。
         agentRunning = true
         // v1.3.2: 用户开始对话后,初始建议立即消失(不常驻);本轮结束后按结果给后续建议
         agentSuggestions = emptyList()
+        // v1.3.10: 直接发消息 = 视作选了卡片上的「其他」答案,卡片随之收起(与卡片提示一致)。
+        agentClarify = null
         val config = activeLlmConfig()
         android.util.Log.d(
             "Agent",
@@ -2472,33 +3037,167 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             // 步骤面板状态(实时更新):先放意图理解的步骤,执行中按 skill 补 steps
             val steps = mutableListOf<com.shiyin.music.data.ai.AgentEngine.Step>()
             val msgIdx = agentMessages.size
+            // v1.3.8: 中间状态历史(方案C折叠式)——记录 THINKING/TOOL 的时间顺序
+            val processHistory = mutableListOf<ProcessStep>()
             // 占位一条 Agent 消息(后面替换)
             agentMessages = agentMessages + AgentMessage("agent", "", steps.toList())
+            // v1.3.9 封口闸:终态消息(最终回答/失败文案)一旦写入,所有经 mainHandler
+            // 排队的中间态回调一律作废——杜绝"迟到的旧 post 把最终回答覆盖回空文本"。
+            // (tool 执行完成 ≠ turn 完成;只有最终 assistant 文本落进消息列表才封口。)
+            val turnSealed = java.util.concurrent.atomic.AtomicBoolean(false)
+            fun seal() {
+                turnSealed.set(true)
+                val m = agentMessages.getOrNull(msgIdx)
+                val report = "turn sealed: msgIdx=$msgIdx textLen=${m?.text?.length ?: -1} steps=${steps.joinToString { "${it.id}:${it.status}" }}"
+                android.util.Log.i("Agent", report)
+                // 持久化事件(logcat 会滚动丢失,UsageLog 落库可查)——"停在中间步骤"
+                // 类问题复发时,这里能直接看到终态写没写、写了多长。
+                com.shiyin.music.data.log.UsageLog.event(getApplication(), "Agent", report)
+            }
+            // ── v1.3.11:本轮的记忆判据(纯函数,无副作用) ──────────────────────
+            // 在 try 外先算好:finally 要靠 memoryExplicit/memoryPreExtract 判断
+            // "回复后还要不要再提取一次"——已经处理过的不重复花一次调用。
+            val memoryExplicit = com.shiyin.music.data.memory.MemoryRules.explicitCandidate(text)
+            val memoryWarrants = com.shiyin.music.data.memory.MemoryRules.memoryWarrantsTrace(text)
+            val memoryPreExtract = com.shiyin.music.data.memory.MemoryRules.shouldExtractSave(text)
             try {
                 // 1. v1.3.8: 单次流式工具调用分发。原生 tool calling 让「选技能 / 聊天回答 /
                 //    要不要联网」在**同一次请求**里完成——取代旧的「决策调用 + 路由调用」
                 //    两次串行往返(旧链路连"你好"都要先等一次非流式决策调用,callSec=45s)。
+                // v1.3.12:原来这里带 `it.steps == null`,于是**所有技能回复都被排除在历史之外**
+                // —— 模型看不到"上一轮那次播放已经成功完成",下一轮就容易把用户的感想读成
+                // "再放一遍"(真机 bug 的直接根因之一)。现在技能回复也进历史;每条限长,
+                // 免得长验收清单把上下文挤爆。
                 val history = agentMessages
-                    .filter { it.text.isNotBlank() && it.steps == null }
-                    .dropLast(1)  // 最后一条是刚 append 的当前指令,不算历史
+                    .filter { it.text.isNotBlank() }
+                    .dropLast(1)  // 当前指令的占位是空文本,已被过滤;这里再兜一层
                     .takeLast(4)
-                    .map { it.role to it.text }
+                    .map { it.role to it.text.take(300) }
                 // 思考链实时流出(reasoning 增量) + 聊天回复实时流出(打字机数据源)
                 var intentThinking: String? = null
                 var streamedReply: String? = null
                 // v1.3.3b review#B2: SSE 回调在 IO 线程触发——state 写入投递主线程执行,
                 // 思考胶囊/打字机不依赖"后台写 snapshot 恰好触发重组"。
                 val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
-                val contextBlock = buildString {
-                    albumKey?.let { k -> albumOrder(k).firstOrNull()?.album }?.let { appendLine("当前专辑: $it") }
-                    (artistKey ?: player.currentId?.let { trackById(it)?.artist })?.let { appendLine("当前歌手: $it") }
-                    player.currentId?.let { trackById(it)?.title }?.let { appendLine("当前播放曲目: $it") }
-                }.trimEnd()
+
+                // ── v1.3.11 统一记忆流程:本轮**只推进一条**状态行 ────────────────────
+                // 顺序按规格:查找记忆中 → (已找到 / 未找到) → 需要保存则 记忆中 → 记忆已保存。
+                // 每一步都由真实执行结果驱动;模型既不产生、也无法影响这些状态。
+                if (memoryWarrants) {
+                    agentMemoryFlow.begin()
+                    publishMemory()
+                }
+
+                // 领域上下文(当前歌曲/专辑/歌手 + **播放状态** + **上一轮动作**)——
+                // 与记忆分层(见 AgentEngine.contextSections);v1.3.12 起由 buildAgentContext 组装。
+                val domainContext = buildAgentContext()
 
                 // v1.3.8(D2): 高频单条指令本地快速路径——命中即零 LLM 往返直接执行
                 // (golden path:「打开专辑 → 排成正确顺序」)。已收窄到 album_sort 一条;
                 // 其余技能的本地正则消歧删除,语义消歧交给工具 description。
                 val fastPlan = com.shiyin.music.data.ai.AgentEngine.fastPathPlan(text)
+
+                // ── ① 检索 ───────────────────────────────────────────────────────
+                // 保持既有行为:非 fastPath 一律检索(相关性由门槛裁决);fastPath 不做无意义检索。
+                var memoryBlock = ""
+                var foundCount = 0
+                var recallFailed = false
+                if (fastPlan == null) {
+                    val recallRes = runCatching { memoryManager.recall(text, 3) }
+                    if (recallRes.isFailure) {
+                        // 异常是真实状态,值得露出;但只有"本轮本来就该显示记忆"时才打扰用户
+                        recallFailed = true
+                        android.util.Log.w("Agent", "memory recall failed", recallRes.exceptionOrNull())
+                        if (memoryWarrants) {
+                            agentMemoryFlow.recallFailed(); publishMemory()
+                        }
+                    } else {
+                        val recalled = recallRes.getOrDefault(emptyList())
+                        foundCount = recalled.size
+                        if (foundCount > 0) {
+                            // 命中就显示(哪怕本轮原本不需要记忆)——这是"她真的用上了记忆"的证据
+                            agentMemoryFlow.found(foundCount); publishMemory()
+                            android.util.Log.i("Agent", "memory recalled $foundCount: ${recalled.map { it.content.take(20) }}")
+                            com.shiyin.music.data.log.UsageLog.event(
+                                getApplication(), "Agent", "memory recalled · $foundCount",
+                            )
+                            memoryBlock = buildString {
+                                appendLine("[关于这位用户,你记得的事]")
+                                recalled.forEach { appendLine("· ${it.content}") }
+                            }.trimEnd()
+                        }
+                    }
+                }
+
+                // ── ② 保存 ───────────────────────────────────────────────────────
+                // 显式「记住」走确定性解析(不依赖 LLM);其余按预筛做一次**回复前**提取,
+                // 让"第一次介绍自己"也能看到真实的保存结果。
+                var saveCands = memoryExplicit?.let { listOf(it) } ?: emptyList()
+                if (saveCands.isEmpty() && memoryPreExtract && fastPlan == null) {
+                    saveCands = runCatching { extractMemoryCandidates(text, null) }.getOrDefault(emptyList())
+                }
+                var memorySaveFailed = false
+                if (saveCands.isNotEmpty()) {
+                    agentMemoryFlow.saving(); publishMemory()
+                    // async 挂在 viewModelScope(不是 agentJob):用户点"停止"也不该丢掉这句「记住」
+                    val ok = viewModelScope.async(Dispatchers.IO) { rememberAll(saveCands, text) }.await()
+                    memorySaveFailed = !ok
+                    if (ok) agentMemoryFlow.saved() else agentMemoryFlow.saveFailed()
+                    publishMemory()
+                    com.shiyin.music.data.log.UsageLog.event(
+                        getApplication(), "Agent", "memory save ${if (ok) "ok" else "failed"}",
+                    )
+                } else if (!recallFailed && foundCount == 0 && memoryWarrants) {
+                    // 没保存成、也没命中 → 落回"未找到相关记忆"(仍然是同一条行)
+                    agentMemoryFlow.nothingFound(); publishMemory()
+                }
+                // 保存失败必须让模型知道——否则它会说"好的我记住了"(假状态,用户明确禁止)
+                if (memorySaveFailed) {
+                    memoryBlock = listOf(
+                        memoryBlock,
+                        "[系统状态] 用户这条「记住」的请求**没有保存成功**。不要声称已经记住,如实说明没记上。",
+                    ).filter { it.isNotBlank() }.joinToString("\n")
+                }
+
+                // ── v1.3.12:用户**明确要求**联网 → 系统先把资料搜好 ────────────────
+                // "帮我搜一下 X" 是**确定性**信号,不该赌弱模型记不记得调 web_search:
+                // 它常常直接凭记忆答。这里先搜好塞进上下文,回答就建立在真实资料上。
+                var webBlock = ""
+                if (fastPlan == null) {
+                    com.shiyin.music.data.ai.WebSearchPolicy.explicitQuery(text)?.let { q ->
+                        if (tavilyApiKey.isNotBlank()) {
+                            val t0 = System.currentTimeMillis()
+                            val ctxText = runCatching {
+                                com.shiyin.music.data.ai.TavilyService.search(tavilyApiKey, q, includeAnswer = true)
+                            }.getOrNull()
+                            val ok = !ctxText.isNullOrBlank()
+                            val ms = System.currentTimeMillis() - t0
+                            android.util.Log.i("Agent", "web pre-search '$q' ok=$ok (${ms}ms)")
+                            com.shiyin.music.data.log.UsageLog.event(
+                                getApplication(), "Agent", "web pre-search ${if (ok) "ok" else "empty"}",
+                            )
+                            processHistory.add(ProcessStep(type = "tool", label = "联网搜索:$q", durationMs = ms))
+                            if (ok) {
+                                webBlock = "[联网资料] 用户明确要求联网,系统已替他搜好「$q」。回答以下面资料为准,资料没提的不要编:\n" +
+                                    ctxText!!.take(3000)
+                            }
+                        }
+                    }
+                }
+                // v1.3.12:把"该不该联网"的判断也**贴着本条消息**说给模型听。
+                // 弱模型对一整段通则的遵从度很低,但一句针对当前这句的提示往往管用;
+                // 同时也不让它"因为拿到了 web 工具就什么都搜"(观点/感想明确劝住)。
+                val webHint = when {
+                    webBlock.isNotBlank() -> ""   // 已经搜好了,不用再提示
+                    com.shiyin.music.data.ai.WebSearchPolicy.looksTimeSensitive(text) ->
+                        "[系统] 这条问题涉及最新/时效信息 —— 先 web_search 核实再回答,不要凭记忆答。"
+                    com.shiyin.music.data.ai.WebSearchPolicy.looksOpinion(text) ->
+                        "[系统] 这是音乐观点/感想,直接聊即可,不要为它联网。"
+                    else -> ""
+                }
+                // 交给模型的完整动态上下文:领域事实 + 播放状态/上一轮动作 + (可选)预搜资料 + 联网提示
+                val agentContext = listOf(domainContext, webBlock, webHint)
+                    .filter { it.isNotBlank() }.joinToString("\n")
 
                 var chatReply: String? = null
                 var planDraft: com.shiyin.music.data.ai.AgentEngine.IntentPlan? =
@@ -2515,10 +3214,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                         config = config,
                         tavilyKey = tavilyApiKey,
                         userText = text,
-                        contextBlock = contextBlock,
+                        contextBlock = agentContext,
+                        memoryBlock = memoryBlock,
                         history = history,
                         onThinking = { th ->
                             mainHandler.post {
+                                if (turnSealed.get()) return@post
                                 intentThinking = th
                                 agentMessages = agentMessages.replaceAt(
                                     msgIdx, AgentMessage("agent", "", steps.toList(), thinking = th),
@@ -2527,6 +3228,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                         },
                         onContent = { full ->
                             mainHandler.post {
+                                if (turnSealed.get()) return@post
                                 val clean = full.trimStart()
                                 streamedReply = clean
                                 agentMessages = agentMessages.replaceAt(msgIdx, AgentMessage("agent", clean, steps.toList()))
@@ -2534,7 +3236,23 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                         },
                         onSearch = { q ->
                             mainHandler.post {
+                                if (turnSealed.get()) return@post
                                 steps.upsert("web", "联网搜索:$q", com.shiyin.music.data.ai.AgentEngine.StepStatus.RUNNING)
+                                agentMessages = agentMessages.replaceAt(msgIdx, AgentMessage("agent", "", steps.toList()))
+                                // v1.3.8: 记录 TOOL 状态(搜索工具调用)
+                                processHistory.add(ProcessStep(
+                                    type = "tool",
+                                    label = "正在搜索:$q",
+                                    durationMs = 0L, // 搜索完成后再更新耗时
+                                ))
+                            }
+                        },
+                        onSearchComplete = { q, success ->
+                            mainHandler.post {
+                                if (turnSealed.get()) return@post
+                                val status = if (success) com.shiyin.music.data.ai.AgentEngine.StepStatus.DONE
+                                             else com.shiyin.music.data.ai.AgentEngine.StepStatus.FAILED
+                                steps.upsert("web", "联网搜索:$q", status)
                                 agentMessages = agentMessages.replaceAt(msgIdx, AgentMessage("agent", "", steps.toList()))
                             }
                         },
@@ -2553,11 +3271,23 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     routeTokens = disp.promptTokens to disp.completionTokens
                     dispatchThinking = disp.thinking ?: intentThinking
                     dispatchThinkingMs = disp.thinkingMs
+                    // v1.3.8: 记录 THINKING 状态(如果有 thinking 内容或耗时 > 0)
+                    if ((dispatchThinking?.isNotBlank() == true && dispatchThinking.length > 20) || dispatchThinkingMs > 500) {
+                        processHistory.add(ProcessStep(
+                            type = "thinking",
+                            label = "思考中...",
+                            durationMs = dispatchThinkingMs,
+                            summary = if (dispatchThinking != null && dispatchThinking.length <= 200) dispatchThinking else null,
+                        ))
+                    }
+
 
                     if (!disp.toolsSupported) {
                         // 供应商不认 tools(HTTP 400/422)→ 回退旧 prompt+JSON 链路,行为与上一版一致
                         android.util.Log.i("Agent", "dispatch: 供应商不支持 tools,回退旧 route 链路")
-                        val r = routeOnce(text, history, config, steps, msgIdx, mainHandler, "") { th, rp ->
+                        // 领域上下文由 route() 内部自己按 ctx 组装(与 domainContext 同源);
+                        // 这里只需把**记忆块**递进去 —— 回退链路也必须拿到同一份记忆。
+                        val r = routeOnce(text, history, config, steps, msgIdx, mainHandler, "", memoryBlock) { th, rp ->
                             intentThinking = th; streamedReply = rp
                         }
                         if (r == null) {
@@ -2566,6 +3296,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                                 msgIdx,
                                 AgentMessage("agent", "LLM 调用失败:$err\n请到右上「设置」检查供应商额度 / Key / 模型名。", steps.toList()),
                             )
+                            seal()
                             return@launch
                         }
                         chatReply = r.chatReply
@@ -2578,6 +3309,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                         agentMessages = agentMessages.replaceAt(
                             msgIdx, AgentMessage("agent", "分发失败:${disp.error ?: "未知错误"}", steps.toList()),
                         )
+                        seal()
                         return@launch
                     } else {
                         disp.skill?.let {
@@ -2587,13 +3319,26 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 }
 
                 // 2a. 反问(第三态):模型不确定 → 不执行任何技能,把问题交还用户。
+                // v1.3.10: 走**专属选择卡片**(独立状态 agentClarify)——不再落一条 agent 气泡、
+                // 也不借用入口建议 chip(用户 2026-09-28 定调:三者是三个东西)。
                 if (clarifyReq != null) {
-                    agentMessages = agentMessages.replaceAt(
-                        msgIdx,
-                        AgentMessage("agent", clarifyReq.question, null, thinking = dispatchThinking, thinkingMs = dispatchThinkingMs),
+                    android.util.Log.i(
+                        "Agent",
+                        "clarify 交给用户: q=「${clarifyReq.question}」 opts=${clarifyReq.options}",
                     )
-                    // 复用现有建议 chip(点一条 = 以用户身份发一条消息),与追问同构
-                    if (clarifyReq.options.isNotEmpty()) agentSuggestions = clarifyReq.options
+                    // 模型若在调用 clarify 前已流出一段正文(如"这个我得问一下"),保留它;
+                    // 只有**空占位**才撤掉,免得对话里留一个空气泡。
+                    val streamed = (streamedReply ?: agentMessages.getOrNull(msgIdx)?.text).orEmpty()
+                    agentMessages = if (streamed.isNotBlank()) {
+                        agentMessages.replaceAt(
+                            msgIdx,
+                            AgentMessage("agent", streamed, null, thinking = dispatchThinking, thinkingMs = dispatchThinkingMs),
+                        )
+                    } else {
+                        agentMessages.removeAt(msgIdx)
+                    }
+                    agentClarify = clarifyReq
+                    seal()
                     refreshAgentTokens()
                     return@launch
                 }
@@ -2603,6 +3348,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                         msgIdx,
                         AgentMessage("agent", streamedReply ?: chatReply, null, tokens = routeTokens, thinking = dispatchThinking, thinkingMs = dispatchThinkingMs),
                     )
+                    seal()
                     refreshAgentTokens()
                     return@launch
                 }
@@ -2610,6 +3356,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 val plan = planDraft ?: run {
                     val err = com.shiyin.music.data.ai.LlmClient.lastError ?: "模型无返回"
                     agentMessages = agentMessages.replaceAt(msgIdx, AgentMessage("agent", "LLM 无有效回复:$err", steps.toList()))
+                    seal()
                     return@launch
                 }
                 android.util.Log.i("Agent", "plan: skill=${plan.skillKey} args=${plan.args}")
@@ -2617,7 +3364,83 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 val skill = com.shiyin.music.data.ai.AgentEngine.skillByKey(plan.skillKey)
                 if (skill == null) {
                     agentMessages = agentMessages.replaceAt(msgIdx, AgentMessage("agent", "没有可执行技能「${plan.skillKey}」。"))
+                    seal()
                     return@launch
+                }
+                // ── v1.3.12:播放执行闸门(确定性保护,不指望模型自守规矩) ─────────────
+                // 真机 bug:上一轮「放一下 Pretender」成功后,这一轮「秋天就喜欢听些苦情歌。」
+                // 被弱模型读成"再放一遍"。规则写进 prompt 只能降低概率,**挡不住弱模型**;
+                // 这里用纯函数再看一遍用户原话:没有明确执行意图 / 已经在放同一首 → 摘掉
+                // 播放工具再问一次(§7:禁止执行,转普通 Agent 回复)。
+                if (skill.key in com.shiyin.music.data.ai.AgentEngine.PLAYBACK_EXEC_SKILLS) {
+                    val guardTarget = plan.args["target"]?.takeIf { it.isNotBlank() }
+                        ?: plan.args["title"]?.takeIf { it.isNotBlank() }
+                    val curTitle = player.currentId?.let { trackById(it)?.title }
+                    val decision = com.shiyin.music.data.ai.PlaybackIntentGuard.guard(
+                        userText = text,
+                        requestedTarget = guardTarget,
+                        currentTitle = curTitle,
+                        isPlaying = player.isPlaying,
+                    )
+                    val guardNote = when (decision) {
+                        com.shiyin.music.data.ai.PlaybackIntentGuard.Decision.BlockNoIntent ->
+                            "[系统] 用户这句话**不是播放指令**(是感想/评论/闲聊)。不要执行任何播放动作,用普通聊天回应他。"
+                        com.shiyin.music.data.ai.PlaybackIntentGuard.Decision.AlreadyPlaying ->
+                            "[系统] 用户点名的「${curTitle.orEmpty()}」**已经在播放中**(进度 ${fmtProgress(player.positionMs)})。不要重新从头播放;除非他明确要求重新播放,否则告诉他已经在放了。"
+                        else -> null
+                    }
+                    if (guardNote != null) {
+                        android.util.Log.i("Agent", "playback guard: $decision · skill=${skill.key} · target=$guardTarget")
+                        com.shiyin.music.data.log.UsageLog.event(getApplication(), "Agent", "playback guard $decision")
+                        val again = com.shiyin.music.data.ai.AgentTools.dispatch(
+                            config = config,
+                            tavilyKey = tavilyApiKey,
+                            userText = text,
+                            contextBlock = listOf(agentContext, guardNote)
+                                .filter { it.isNotBlank() }.joinToString("\n"),
+                            memoryBlock = memoryBlock,
+                            history = history,
+                            blockPlayback = true,   // 手里没有播放工具 → 只能按聊天回答
+                            onThinking = { th ->
+                                mainHandler.post {
+                                    if (turnSealed.get()) return@post
+                                    intentThinking = th
+                                    agentMessages = agentMessages.replaceAt(msgIdx, AgentMessage("agent", "", steps.toList(), thinking = th))
+                                }
+                            },
+                            onContent = { full ->
+                                mainHandler.post {
+                                    if (turnSealed.get()) return@post
+                                    val clean = full.trimStart()
+                                    streamedReply = clean
+                                    agentMessages = agentMessages.replaceAt(msgIdx, AgentMessage("agent", clean, steps.toList()))
+                                }
+                            },
+                        )
+                        routeTokens = again.promptTokens to again.completionTokens
+                        dispatchThinking = again.thinking ?: intentThinking
+                        dispatchThinkingMs = again.thinkingMs
+                        if (again.promptTokens + again.completionTokens > 0) {
+                            viewModelScope.launch(Dispatchers.IO) {
+                                com.shiyin.music.data.ai.TokenUsageStore.log(
+                                    getApplication(), llmActiveProvider, "agent_dispatch",
+                                    again.promptTokens, again.completionTokens, again.cacheTokens,
+                                )
+                            }
+                        }
+                        // 摘掉播放工具后它只能聊天;万一仍然没正文,给一句诚实的兜底——
+                        // **绝不**回落到执行播放(这一步的意义就是"宁可少放,不要误放")。
+                        val said = again.chatReply?.takeIf { it.isNotBlank() }
+                            ?: streamedReply?.takeIf { it.isNotBlank() }
+                            ?: "这句我当成在聊音乐了——想放歌的话跟我说一声「放一下《歌名》」。"
+                        agentMessages = agentMessages.replaceAt(
+                            msgIdx,
+                            AgentMessage("agent", said, null, tokens = routeTokens, thinking = dispatchThinking, thinkingMs = dispatchThinkingMs),
+                        )
+                        seal()
+                        refreshAgentTokens()
+                        return@launch
+                    }
                 }
                 steps.clear()
                 // v1.3.8(P2): 步骤清单由**技能自己声明**(panelSteps),面板行 id == 技能回调
@@ -2644,10 +3467,19 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                         "未搜到相关资料" else null
                     // v1.3.3b review#B2: 技能协程在 IO 线程回调——state 写入投递主线程。
                     mainHandler.post {
+                        if (turnSealed.get()) return@post
                         steps.upsert(effectiveRow, id, st, explicitError = bizErr)
                         agentMessages = agentMessages.replaceAt(msgIdx, AgentMessage("agent", "", steps.toList(), lastTokens))
                     }
                 }
+                // v1.3.12:记下"上一轮做了什么"——下一轮会被摆进 [上一轮动作] 让模型知道
+                // 这件事已经成功完成(真机 bug:模型看不到"已经放过",就把感想读成"再放一遍")。
+                lastAgentAction = AgentAction(
+                    kind = humanActionLabel(skill.key),
+                    detail = (plan.args["target"] ?: plan.args["title"] ?: plan.args["album"]
+                        ?: plan.args["action"] ?: plan.args["artist"] ?: "").trim(),
+                    success = result.success,
+                )
                 // v1.3.x 使用日志:记"用了哪个技能、成没成",**不记用户的提问与回复内容**。
                 com.shiyin.music.data.log.UsageLog.event(
                     getApplication(), "Agent",
@@ -2669,7 +3501,20 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 steps.removeAll { it.status == com.shiyin.music.data.ai.AgentEngine.StepStatus.PENDING }
                 // v1.3.3: 最终消息带上思考链(意图理解 + 技能内 LLM 调用,取最全的一条)+ 真实耗时。
                 val finalThinking = result.thinking ?: intentThinking
-                agentMessages = agentMessages.replaceAt(msgIdx, AgentMessage("agent", result.summary, steps.toList(), lastTokens, thinking = finalThinking, thinkingMs = dispatchThinkingMs))
+                // v1.3.9: 空正文兜底——技能成功返回但 summary 为空时,绝不让气泡停在
+                // 只有步骤的状态(用户看到的"卡住"):如实给出可读的收尾文案。
+                val finalText = result.summary.ifBlank {
+                    android.util.Log.w("Agent", "技能 ${skill.key} 成功返回但正文为空,使用兜底文案")
+                    "处理完了,但这次没有生成可显示的正文。请换个说法或重试一次。"
+                }
+                // v1.3.8: 最终消息包含完整 processHistory(方案C折叠式)
+                agentMessages = agentMessages.replaceAt(msgIdx, AgentMessage(
+                    "agent", finalText, steps.toList(), lastTokens,
+                    thinking = finalThinking, thinkingMs = dispatchThinkingMs,
+                    processHistory = processHistory.toList(),
+                ))
+                // 终态落钉:此后的中间态回调(迟到的 mainHandler.post)一律作废。
+                seal()
                 // v1.3.2: 按本轮任务结果更新建议(点过/发过即消失,不常驻)
                 // v1.3.3: 删掉「查歌手名识别是否正确」建议——意义不明,任务完成后清空。
                 agentSuggestions = emptyList()
@@ -2684,8 +3529,19 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     throw e
                 }
                 agentMessages = agentMessages.replaceAt(msgIdx, AgentMessage("agent", "Agent 执行出错:${e.message ?: e.javaClass.simpleName}"))
+                seal()
             } finally {
                 agentRunning = false
+                // v1.3.9: 一轮结束落库对话（完成/失败/被打断都在此收口）。
+                persistAgentConversation()
+                // v1.3.10 需求 A21(P2):**回合后记忆提取**(兜底)——独立单用途调用判断这轮有没有
+                // 值得长期记住的东西,再交 MemoryManager 的确定性规则裁决落库。
+                // 放在 finally:闲聊/技能/clarify/失败四条路径都会跑到。
+                // v1.3.11:回复前流程已经处理过的轮次(显式「记住」/ 自我介绍类)不再重复提取,
+                // 免得同一轮花两次调用、也不会让状态在回复后又被抽屉里改一次。
+                if (memoryExplicit == null && !memoryPreExtract) {
+                    extractMemories(text, agentMessages.getOrNull(msgIdx)?.text.orEmpty())
+                }
             }
         }
     }
@@ -2703,6 +3559,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         msgIdx: Int,
         mainHandler: android.os.Handler,
         webContext: String = "",
+        /** v1.3.11:记忆块——回退链路必须与主链路拿到同一份记忆,否则同一句话两个答案。 */
+        memoryBlock: String = "",
         onState: (thinking: String?, streamedReply: String?) -> Unit = { _, _ -> },
     ): com.shiyin.music.data.ai.AgentEngine.Route? {
         // v1.3.4: onThinking 传的是增量碎片——live 展开要看完整链,本地累积;
@@ -2722,6 +3580,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             },
             history = history,
             webContext = webContext,
+            memoryBlock = memoryBlock,
             onThinking = { th ->
                 thinkAcc = if (th == null) "" else (thinkAcc ?: "") + th
                 mainHandler.post {
@@ -2759,11 +3618,36 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private fun List<AgentMessage>.replaceAt(idx: Int, m: AgentMessage): List<AgentMessage> =
         mapIndexed { i, old -> if (i == idx) m else old }
 
+    /** v1.3.10: 撤掉一条消息(越界安全)。clarify 走独立卡片、不落气泡时用来清掉空占位,
+     *  免得对话里留下一个空气泡。 */
+    private fun List<AgentMessage>.removeAt(idx: Int): List<AgentMessage> =
+        if (idx in indices) toMutableList().apply { removeAt(idx) } else this
+
     /** 打开/开关 Agent 页(侧边栏/专辑菜单)。agentOpen 公开可写,UI 直接赋值。 */
 
     // v1.3.2: 专辑菜单的 Agent 入口——不自动执行排序,而是打开对话页打招呼 +
     // 给出针对该专辑的建议回复,用户点建议或自行输入(Agent 不局限于排序一种处理)。
     fun clearAgentSuggestions() { agentSuggestions = emptyList() }
+
+    /**
+     * v1.3.10: 用户点选了选择卡片里的某一项——**原样**作为用户消息发出,卡片收起。
+     * 不发系统包装文案:对话记录里出现的就应该是用户当时选的那句话,历史才读得通。
+     */
+    fun chooseAgentClarify(option: String) {
+        if (agentClarify == null) return
+        agentClarify = null
+        sendAgentMessage(option)
+    }
+
+    /**
+     * v1.3.10: 关闭或跳过卡片(× / 「跳过」)。不发任何内容。
+     *
+     * 这里**不需要**额外"解除等待"——clarify 那一轮模型已经返回(agentRunning=false),
+     * 对话本来就是可继续的;清掉状态就够了,不存在"卡在等待选择"。
+     */
+    fun dismissAgentClarify() {
+        agentClarify = null
+    }
 
     fun openAgentForAlbum(key: String) {
         agentOpen = true
@@ -3231,6 +4115,28 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             ?: queue.first().id
         player.setShuffle(false)
         player.playQueue(collapseSplitRuns(queue, realStart), realStart, "artist:$name")
+    }
+
+    /**
+     * v1.3.10 需求 A15:歌手页「热门」行点播——队列必须与**列表展示顺序一致**(热度降序)。
+     *
+     * 旧行为(用户报的 bug):热门行点击走 [playArtist] → 队列是 [artistQueue](专辑曲序),
+     * 于是"点了第 3 首热门,下一首却是专辑里的下一首"——听感就是"不按热门队列播放,乱来"。
+     *
+     * 排序口径与歌手页展示用**同一个表达式**(heatCountFor 降序),两边不会漂移;
+     * 队列 key 用 `artisthot:` 前缀,让 [resyncQueue] 也按热度序重建——否则库一变(扫描/改名)
+     * 队列会翻回专辑序,播放中途顺序突变。
+     */
+    fun playArtistHot(name: String, startId: Long) {
+        val tracks = artistQueue(name).sortedByDescending { heatCountFor(it.id) }
+        // 与 playArtist 同一套可见性处理:点中的是隐藏曲 → 保留它、滤掉其余隐藏曲
+        val tappedHidden = isHidden(startId)
+        val queue = if (tappedHidden) tracks.filter { it.id == startId || !isHidden(it.id) }
+        else playbackFiltered(tracks)
+        if (queue.isEmpty()) return
+        val realStart = startId.takeIf { id -> queue.any { it.id == id } } ?: queue.first().id
+        player.setShuffle(false)
+        player.playQueue(collapseSplitRuns(queue, realStart), realStart, "artisthot:$name")
     }
 
     fun playRandom() {
@@ -3782,6 +4688,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun setFuriganaAutoVerify(v: Boolean) = viewModelScope.launch { settingsStore.setFuriganaAutoVerify(v) }
     fun setTranslateAutoForeign(v: Boolean) = viewModelScope.launch { settingsStore.setTranslateAutoForeign(v) }
     fun setTranslateDefaultShow(v: Boolean) = viewModelScope.launch { settingsStore.setTranslateDefaultShow(v) }
+    /** v1.3.10: 「翻译按钮显示」档位。 */
+    fun setTranslateButtonMode(mode: String) = viewModelScope.launch { settingsStore.setTranslateButtonMode(mode) }
+    /** v1.3.10 需求 A26:时间轴校对入口常显开关。 */
+    fun setLyricsCalibAlwaysOn(v: Boolean) = viewModelScope.launch { settingsStore.setLyricsCalibAlwaysOn(v) }
 
     /** v1.3.x 播放设置 setter(设置·播放页)。 */
     fun setVolumeNormalize(v: Boolean) = viewModelScope.launch { settingsStore.setVolumeNormalize(v) }
@@ -4193,12 +5103,27 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      *  直接拒绝,不再 coerceAtLeast(0) 静默落到 LRCLIB(旧:任意字符串都被当 LRCLIB 查)。 */
     fun rematchSource(source: String) {
         val track = trackById(player.currentId) ?: return
-        val idx = LyricsFetcher.SOURCES.indexOf(source)
+        // v1.3.10 A29:索引基于**当前可用源**(内置去掉关掉的 + 自定义源)
+        val idx = LyricsFetcher.activeSources().indexOf(source)
         if (idx < 0) return
         lySheet = false
         lyricsJob?.cancel()
         lyricsJob = viewModelScope.launch {
             matchOnline(track, idx, thenNextSource = false, reopenSheet = true)
+        }
+    }
+
+    /**
+     * v1.3.10 需求 A32:歌词卡片「在线匹配歌词」——手动重跑**完整来源链**
+     * (从第一个源开始,失败自动降级到下一个),与自动匹配走同一条逻辑。
+     * 与 [rematchSource] 的区别:那个只查用户点的那一个源。
+     */
+    fun rematchAuto() {
+        val track = trackById(player.currentId) ?: return
+        lySheet = false
+        lyricsJob?.cancel()
+        lyricsJob = viewModelScope.launch {
+            matchOnline(track, 0, thenNextSource = true, reopenSheet = true)
         }
     }
 
@@ -4303,7 +5228,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun matchOnline(track: Track, sourceIndex: Int, thenNextSource: Boolean, reopenSheet: Boolean = false) {
         lyState = LyState.Searching
         lyFailReason = null
-        val sources = LyricsFetcher.SOURCES
+        // v1.3.9 诊断:把 App **实际使用的**曲目元数据打出来——此前排查"某首歌搜不到"
+        // 时,只能靠外部工具猜 App 拿到的是什么(MediaStore 与 App 扫描结果可能不同)。
+        android.util.Log.i(
+            "Lyrics",
+            "matchOnline: title=${track.title} | artist=${track.artist} | album=${track.album} | dur=${track.durationSec}s | fromSource=$sourceIndex",
+        )
+        val sources = LyricsFetcher.activeSources()
         // Bug4a: try sources in order, preferring any that yields timestamped
         // lyrics (LRC). Plain-text results are accepted only as a last resort
         // (no other source produced anything) — same logic for the auto
@@ -4316,6 +5247,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         while (attempts < maxAttempts) {
             val src = sources[i % sources.size]
             val raw = LyricsFetcher.fetch(src, track.title, track.artist, track.album, track.durationSec)
+            android.util.Log.i("Lyrics", "源 $src 返回 ${raw?.length ?: 0} 字")
             if (raw != null) {
                 val parsed = LrcParser.parse(raw)
                 if (!parsed.isEmpty) {
@@ -4364,11 +5296,43 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         triedAuto += targetId
         currentLyrics = LoadedLyrics(targetId, content, parsed, name, LyricsKind.Imported, saved = false, offsetMs = 0)
         lyState = LyState.Idle
+        // v1.3.10 需求 A28:**导入即保存**。
+        // 用户实测的数据丢失:手动导入一个专辑的歌词后没点"保存",播放下一首 → 导入的歌词全没了。
+        // 用户定调:"歌词这种获取了(导入或抓取),除非用户自己又删了,不然就要自动保存"——
+        // 人家费劲找来歌词文件/文字,不可能保证停在这一页点一下保存。
+        // 落库用 autoSaved=0(与"手动确认保存"同级):清理识别缓存时**保留**用户自己的歌词。
+        persistLyricsNow("导入即保存 · $name")
+    }
+
+    /**
+     * v1.3.10:立即可靠落库当前歌词(autoSaved=0,与手动确认同级)。
+     *
+     * 顺序刻意与 [autoSaveRecognizedLyrics] 一致:**先写库、写成功才置 saved=true**
+     * (旧教训:先置 saved=true 而写入失败被吞 → UI 假成功、切歌照样丢)。
+     * 任何异常静默——持久化失败不该影响正在展示的歌词。
+     */
+    private fun persistLyricsNow(logLabel: String) {
+        val cur = currentLyrics ?: return
+        val target = cur.mediaId
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                dao.upsertLyric(
+                    SavedLyricEntity(cur.mediaId, cur.raw, cur.source, cur.offsetMs, System.currentTimeMillis(), autoSaved = 0),
+                )
+                withContext(Dispatchers.Main) {
+                    if (currentLyrics?.mediaId == target) currentLyrics = currentLyrics?.copy(saved = true)
+                }
+                com.shiyin.music.data.log.UsageLog.event(getApplication(), "歌词", logLabel)
+            } catch (_: Exception) { }
+        }
     }
 
     fun bumpLyricsOffset(deltaMs: Long) {
         val cur = currentLyrics ?: return
         currentLyrics = cur.copy(offsetMs = cur.offsetMs + deltaMs, saved = false)
+        // v1.3.10 需求 A28:偏移量调整同样属于"用户费力对齐的成果"——一并自动保存,
+        // 否则调完切歌就白调(与导入丢失同一类问题)。
+        persistLyricsNow("偏移调整即保存 · ${deltaMs}ms")
     }
 
     /** v2.0: sync a line of unsynced lyrics to the current playback position.
@@ -5017,6 +5981,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     retries = 1,
                 )
                 if (resp == null) lastLlmError = com.shiyin.music.data.ai.LlmClient.lastError
+                // v1.3.11:正文空 + 有思考 = 思考型模型把输出预算吃光(见 LlmBudget 实证)。
+                // 给一句用户看得懂的原因 —— 否则表现就是"点了转半天,啥也没说就回原样"。
+                // 只写人话,不把 finish=length/token 数这类内部细节摆给用户(日志里有)。
+                if (resp != null && resp.content.isNullOrBlank() && !resp.thinking.isNullOrBlank()) {
+                    lastLlmError = "模型思考占满了输出预算,可重试或换一个非思考模型"
+                }
                 if (resp != null) {
                     viewModelScope.launch(Dispatchers.IO) {
                         com.shiyin.music.data.ai.TokenUsageStore.log(
@@ -5221,6 +6191,21 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         com.shiyin.music.data.translate.LyricsTranslationProtocol.isForeign(lines)
 
     /**
+     * v1.3.10: 歌词本「翻译」按钮是否挂载——按用户选的档位([translateButtonMode])决定:
+     *  - never    → 永不显示;
+     *  - any      → 出现任何外文(假名/谚文/拉丁字母)就显示;
+     *  - majority → 沿用 [isForeignLyrics] 的占比判定(第7轮定的现状阈值,不改变)。
+     *
+     * 与自动翻译**刻意解耦**:自动翻译只认 [isForeignLyrics](占比),不随按钮档位变——
+     * 用户调的是"按钮显不显示",不是"要不要自动烧 token 翻译"。
+     */
+    fun shouldShowTranslateButton(lines: List<String>): Boolean = when (translateButtonMode) {
+        "never" -> false
+        "any" -> com.shiyin.music.data.translate.LyricsTranslationProtocol.hasAnyForeign(lines)
+        else -> isForeignLyrics(lines)
+    }
+
+    /**
      * v1.3.x 需求6「删除翻译缓存」：清掉本曲本版本的已保存译文（内存 + DB）。
      * 只删当前 `(mediaId, lyricsHash)` —— 不牵连其它歌，也不牵连换源前的旧版本。
      */
@@ -5402,6 +6387,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                             callSec = 45, retries = 0,
                         )
                         android.util.Log.i("FuriganaAssist", "llm call ${android.os.SystemClock.elapsedRealtime() - llmT0}ms gaps=${gaps.size} → ${if (resp != null) "ok" else com.shiyin.music.data.ai.LlmClient.lastError?.take(50)}")
+                        // v1.3.10 A19: 这次调用此前**从不入账**——用量面板因此少算振假名这一块,
+                        // 是用户"统计不准"的来源之一。成功失败都记(token 已经烧了,解析失败也算)。
+                        if (resp != null) {
+                            com.shiyin.music.data.ai.TokenUsageStore.log(
+                                getApplication(), llmActiveProvider, "furigana_assist",
+                                resp.promptTokens, resp.completionTokens, resp.cacheTokens,
+                            )
+                        }
                         if (resp == null) {
                             // v1.3.x code-review 修复(lastError 串扰):全局单例
                             // lastError 是所有调用方共享的——振假名后台跑期间若
@@ -5778,4 +6771,70 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         super.onCleared()
         player.finalizeCurrent()
     }
+}
+
+/**
+ * v1.3.9: 对话消息解码 + 净化。
+ *
+ * Gson 通过 Unsafe 分配对象、**不执行构造器**——JSON 里缺失的字段会被置成 null
+ * 打进 Kotlin 的非空属性(旧构建写的行、或后来新增的字段如 processHistory)。
+ * UI 一旦读 `msg.processHistory.size` / `msg.text` 就 NPE 崩溃
+ * (用户实测:点击历史对话闪退)。这里逐条补齐兜底值再交付 UI。
+ *
+ * 独立成顶层函数是为了能被 JVM 单测直接覆盖(不需要设备)。
+ */
+/**
+ * v1.3.9 二修:改为 **JsonParser 手动逐字段解析**,彻底脱离 Gson 反射数据绑定。
+ * 根因(真机崩溃栈 2026-09-27 12:33 实证):release 包经 R8 后,`List<Step>` 的泛型
+ * 信息在反射路径上丢失,Gson 把 steps 元素落成 LinkedTreeMap,迭代时
+ * ClassCastException 闪退——`TypeToken` + `-keepattributes Signature` 都没能防住。
+ * 手动解析不依赖任何字段名/泛型签名,与项目既有约定一致(proguard-rules.pro 的
+ * Gson 注释、UpdateStateCodec 的"刻意不用 fromJson")。
+ * 任何解析异常 → 空列表(历史打不开总比闪退强),并落 error 日志。
+ */
+internal fun decodeAgentMessages(json: String): List<MainViewModel.AgentMessage> = runCatching {
+    fun com.google.gson.JsonObject.str(k: String): String? =
+        get(k)?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isString }?.asString
+    fun com.google.gson.JsonObject.lng(k: String): Long? =
+        get(k)?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isNumber }?.asLong
+    val arr = com.google.gson.JsonParser.parseString(json).asJsonArray
+    arr.mapNotNull { el ->
+        if (!el.isJsonObject) return@mapNotNull null
+        val o = el.asJsonObject
+        MainViewModel.AgentMessage(
+            role = o.str("role") ?: "agent",
+            text = o.str("text") ?: "",
+            steps = o.get("steps")?.takeIf { it.isJsonArray }?.asJsonArray?.mapNotNull { se ->
+                if (!se.isJsonObject) return@mapNotNull null
+                val so = se.asJsonObject
+                com.shiyin.music.data.ai.AgentEngine.Step(
+                    id = so.str("id") ?: "",
+                    label = so.str("label") ?: "",
+                    status = runCatching {
+                        com.shiyin.music.data.ai.AgentEngine.StepStatus.valueOf(so.str("status") ?: "")
+                    }.getOrDefault(com.shiyin.music.data.ai.AgentEngine.StepStatus.PENDING),
+                    error = so.str("error"),
+                )
+            },
+            tokens = o.get("tokens")?.takeIf { it.isJsonObject }?.asJsonObject?.let { t ->
+                val f = t.lng("first")?.toInt(); val s = t.lng("second")?.toInt()
+                if (f != null && s != null) f to s else null
+            },
+            thinking = o.str("thinking"),
+            thinkingMs = o.lng("thinkingMs") ?: 0L,
+            processHistory = o.get("processHistory")?.takeIf { it.isJsonArray }?.asJsonArray?.mapNotNull { pe ->
+                if (!pe.isJsonObject) return@mapNotNull null
+                val po = pe.asJsonObject
+                MainViewModel.ProcessStep(
+                    type = po.str("type") ?: "thinking",
+                    label = po.str("label") ?: "",
+                    durationMs = po.lng("durationMs") ?: 0L,
+                    summary = po.str("summary"),
+                )
+            } ?: emptyList(),
+        )
+    }
+}.getOrElse {
+    android.util.Log.e("Agent", "decodeAgentMessages 解析失败,返回空列表", it)
+    emptyList()
 }
