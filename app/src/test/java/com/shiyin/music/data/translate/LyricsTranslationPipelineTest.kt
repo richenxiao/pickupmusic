@@ -219,4 +219,29 @@ class LyricsTranslationPipelineTest {
         assertFalse("进度不应回退", seen.zipWithNext().any { (a, b) -> b < a })
         assertEquals(3, seen.last())
     }
+
+    // ── v1.3.11:正文全空(思考吃光预算)与"格式不符"必须区别对待 ──────────────
+
+    @Test
+    fun blankBodySkipsCompletionRoundAndReportsReason() = runBlocking {
+        // 用户实证:思考型模型思考太久时 content 返回**空串**(不是格式问题)。
+        // 补齐轮的请求形状与第一次相同 → 只会让用户再干等 8-12 秒后同样失败,必须跳掉。
+        val (p, llm) = pipeline("", "")
+        val out = p.translate("t", "a", lines)
+        assertEquals("正文全空时应只发一次调用", 1, llm.calls.size)
+        assertEquals(1, out.rounds)
+        assertTrue(out.byLine.isEmpty())
+        assertEquals("模型没有返回译文正文（思考占满了输出预算）", out.failure)
+    }
+
+    @Test
+    fun nonBlankButUnparseableBodyStillTriesCompletionRound() = runBlocking {
+        // 有正文但解析不出行号(如模型加了 markdown 或先说了段废话)是**另一类**问题:
+        // 补齐轮带着语境重问是有意义的,不能跟"正文全空"一起跳掉。
+        val (p, llm) = pipeline("这是一段没有行号的说明文字", "1|L1\n2|L2\n3|L3")
+        val out = p.translate("t", "a", lines)
+        assertEquals("有正文时应照常走补齐轮", 2, llm.calls.size)
+        assertEquals(1.0f, out.coverage, 0.001f)
+        assertNull(out.failure)
+    }
 }

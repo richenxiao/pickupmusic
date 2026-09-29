@@ -112,7 +112,11 @@ object LyricsTranslationProtocol {
      * 已知取舍：纯汉字+极少量假名的日语歌（如「我思う故に我在り」，kana=1/cjk=7）
      * 会被判成中文而漏译。这类歌词与中文无法从字符层区分，宁可不译也不整首误译。
      */
-    fun classifyLanguage(lines: List<String>): SongLanguage {
+    /**
+     * 字符分类计数([kana, hangul, cjk, latin])。**字符区间只在这一处维护**——
+     * [classifyLanguage] 与 [hasAnyForeign] 共用,避免两条判定各写一套区间、日后漂移。
+     */
+    private fun charCounts(lines: List<String>): IntArray {
         var kana = 0; var hangul = 0; var latin = 0; var cjk = 0
         for (line in lines) for (ch in line) {
             val c = ch.code
@@ -129,6 +133,11 @@ object LyricsTranslationProtocol {
                 Character.isLetter(ch) -> latin++
             }
         }
+        return intArrayOf(kana, hangul, cjk, latin)
+    }
+
+    fun classifyLanguage(lines: List<String>): SongLanguage {
+        val (kana, hangul, cjk, latin) = charCounts(lines)
         return when {
             kana > 0 && kana * 4 >= cjk -> SongLanguage.Japanese
             hangul > 0 && hangul * 4 >= cjk -> SongLanguage.Korean
@@ -137,8 +146,21 @@ object LyricsTranslationProtocol {
         }
     }
 
-    /** 外语歌 = 非用户语言(当前:非中文)。按钮显隐与自动翻译共用此判定。 */
+    /** 外语歌 = 非用户语言(当前:非中文)。**自动翻译**用此判定(占比语义,不随按钮档位变)。 */
     fun isForeign(lines: List<String>): Boolean = classifyLanguage(lines) != SongLanguage.Chinese
+
+    /**
+     * v1.3.10:「检测到外文就显示」档——出现**任何**外文内容(假名/谚文/拉丁字母)即为真,
+     * 不看占比。复用 [charCounts] 的同一套字符区间,不是另写一套判定。
+     *
+     * 与 [isForeign] 的区别:那条是「外文较多」(占比判定,专为"中文歌夹几句英语不该整首
+     * 翻译"设计);本条是用户可显式选择的宽松档——中文歌只夹一个英文单词也会显示翻译按钮。
+     * 数字/标点不算外文(只认字母与假名/谚文)。
+     */
+    fun hasAnyForeign(lines: List<String>): Boolean {
+        val (kana, hangul, _, latin) = charCounts(lines)
+        return kana > 0 || hangul > 0 || latin > 0
+    }
 
     /** 该行是否**纯用户语言**(纯中文行,夹个别外文的也算——主题内容是中文)。 */
     private fun isUserLanguageLine(line: String): Boolean {
@@ -286,5 +308,12 @@ object LyricsTranslationProtocol {
      * 兜底(第二轮只发缺失行,maxTokens 自然小)。
      */
     fun suggestedMaxTokens(lineCount: Int): Int =
-        (lineCount * 32 + 1024).coerceIn(2048, 8192)
+        // v1.3.11:余量 1024→2048、每行 32→48。用户报"翻译往常 2-3 秒就出来,现在时好时坏、
+        // 点两三次才成功":deepseek-flash 这类**思考模型**把 reasoning token 也计进 max_tokens,
+        // 思考一长就把预算吃光、正文返回空串(实证:同一提示词,9.2s 那次 content 为空、
+        // 2.9s 那次是完整译文)。上面那句注释本来就写着"给思考型模型留 reasoning 余量",
+        // 但只留了 1024 —— 不够。
+        // 上限仍是 8192(DeepSeek 等厂商的 max_tokens 硬上限,超了会被服务端 HTTP 400 拒绝);
+        // 万一还是被截断,`LlmClient.call` 会用**双倍预算**自动再要一次(见 LlmBudget)。
+        (lineCount * 48 + 2048).coerceIn(3072, 8192)
 }

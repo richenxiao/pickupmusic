@@ -243,4 +243,17 @@ class LyricsTranslationProtocolTest {
         assertTrue(proto.suggestedMaxTokens(200) <= 8192)
         assertTrue(proto.suggestedMaxTokens(120) > proto.suggestedMaxTokens(20))
     }
+
+    @Test
+    fun suggestedMaxTokensLeavesReasoningHeadroom() {
+        // v1.3.11(用户报"翻译时好时坏、点两三次才成功"):思考模型把 reasoning token 也
+        // 计进 max_tokens,思考一长就把预算吃光、正文返回空串(实证:48 行时旧预算 2560
+        // 不够)。这里把新的余量钉死 —— 再有人"顺手调小"会立刻被测试拦住。
+        assertEquals(4352, proto.suggestedMaxTokens(48))   // 48×48 + 2048
+        assertEquals(3584, proto.suggestedMaxTokens(32))   // 32×48 + 2048
+        // 极短歌也要给足思考余量(否则两句歌词也会被思考吃光)
+        assertEquals(3072, proto.suggestedMaxTokens(3))
+        // 上限 8192:超过会被 DeepSeek 等服务端 HTTP 400 拒绝
+        assertEquals(8192, proto.suggestedMaxTokens(1000))
+    }
 }

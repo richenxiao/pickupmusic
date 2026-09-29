@@ -24,6 +24,14 @@ data class LlmResponse(
     /** v1.3.6: 缓存命中 token(usage.prompt_tokens_details.cached_tokens,
      *  DeepSeek 用 usage.prompt_cache_hit_tokens;没有=0)。用量面板"缓存命中"曲线。 */
     val cacheTokens: Int = 0,
+    /**
+     * v1.3.11: 服务端给的结束原因(`stop`=正常结束,`length`=被 max_tokens 截断)。
+     *
+     * **这次必须留下它**:用户报"翻译时好时坏"时,日志里只有 `body=<前300字>`,
+     * 而 finish_reason 在响应尾部、根本不在那 300 字里 —— 只能靠人工推理半天。
+     * 思考型模型把预算花光导致正文为空,正是靠这个字段一眼可判。
+     */
+    val finishReason: String? = null,
 ) {
     val totalTokens: Int get() = promptTokens + completionTokens
 }
@@ -131,9 +139,29 @@ object LlmClient {
         while (true) {
             val t0 = android.os.SystemClock.elapsedRealtime()
             val r = callOnce(config, messages, temperature, maxTokens, callSec)
-            android.util.Log.i(TAG, "LLM call ${android.os.SystemClock.elapsedRealtime() - t0}ms (callSec=$callSec) → ${if (r != null) "ok" else lastError?.take(60)}")
+            logCallLine(r, android.os.SystemClock.elapsedRealtime() - t0, callSec, maxTokens)
             // 成功 / 非网络类失败(服务端响应了:HTTP 错误码、配置问题) → 直接返回
-            if (r != null || lastError?.startsWith("网络异常") != true) return r
+            if (r != null || lastError?.startsWith("网络异常") != true) {
+                // v1.3.11:正文空 + 思考非空 = 思考型模型把预算吃光(见 LlmBudget 的实证)。
+                // 用**双倍预算**再要一次:一次点击最多多花一次调用,换掉"时好时坏、点两三次"。
+                if (r != null &&
+                    shouldRetryWithBiggerBudget(r.content, r.thinking, r.finishReason, maxTokens)
+                ) {
+                    val bigger = doubledBudget(maxTokens)
+                    android.util.Log.w(
+                        TAG,
+                        "正文为空但思考非空(finish=${r.finishReason ?: "?"})" +
+                            "→ 预算 $maxTokens → $bigger,重试一次",
+                    )
+                    val t1 = android.os.SystemClock.elapsedRealtime()
+                    val r2 = callOnce(config, messages, temperature, bigger, callSec)
+                    logCallLine(r2, android.os.SystemClock.elapsedRealtime() - t1, callSec, bigger)
+                    // 加大预算仍拿不到 → 返回原始结果(调用方按"空响应"处理并报错),
+                    // 不返回 null:HTTP 层这次是成功的,别谎报成网络失败。
+                    if (r2 != null) return r2
+                }
+                return r
+            }
             // 网络异常 → 重试(默认 1 次;轻量调用传 0)
             if (attempt >= retries) return r
             attempt++
@@ -141,6 +169,28 @@ object LlmClient {
             kotlinx.coroutines.delay(backoffMs)
             backoffMs *= 2
         }
+    }
+
+    /**
+     * 每次 LLM 调用一行**可诊断**摘要。
+     *
+     * v1.3.11:原来只有 `LLM resp http=.. body=<前 300 字>` —— 正文为空时,那 300 字里
+     * 既没有 finish_reason 也没有 token 用量,"思考吃光预算"这种失败只能靠猜
+     * (用户报"翻译时好时坏",是人工翻半天日志才定案的)。这行把判据全摆出来:
+     * finish / 用量 / 正文长度 / 思考长度,一眼可判。
+     */
+    private fun logCallLine(r: LlmResponse?, ms: Long, callSec: Long, maxTokens: Int) {
+        if (r == null) {
+            android.util.Log.i(TAG, "LLM call ${ms}ms (callSec=$callSec) → ${lastError?.take(80)}")
+            return
+        }
+        android.util.Log.i(
+            TAG,
+            "LLM call ${ms}ms (callSec=$callSec, maxTok=$maxTokens) → ok " +
+                "finish=${r.finishReason ?: "?"} pt=${r.promptTokens} ct=${r.completionTokens} " +
+                "cache=${r.cacheTokens} contentLen=${r.content?.length ?: 0} " +
+                "reasoningLen=${r.thinking?.length ?: 0}",
+        )
     }
 
     /**
@@ -351,7 +401,12 @@ object LlmClient {
                 // reasoning_content 时回 "content": null)——getAsJsonObject 语义的
                 // 空安全判空,JsonNull.asString 会抛 UnsupportedOperationException,
                 // 整个成功响应又被当"网络异常"烧三轮重试。
-                val msgObj = choices.get(0)?.takeIf { it.isJsonObject }?.asJsonObject
+                // v1.3.11: 取 choices[0] 一次,复用于 message 与 finish_reason。
+                // firstOrNull{isJsonObject} 比 get(0) 稳:元素可能是 JsonNull(见下)。
+                val choice0 = choices.firstOrNull { el -> el.isJsonObject }?.asJsonObject
+                val finishReason =
+                    choice0?.get("finish_reason")?.takeIf { it.isJsonPrimitive }?.asString
+                val msgObj = choice0
                     ?.get("message")?.takeIf { it.isJsonObject }?.asJsonObject ?: run {
                     lastError = "响应缺少 message"
                     return@withContext null
@@ -370,7 +425,7 @@ object LlmClient {
                     ?.get("cached_tokens")?.takeIf { it.isJsonPrimitive }?.asInt
                     ?: usage?.get("prompt_cache_hit_tokens")?.takeIf { it.isJsonPrimitive }?.asInt
                     ?: 0
-                LlmResponse(content, pt, ct, thinking, cacheTk)
+                LlmResponse(content, pt, ct, thinking, cacheTk, finishReason)
             } catch (e: Exception) {
                 if (e is kotlinx.coroutines.CancellationException) throw e
                 lastError = "网络异常: ${e.message ?: e.javaClass.simpleName}"

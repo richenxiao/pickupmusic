@@ -107,8 +107,14 @@ class LyricsTranslationPipeline(
         outOfRange.addAll(parsed.outOfRange)
         onProgress(byLine.size, total)
 
+        // v1.3.11:第 1 轮**正文整个是空**时不要跑补齐轮 —— 那不是"格式不符",是压根没有正文。
+        // 补齐轮的请求形状与第一次一样(同样吃紧的思考余量),只会让用户再干等 8-12 秒后
+        // 同样失败(实证日志:rounds=2,两轮都解析出 0 行)。LlmClient 内部已经用双倍
+        // 预算重试过一次,这里再发一次纯属浪费等待时间。
+        val firstBlank = firstRaw.isBlank()
+
         // ── 后续轮：只补缺失行 ──────────────────────────────────────────────
-        var pending = parsed.missing
+        var pending = if (firstBlank) emptyList() else parsed.missing
         while (pending.isNotEmpty() && rounds < maxRounds) {
             rounds++
             val raw = invoke(
@@ -127,7 +133,13 @@ class LyricsTranslationPipeline(
             onProgress(byLine.size, total)
         }
 
-        val failure = if (byLine.isEmpty()) "AI 未返回可解析的译文（可能被拒答或格式不符）" else null
+        // v1.3.11:把"正文全空"(思考吃光预算被截断)与"有正文但解析不出行"分开报 ——
+        // 两者的修法不同(前者换模型/加预算,后者看格式),混成一句会让用户与开发者都在猜。
+        val failure = when {
+            byLine.isNotEmpty() -> null
+            firstBlank -> "模型没有返回译文正文（思考占满了输出预算）"
+            else -> "AI 未返回可解析的译文（可能被拒答或格式不符）"
+        }
         if (failure != null || byLine.size < total) {
             Log.w(
                 TAG,
