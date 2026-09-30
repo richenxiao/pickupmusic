@@ -18,12 +18,13 @@ class MemoryManager(
     /**
      * 写入一条候选记忆。裁决顺序(**先校验、再去重、最后冲突**):
      *  1. 归一化+截断 → 空内容/非法 type 直接拒;
-     *  2. 一次性情绪("今天有点累")默认拒——除非用户明确要求记住;
+     *  2. 一次性情绪("今天有点累")默认拒——除非用户明确要求记住,或调用方传
+     *     [allowTransient]=true(设置里的「连情绪与近况也记」,用户主动开的口子);
      *  3. 与既有**有效**条目重复(同一件事的换说法)→ **update 旧条目**,不新增;
      *  4. 与既有条目同主题但说法冲突(「喜欢 aiko」→「不再喜欢 aiko」)→ 新增,
      *     并把旧条目标 [Memory.supersededBy] 指向新条(保留历史,两条不再互相打架)。
      */
-    suspend fun remember(candidate: MemoryCandidate): RememberOutcome {
+    suspend fun remember(candidate: MemoryCandidate, allowTransient: Boolean = false): RememberOutcome {
         // v1.3.10 P3:「拾光记忆」管理页里**用户手加**的条目 = 明确指令,与"原话里有记住"
         // 同等对待(否则用户手打"今天有点累"会被一次性情绪拒表挡住——用户都点添加了,
         // 还被拒是产品逻辑说不通)。来源仍记为 manual,不冒充 explicit。
@@ -32,7 +33,7 @@ class MemoryManager(
         val content = MemoryRules.normalizeAndLimit(candidate.content)
         if (!MemoryRules.isUsableContent(content)) return RememberOutcome.Rejected(RememberOutcome.Reason.BLANK)
         if (!MemoryRules.isValidType(candidate.type)) return RememberOutcome.Rejected(RememberOutcome.Reason.BAD_TYPE)
-        if (!explicit && MemoryRules.isTransient(content)) {
+        if (!explicit && !allowTransient && MemoryRules.isTransient(content)) {
             return RememberOutcome.Rejected(RememberOutcome.Reason.TRANSIENT)
         }
 

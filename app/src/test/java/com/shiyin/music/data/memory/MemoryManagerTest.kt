@@ -315,4 +315,30 @@ class MemoryManagerTest {
         val s = InMemoryStore(); val m = manager(s)
         assertTrue(m.recall("我叫什么").isEmpty())
     }
+
+    // ── ⑭ v1.3.12:设置项「连情绪与近况也记」───────────────────────────────
+
+    @Test
+    fun `默认仍然拒收一次性情绪 - 开关没开时行为不变`() = runBlocking {
+        val s = InMemoryStore(); val m = manager(s)
+        val out = m.remember(cand(MemoryType.PERSONAL, "今天有点累"))
+        assertTrue(out is RememberOutcome.Rejected)
+        assertTrue(s.rows.isEmpty())
+    }
+
+    @Test
+    fun `开了连情绪也记 - 一次性情绪可入库`() = runBlocking {
+        val s = InMemoryStore(); val m = manager(s)
+        val out = m.remember(cand(MemoryType.PERSONAL, "今天有点累"), allowTransient = true)
+        assertTrue("用户主动开了这个口子,就该真的记下来", out is RememberOutcome.Saved)
+        assertEquals("今天有点累", s.rows.values.single().content)
+    }
+
+    @Test
+    fun `开关不影响其他拒表 - 空内容与非法类型照旧拒`() = runBlocking {
+        val s = InMemoryStore(); val m = manager(s)
+        assertTrue(m.remember(cand(MemoryType.PERSONAL, "  "), allowTransient = true) is RememberOutcome.Rejected)
+        assertTrue(m.remember(cand("banana", "今天有点累"), allowTransient = true) is RememberOutcome.Rejected)
+        assertTrue(s.rows.isEmpty())
+    }
 }
