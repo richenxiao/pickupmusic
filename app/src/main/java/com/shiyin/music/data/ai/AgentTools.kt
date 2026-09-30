@@ -342,13 +342,14 @@ object AgentTools {
     /**
      * 组装工具表:全部技能 + (可选)web_search + clarify。
      *
-     * [blockPlayback] = true → **摘掉播放类技能**。用于确定性闸门判定"这句不是播放指令"
-     * 之后的兜底:模型手里没有播放工具,就只能按普通聊天回应(见 MainViewModel 的播放闸门)。
-     * 这是"弱模型误判感想=命令"的最后一道保护,不指望模型自己守规矩。
+     * ⚠️ v1.3.12 教训:**不要在这里按"这一轮该不该执行"去摘工具**。
+     * 曾经为了拦播放误触发,在这一层摘掉过 playback_control —— 结果提示词里
+     * "用户想听歌 → 直接调 playback_control"还在,而 tools 里没有它,模型在思考里
+     * 直接抱怨"提示词让我调用但工具列表里没有这个工具"(真机实测)。
+     * **执行与否是运行时闸门的事,工具面必须始终一致**。
      */
-    private fun buildTools(includeWebSearch: Boolean, blockPlayback: Boolean = false): JsonArray = JsonArray().apply {
+    private fun buildTools(includeWebSearch: Boolean): JsonArray = JsonArray().apply {
         for (s in AgentEngine.skills) {
-            if (blockPlayback && s.key in AgentEngine.PLAYBACK_EXEC_SKILLS) continue
             add(JsonObject().apply {
                 addProperty("type", "function")
                 add("function", JsonObject().apply {
@@ -482,11 +483,6 @@ object AgentTools {
         memoryBlock: String = "",
         history: List<Pair<String, String>> = emptyList(),
         maxSearchRounds: Int = 2,
-        /**
-         * v1.3.12:摘掉播放类技能后再问一次 —— 用于播放执行闸门判定"这句不是播放指令"的兜底。
-         * 传 true 时模型没有播放工具可调,只能按普通聊天回应(见 MainViewModel 的播放闸门)。
-         */
-        blockPlayback: Boolean = false,
         onThinking: (String?) -> Unit = {},
         onContent: (String) -> Unit = {},
         onSearch: (String) -> Unit = {},
@@ -504,7 +500,7 @@ object AgentTools {
                 ),
             )
         }
-        val tools = buildTools(includeWebSearch = tavilyKey.isNotBlank(), blockPlayback = blockPlayback)
+        val tools = buildTools(includeWebSearch = tavilyKey.isNotBlank())
         val messages = JsonArray().apply {
             add(JsonObject().apply {
                 addProperty("role", "system")
