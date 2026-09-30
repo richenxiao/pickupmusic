@@ -174,6 +174,17 @@ object AgentEngine {
         val success: Boolean = true,
         /** v1.3.3: 技能内 LLM 调用的思考链(推理模型才有)——透出给 UI 折叠展示。 */
         val thinking: String? = null,
+        /**
+         * v1.3.13:**可点选项**(如"你自己挑一首"给出的几首候选)。
+         *
+         * 为什么加它(用户定调):智能助手应该让用户**少输入** —— 列了 A/B/C 三首还让用户
+         * 打字说歌名是很蠢的交互;应该直接给按钮,点一下就把那首放上。
+         * 非空时调用方把它渲染成选择卡片(复用既有 clarify 卡片),点选即发一条消息。
+         *
+         * ⚠️ 选项文本必须是**能被当指令识别的句子**(如「播放《X》」)——否则点选后那条
+         * 消息会被当成闲聊,白白兜一圈。
+         */
+        val options: List<String> = emptyList(),
     )
 
     /** 意图理解返回的计划(skillKey + 步骤标签 + 给技能的参数)。 */
@@ -341,12 +352,17 @@ object AgentEngine {
                 "${if (r == "user") "用户" else "助手"}: ${t.take(300)}"
             } + "\n"
         val albumName = ctx.albumKey?.let { ctx.albumTracks().firstOrNull()?.album }
-        val artistName = ctx.artistKey ?: ctx.currentTrack()?.artist
+        // v1.3.13:当前播放曲目只在用户这条消息确实谈播放时才注入 —— 闲聊/问别的歌手时
+        // 不带它,避免"正在听 A 问 B 的事"被错接成"B 的事其实是 A"。
+        // 「当前歌手」同理:歌手页的语境是页面自己的,可以带;但"由正在播放的曲目推断出
+        // 的歌手"只在播放相关时才带(否则听着 A 问 B 的事,会串到 A 的歌手身上)。
+        val playbackRelated = PlaybackIntentGuard.classify(intent) != PlaybackIntentGuard.Intent.NONE
+        val artistName = ctx.artistKey ?: if (playbackRelated) ctx.currentTrack()?.artist else null
         val trackName = ctx.currentTrack()?.title
         val contextBlock = buildString {
             if (albumName != null) appendLine("当前专辑: $albumName")
             if (artistName != null) appendLine("当前歌手: $artistName")
-            if (trackName != null) appendLine("当前播放曲目: $trackName")
+            if (playbackRelated && trackName != null) appendLine("当前播放曲目: $trackName")
         }
         // v1.3.6: 聊天死板重做——旧 prompt 是一整块"路由规则书",弱模型读进去
         // 就被规则腔感染,闲聊也答成"我目前主要能帮你做曲目排序/修正歌手名/找
@@ -355,7 +371,9 @@ object AgentEngine {
         // 除非用户问你能干什么";历史放宽到 300 字(旧 120 字把上下文剪残)。
         // v1.3.10: 人设改用 [persona](与 AgentTools.dispatchSystemPrompt 同一份)——
         // 两条链路的人设必须一致,否则主链路与联网重发兜底会表现为两个人。
-        val systemMsg = persona
+        // v1.3.13:人设之后紧接着注入颜文字纪律(清单/边界见 KaomojiPolicy,单一真源)。
+        // 纪律**不**并进 persona 本体:那段刻意只承载人格,挂上候选清单会变成可抄模板。
+        val systemMsg = persona + "\n\n" + KaomojiPolicy.directive
         // v1.3.11:领域上下文与记忆块**分开组装**(见 contextSections)——记忆不是领域上下文。
         val sections = contextSections(contextBlock, memoryBlock)
         val routeMsg = routeUserMessage(intent, skillsManifest(), historyBlock, webContext, sections)
@@ -437,7 +455,9 @@ object AgentEngine {
             // 调用方按"模型无有效输出"提示,不冒充答案。
             // v1.3.6d: stripInlineThinking 带佐证判(模型有独立 reasoning 时弱英文
             // 形态也剥),全文清洗比逐块更准。
-            val chat = stripInlineThinking(body, resp.thinking?.isNotBlank() == true).takeIf { it.isNotBlank() }
+            val chat = KaomojiPolicy
+                .sanitize(stripInlineThinking(body, resp.thinking?.isNotBlank() == true))
+                .takeIf { it.isNotBlank() }
             Route(null, chat, resp.thinking, elapsedMs, resp.promptTokens, resp.completionTokens)
         }
     }

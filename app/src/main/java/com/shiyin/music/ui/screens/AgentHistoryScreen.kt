@@ -66,7 +66,8 @@ internal fun AgentHistoryDialog(vm: MainViewModel, onDismiss: () -> Unit) {
         Column(Modifier.fillMaxSize().background(c.bg)) {
             // 顶栏:与 Agent 页/设置页同一套(38dp 圆形返回键 + 标题)
             Row(
-                Modifier.fillMaxWidth().padding(start = 8.dp, end = 16.dp, top = 16.dp, bottom = 8.dp)
+                // v1.3.12:与 Agent 页/设置页/记忆页统一 20dp 左基线
+                Modifier.fillMaxWidth().padding(start = 20.dp, end = 16.dp, top = 16.dp, bottom = 8.dp)
                     .statusBarsPadding(),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -86,7 +87,7 @@ internal fun AgentHistoryDialog(vm: MainViewModel, onDismiss: () -> Unit) {
             } else {
                 LazyColumn(
                     modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 32.dp),
+                    contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 8.dp, bottom = 32.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     items(list, key = { it.id }) { conv ->

@@ -64,11 +64,17 @@ object DiscoverMusicSkill : AgentEngine.AgentSkill {
         android.util.Log.i("Agent", "discover_music: mood=「$mood」→ 候选 ${candidates.size} 首(直接命中 ${matched.size})")
 
         // 只回人话(可被直接念出来),不含 id / 工具名 / 内部指示。
-        AgentEngine.SkillResult(buildString {
-            if (mood.isNotBlank() && matched.isNotEmpty()) appendLine("库里和「$mood」相关的:")
-            else if (mood.isNotBlank()) appendLine("库里没有直接对应「$mood」的,这几首是平时常听的:")
-            else appendLine("这几首是按平时常听挑的:")
-            candidates.forEach { appendLine("《${it.title}》 — ${it.artist} · 专辑《${it.album}》") }
-        }.trimEnd())
+        // v1.3.13:同时给出**可点选项** —— 用户定调"列了 A/B/C 还让人打字说歌名很蠢,
+        // 应该给按钮点一下就播"。选项文本写成**指令句**(「播放《X》」),点选后那条消息
+        // 才能被识别成播放指令、直接落地(否则等于让用户再兜一圈)。
+        AgentEngine.SkillResult(
+            summary = buildString {
+                if (mood.isNotBlank() && matched.isNotEmpty()) appendLine("库里和「$mood」相关的,点一下就直接放:")
+                else if (mood.isNotBlank()) appendLine("库里没有直接对应「$mood」的,这几首是平时常听的:")
+                else appendLine("这几首是按平时常听挑的:")
+                candidates.forEach { appendLine("《${it.title}》 — ${it.artist} · 专辑《${it.album}》") }
+            }.trimEnd(),
+            options = candidates.take(3).map { "播放《${it.title}》" },
+        )
     }
 }

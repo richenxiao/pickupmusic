@@ -537,14 +537,15 @@ private fun LogsScreen(vm: MainViewModel, scrollStates: MutableMap<String, Scrol
 }
 
 @Composable
-private fun SectionLabel(text: String) {
+private fun SectionLabel(text: String, color: Color? = null) {
     val c = LocalOrganic.current
     // v1.3.x 设计打磨:眉题化——12.5 ExtraBold + 1.2sp 字距。小而疏的标签只做
     // 分组节奏标记,视觉重量全部留给卡片与页面标题(Caprasimo 只出现在标题,
     // 角色分工干净)。色保 n700:12.5sp 小字下 n600 对比度不足。
+    // 需要与正文拉开区分的页面(如拾光记忆的分组)可传 color 走主题强调色。
     Text(
         text,
-        style = body(12.5f, FontWeight.ExtraBold, c.n700).copy(letterSpacing = 1.2.sp),
+        style = body(12.5f, FontWeight.ExtraBold, color ?: c.n700).copy(letterSpacing = 1.2.sp),
     )
 }
 
@@ -2782,22 +2783,18 @@ private fun MemoryListScreen(
     val memories = vm.memories
     val groups = com.shiyin.music.data.memory.MemoryPresentation.group(memories)
     Column(Modifier.fillMaxSize()) {
-        SubPageHeader("拾光记忆") { onBack() }
+        // v1.3.13(用户反馈"点进去感觉内容被抬上去了"):全站设置子页的页头顶距是 22dp
+        // (见 SettingsPages 的 screenPadding),这里原来只有左右、**没有上边距** —— 返回键
+        // 紧贴状态栏,整页比别的子页高一截。补上同值,页头与内容共用 20dp 左基线。
+        Box(Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 22.dp)) {
+            SubPageHeader("拾光记忆") { onBack() }
+        }
         LazyColumn(
             Modifier.weight(1f).fillMaxWidth(),
             contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 8.dp, bottom = 40.dp),
         ) {
-            item(key = "intro") {
-                Text(
-                    "拾光会记住一些关于你的信息,让之后的对话更自然。",
-                    style = body(13f, FontWeight.Normal, c.n600).copy(lineHeight = 19.sp),
-                    modifier = Modifier.padding(bottom = 18.dp),
-                )
-            }
-            // v1.3.12:两个开关(参考成熟产品的记忆设置:上面是"要不要记"的策略,下面是记了什么)。
-            // 都是**真实生效**的开关,不是摆设:
-            //  · 自动记住 → 关掉后只有你明说「记住…」才落库;
-            //  · 连情绪也记 → 打开后才收「今天有点累」这类一次性的(默认拒收)。
+            // v1.3.13:两个开关(参考成熟产品的记忆设置:上面是"要不要记"的策略,下面是记了什么)。
+            // 名字已自证,不再各挂一行小字说明(用户:"功能名就能表达完的内容偏偏还要加小字")。
             item(key = "switches") {
                 Column(
                     Modifier.fillMaxWidth().shadowSm(RoundedCornerShape(20.dp))
@@ -2805,15 +2802,13 @@ private fun MemoryListScreen(
                         .padding(horizontal = 16.dp, vertical = 2.dp),
                 ) {
                     MemoryToggleRow(
-                        title = "从对话里自动记住",
-                        sub = "拾光会自己总结值得长期留下的信息。关掉后只有你说「记住…」才会存。",
+                        title = "从对话中生成记忆",
                         checked = vm.memoryAutoExtract,
                         onToggle = { vm.setMemoryAutoExtract(!vm.memoryAutoExtract) },
                     )
                     MemoryRowDivider()
                     MemoryToggleRow(
-                        title = "连情绪与近况也记",
-                        sub = "默认只记稳定的偏好与背景;打开后「今天有点累」这类也会留下。",
+                        title = "允许生成敏感性的记忆",
                         checked = vm.memoryIncludeTransient,
                         onToggle = { vm.setMemoryIncludeTransient(!vm.memoryIncludeTransient) },
                     )
@@ -2832,7 +2827,15 @@ private fun MemoryListScreen(
             } else {
                 for ((section, rows) in groups) {
                     item(key = "sec-${section.title}") {
-                        Column(Modifier.padding(top = 10.dp, bottom = 6.dp)) { SectionLabel(section.title) }
+                        // v1.3.13(用户反馈"你 和下面的 TAG 都是橙色时,看不清重点"):
+                        // 分组标题 = **亮色结构标**(主文字色 + 更重字重 + 字距),行内 TAG = 橙色色片。
+                        // 两者一个管结构、一个管分类,颜色与形状都不同,重点一眼可辨。
+                        Column(Modifier.padding(top = 16.dp, bottom = 6.dp)) {
+                            Text(
+                                section.title,
+                                style = body(13f, FontWeight.ExtraBold, c.text).copy(letterSpacing = 1.4.sp),
+                            )
+                        }
                     }
                     items(rows, key = { it.id }) { m ->
                         MemoryRowView(
@@ -2860,23 +2863,16 @@ private fun MemoryRowDivider() {
     Box(Modifier.fillMaxWidth().height(1.dp).background(c.divider))
 }
 
-/** 记忆页的策略开关行(标题 + 一行说明 + 右侧开关)。 */
+/** 记忆页的策略开关行(标题 + 右侧开关)。 */
 @Composable
-private fun MemoryToggleRow(title: String, sub: String, checked: Boolean, onToggle: () -> Unit) {
+private fun MemoryToggleRow(title: String, checked: Boolean, onToggle: () -> Unit) {
     val c = LocalOrganic.current
     Row(
-        Modifier.fillMaxWidth().clickableNoRipple(onClick = onToggle).padding(vertical = 12.dp),
+        Modifier.fillMaxWidth().clickableNoRipple(onClick = onToggle).padding(vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Column(Modifier.weight(1f)) {
-            Text(title, style = body(14f, FontWeight.SemiBold, c.text))
-            Text(
-                sub,
-                style = body(11.5f, FontWeight.Normal, c.n600).copy(lineHeight = 16.sp),
-                modifier = Modifier.padding(top = 3.dp),
-            )
-        }
+        Text(title, style = body(14f, FontWeight.SemiBold, c.text), modifier = Modifier.weight(1f))
         OrganicSwitch(checked, onToggle)
     }
 }
@@ -2908,11 +2904,16 @@ private fun MemoryRowView(
         Column(Modifier.weight(1f)) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                // v1.3.12:类型标签是**重点信息**,不能用灰色(n500/n600 是"次要说明"的语气)。
-                // 用主文字色 + Bold,与正文靠字号/字重分层;次要信息只有下面那行来源·日期。
-                Text(P.typeLabel(memory.type), style = body(12.5f, FontWeight.Bold, c.text))
+                // v1.3.13:类型标签走**主题强调色的小色片**——整页原本"从标签到分栏全是黑",
+                // 没有区分度。色片做分类标识,内容仍是主视觉。
+                Box(
+                    Modifier.clip(RoundedCornerShape(6.dp)).background(c.a200)
+                        .padding(horizontal = 6.dp, vertical = 2.dp),
+                ) {
+                    Text(P.typeLabel(memory.type), style = body(11f, FontWeight.Bold, c.a700))
+                }
                 Text(
                     memory.content,
                     style = body(14f, FontWeight.SemiBold, c.text),
@@ -2975,13 +2976,18 @@ private fun MemoryDetailScreen(
 
     Column(Modifier.fillMaxSize()) {
         Row(
-            Modifier.fillMaxWidth().padding(start = 8.dp, end = 8.dp, bottom = 8.dp),
+            // v1.3.13:与正文同一条左基线(20dp);顶距 22dp 与全站子页一致(原来没有上边距)
+            Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp, top = 22.dp, bottom = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             // 编辑态下返回 = 放弃本次修改(不做"未保存就丢"的额外确认——改动只在草稿里)
             BackButton { if (editing) editing = false else onBack() }
-            Text(P.typeLabel(memory.type), style = heading(22), modifier = Modifier.weight(1f))
+            Text(
+                P.typeLabel(memory.type),
+                style = heading(22).copy(color = c.a700),
+                modifier = Modifier.weight(1f),
+            )
             if (editing) {
                 MemoryIconAction(Lucide.Check) { onSave(draft); editing = false }
             } else {
@@ -2993,9 +2999,17 @@ private fun MemoryDetailScreen(
             Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState())
                 .padding(horizontal = 20.dp).padding(bottom = 40.dp),
         ) {
+            // v1.3.12(用户反馈):**永远显示完整详情**(最后更新 / 记忆内容 / 来源 / 类型)。
+            // 之前"编辑态"把元信息整块藏掉 → 从 ✎ 进来只看到一块内容、返回再点才看到完整页面,
+            // 分两步走很别扭。现在编辑只是把「记忆内容」那一块**就地**换成输入框,其余照常显示。
+            SectionLabel("最后更新", color = c.a700)
+            Spacer(Modifier.height(6.dp))
+            Text(P.formatDateLong(memory.updatedAt), style = body(14f, FontWeight.Normal, c.text))
+
+            Spacer(Modifier.height(22.dp))
+            SectionLabel("记忆内容", color = c.a700)
+            Spacer(Modifier.height(6.dp))
             if (editing) {
-                SectionLabel("记忆内容")
-                Spacer(Modifier.height(8.dp))
                 OutlinedTextField(
                     value = draft,
                     onValueChange = { draft = it },
@@ -3006,30 +3020,24 @@ private fun MemoryDetailScreen(
                         focusedBorderColor = c.accent, unfocusedBorderColor = c.divider,
                     ),
                 )
-                Spacer(Modifier.height(10.dp))
+                Spacer(Modifier.height(8.dp))
+                Text("改完点右上角的 ✓ 保存。", style = body(11.5f, FontWeight.Normal, c.n500))
             } else {
-                SectionLabel("最后更新")
-                Spacer(Modifier.height(6.dp))
-                Text(P.formatDateLong(memory.updatedAt), style = body(14f, FontWeight.Normal, c.text))
-
-                Spacer(Modifier.height(22.dp))
-                SectionLabel("记忆内容")
-                Spacer(Modifier.height(6.dp))
                 Text(
                     memory.content,
                     style = body(15f, FontWeight.Normal, c.text).copy(lineHeight = 23.sp),
                 )
-
-                Spacer(Modifier.height(22.dp))
-                SectionLabel("来源")
-                Spacer(Modifier.height(6.dp))
-                Text(P.sourceLabel(memory.source), style = body(14f, FontWeight.Normal, c.text))
-
-                Spacer(Modifier.height(22.dp))
-                SectionLabel("类型")
-                Spacer(Modifier.height(6.dp))
-                Text(P.typeLabel(memory.type), style = body(14f, FontWeight.Normal, c.text))
             }
+
+            Spacer(Modifier.height(22.dp))
+            SectionLabel("来源", color = c.a700)
+            Spacer(Modifier.height(6.dp))
+            Text(P.sourceLabel(memory.source), style = body(14f, FontWeight.Normal, c.text))
+
+            Spacer(Modifier.height(22.dp))
+            SectionLabel("类型", color = c.a700)
+            Spacer(Modifier.height(6.dp))
+            Text(P.typeLabel(memory.type), style = body(14f, FontWeight.Normal, c.text))
         }
     }
 }

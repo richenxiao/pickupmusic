@@ -1,27 +1,23 @@
 package com.shiyin.music.data.ai
 
-import com.shiyin.music.data.ai.PlaybackIntentGuard.Decision
 import com.shiyin.music.data.ai.PlaybackIntentGuard.Intent
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * v1.3.12:播放执行意图闸门的回归测试 —— 真机 bug 的锁。
+ * v1.3.12:播放执行意图判定的回归测试。
  *
- * 真机 bug:上一轮「放一下 Pretender」成功后,这一轮「秋天就喜欢听些苦情歌。」
- * 被弱模型读成"The user wants to play Pretender..." → **又放了一遍**。
- *
- * 这里钉住两件事:
- *  - **陈述/感想不是指令**(Intent.NONE → BlockNoIntent);
- *  - **每轮独立判断,不继承上一轮**(所以第 5 条与第 3 条结论必须一致)。
+ * 这一层**只做文本判定**,不做执行决策、不生成面向用户的文案。它的两个真机 bug 教训:
+ *  1. 上一轮刚放过某首歌 → 这一轮「秋天就喜欢听些苦情歌。」被读成"再放一遍"(感想≠命令);
+ *  2. 用户**更正上一条指令**(「我说的是单曲」)被当成闲聊拦下 —— 用户看到的是"说了半天
+ *     它没听见 / 无动于衷"。所以更正句必须算指令。
  */
 class PlaybackIntentGuardTest {
 
-
     private fun cls(t: String) = PlaybackIntentGuard.classify(t)
 
-    // ── ① 明确命令:要放行 ────────────────────────────────────────────────
+    // ── ① 明确命令 ─────────────────────────────────────────────────────────
 
     @Test
     fun `明确播放命令被识别为 PLAY`() {
@@ -56,7 +52,29 @@ class PlaybackIntentGuardTest {
         }
     }
 
-    // ── ② 感想 / 闲聊:必须拦下(本轮修复的核心) ────────────────────────
+    // ── ② 更正上一条指令:必须算指令(真机 bug 的核心) ──────────────────
+
+    @Test
+    fun `更正上一轮播放指令的说法算 PLAY - 不能当闲聊`() {
+        // 真机实录:第一条「给我播放藤井风的 prema」被播成了整张专辑,用户接着说
+        // 「我说的是单曲」——这句话是**改命令**,不是感慨;当成闲聊拦下就是"无动于衷"。
+        for (t in listOf(
+            "我说的是单曲",
+            "我要的是单曲",
+            "应该是另一首",
+            "我都说的很清楚了,是单曲prema,不是专辑!",
+            "不是这张",
+            "不是这个",
+            "要的是这一首",
+            "搞错了,是另一首",
+            "听错了,我要的是单曲",
+            "换这首",
+        )) {
+            assertEquals("「$t」是在更正指令,应判为 PLAY", Intent.PLAY, cls(t))
+        }
+    }
+
+    // ── ③ 感想 / 闲聊:必须判 NONE ────────────────────────────────────────
 
     @Test
     fun `音乐感想与闲聊不是播放指令`() {
@@ -79,67 +97,14 @@ class PlaybackIntentGuardTest {
         }
     }
 
-    // ── ③ 闸门:拦下 / 放行 / 已在播放 ─────────────────────────────────
-
     @Test
-    fun `感想句一律拦下 - 不执行播放技能`() {
-        for (t in listOf("秋天就喜欢听些苦情歌。", "这首歌很适合秋天", "我喜欢这首")) {
-            assertEquals("「$t」必须被拦", Decision.BlockNoIntent,
-                PlaybackIntentGuard.guard(t, requestedTarget = "Pretender", currentTitle = "Pretender", isPlaying = true))
-        }
+    fun `每轮独立判断 - 上一轮说过什么不影响这一轮`() {
+        // 判定只看当前这句(闸门看不到历史,所以"不继承"在结构上就是必然的)
+        assertEquals(Intent.PLAY, cls("放一下 Pretender"))
+        assertEquals("上一轮放过,不代表这一轮的感想是指令", Intent.NONE, cls("秋天就喜欢听些苦情歌。"))
     }
 
-    @Test
-    fun `上一轮放过 Pretender - 这一轮感想句仍然被拦下 不重复播放`() {
-        // 用户定调:上一轮 Skill=PLAY 不能自动成为这一轮的 PLAY;每轮独立判断。
-        // (闸门看不到历史,所以"没继承"这件事在结构上就是必然的 —— 这正是要钉的点。)
-        val prevTurnUserSaid = "放一下 Pretender"
-        assertEquals(Decision.Allow, PlaybackIntentGuard.guard(prevTurnUserSaid, "Pretender", null, false))
-
-        val nextTurn = "秋天就喜欢听些苦情歌。"
-        assertEquals("不能因为上一轮放过就放行", Decision.BlockNoIntent,
-            PlaybackIntentGuard.guard(nextTurn, "Pretender", "Pretender", true))
-    }
-
-    @Test
-    fun `上一轮放过 Pretender - 这一轮说 再放一遍 允许重播`() {
-        assertEquals(Decision.Allow, PlaybackIntentGuard.guard("再放一遍", "Pretender", "Pretender", true))
-        assertEquals(Decision.Allow, PlaybackIntentGuard.guard("重新播放", "Pretender", "Pretender", true))
-    }
-
-    @Test
-    fun `已经在放的同一首 - 不再重新开始`() {
-        assertEquals(Decision.AlreadyPlaying,
-            PlaybackIntentGuard.guard("播放 Pretender", "Pretender", "Pretender", true))
-        // 曲名带副标题也要认得出是同一首
-        assertEquals(Decision.AlreadyPlaying,
-            PlaybackIntentGuard.guard("播放 Pretender", "Pretender", "Pretender (Live)", true))
-        assertEquals(Decision.AlreadyPlaying,
-            PlaybackIntentGuard.guard("放一下 pretender", "pretender", "Pretender", true))
-    }
-
-    @Test
-    fun `已经在放 Pretender - 但要求从头再放 允许 restart`() {
-        assertEquals(Decision.Allow, PlaybackIntentGuard.guard("从头再放一遍", "Pretender", "Pretender", true))
-    }
-
-    @Test
-    fun `点名的是另一首 - 正常放行`() {
-        assertEquals(Decision.Allow,
-            PlaybackIntentGuard.guard("播放 Pretender", "Pretender", "残酷な天使のテーゼ", true))
-    }
-
-    @Test
-    fun `暂停状态下的播放请求不应被判成已在播放`() {
-        // 播放器没在放 → 用户说"播放 X"是有效指令(要走 resume/play),不能拦
-        assertEquals(Decision.Allow,
-            PlaybackIntentGuard.guard("播放 Pretender", "Pretender", "Pretender", isPlaying = false))
-    }
-
-    @Test
-    fun `没有点名对象的继续放 - 放行`() {
-        assertEquals(Decision.Allow, PlaybackIntentGuard.guard("继续放", null, "Pretender", false))
-    }
+    // ── ④ 歌名比对(供"名字既是单曲又是专辑"的歧义判定用) ──────────────
 
     @Test
     fun `歌名归一比对 - 全半角与繁简都算同一首`() {
@@ -149,9 +114,8 @@ class PlaybackIntentGuardTest {
     }
 
     @Test
-    fun `短歌名不会被误判成同一首 - 换歌请求不能被当成已在播放`() {
-        // 真机 bug 的放大器:target 是当前标题的子串时被判成"同一首",于是用户明明在换歌,
-        // 却被回了"已经在放了"。一字/两字歌名在中日曲库里很常见,必须挡住。
+    fun `短歌名不会被误判成同一首`() {
+        // 一字/两字歌名在中日曲库里很常见,包含判定必须带长度下限
         assertTrue("「夜」不是《夜に駆ける》", !PlaybackIntentGuard.sameTrack("夜", "夜に駆ける"))
         assertTrue("「恋」不是《恋愛写真》", !PlaybackIntentGuard.sameTrack("恋", "恋愛写真"))
         assertTrue("「花」不是《花束》", !PlaybackIntentGuard.sameTrack("花", "花束"))
@@ -160,10 +124,32 @@ class PlaybackIntentGuardTest {
     }
 
     @Test
-    fun `换一首别的歌不会被判成已在播放 - 必须放行`() {
-        assertEquals(Decision.Allow,
-            PlaybackIntentGuard.guard("播放 夜に駆ける", "夜に駆ける", "Pretender", true))
-        assertEquals(Decision.Allow,
-            PlaybackIntentGuard.guard("放一下 花束", "花束", "Pretender", true))
+    fun `同名专辑与同名单曲能被认出是同名 - 歧义判定要靠它`() {
+        // VM 用它判断"这个名字既是单曲又是专辑"→ 弹 clarify 问用户
+        assertTrue(PlaybackIntentGuard.sameTrack("prema", "prema"))
+        assertTrue(PlaybackIntentGuard.sameTrack("Prema", "prema"))
+    }
+
+    // ── ⑤ 从用户原话推断"单曲还是整张"(说了就别再问) ────────────────────
+
+    @Test
+    fun `用户明说单曲时定死 track - 不再弹选择卡片`() {
+        for (t in listOf("我说的是单曲", "我要的是单曲", "放这首单曲", "我想听这首歌", "播放这一首")) {
+            assertEquals("「$t」应定死 track", PlaybackIntentGuard.SCOPE_TRACK, PlaybackIntentGuard.userScope(t))
+        }
+    }
+
+    @Test
+    fun `用户明说专辑时定死 album`() {
+        for (t in listOf("放整张专辑 Prema", "整张放一下", "全张都放", "我要整碟")) {
+            assertEquals("「$t」应定死 album", PlaybackIntentGuard.SCOPE_ALBUM, PlaybackIntentGuard.userScope(t))
+        }
+    }
+
+    @Test
+    fun `用户没说单曲也没说专辑时不表态 - 有歧义才问`() {
+        for (t in listOf("给我播放藤井风的 prema", "放一下 Pretender", "来一首 Pretender")) {
+            assertEquals("「$t」用户没表态", null, PlaybackIntentGuard.userScope(t))
+        }
     }
 }

@@ -27,12 +27,16 @@ object PlaybackControlSkill : AgentEngine.AgentSkill {
         "播放/暂停/切歌。用户想听某个具体内容时用它(「放一下X」「我想听X」「来一首X」「放一首X的歌」):" +
             "它一次调用就完成查找并开始播放,不需要再调别的工具。歌名不必说准——别名、译名、罗马字、" +
             "只记得片段、记错一两个字都能匹配上。暂停/继续/下一首/上一首也用它。" +
+            "**用户要整张专辑时把 scope 填 album**(「放整张X」「X 这张专辑」);只说作品名默认按单曲放。" +
+            "**名字既是单曲又是专辑名时不要自己猜**——用 clarify 问一句(选项写「播放单曲 X」与「播放整张专辑 X」)。" +
             "用户没点名内容、要你替他挑时用 discover_music;只是**问**库里有没有某首歌时用 library_query。" +
             "只控制播放,不改音乐库内容。"
     override val parameters = """
         {"type":"object","properties":{
           "action":{"type":"string","enum":["play","pause","resume","next","previous"],"description":"要做的播放动作:play=播放(可用 target 指定内容),pause=暂停,resume=从暂停处继续,next=下一首,previous=上一首"},
-          "target":{"type":"string","description":"要播放的歌曲名/专辑名/歌手名。仅 action=play 且用户点名了内容时填,用用户说的原样中文;用户只是说「继续放」时不要填"}
+          "target":{"type":"string","description":"要播放的歌曲名/专辑名/歌手名。仅 action=play 且用户点名了内容时填,用用户说的原样中文;用户只是说「继续放」时不要填"},
+          "scope":{"type":"string","enum":["track","album"],"description":"用户要的是**整张专辑**时填 album(说了「专辑/整张/这张专辑」);要单首歌/歌手时省略或填 track。点名的名字在库里**既是单曲又是专辑**时不要自己猜,先用 clarify 问用户放哪个"},
+          "restart":{"type":"boolean","description":"仅当用户**明确要求重新开始**时填 true(「重新播放」「从头」「再放一遍」);其它情况省略"}
         },"required":["action"]}
     """.trimIndent()
 
@@ -84,21 +88,33 @@ object PlaybackControlSkill : AgentEngine.AgentSkill {
             return@withContext fail("播放器还没准备好(后台服务未连接),过一会儿再说一次试试。")
         }
 
-        // ── play + 点名了内容:先找专辑,再找单曲/歌手 ──────────────────────
+        // ── play + 点名了内容 ────────────────────────────────────────────────
+        // v1.3.12 真机 bug 修正:原来**先找专辑**——用户说「给我播放藤井风的 prema」,
+        // 库里正好有同名专辑,于是整张 9 首被播了,而他要的是那首单曲。
+        // 现在:默认按**单曲**找(用户点作品名时想要的就是那首歌);只有明确 scope=album
+        // (用户说了"专辑/整张")才播整张;两者都存在时由上层用**选择卡片**问用户,不猜。
         if (action == "play" && target.isNotBlank()) {
-            val albumKey = ctx.findAlbum(target)
-            if (albumKey != null) {
-                val tracks = ctx.albumTracksOf(albumKey)
-                if (tracks.isEmpty()) return@withContext fail("专辑《$target》里没有曲目。")
+            val wantsAlbum = args["scope"]?.trim().equals("album", ignoreCase = true)
+            val restart = args["restart"]?.trim().equals("true", ignoreCase = true)
+
+            fun playAlbum(): AgentEngine.SkillResult? {
+                val key = ctx.findAlbum(target) ?: return null
+                val tracks = ctx.albumTracksOf(key)
+                if (tracks.isEmpty()) return fail("专辑《$target》里没有曲目。")
                 ctx.playTracks(tracks, tracks.first().id)
-                return@withContext done("开始播放专辑《${tracks.first().album}》,共 ${tracks.size} 首。")
+                return done("开始播放专辑《${tracks.first().album}》,共 ${tracks.size} 首。")
             }
+
+            if (wantsAlbum) playAlbum()?.let { return@withContext it }
+
             // v1.3.10: 检索改用 [AgentLibrarySearch]——FuzzySearch(全半角/繁简/编辑距离)
             // + 假名↔罗马字 + 译名/别名写法兜底。旧实现直接 ctx.searchTracks(关键词包含匹配),
             // 用户说别名/译名/罗马字/记错一个字就"库里没找到",还回一句"请说完整歌名"——
             // 这正是用户反馈"必须百分百匹配歌名才能播放"的直接来源。弱模型也不会自己再搜一次。
             val hits = AgentLibrarySearch.resolve(ctx, config, target, 30)
             if (hits.isEmpty()) {
+                // 单曲里没有 → 也许用户要的是同名专辑(他没明说"专辑",但库里只有这张叫这名)
+                playAlbum()?.let { return@withContext it }
                 return@withContext fail(
                     "音乐库里确实没有「$target」(改名/译名/罗马字/错别字都试过了)。" +
                         "换个说法可以再试,或者我按你现在的心情从库里给你挑一首?",
@@ -107,6 +123,13 @@ object PlaybackControlSkill : AgentEngine.AgentSkill {
             // 精确同名 → 只放这一首。
             val exact = hits.firstOrNull { normalize(it.title) == normalize(target) }
             if (exact != null) {
+                // v1.3.12 幂等(**在技能里**,不在运行时):同一首已经在放就别重新从头放。
+                // 技能自己有真实播放状态,由它说这句人话——不必让运行时替它说话。
+                // 只有用户明确要求重来(上层把 restart 注进来)才 restart。
+                val cur = ctx.currentTrack()
+                if (!restart && ctx.isPlaying() && cur?.id == exact.id) {
+                    return@withContext done("《${exact.title}》已经在放了。想从头听就说一句「重新播放」。")
+                }
                 ctx.playTracks(listOf(exact), exact.id)
                 return@withContext done("正在播放《${exact.title}》— ${exact.artist}。")
             }

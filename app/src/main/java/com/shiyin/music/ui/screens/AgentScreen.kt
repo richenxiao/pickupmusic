@@ -52,9 +52,11 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.input.pointer.pointerInput
@@ -69,11 +71,19 @@ import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
@@ -291,7 +301,9 @@ fun AgentScreen(vm: MainViewModel) {
     Column(Modifier.fillMaxSize().background(c.bg).imePadding()) {
         // 顶栏
         Row(
-            Modifier.fillMaxWidth().padding(start = 8.dp, end = 16.dp, top = 16.dp, bottom = 8.dp)
+            // v1.3.12(用户反馈"各页返回键位置乱、与板块不对齐"):拾光 Agent 所有层级
+            // 统一用 **20dp** 左内边距(与全站设置子页一致),页头与内容同一条左基线。
+            Modifier.fillMaxWidth().padding(start = 20.dp, end = 16.dp, top = 16.dp, bottom = 8.dp)
                 .statusBarsPadding(),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -323,7 +335,7 @@ fun AgentScreen(vm: MainViewModel) {
             state = listState,
             modifier = Modifier.weight(1f).fillMaxWidth(),
             contentPadding = androidx.compose.foundation.layout.PaddingValues(
-                start = 16.dp, end = 16.dp, top = 8.dp, bottom = 8.dp,
+                start = 20.dp, end = 20.dp, top = 8.dp, bottom = 8.dp,
             ),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
@@ -332,6 +344,14 @@ fun AgentScreen(vm: MainViewModel) {
             }
             if (vm.agentMessages.isEmpty()) {
                 item {
+                    // v1.3.13:本会话的欢迎语序号——首次进空态随机取一次,之后固定
+                    // (新鲜感跨会话,不在一次会话里跳来跳去)。
+                    val greetingIdx = remember {
+                        if (vm.agentGreetingIndex < 0) {
+                            vm.agentGreetingIndex = kotlin.random.Random.nextInt(AGENT_GREETINGS.size)
+                        }
+                        vm.agentGreetingIndex
+                    }
                     // v1.3.8 欢迎空态重做(用户规格):纵向三段式,不再把 Logo 和文字
                     // 横向拼在一起。
                     //  - 品牌标独占视觉主体(88dp,与 agent_brand.xml 自带建议尺寸一致);
@@ -351,16 +371,14 @@ fun AgentScreen(vm: MainViewModel) {
                             modifier = Modifier.size(56.dp),
                         )
                         Spacer(Modifier.height(20.dp))
-                        // 18→24:问候语是这屏的主角(参照 Claude "How can I help")。
-                        // v1.3.10 用户反馈"欢迎语句要和 LOGO 对齐居中":24sp 下这句话在
-                        // 多数机型上会折成两行,而 Text 默认 textAlign=Start → 两行都靠左,
-                        // 整块看着跟上方居中的 LOGO 不在一条中轴上。改 Center + fillMaxWidth
-                        // 让折行也居中,和 LOGO 共用同一条中轴。
-                        Text(
-                            "有什么想让我帮你做的？",
-                            style = heading(24),
-                            textAlign = TextAlign.Center,
-                            modifier = Modifier.fillMaxWidth(),
+                        // v1.3.13:问候语改为打字机呈现(用户规格)。
+                        // 文案**显式分成 1-2 行**渲染,不再靠自动折行——断点由文案决定,
+                        // 不随机型宽度乱跳;每行短到能独占一行,颜文字只落在行尾且整组不拆。
+                        // 会话内固定同一句、每会话只播一次(状态在 VM)。
+                        TypewriterGreeting(
+                            lines = AGENT_GREETINGS[greetingIdx % AGENT_GREETINGS.size],
+                            played = vm.agentGreetingPlayed,
+                            onPlayed = { vm.agentGreetingPlayed = true },
                         )
                         Spacer(Modifier.weight(1.3f))
                     }
@@ -539,7 +557,7 @@ private fun AgentSettingsDialog(vm: MainViewModel, onDismiss: () -> Unit) {
         Column(Modifier.fillMaxSize().background(c.bg)) {
             // 顶栏
             Row(
-                Modifier.fillMaxWidth().padding(start = 8.dp, end = 16.dp, top = 16.dp, bottom = 8.dp)
+                Modifier.fillMaxWidth().padding(start = 20.dp, end = 16.dp, top = 16.dp, bottom = 8.dp)
                     .statusBarsPadding(),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -1051,17 +1069,24 @@ private fun AgentBubble(
                 }
 
                 // v1.3.8: Agent 回复内容(最终输出——在思考链之下)
+                // v1.3.13:打字机还在吐字时**不算完成** —— 否则【复制】【重试】与署名 Logo
+                // 会在正文还没吐完时就冒出来(用户实测)。打字机与 agentRunning 是解耦的
+                // (见 AgentReplyText 的 v1.3.9 注释),所以这里必须单独听它是否还在打字。
+                var typingNow by remember { mutableStateOf(false) }
                 AgentReplyText(
                     msg.text,
                     streaming = vm.agentRunning && isLast && !isUser,
                     isLast = isLast,
+                    onTypingChanged = { typingNow = it },
                 )
 
                 // v1.3.8: 状态机 Logo——根据消息状态动态显示
                 // THINKING/TOOL: 无内容但执行中 → 动态 Logo 24dp (period=2800ms)
                 // GENERATING: 有内容且仍在运行 → 动态 Logo 22dp (period=2400ms)
                 // COMPLETED: 有内容且完成 → 静态 Logo 30dp
-                val isExecuting = vm.agentRunning && isLast
+                // v1.3.13:打字中(typingNow)也算"还在执行" —— 操作栏与署名只在**真正完成**
+                // (模型答完 **且** 打字机追平)之后出现。
+                val isExecuting = (vm.agentRunning && isLast) || (isLast && typingNow)
                 val hasContent = msg.text.isNotBlank()
 
                 when {
@@ -1295,7 +1320,13 @@ private fun ThinkingBlock(
  * 字符数推进(视觉节奏一致性够用)。
  */
 @Composable
-private fun AgentReplyText(text: String, streaming: Boolean, isLast: Boolean) {
+private fun AgentReplyText(
+    text: String,
+    streaming: Boolean,
+    isLast: Boolean,
+    /** v1.3.13:打字机是否还在吐字 —— 气泡据此把"操作栏 / 署名 Logo"推迟到真正完成。 */
+    onTypingChanged: (Boolean) -> Unit = {},
+) {
     val c = LocalOrganic.current
     // v1.3.9 打字机修复(用户实测"最终回答瞬间输出"):技能类回复的正文是**一次性**
     // 写入的,`agentRunning` 几乎立刻翻 false——只按 streaming 判断,动画还没跑就已结束。
@@ -1305,8 +1336,15 @@ private fun AgentReplyText(text: String, streaming: Boolean, isLast: Boolean) {
     LaunchedEffect(text, isLast) {
         if (!isLast) {
             shownCount = text.length
+            onTypingChanged(false)
             return@LaunchedEffect
         }
+        if (shownCount >= text.length) {
+            // 已经追平(或本来就没有要吐的字)→ 空闲
+            onTypingChanged(false)
+            return@LaunchedEffect
+        }
+        onTypingChanged(true)
         val breaker = java.text.BreakIterator.getCharacterInstance()
         breaker.setText(text)
         while (shownCount < text.length) {
@@ -1315,6 +1353,7 @@ private fun AgentReplyText(text: String, streaming: Boolean, isLast: Boolean) {
             shownCount = next
             kotlinx.coroutines.delay(45)
         }
+        onTypingChanged(false)
     }
     val shown = text.take(shownCount)
 
@@ -1333,6 +1372,162 @@ private fun AgentReplyText(text: String, streaming: Boolean, isLast: Boolean) {
             text = annotated,
             style = body(13.5f, FontWeight.Normal, c.text),
         )
+    }
+}
+
+// ── v1.3.13: 空态欢迎语(打字机) ──────────────────────────────────────────────
+/**
+ * 欢迎语文案池。调性:她是**陪你听歌的人**,不是客服。
+ *
+ * 不写"有什么我能帮你的"(通用助手腔)、不列功能清单、不催输入;
+ * 也**不替用户安排下一步**("慢慢挑""不着急"那类预设动作的说法一律弃用)。
+ * 排版硬约束(用户要求):**每行都短到能独占一行**,否则窄屏上第二行会被挤成一两个字;
+ * 颜文字只出现在行尾、且整组跟着这一行(靠显式分行 + softWrap=false 保证不被拆开),
+ * 取值来自 [com.shiyin.music.data.ai.KaomojiPolicy] 的同一份清单(UI 与模型输出不许漂移),
+ * 只在情绪点略高的两条用;不用也不是缺陷——不写死有或无。
+ */
+private val AGENT_GREETINGS: List<List<String>> = listOf(
+    // ── 一行(短) ──
+    listOf("今天想听点什么？"),
+    listOf("唱片都在架上。"),
+    listOf("嗯，我在。 (｡・ω・｡)"),
+    listOf("今晚想听哪一张？ ( ´ ▽ ` )"),
+    // ── 两行(长) ──
+    listOf("要不要听点什么？", "你决定的，我都放。"),
+    listOf("要不要一起，", "把一张专辑从头听到尾？"),
+    listOf("库里的都整理好了。", "想听歌，还是随便聊聊？"),
+    listOf("架上的唱片都在等。", "想从哪一张开始？"),
+    listOf("你想找的那首，", "也许就躺在架上第三排。"),
+    listOf("有想听的就说。", "没有的话，我挑一张。"),
+    listOf("今天想听慢的，", "还是想听吵一点的？"),
+    listOf("说话的、听歌的，", "我都在这儿。"),
+)
+
+/** 欢迎语候选字号:从大到小试,取"每一行都能独占一行"的最大值。 */
+private val GREETING_SIZES = listOf(24, 22, 20, 18, 16)
+
+private const val GREETING_BASE_DELAY_MS = 45L
+
+/** 首字延迟:静默这一段正是"她在想"的来源(参考 Claude / ChatGPT 官网的节奏)。 */
+private const val GREETING_INITIAL_DELAY_MS = 400L
+
+/** 末尾做渐入的字素数——再大就整段淡入、失去逐字感。 */
+private const val GREETING_ALPHA_RAMP = 4
+
+private val GREETING_PAUSE_STRONG = setOf("。", "！", "？", "…", "!", "?", "\n")
+private val GREETING_PAUSE_WEAK = setOf("，", "、", "；", "：", ",", ";", ":")
+
+/** 标点停顿:弱标点约 4 倍字速(换气),强标点/换行约 7 倍(一句说完)。 */
+private fun greetingPauseAfter(grapheme: String): Long = when (grapheme) {
+    in GREETING_PAUSE_STRONG -> 320L
+    in GREETING_PAUSE_WEAK -> 190L
+    else -> GREETING_BASE_DELAY_MS
+}
+
+/**
+ * 打字机欢迎语。无光标(与 [AgentReplyText] 同一决定);首字延迟 → 逐字族推进 →
+ * 标点处停顿 → 新出现的末尾几个字素做极轻的 alpha 渐入。
+ *
+ * 排版:文案**显式分行**,不靠自动折行(断点才不会随屏幕宽度乱跳);组合期用
+ * TextMeasurer 逐行量宽、自动降到能一行放下的最大字号,再配 softWrap=false,
+ * 彻底排除"第二行只剩一两个字""颜文字被拆到两行"这类事故。量的是**完整**文案,
+ * 所以打字过程中字号不会跳。
+ *
+ * [played] 为真(本会话已经播过)时直接整段呈现,不重放——切 tab、滚动回来都安静。
+ * 打字期间点一下即可补全(打字机的必备出口)。
+ */
+@Composable
+private fun TypewriterGreeting(
+    lines: List<String>,
+    played: Boolean,
+    onPlayed: () -> Unit,
+    initialDelayMs: Long = GREETING_INITIAL_DELAY_MS,
+) {
+    val c = LocalOrganic.current
+    val full = remember(lines) { lines.joinToString("\n") }
+    var shown by rememberSaveable(full) { mutableIntStateOf(if (played) full.length else 0) }
+    var skip by remember { mutableStateOf(false) }
+
+    LaunchedEffect(full, played) {
+        if (played || shown >= full.length) {
+            onPlayed()
+            return@LaunchedEffect
+        }
+        kotlinx.coroutines.delay(initialDelayMs)
+        val breaker = java.text.BreakIterator.getCharacterInstance()
+        breaker.setText(full)
+        var lastEmitted = ""
+        var i = 0
+        while (i < full.length) {
+            if (skip) break
+            val next = breaker.following(i)
+            if (next == java.text.BreakIterator.DONE) break
+            lastEmitted = full.substring(i, next)
+            i = next
+            shown = i
+            kotlinx.coroutines.delay(greetingPauseAfter(lastEmitted))
+        }
+        shown = full.length
+        onPlayed()
+    }
+
+    val shownText = full.take(shown)
+    val ramp = remember(shownText, c.text) { greetingRamp(shownText, c.text) }
+
+    Column(
+        Modifier.fillMaxWidth().clickableNoRipple { skip = true },
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        BoxWithConstraints(Modifier.fillMaxWidth()) {
+            val measurer = rememberTextMeasurer()
+            val availPx = with(LocalDensity.current) { maxWidth.toPx() }
+            // heading() 是 @Composable,只能在组合里取一次"字体模板",再在 remember 里
+            // 按字号派生——量宽循环不进组合作用域。
+            val probe = heading(GREETING_SIZES.first())
+            val size = remember(lines, availPx, probe) {
+                GREETING_SIZES.firstOrNull { s ->
+                    val st = probe.copy(fontSize = s.sp)
+                    lines.all { ln ->
+                        measurer.measure(AnnotatedString(ln), style = st).size.width.toFloat() <= availPx
+                    }
+                } ?: GREETING_SIZES.last()
+            }
+            Text(
+                text = ramp,
+                style = probe.copy(fontSize = size.sp, lineHeight = 34.sp),
+                textAlign = TextAlign.Center,
+                softWrap = false,
+                modifier = Modifier.fillMaxWidth().clearAndSetSemantics {
+                    // TalkBack 一次读完整句,不要跟着打字机一个字一个字念
+                    contentDescription = lines.joinToString(" ")
+                },
+            )
+        }
+    }
+}
+
+/** 末尾 [GREETING_ALPHA_RAMP] 个字素做 0.35→1 渐入;按字素边界切,不拆代理对。 */
+private fun greetingRamp(text: String, color: Color): AnnotatedString {
+    if (text.isEmpty()) return AnnotatedString("")
+    val breaker = java.text.BreakIterator.getCharacterInstance()
+    breaker.setText(text)
+    var start = text.length
+    repeat(GREETING_ALPHA_RAMP) {
+        if (start > 0) start = breaker.preceding(start).coerceAtLeast(0)
+    }
+    return buildAnnotatedString {
+        append(text.substring(0, start))
+        var idx = start
+        var k = 0
+        while (idx < text.length) {
+            val next = breaker.following(idx)
+            k++
+            val alpha = (0.35f + 0.65f * (k.toFloat() / GREETING_ALPHA_RAMP)).coerceAtMost(1f)
+            withStyle(SpanStyle(color = color.copy(alpha = alpha))) {
+                append(text.substring(idx, next))
+            }
+            idx = next
+        }
     }
 }
 

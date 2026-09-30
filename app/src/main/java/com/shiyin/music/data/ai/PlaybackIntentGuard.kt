@@ -16,7 +16,13 @@ import com.shiyin.music.data.search.FuzzySearch
  *
  * 判据刻意保守(用户定调:误播放 < 漏掉少量播放请求):
  *  - 必须有**明确动作词**(播放/放一下/来一首/我想听/换一首…),或**明确控制词**(暂停/下一首…);
- *  - 只有陈述/感想/评论(喜欢/很适合/好听/伤感/想起…)一律 [PlayIntent.NONE] → 拦下。
+ *  - 只有陈述/感想/评论(喜欢/很适合/好听/伤感/想起…)一律 [Intent.NONE];
+ *  - **更正/延续上一条指令**(「我说的是单曲」「不是这张」)算指令 —— 用户是在改命令,
+ *    不是闲聊;把它当闲聊会让用户觉得"说了半天它没听见"。
+ *
+ * 分工(重要):本文件**只做文本判定**,不做任何执行决策、更不生成任何面向用户的文案。
+ * "要不要执行 / 要不要问用户 / 怎么回话" 由 MainViewModel(闸门 + clarify 卡片)与
+ * 技能自己(幂等、放单曲还是整张)负责。
  *
  * 注意:它**不**判断"该不该放这首特定的歌",只回答"用户这句话是不是在指挥播放"。
  */
@@ -32,19 +38,6 @@ object PlaybackIntentGuard {
         CONTROL,
         /** 陈述 / 感想 / 评论 / 闲聊 —— **不是**指令。 */
         NONE,
-    }
-
-    /** 闸门结论。 */
-    sealed interface Decision {
-        /** 放行:确实是指令,交给技能执行。 */
-        object Allow : Decision
-        /**
-         * 用户点名的内容**已经在放**了 —— 不要重新从头放。
-         * (只有他明确说"重新播放/从头再来"才允许 restart,那种情况走 [Intent.RESTART] → Allow。)
-         */
-        object AlreadyPlaying : Decision
-        /** 这句不是指令(感想/闲聊) —— 禁止执行播放技能,转普通回复。 */
-        object BlockNoIntent : Decision
     }
 
     // ── 词表(刻意保守:宁可漏掉,也不要误放) ──────────────────────────────
@@ -81,6 +74,20 @@ object PlaybackIntentGuard {
     )
 
     /**
+     * **更正 / 延续上一条播放指令**的说法。
+     *
+     * 真机 bug(比"感想被误当命令"更难受的一种):用户说「给我播放藤井风的 prema」,
+     * 系统放成了同名**专辑**的整张;用户接着说「我说的是单曲」——这是在**纠正**,
+     * 但词表里没有动作词,闸门判成闲聊把它拦掉,用户看到的是"说了半天它没听见"。
+     * 这类一律按 PLAY 放行:闸门只该拦"纯感想",没有资格拦"用户在改上一条命令"。
+     */
+    private val CORRECTION = listOf(
+        "我说的是", "我是说", "我说的那首", "我说的这", "不是这张", "不是专辑", "不是这个",
+        "是单曲", "要的是", "搞错", "弄错", "听错了", "认错", "换这首", "换那首", "换这张",
+        "重放这首", "放这首", "这首歌才", "应该是",
+    )
+
+    /**
      * 这句话的播放意图。**不继承上一轮**——每轮独立判断(用户定调:
      * 上一轮执行过 PLAY,不能自动成为这一轮的 PLAY)。
      */
@@ -88,40 +95,35 @@ object PlaybackIntentGuard {
         val t = FuzzySearch.normalize(userText)
         if (t.isEmpty()) return Intent.NONE
         if (RESTART.any { t.contains(it) }) return Intent.RESTART
+        // 更正优先于控制/动作判定:它同样是"要你做事",不能落进 NONE
+        if (CORRECTION.any { t.contains(it) }) return Intent.PLAY
         if (CONTROL.any { t.contains(it) }) return Intent.CONTROL
         if (ACTION.any { t.contains(it) }) return Intent.PLAY
         return Intent.NONE
     }
 
     /**
-     * 执行型播放技能(playback_control / play_track)的放行判定。
+     * 从**用户原话**确定性推断"要单曲还是整张"。
      *
-     * @param requestedTarget 模型抽出的播放对象(可能为空:用户只说「继续放」)
-     * @param currentTitle    当前正在播放的曲目标题(播放器没在放时传 null)
-     * @param isPlaying       播放器此刻是否真的在放
+     * 为什么不能只依赖模型填 scope:真机实测——用户已经明说「我说的是单曲」,模型却没填 scope,
+     * 运行时的歧义判定就又弹了一次选择卡片("我都说了单曲你还问")。用户说清楚的事,
+     * 系统必须自己看得见:[ALBUM_WORDS]/[TRACK_WORDS] 命中就定死,**不再问**。
+     *
+     * 返回 null = 用户没说 → 有歧义时才交给 clarify 问。
      */
-    fun guard(
-        userText: String,
-        requestedTarget: String?,
-        currentTitle: String?,
-        isPlaying: Boolean,
-    ): Decision {
-        when (classify(userText)) {
-            // 明确要求重来 → 放行(这是唯一允许 restart 的路径)
-            Intent.RESTART -> return Decision.Allow
-            // 感想/陈述/闲聊 → 拦下。这里是"上一轮刚放过"最容易误触发的地方。
-            Intent.NONE -> return Decision.BlockNoIntent
-            Intent.CONTROL -> return Decision.Allow
-            Intent.PLAY -> Unit
-        }
-        // 点名的那首**已经在放** → 不要重新从头放(用户定调:直接说"已经在放了")
-        if (isPlaying && !requestedTarget.isNullOrBlank() && !currentTitle.isNullOrBlank() &&
-            sameTrack(requestedTarget, currentTitle)
-        ) {
-            return Decision.AlreadyPlaying
-        }
-        return Decision.Allow
+    fun userScope(userText: String): String? {
+        val t = FuzzySearch.normalize(userText)
+        if (t.isEmpty()) return null
+        if (ALBUM_WORDS.any { t.contains(it) }) return SCOPE_ALBUM
+        if (TRACK_WORDS.any { t.contains(it) }) return SCOPE_TRACK
+        return null
     }
+
+    const val SCOPE_ALBUM = "album"
+    const val SCOPE_TRACK = "track"
+
+    private val ALBUM_WORDS = listOf("专辑", "整张", "全张", "整碟", "整盘")
+    private val TRACK_WORDS = listOf("单曲", "这首歌", "这首", "这一首", "那首歌", "首歌", "一首歌")
 
     /**
      * 歌名比对:剥括号副标题 + 全半角/繁简/大小写归一。

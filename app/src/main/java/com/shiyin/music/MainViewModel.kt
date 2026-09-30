@@ -2353,6 +2353,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** v1.3.2: 默认回复建议(专辑页 Agent 入口带入,Agent 页点一条即发送)。 */
     var agentSuggestions by mutableStateOf<List<String>>(emptyList()); private set
 
+    // ── v1.3.13: 空态欢迎语的会话状态(只活在进程内——进程即"会话") ──────────
+    // 放 VM 而不是 rememberSaveable:切 tab 会离开组合,而 AppRoot 下没有
+    // SaveableStateHolder,rememberSaveable 撑不住"切回来不重放"。
+    /** 本会话已经播过打字机欢迎语。 */
+    var agentGreetingPlayed by mutableStateOf(false)
+    /** 本会话选中的欢迎语序号(进空态时随机一次,会话内固定;跨会话才有新鲜感)。 */
+    var agentGreetingIndex by mutableStateOf(-1)
+
     /**
      * v1.3.10: 模型发起的「选择题」(clarify)的**独立状态**——非空时输入框上方显示专属卡片。
      *
@@ -2441,26 +2449,39 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      * 为什么要把播放状态和上一轮动作都摆进来:真机 bug 的根因之一是**模型只能猜**——
      * 它看不到"Pretender 正在播放",也看不到"刚才那次播放已经成功",于是把用户的感想
      * 读成"再放一遍"。这里把两者都做成明确事实,再配一条"已完成,别重复"的指令。
+     *
+     * v1.3.13 修正(用户实测):播放状态/上一轮动作**只在用户这条消息确实与播放相关时**
+     * 才注入。闲聊、评价别的歌手、问与当前歌无关的问题,一律不带——模型从没问过"现在
+     * 在放什么",这条信息就不该出现在语境里(否则"正在听 A"会被它错接成"B 的答案")。
      */
-    private fun buildAgentContext(): String = buildString {
+    private fun buildAgentContext(userText: String): String = buildString {
         albumKey?.let { k -> albumOrder(k).firstOrNull()?.album }?.let { appendLine("当前专辑: $it") }
-        (artistKey ?: player.currentId?.let { trackById(it)?.artist })?.let { appendLine("当前歌手: $it") }
-        player.currentId?.let { id ->
-            trackById(id)?.let { t ->
-                appendLine("当前播放曲目: ${t.title}")
+        // 关键:只有用户消息确实涉及播放(指令/控制/重来/纠正)时,才把"正在播放"与
+        // "上一轮动作"告诉模型。否则闲聊带进来就是污染源。
+        val playbackRelated = com.shiyin.music.data.ai.PlaybackIntentGuard.classify(userText) !=
+            com.shiyin.music.data.ai.PlaybackIntentGuard.Intent.NONE
+        // 当前歌手也分:专辑页/歌手页的"当前歌手"是页面语境,可以带;
+        // 但"由正在播放的曲目推断出的歌手"只在播放相关时才带(否则"听着 A 问 B"会串台)。
+        (artistKey ?: if (playbackRelated) player.currentId?.let { trackById(it)?.artist } else null)
+            ?.let { appendLine("当前歌手: $it") }
+        if (playbackRelated) {
+            player.currentId?.let { id ->
+                trackById(id)?.let { t ->
+                    appendLine("当前播放曲目: ${t.title}")
+                    appendLine(
+                        "[当前播放] ${t.title} — ${t.artist} · " +
+                            (if (player.isPlaying) "正在播放" else "已暂停") +
+                            " · 进度 ${fmtProgress(player.positionMs)}",
+                    )
+                }
+            }
+            lastAgentAction?.let {
                 appendLine(
-                    "[当前播放] ${t.title} — ${t.artist} · " +
-                        (if (player.isPlaying) "正在播放" else "已暂停") +
-                        " · 进度 ${fmtProgress(player.positionMs)}",
+                    "[上一轮动作] ${it.kind}:${it.detail.ifBlank { "—" }} · " +
+                        (if (it.success) "已成功" else "失败") +
+                        " —— **已完成,除非用户本轮明确要求,不要重复执行**",
                 )
             }
-        }
-        lastAgentAction?.let {
-            appendLine(
-                "[上一轮动作] ${it.kind}:${it.detail.ifBlank { "—" }} · " +
-                    (if (it.success) "已成功" else "失败") +
-                    " —— **已完成,除非用户本轮明确要求,不要重复执行**",
-            )
         }
     }.trimEnd()
 
@@ -2594,7 +2615,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val prompt = """
             从下面这轮对话里,挑出**值得长期记住**的用户信息(0-3 条;一条都没有就输出 [])。
             值得记:稳定偏好、长期习惯、重要个人背景、长期有意义的音乐偏好、用户明确要求记住的事。
-            **不要记**:一次性的情绪(如"今天有点累")、临时计划、当下的指令、助手说过的话。
+            **一定不要记**:
+              · 一次性的情绪(如"今天有点累")、临时计划、当下的指令、助手说过的话;
+              · **用户下过的操作指令本身** —— 「播放 X」「放一下 X」「换一首」只说明他**此刻想听**,
+                **不代表他喜欢 X**(也可能只是偶尔想听一下)。除非同一句里明确表达了对它的喜爱
+                (「我一直很喜欢」「这是我最喜欢的」「我特别喜欢」),否则**不要**生成"用户喜欢 X"
+                这类偏好,更不要把"要求播放 / 曾要求播放"写进内容。
             每条一行 JSON:{"type":"preference|personal|episodic|music|relationship","content":"第三人称一句话,以「用户」开头","importance":1-3}
             只输出 JSON,不要解释、不要代码块。
 
@@ -3101,6 +3127,25 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 // 思考胶囊/打字机不依赖"后台写 snapshot 恰好触发重组"。
                 val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
 
+                /**
+                 * v1.3.13:中间态的**保号更新** —— 同一时刻已有的正文与思考链都要带上。
+                 *
+                 * 真机 bug:原来每个中间回调都自己 `AgentMessage("agent", …, steps)` 重建消息,
+                 * 只带其中一个字段 —— onThinking 丢正文、onContent 丢思考链、onSearch 两个都丢。
+                 * 于是联网搜索的多轮里,「思考中」被反复抹掉又出现(用户实测:"1s 又消失,反复 2-3 次"),
+                 * 正文一旦开始流就把思考链整块抹掉。统一走这一个构造口,谁都不会被顺手丢掉。
+                 */
+                fun liveAgentMsg(
+                    stepsNow: List<com.shiyin.music.data.ai.AgentEngine.Step>,
+                    text: String? = null,
+                    thinking: String? = null,
+                ) = AgentMessage(
+                    role = "agent",
+                    text = text ?: streamedReply.orEmpty(),
+                    steps = stepsNow,
+                    thinking = thinking ?: intentThinking,
+                )
+
                 // ── v1.3.11 统一记忆流程:本轮**只推进一条**状态行 ────────────────────
                 // 顺序按规格:查找记忆中 → (已找到 / 未找到) → 需要保存则 记忆中 → 记忆已保存。
                 // 每一步都由真实执行结果驱动;模型既不产生、也无法影响这些状态。
@@ -3110,8 +3155,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 }
 
                 // 领域上下文(当前歌曲/专辑/歌手 + **播放状态** + **上一轮动作**)——
-                // 与记忆分层(见 AgentEngine.contextSections);v1.3.12 起由 buildAgentContext 组装。
-                val domainContext = buildAgentContext()
+                // 与记忆分层(见 AgentEngine.contextSections);v1.3.13 起播放状态只在
+                // 用户本条消息确实谈播放时才注入(闲聊/评价别人时不带,避免被错接)。
+                val domainContext = buildAgentContext(text)
 
                 // v1.3.8(D2): 高频单条指令本地快速路径——命中即零 LLM 往返直接执行
                 // (golden path:「打开专辑 → 排成正确顺序」)。已收窄到 album_sort 一条;
@@ -3243,7 +3289,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                                 if (turnSealed.get()) return@post
                                 intentThinking = th
                                 agentMessages = agentMessages.replaceAt(
-                                    msgIdx, AgentMessage("agent", "", steps.toList(), thinking = th),
+                                    msgIdx, liveAgentMsg(steps.toList(), thinking = th),
                                 )
                             }
                         },
@@ -3252,14 +3298,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                                 if (turnSealed.get()) return@post
                                 val clean = full.trimStart()
                                 streamedReply = clean
-                                agentMessages = agentMessages.replaceAt(msgIdx, AgentMessage("agent", clean, steps.toList()))
+                                agentMessages = agentMessages.replaceAt(msgIdx, liveAgentMsg(steps.toList(), text = clean))
                             }
                         },
                         onSearch = { q ->
                             mainHandler.post {
                                 if (turnSealed.get()) return@post
                                 steps.upsert("web", "联网搜索:$q", com.shiyin.music.data.ai.AgentEngine.StepStatus.RUNNING)
-                                agentMessages = agentMessages.replaceAt(msgIdx, AgentMessage("agent", "", steps.toList()))
+                                agentMessages = agentMessages.replaceAt(msgIdx, liveAgentMsg(steps.toList()))
                                 // v1.3.8: 记录 TOOL 状态(搜索工具调用)
                                 processHistory.add(ProcessStep(
                                     type = "tool",
@@ -3274,7 +3320,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                                 val status = if (success) com.shiyin.music.data.ai.AgentEngine.StepStatus.DONE
                                              else com.shiyin.music.data.ai.AgentEngine.StepStatus.FAILED
                                 steps.upsert("web", "联网搜索:$q", status)
-                                agentMessages = agentMessages.replaceAt(msgIdx, AgentMessage("agent", "", steps.toList()))
+                                agentMessages = agentMessages.replaceAt(msgIdx, liveAgentMsg(steps.toList()))
                             }
                         },
                     )
@@ -3339,6 +3385,63 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     }
                 }
 
+                // ── v1.3.12:"要播放"却被路由成"查库" → 纠正一次 ───────────────────────
+                // 真机实测:「给我播放藤井风的 prema」被路由到 library_query,**罗列了 8 条检索结果**
+                // 当回答(用户:"这显然不应该,我要求播放的是音乐")。库查询的 description 里其实
+                // 已经写了"想听就用 playback_control、不要用本工具",但**弱模型不照办** ——
+                // 所以这里用纯函数判据确定性地兜一次:工具面保持完整,只加一条贴着本条消息的说明,
+                // 让它重新选。纠正后若是播放类技能,就走下面的正常链路(含歧义 → clarify 询问)。
+                if (planDraft?.skillKey == "library_query" &&
+                    com.shiyin.music.data.ai.PlaybackIntentGuard.classify(text) !=
+                    com.shiyin.music.data.ai.PlaybackIntentGuard.Intent.NONE
+                ) {
+                    android.util.Log.i("Agent", "misroute: 播放指令被路由到 library_query → 纠正一次")
+                    com.shiyin.music.data.log.UsageLog.event(getApplication(), "Agent", "misroute play→query corrected")
+                    val fixed = com.shiyin.music.data.ai.AgentTools.dispatch(
+                        config = config,
+                        tavilyKey = tavilyApiKey,
+                        userText = text,
+                        contextBlock = listOf(
+                            agentContext,
+                            "[系统] 用户这条是在**要求播放**,不是查库。直接调用 playback_control 播放它;" +
+                                "名字在库里同时是单曲和专辑时用 clarify 问用户放哪个。**不要罗列检索结果**。",
+                        ).filter { it.isNotBlank() }.joinToString("\n"),
+                        memoryBlock = memoryBlock,
+                        history = history,
+                        onThinking = { th ->
+                            mainHandler.post {
+                                if (turnSealed.get()) return@post
+                                intentThinking = th
+                            }
+                        },
+                        onContent = { full ->
+                            mainHandler.post {
+                                if (turnSealed.get()) return@post
+                                streamedReply = full.trimStart()
+                            }
+                        },
+                    )
+                    routeTokens = fixed.promptTokens to fixed.completionTokens
+                    if (!fixed.thinking.isNullOrBlank()) dispatchThinking = fixed.thinking
+                    dispatchThinkingMs = fixed.thinkingMs
+                    if (fixed.promptTokens + fixed.completionTokens > 0) {
+                        viewModelScope.launch(Dispatchers.IO) {
+                            com.shiyin.music.data.ai.TokenUsageStore.log(
+                                getApplication(), llmActiveProvider, "agent_dispatch",
+                                fixed.promptTokens, fixed.completionTokens, fixed.cacheTokens,
+                            )
+                        }
+                    }
+                    val fixedSkill = fixed.skill
+                    if (fixedSkill != null && fixedSkill.key in com.shiyin.music.data.ai.AgentEngine.PLAYBACK_EXEC_SKILLS) {
+                        planDraft = com.shiyin.music.data.ai.AgentEngine.IntentPlan(fixedSkill.key, fixedSkill.args, emptyList())
+                    } else if (!fixed.chatReply.isNullOrBlank()) {
+                        // 它宁可用文字讲明白(例如直接问用户),就照它说的走闲聊分支
+                        chatReply = fixed.chatReply
+                    }
+                    // 都没给 → 保持原计划(按查库执行),不硬造行为
+                }
+
                 // 2a. 反问(第三态):模型不确定 → 不执行任何技能,把问题交还用户。
                 // v1.3.10: 走**专属选择卡片**(独立状态 agentClarify)——不再落一条 agent 气泡、
                 // 也不借用入口建议 chip(用户 2026-09-28 定调:三者是三个东西)。
@@ -3388,41 +3491,68 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     seal()
                     return@launch
                 }
-                // ── v1.3.12:播放执行闸门(确定性保护,不指望模型自守规矩) ─────────────
-                // 真机 bug:上一轮「放一下 Pretender」成功后,这一轮「秋天就喜欢听些苦情歌。」
-                // 被弱模型读成"再放一遍"。规则写进 prompt 只能降低概率,**挡不住弱模型**;
-                // 这里用纯函数再看一遍用户原话:没有明确执行意图 / 已经在放同一首 → 摘掉
-                // 播放工具再问一次(§7:禁止执行,转普通 Agent 回复)。
+                // ── v1.3.12:播放执行的**确定性关卡** ──────────────────────────────────
+                // 分工(用户定调,一次纠正后的最终口径):
+                //   · **模型照常判断、照常调工具** —— 工具面永远完整,判断权在它手里;
+                //   · 运行时只管**副作用**:① 名字既是单曲又是专辑时**不猜**,把选择交回用户
+                //     (用已有的 clarify 选择卡片);② 纯感想被当成播放命令时拦下;
+                //   · **幂等不在这一层** —— "同一首已经在放就别重启"是**技能**的职责(它知道
+                //     真实播放状态,由它说那句人话),这里不再替模型生成任何"回复文案";
+                //   · 需要用户拿主意时**追问**,不吐兜底句式(用户明确反感"无限兜底")。
+                var execArgs = plan.args
                 if (skill.key in com.shiyin.music.data.ai.AgentEngine.PLAYBACK_EXEC_SKILLS) {
                     val guardTarget = plan.args["target"]?.takeIf { it.isNotBlank() }
                         ?: plan.args["title"]?.takeIf { it.isNotBlank() }
-                    val curTitle = player.currentId?.let { trackById(it)?.title }
-                    val decision = com.shiyin.music.data.ai.PlaybackIntentGuard.guard(
-                        userText = text,
-                        requestedTarget = guardTarget,
-                        currentTitle = curTitle,
-                        isPlaying = player.isPlaying,
-                    )
-                    val guardNote = when (decision) {
-                        com.shiyin.music.data.ai.PlaybackIntentGuard.Decision.BlockNoIntent ->
-                            "[系统] 用户这句话**不是播放指令**(是感想/评论/闲聊)。不要执行任何播放动作,用普通聊天回应他。"
-                        com.shiyin.music.data.ai.PlaybackIntentGuard.Decision.AlreadyPlaying ->
-                            "[系统] 用户点名的「${curTitle.orEmpty()}」**已经在播放中**(进度 ${fmtProgress(player.positionMs)})。不要重新从头播放;除非他明确要求重新播放,否则告诉他已经在放了。"
-                        else -> null
+
+                    // ① 用户自己说清楚了(「我说的是单曲」/「放整张专辑」)→ 按他说的定死 scope,
+                    //    **不再问一遍**(真机:用户已明说单曲,系统却还弹选择卡片 → 读起来像没在听)。
+                    //    模型没填 scope 时以**用户原话**为准(这是确定性判据,不指望弱模型转述)。
+                    val userScope = com.shiyin.music.data.ai.PlaybackIntentGuard.userScope(text)
+                    if (userScope != null) {
+                        execArgs = execArgs + ("scope" to userScope)
+                    } else if (plan.args["scope"].isNullOrBlank() && guardTarget != null) {
+                        // ② 用户没说、名字又**既是单曲又是专辑** → 问用户,不猜。
+                        //    真机场景:「给我播放藤井风的 prema」库里既有单曲 prema 又有专辑 Prema,
+                        //    代码(或模型)悄悄选一个,用户只能事后纠正。
+                        val albumKey = agentCtx.findAlbum(guardTarget)
+                        val exactTrack = agentCtx.searchTracks(guardTarget, 8)
+                            .any { com.shiyin.music.data.ai.PlaybackIntentGuard.sameTrack(it.title, guardTarget) }
+                        if (albumKey != null && exactTrack) {
+                            android.util.Log.i("Agent", "playback ambiguous: 「$guardTarget」既是单曲又是专辑 → 问用户")
+                            com.shiyin.music.data.log.UsageLog.event(getApplication(), "Agent", "playback ambiguous ask")
+                            agentClarify = com.shiyin.music.data.ai.AgentTools.ClarifyRequest(
+                                question = "「$guardTarget」在库里既是单曲也是专辑,放哪个?",
+                                options = listOf("播放单曲 $guardTarget", "播放整张专辑 $guardTarget"),
+                            )
+                            val streamed0 = (streamedReply ?: agentMessages.getOrNull(msgIdx)?.text).orEmpty()
+                            if (streamed0.isBlank()) agentMessages = agentMessages.removeAt(msgIdx)
+                            seal()
+                            refreshAgentTokens()
+                            return@launch
+                        }
                     }
-                    if (guardNote != null) {
-                        android.util.Log.i("Agent", "playback guard: $decision · skill=${skill.key} · target=$guardTarget")
-                        com.shiyin.music.data.log.UsageLog.event(getApplication(), "Agent", "playback guard $decision")
-                        // ⚠️ 工具表**保持原样**(v1.3.12 真机 bug 修正):曾经在这里传
-                        // blockPlayback=true 把 playback_control 摘掉,结果提示词第 6 条
-                        // ("想听歌就直接调 playback_control")还在、tools 里却没它 —— 模型
-                        // 在思考里抱怨"提示词让我调用但工具列表里没有这个工具",用户看到的就是
-                        // "第一次能放、切了页面就不能放"。**执行与否由闸门决定,工具面不能残缺**。
+
+                    // ② 用户明确要求"重来" → 把 restart 注进参数。这是**补全信息**(技能看不到
+                    //    用户原话),不是否决模型:让它有能力区分"播放"与"从头再放"。
+                    if (com.shiyin.music.data.ai.PlaybackIntentGuard.classify(text) ==
+                        com.shiyin.music.data.ai.PlaybackIntentGuard.Intent.RESTART
+                    ) {
+                        execArgs = execArgs + ("restart" to "true")
+                    }
+
+                    // ③ 纯感想/闲聊被当成播放命令 → 拦下。先让模型**用自己的话**回应(工具面完整,
+                    //    只加一条 [系统] 说明);它若仍然硬要执行,就把决定权交回用户(**追问**)。
+                    if (com.shiyin.music.data.ai.PlaybackIntentGuard.classify(text) ==
+                        com.shiyin.music.data.ai.PlaybackIntentGuard.Intent.NONE
+                    ) {
+                        val note = "[系统] 用户这句话**不是播放指令**(是感想/评论/闲聊)。不要执行任何播放动作,用你自己的话回应他。"
+                        android.util.Log.i("Agent", "playback guard: BlockNoIntent · skill=${skill.key} · target=$guardTarget")
+                        com.shiyin.music.data.log.UsageLog.event(getApplication(), "Agent", "playback guard BlockNoIntent")
                         val again = com.shiyin.music.data.ai.AgentTools.dispatch(
                             config = config,
                             tavilyKey = tavilyApiKey,
                             userText = text,
-                            contextBlock = listOf(agentContext, guardNote)
+                            contextBlock = listOf(agentContext, note)
                                 .filter { it.isNotBlank() }.joinToString("\n"),
                             memoryBlock = memoryBlock,
                             history = history,
@@ -3430,7 +3560,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                                 mainHandler.post {
                                     if (turnSealed.get()) return@post
                                     intentThinking = th
-                                    agentMessages = agentMessages.replaceAt(msgIdx, AgentMessage("agent", "", steps.toList(), thinking = th))
+                                    agentMessages = agentMessages.replaceAt(msgIdx, liveAgentMsg(steps.toList(), thinking = th))
                                 }
                             },
                             onContent = { full ->
@@ -3438,7 +3568,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                                     if (turnSealed.get()) return@post
                                     val clean = full.trimStart()
                                     streamedReply = clean
-                                    agentMessages = agentMessages.replaceAt(msgIdx, AgentMessage("agent", clean, steps.toList()))
+                                    agentMessages = agentMessages.replaceAt(msgIdx, liveAgentMsg(steps.toList(), text = clean))
                                 }
                             },
                         )
@@ -3453,25 +3583,35 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                                 )
                             }
                         }
-                        // 模型可能又想吃掉这条播放请求 —— 那就**不执行**(闸门说了算),
-                        // 用确定性文案收尾。绝不说"我没有播放工具"(工具其实在),只说实话。
                         val insisted = again.skill?.key in com.shiyin.music.data.ai.AgentEngine.PLAYBACK_EXEC_SKILLS
-                        val grounded = when (decision) {
-                            com.shiyin.music.data.ai.PlaybackIntentGuard.Decision.AlreadyPlaying ->
-                                "《${curTitle.orEmpty()}》已经在放了(进度 ${fmtProgress(player.positionMs)})。要重新从头听,说一句「重新播放」就行。"
-                            else ->
-                                "这句我先当成在聊音乐了——想放歌的话跟我说一声「放一下《歌名》」。"
-                        }
-                        val said = if (insisted) grounded
-                            else again.chatReply?.takeIf { it.isNotBlank() }
-                                ?: streamedReply?.takeIf { it.isNotBlank() }
-                                ?: grounded
                         if (insisted) {
-                            android.util.Log.i("Agent", "playback guard: 模型仍想执行播放,已按闸门改为确定性回复")
+                            // 说了两遍还要执行 → 不再替它硬答(那会显得"无动于衷"),**问用户**。
+                            android.util.Log.i("Agent", "playback guard: 模型仍要执行 → 交回用户(clarify)")
+                            agentClarify = com.shiyin.music.data.ai.AgentTools.ClarifyRequest(
+                                question = "这句要不要当成播放指令?",
+                                options = listOf("播放它", "不用放,只是聊聊"),
+                            )
+                            val streamed1 = streamedReply?.takeIf { it.isNotBlank() }
+                                ?: agentMessages.getOrNull(msgIdx)?.text?.takeIf { it.isNotBlank() }
+                            if (streamed1 == null) agentMessages = agentMessages.removeAt(msgIdx)
+                            else agentMessages = agentMessages.replaceAt(
+                                msgIdx,
+                                AgentMessage("agent", streamed1, null, thinking = dispatchThinking, thinkingMs = dispatchThinkingMs),
+                            )
+                            seal()
+                            refreshAgentTokens()
+                            return@launch
                         }
+                        // 模型按说明用了自己的话 → 正常落终态(它说人话,不是运行时模板)
                         agentMessages = agentMessages.replaceAt(
                             msgIdx,
-                            AgentMessage("agent", said, null, tokens = routeTokens, thinking = dispatchThinking, thinkingMs = dispatchThinkingMs),
+                            AgentMessage(
+                                "agent",
+                                again.chatReply?.takeIf { it.isNotBlank() }
+                                    ?: streamedReply.orEmpty(),
+                                null, tokens = routeTokens,
+                                thinking = dispatchThinking, thinkingMs = dispatchThinkingMs,
+                            ),
                         )
                         seal()
                         refreshAgentTokens()
@@ -3482,7 +3622,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 // v1.3.8(P2): 步骤清单由**技能自己声明**(panelSteps),面板行 id == 技能回调
                 // 的语义 id——映射表不复存在。行文案也不再用模型生成的 plan.steps(§3 定调),
                 // "模型给 2 步、技能有 4 个回调"这类错位从根上消失。
-                for (ps in skill.panelSteps(plan.args)) {
+                for (ps in skill.panelSteps(execArgs)) {
                     steps.add(com.shiyin.music.data.ai.AgentEngine.Step(ps.id, ps.label, com.shiyin.music.data.ai.AgentEngine.StepStatus.PENDING))
                 }
                 agentMessages = agentMessages.replaceAt(msgIdx, AgentMessage("agent", "", steps.toList(), thinking = intentThinking))
@@ -3490,7 +3630,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 // 从不显示——改记路由调用的真实 usage,技能内调用靠 refreshAgentTokens 累计。
                 val lastTokens: Pair<Int, Int>? = routeTokens
                 val result = skill.execute(
-                    agentCtx, plan.args, config, tavilyApiKey,
+                    agentCtx, execArgs, config, tavilyApiKey,
                 ) { id, st ->
                     // v1.3.8(P2): 语义 id 直接就是面板行 id,无需任何映射。万一技能回调了
                     // 未在 panelSteps 里声明的 id(技能改了回调没改声明),落到最后一行——
@@ -3551,6 +3691,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 ))
                 // 终态落钉:此后的中间态回调(迟到的 mainHandler.post)一律作废。
                 seal()
+                // v1.3.13:技能给了**可点选项**(如"你自己挑一首"的几首候选)→ 直接弹选择卡片。
+                // 用户定调:智能助手要让用户**少输入** —— 列了 A/B/C 还让人打字说歌名是很蠢的交互;
+                // 点一下就把那首放上。复用既有 clarify 卡片(点选 → 发一条消息 → 正常链路执行)。
+                if (result.options.isNotEmpty()) {
+                    android.util.Log.i("Agent", "技能 ${skill.key} 给了 ${result.options.size} 个可点选项")
+                    agentClarify = com.shiyin.music.data.ai.AgentTools.ClarifyRequest(
+                        question = "想听哪一首?",
+                        options = result.options.take(4),
+                    )
+                }
                 // v1.3.2: 按本轮任务结果更新建议(点过/发过即消失,不常驻)
                 // v1.3.3: 删掉「查歌手名识别是否正确」建议——意义不明,任务完成后清空。
                 agentSuggestions = emptyList()
@@ -3602,6 +3752,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         // v1.3.4: onThinking 传的是增量碎片——live 展开要看完整链,本地累积;
         // null=重试轮开始,清空重攒(重试成功会从头重发全量)。
         var thinkAcc: String? = null
+        // v1.3.13:同样"保号更新"——回退链路也要把已有的正文/思考链带上,否则一有中间态
+        // 就会把另一块抹掉(与主链路同一个真机 bug)。
+        var routeText: String? = null
+        fun routeMsg(stepsNow: List<com.shiyin.music.data.ai.AgentEngine.Step>) =
+            AgentMessage("agent", routeText.orEmpty(), stepsNow, thinking = thinkAcc)
         return com.shiyin.music.data.ai.AgentEngine.route(
             text, agentCtx, config,
             onStep = { _, st ->
@@ -3610,7 +3765,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 if (st == com.shiyin.music.data.ai.AgentEngine.StepStatus.FAILED) {
                     mainHandler.post {
                         steps.upsert("intent", "思考中", st)
-                        agentMessages = agentMessages.replaceAt(msgIdx, AgentMessage("agent", "", steps.toList()))
+                        agentMessages = agentMessages.replaceAt(msgIdx, routeMsg(steps.toList()))
                     }
                 }
             },
@@ -3621,15 +3776,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 thinkAcc = if (th == null) "" else (thinkAcc ?: "") + th
                 mainHandler.post {
                     onState(thinkAcc, null)
-                    agentMessages = agentMessages.replaceAt(msgIdx, AgentMessage("agent", "", steps.toList(), thinking = thinkAcc))
+                    agentMessages = agentMessages.replaceAt(msgIdx, routeMsg(steps.toList()))
                 }
             },
             onContent = { partial ->
                 // sensenova 等模型的回复常以 \n\n 开头——不 trim 气泡顶会渲染一整行空白。
                 mainHandler.post {
                     val clean = partial.trimStart()
+                    routeText = clean
                     onState(null, clean)
-                    agentMessages = agentMessages.replaceAt(msgIdx, AgentMessage("agent", clean, steps.toList()))
+                    agentMessages = agentMessages.replaceAt(msgIdx, routeMsg(steps.toList()))
                 }
             },
         )

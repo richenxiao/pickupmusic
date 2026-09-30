@@ -92,6 +92,72 @@ class PlaybackSkillsTest {
 
     // ── playback_control ──────────────────────────────────────────────────
 
+    // ── v1.3.12 真机 bug:同名专辑 vs 单曲 ───────────────────────────────
+    // 「给我播放藤井风的 prema」库里既有单曲 prema 又有专辑 prema,旧实现**先找专辑**,
+    // 于是整张 9 首被播了 —— 用户随后只能补一句「我说的是单曲」。
+
+    @Test
+    fun `点名作品名时默认放单曲 - 同名专辑不再被抢先播整张`() {
+        val single = track(1, "prema")
+        val ctx = PlaybackFake(
+            albumHits = mapOf("prema" to listOf(single, track(2, "别的"))),
+            libraryHits = listOf(single),
+        )
+        val r = ctl(ctx, mapOf("action" to "play", "target" to "prema"))
+        assertTrue("应成功:${r.summary}", r.success)
+        assertEquals("只应放那一首,不能播整张", 1, ctx.played?.size)
+        assertEquals(single.id, ctx.played?.first()?.id)
+        assertFalse("不该说「开始播放专辑」:${r.summary}", r.summary.contains("专辑"))
+    }
+
+    @Test
+    fun `明确要整张专辑时才放整张 - scope=album`() {
+        val ctx = PlaybackFake(
+            albumHits = mapOf("prema" to listOf(track(1, "prema"), track(2, "二"), track(3, "三"))),
+            libraryHits = listOf(track(1, "prema")),
+        )
+        val r = ctl(ctx, mapOf("action" to "play", "target" to "prema", "scope" to "album"))
+        assertEquals("scope=album 时应播整张", 3, ctx.played?.size)
+        assertTrue(r.summary.contains("专辑"))
+    }
+
+    @Test
+    fun `库里只有同名专辑时兜底放整张 - 并如实说明`() {
+        val ctx = PlaybackFake(
+            albumHits = mapOf("prema" to listOf(track(1, "别的歌"), track(2, "另一首"))),
+            libraryHits = emptyList(),
+        )
+        val r = ctl(ctx, mapOf("action" to "play", "target" to "prema"))
+        assertEquals("单曲里没有 → 放同名专辑", 2, ctx.played?.size)
+        assertTrue("要如实说明放的是专辑:${r.summary}", r.summary.contains("专辑"))
+    }
+
+    @Test
+    fun `同一首已经在放时不重新从头放 - 由技能说这句人话`() {
+        val single = track(1, "prema")
+        val ctx = PlaybackFake(libraryHits = listOf(single), playing = true, current = single)
+        val r = ctl(ctx, mapOf("action" to "play", "target" to "prema"))
+        assertNull("不该重新播放", ctx.played)
+        assertTrue("应说明已经在放:${r.summary}", r.summary.contains("已经在放"))
+    }
+
+    @Test
+    fun `明确要求重启时才从头放 - restart=true`() {
+        val single = track(1, "prema")
+        val ctx = PlaybackFake(libraryHits = listOf(single), playing = true, current = single)
+        val r = ctl(ctx, mapOf("action" to "play", "target" to "prema", "restart" to "true"))
+        assertEquals("明确要重来 → 真的重放", single.id, ctx.played?.first()?.id)
+        assertTrue(r.success)
+    }
+
+    @Test
+    fun `没在播放时同一首照常播放 - 幂等只在"正在放"时生效`() {
+        val single = track(1, "prema")
+        val ctx = PlaybackFake(libraryHits = listOf(single), playing = false, current = single)
+        ctl(ctx, mapOf("action" to "play", "target" to "prema"))
+        assertEquals("暂停状态下的播放请求必须真的放", single.id, ctx.played?.first()?.id)
+    }
+
     @Test
     fun `没在播放时说暂停不谎报已暂停`() {
         val ctx = PlaybackFake(playing = false, current = track(1, "晴天"))
