@@ -19,6 +19,7 @@ import com.shiyin.music.data.Track
 import com.shiyin.music.data.UNKNOWN_ARTIST
 import com.shiyin.music.data.albumKeyOf
 import com.shiyin.music.data.db.AlbumOrderEntity
+import com.shiyin.music.data.memory.logTag
 import com.shiyin.music.data.db.AlbumOverrideEntity
 import com.shiyin.music.data.db.AppDatabase
 import com.shiyin.music.data.db.ArtistAliasEntity
@@ -2657,7 +2658,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             val outcome = res.getOrNull()
             val ok = res.isSuccess && outcome !is com.shiyin.music.data.memory.RememberOutcome.Rejected
             if (!ok) allOk = false
-            val tag = outcome?.let { it::class.simpleName } ?: "Rejected"
+            // v1.3.14:用**稳定标签**(见 RememberOutcome.logTag),不用 ::class.simpleName ——
+            // release 经 R8 会把 Saved/Updated 缩成单字母,使用日志里的"memory C"就是这么来的。
+            val tag = outcome?.logTag ?: "Failed"
             android.util.Log.i("Agent", "memory $tag: ${c.type} · ${c.content.take(30)}")
             com.shiyin.music.data.log.UsageLog.event(getApplication(), "Agent", "memory $tag · ${c.type}")
         }

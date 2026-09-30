@@ -364,4 +364,25 @@ class MemoryManagerTest {
         )
         assertTrue("用户明确要求记住 → 不该被这条规则挡", out is RememberOutcome.Saved)
     }
+
+    // ── ⑯ v1.3.14:写入结果的日志标签必须稳定(不能用类名) ────────────────────
+    // 真机实测:使用日志里出现 `memory C · preference` —— release 经 R8 把 Saved/Updated
+    // 缩成了单字母,诊断信息自己先失真。这条测试钉住"标签是显式字符串、不是类名"。
+
+    @Test
+    fun `写入结果的日志标签是稳定的显式字符串 - 不随 R8 混淆变化`() {
+        assertEquals("Saved", RememberOutcome.Saved("x").logTag)
+        assertEquals("Updated", RememberOutcome.Updated("x").logTag)
+        assertEquals("Superseded", RememberOutcome.Superseded("a", "b").logTag)
+        assertEquals("Rejected", RememberOutcome.Rejected(RememberOutcome.Reason.BLANK).logTag)
+        for (tag in listOf(
+            RememberOutcome.Saved("x").logTag,
+            RememberOutcome.Updated("x").logTag,
+            RememberOutcome.Superseded("a", "b").logTag,
+            RememberOutcome.Rejected(RememberOutcome.Reason.TRANSIENT).logTag,
+        )) {
+            assertTrue("标签「$tag」太短,像是被混淆过的类名", tag.length >= 4)
+            assertTrue("标签「$tag」不该是单字母", tag.any { it.isLetter() })
+        }
+    }
 }

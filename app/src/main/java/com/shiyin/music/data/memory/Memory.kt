@@ -90,3 +90,21 @@ sealed interface RememberOutcome {
         COMMAND_RECORD,
     }
 }
+
+/**
+ * v1.3.14:写入结果的**稳定日志标签**。
+ *
+ * 为什么不直接用 `::class.simpleName`:release 包经 R8 会把 `Saved` / `Updated` 这类类名
+ * 缩成单字母,使用日志里就成了 `memory C · preference` —— **诊断信息自己先失真**
+ * (真机实测)。改成显式字符串,日志里的标签就不再随混淆变化。
+ *
+ * 放在类型旁边(而不是各调用处各自写)是为了:以后新增一种写入结果时,这里会**编译报错**,
+ * 强制补上标签,不会有漏网的分支。
+ */
+val RememberOutcome.logTag: String
+    get() = when (this) {
+        is RememberOutcome.Saved -> "Saved"
+        is RememberOutcome.Updated -> "Updated"
+        is RememberOutcome.Superseded -> "Superseded"
+        is RememberOutcome.Rejected -> "Rejected"
+    }
