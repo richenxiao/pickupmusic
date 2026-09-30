@@ -97,6 +97,7 @@ import com.shiyin.music.data.ai.resampleTo
 import com.shiyin.music.ui.components.AgentLogoThinking
 import com.shiyin.music.ui.components.EqBars
 import com.shiyin.music.ui.components.OIcon
+import com.shiyin.music.ui.components.OrganicSwitch
 import com.shiyin.music.ui.components.PasswordField
 import com.shiyin.music.ui.components.clickableNoRipple
 import com.shiyin.music.ui.components.body
@@ -644,6 +645,30 @@ private fun AgentSettingsDialog(vm: MainViewModel, onDismiss: () -> Unit) {
                     }
                 }
 
+                // ── 对话显示(v1.3.12) ─────────────────────────────────────────────
+                // 用户实测:"思考链默认是展开的,应该在设置能够选择默认收起。"
+                SettingsSection("对话显示") {
+                    Row(
+                        Modifier.fillMaxWidth()
+                            .clickable { vm.setAgentThinkingCollapsed(!vm.agentThinkingCollapsed) }
+                            .padding(vertical = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text("思考过程默认收起", style = body(14f, FontWeight.Medium, c.text))
+                            Text(
+                                "开启后只显示「思考中 · Ns」,点一下才展开推理过程。",
+                                style = body(11.5f, FontWeight.Normal, c.n600),
+                                modifier = Modifier.padding(top = 2.dp),
+                            )
+                        }
+                        OrganicSwitch(vm.agentThinkingCollapsed) {
+                            vm.setAgentThinkingCollapsed(!vm.agentThinkingCollapsed)
+                        }
+                    }
+                }
+
                 // ── 拾光记忆(v1.3.12) ─────────────────────────────────────────────
                 // 用户定调:功能区只有一个「拾光记忆」,**不要再套一层"记忆 → 拾光记忆"**
                 // 的重复层级。所以这里不给 SettingsSection 标题,直接做成一个独立设置项。
@@ -947,6 +972,8 @@ private fun AgentBubble(
                 live = msg.text.isBlank(),
                 thinkingMs = msg.thinkingMs,
                 showLogo = !stepsLive,
+                // v1.3.12:设置里可要求"思考过程默认收起"
+                defaultCollapsed = vm.agentThinkingCollapsed,
             )
         }
         if (msg.text.isNotBlank()) {
@@ -1170,15 +1197,18 @@ private fun ThinkingBlock(
     thinkingMs: Long = 0L,
     /** v1.3.9: 动态 Logo 是否归本块显示（TOOL 阶段的步骤块已占用时为 false，避免两个动画同时出现）。 */
     showLogo: Boolean = true,
+    /** v1.3.12:设置「思考过程默认收起」——开了就不再自动摊开(仍可手点展开)。 */
+    defaultCollapsed: Boolean = false,
 ) {
     val c = LocalOrganic.current
     // v1.3.5: live 态默认展开(用户定调:思考中就摊开看,像 ChatGPT 的 reasoning
     // 流);回复出来(live=false)自动折叠成"已思考 X 秒"。用户手动点开/收起过
     // (manualToggle)就尊重手选,不再自动切。
-    var expanded by remember { mutableStateOf(live) }
+    // v1.3.12:设置里可改为"默认收起"(defaultCollapsed)——那时连 live 也不自动摊开。
+    var expanded by remember { mutableStateOf(live && !defaultCollapsed) }
     var manualToggle by remember { mutableStateOf(false) }
     LaunchedEffect(live) {
-        if (!manualToggle) expanded = live
+        if (!manualToggle) expanded = live && !defaultCollapsed
     }
     // live 态:最近一次 thinking 变化的时间——静止超 9s 显示"仍在思考…"
     var stalled by remember { mutableStateOf(false) }
@@ -1230,11 +1260,29 @@ private fun ThinkingBlock(
                 animationSpec = tween(180, easing = androidx.compose.animation.core.FastOutSlowInEasing),
             ) + androidx.compose.animation.fadeOut(tween(150)),
         ) {
-            Text(
-                thinking,
-                style = body(11.5f, FontWeight.Normal, c.n500).copy(lineHeight = 17.sp),
-                modifier = Modifier.padding(top = 4.dp, start = 19.dp, end = 10.dp, bottom = 4.dp),
-            )
+            // v1.3.12 真机 bug:思考正文原来是个**不设限的 Text** —— 越写越长,长到超出屏幕
+            // 之后就"卡住"了,新内容落在看不见的地方(用户:"并没有像成熟产品一样旧文向上,
+            // 露出新的思考内容")。现在:限高 168dp + 自己滚 + **内容变长就把视口钉到底部**
+            // (旧文向上、新文始终露出),与 Claude / DeepSeek 的阅读方式一致。
+            val thinkScroll = rememberScrollState()
+            androidx.compose.runtime.LaunchedEffect(live) {
+                androidx.compose.runtime.snapshotFlow { thinkScroll.maxValue }
+                    .collect { max ->
+                        // 只在进行中跟随:用户往上翻看历史时不要抢他的位置
+                        if (live && max > 0) thinkScroll.scrollTo(max)
+                    }
+            }
+            Box(
+                Modifier
+                    .padding(top = 4.dp, start = 19.dp, end = 10.dp, bottom = 4.dp)
+                    .heightIn(max = 168.dp)
+                    .verticalScroll(thinkScroll),
+            ) {
+                Text(
+                    thinking,
+                    style = body(11.5f, FontWeight.Normal, c.n500).copy(lineHeight = 17.sp),
+                )
+            }
         }
     }
 }
