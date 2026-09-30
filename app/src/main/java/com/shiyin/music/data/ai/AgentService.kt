@@ -98,17 +98,30 @@ object AgentService {
         } else {
             "网络资料:\n$tavilyContext"
         }
+        // v1.3.13(真机反馈"AI 判断《龙年》曲序时未能确定答案"/"没按格式输出"):换协议,
+        // 但**判断权仍在模型手里**。旧协议要它"把歌名映射成编号再排" → 就崩在编号格式上。
+        // 现在的分工:
+        //   · **模型**:判断"官方这首 = 本地哪一首"(官方《花》在本地叫 hana、官方是 Live 版
+        //     而本地没有 —— 这种只有它能对上),并**按官方顺序输出本地列表里的写法**;
+        //   · **代码**:只做回填(照着它给的本地写法取下标)+ 兜底(写法有出入时的模糊匹配)。
+        // ⚠️ 刻意**不**让代码接手"对应关系":那正是需要语义理解的一步,代码永远做不对。
         val prompt = """
-            《$album》($artist)本地曲目(编号仅指代,当前顺序可能有误):
+            《$album》($artist)的本地曲目(当前顺序可能有误,编号仅指代;这也是**你输出的词表**):
             $localBlock
 
             $contextBlock
 
-            输出官方正确顺序的编号序列,每行一个数字,从第一首到最后一首。例:
-            3
-            1
-            2
-            约束:只输出上面出现过的编号;每首恰好一次;官方名与本地写法有差异(feat.注记/空格/繁简)由你对应,不要跳过;完全无法判断时输出 UNKNOWN。不要输出其他任何内容。
+            请把这些本地曲目按**官方正确顺序**重排,逐行输出,每行一首。例:
+            照抄上面本地列表里排第一的那首的写法
+            照抄上面本地列表里排第二的那首的写法
+            照抄上面本地列表里排第三的那首的写法
+            约束:
+            · 输出**必须照抄上面本地列表里的写法** —— 系统用你的输出去重排本地曲目,
+              写成官方名/译名/罗马字就认不出来了;
+            · 官方写法与本地不一致时,**对应关系由你判断**(例:官方《花》在本地是「hana」、
+              官方是 Live 版而本地没有这类差异,只有你能对上),判断出来后就照抄本地写法;
+            · 不确定某首对应本地哪一个,就不要输出它;
+            · 完全无法判断时,只输出一行 UNKNOWN。
         """.trimIndent()
         val messages = mutableListOf("user" to prompt)
 
@@ -116,45 +129,35 @@ object AgentService {
         // 3. 调 LLM(config 驱动,任意已配置供应商)。
         // v1.3.3: maxTokens 从 512 回调到 2048——推理模型(sensenova/DeepSeek-R1 等)的
         // reasoning 也计入 completion_tokens,思考就能吃掉几百 token,512 会让 content
-        // 被截断 → 解析不出编号 → 误报"未找到足够信息"(正是 JTW 排序失败的根因)。
+        // 被截断 → 解析不出排序 → 误报"未找到足够信息"(正是 JTW 排序失败的根因)。
         val first = com.shiyin.music.data.ai.LlmClient.call(config, messages, maxTokens = 2048)
         if (first == null) {
             onStep("analyze", AgentEngine.StepStatus.FAILED)
             return@withContext null
         }
 
-        // 4. 解析编号序列(0-based):行首整数(容错「3.」「3、」「(3)」),或单行全编号串「3,1,2」
-        fun parseIndices(content: String?): List<Int> {
-            if (content.isNullOrBlank()) return emptyList()
-            val out = mutableListOf<Int>()
-            for (raw in content.lines()) {
-                val line = raw.trim().trimStart('*', '#', '-', '·', ' ')
-                if (line.isEmpty() || line.equals("UNKNOWN", ignoreCase = true)) continue
-                if (Regex("""^[\d\s,，、.。:：()()-]+$""").matches(line)) {
-                    Regex("""\d+""").findAll(line).forEach { out.add(it.value.toInt() - 1) }
-                    continue
-                }
-                Regex("""^\D*?(\d+)""").find(line)?.groupValues?.get(1)?.let { out.add(it.toInt() - 1) }
-            }
-            return out.filter { it in currentTracks.indices }.distinct()
-        }
+        // 4. 解析:模型给的是官方曲序的**曲目名** → 映射回本地下标(0-based)。
+        //    解析与匹配都是纯函数,可脱机单测(弱模型最容易错的"编号格式"不再由它负责)。
+        fun parseOrder(content: String?): List<Int> =
+            officialToLocalIndices(parseTitleLines(content), currentTracks)
 
         var resp = first
-        var ordered = parseIndices(first.content)
+        var ordered = parseOrder(first.content)
         val hadUnknown = first.content?.lines()?.any { it.trim().equals("UNKNOWN", ignoreCase = true) } == true
-        if (ordered.isEmpty() && !first.content.isNullOrBlank() && !hadUnknown) {
-            // 模型没按编号格式输出(且不是明确 UNKNOWN)→ 追加纠错重试一次(只在异常时多花一次调用)
+        // v1.3.13:UNKNOWN 与"格式不对"**都要重试一次** —— 旧实现是 UNKNOWN 直接放弃,
+        // 于是弱模型一句 UNKNOWN 就把整个排序判死(用户实测)。重试只多花一次调用。
+        if (ordered.isEmpty() && !first.content.isNullOrBlank()) {
             val retry = com.shiyin.music.data.ai.LlmClient.call(
                 config,
                 messages + listOf(
                     "assistant" to first.content,
-                    "user" to "你输出的不是编号格式。请重新只输出编号列表:每行一个数字,按官方顺序排列,不要歌名、不要解释。",
+                    "user" to "请重新输出:按官方顺序,每行一首,**照抄我上面给你的本地曲目写法**;不要编号、不要歌手名、不要解释;不确定的不要写。",
                 ),
-                maxTokens = 2048,  // v1.3.3: 512→2048,纠错轮推理模型同样要吃 reasoning token
+                maxTokens = 2048,  // 纠错轮推理模型同样要吃 reasoning token
             )
             if (retry != null) {
                 resp = retry
-                ordered = parseIndices(retry.content)
+                ordered = parseOrder(retry.content)
             }
         }
 
@@ -167,6 +170,80 @@ object AgentService {
         onStep("analyze", AgentEngine.StepStatus.DONE)
         SortResult(ordered, confidence, resp.promptTokens, resp.completionTokens, cacheTokens = resp.cacheTokens, webSearched = !tavilyContext.isNullOrBlank(), thinking = resp.thinking, hadUnknown = hadUnknown)
     }
+
+    /** 单条模糊匹配的最低分(低于它宁可不认,也不要张冠李戴)。 */
+    private const val MIN_FUZZY_SCORE = 400
+
+    /** 从模型回复里抽出"曲目名"行:去行首编号/项目符号/markdown 记号,丢掉 UNKNOWN 与空行。 */
+    internal fun parseTitleLines(content: String?): List<String> {
+        if (content.isNullOrBlank()) return emptyList()
+        return content.lines()
+            .map { it.trim().trimStart('*', '#', '-', '·', ' ') }
+            .map { it.replace(Regex("""^(?:\(?\d+\)?[.、,，:：)]\s*)+"""), "").trim() }
+            .map { it.trim('*', '`', '"', '“', '”', ' ') }
+            .filter { it.isNotEmpty() && !it.equals("UNKNOWN", ignoreCase = true) }
+    }
+
+    /**
+     * **模型给出的本地曲目名序列** → 本地下标(0-based,即官方顺序)。
+     *
+     * ⚠️ 分工(别搞反):**"官方这首 = 本地哪一首"的对应关系由模型判断** —— 官方《花》在本地叫
+     * hana、官方是 Live 版而本地没有,这类差异只有语义理解能对上,代码永远做不对。
+     * 模型被要求**照抄本地列表里的写法**输出,所以这里主要是**回填下标**;
+     * 三级匹配只是"它写法有出入时"的兜底网(繁简/全半角/feat. 副标题这类机械差异)。
+     *
+     * 每条本地曲目**只用一次**(天然去重);匹配不上的条目跳过(本地可能缺歌)。
+     * 抽成纯函数是为了能脱机单测:兜底网错了会**静默**把曲序排错,比报错更糟。
+     */
+    internal fun officialToLocalIndices(officialTitles: List<String>, currentTracks: List<String>): List<Int> {
+        if (officialTitles.isEmpty() || currentTracks.isEmpty()) return emptyList()
+        val localNorm = currentTracks.map { normTitle(it) }
+        val used = HashSet<Int>()
+        val out = ArrayList<Int>(officialTitles.size)
+        for (title in officialTitles) {
+            val on = normTitle(title)
+            if (on.isEmpty()) continue
+            var pick = -1
+            // ① 全等
+            for (i in currentTracks.indices) if (i !in used && localNorm[i] == on) { pick = i; break }
+            // ② 相互包含(带长度下限:短歌名在中文曲库里太常见)
+            if (pick < 0) {
+                for (i in currentTracks.indices) {
+                    if (i in used) continue
+                    val ln = localNorm[i]
+                    if (ln.isEmpty()) continue
+                    if (minOf(ln.length, on.length) >= 3 && (ln.contains(on) || on.contains(ln))) { pick = i; break }
+                }
+            }
+            // ③ 相似度最高。⚠️ 单字标题不走这一档:它的"包含"必然命中一堆无关曲目
+            //    (「夜」→《夜に駆ける》),宁可这条不放(少排一首),也不要张冠李戴。
+            if (pick < 0 && on.length >= 2) {
+                var best = -1
+                var bestScore = 0
+                for (i in currentTracks.indices) {
+                    if (i in used) continue
+                    val m = com.shiyin.music.data.search.FuzzySearch.match(on, localNorm[i]) ?: continue
+                    if (m.score > bestScore) { bestScore = m.score; best = i }
+                }
+                if (bestScore >= MIN_FUZZY_SCORE) pick = best
+            }
+            if (pick >= 0) { used += pick; out += pick }
+        }
+        return out
+    }
+
+    /** 括号补充说明(「晴天 (Live)」「曲名【remix】」)—— 比对前剥掉。 */
+    private val BRACKET_SUFFIX = Regex("[(（\\[【].*?[)）\\]】]")
+
+    /**
+     * 曲名归一:先剥括号补充说明(「晴天 (Live)」→「晴天」),再交给
+     * [com.shiyin.music.data.search.FuzzySearch.normalize] 做全半角/繁简/去空格/小写。
+     *
+     * 官方曲名经常带 `(Live)` `(Remastered)` `【官方版】` 这类副标题,而本地文件往往没有
+     * ——只做 FuzzySearch.normalize **不剥括号**,「晴天 (Live)」就永远对不上《晴天》。
+     */
+    private fun normTitle(s: String): String =
+        com.shiyin.music.data.search.FuzzySearch.normalize(BRACKET_SUFFIX.replace(s, ""))
 
     /**
      * v1.3.3: 检测文本主要语言(粗略启发式)——日语/中文/英文,用于 Tavily 查询关键词选择。
