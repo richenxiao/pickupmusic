@@ -1171,7 +1171,10 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
                                 tr.hasContent -> vm.hideLyricsTranslation()
                                 tr.hasData -> vm.showLyricsTranslation()
                                 else -> if (!vm.translateLyricsWithAi()) {
-                                    vm.showToast(vm.lyricsTranslation.error ?: "无法翻译")
+                                    // A36: 起步即失败的提示同样受「翻译失败时提示」开关门控
+                                    if (vm.translateErrorToast) {
+                                        vm.showToast(vm.lyricsTranslation.error ?: "无法翻译")
+                                    }
                                 }
                             }
                         } else Modifier),

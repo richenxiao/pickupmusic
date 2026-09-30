@@ -162,7 +162,17 @@ private fun CloudBackupScreen(vm: MainViewModel, scrollStates: MutableMap<String
             .padding(horizontal = 20.dp).padding(top = 22.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        SubPageHeader("云备份") { vm.navFilesBack() }
+        SubPageHeader(
+            "云备份",
+            help = "关于云备份" to
+                "任何兼容 WebDAV 协议的网盘或服务器都可以存放备份（坚果云、Nextcloud、群晖 NAS 等）。" +
+                "备份通过服务器地址直连传输，不需要安装对应的网盘 APP。\n\n" +
+                "坚果云地址固定填 https://dav.jianguoyun.com/dav/（只填主机名会自动补 /dav/）。" +
+                "备份会存进这个地址下的 PickUpMusic 文件夹，没有会自动创建；想自己指定位置，" +
+                "就写成 …/dav/文件夹名/（该文件夹需已存在）。\n\n" +
+                "坚果云等网盘要求在网页端生成「应用密码」，不要填登录密码。" +
+                "「测试连接」会真的写一个临时文件再删掉，通过即代表备份能成。",
+        ) { vm.navFilesBack() }
 
         // ── 服务器配置 ──────────────────────────────────────────────────
         SectionLabel("服务器")
@@ -172,24 +182,10 @@ private fun CloudBackupScreen(vm: MainViewModel, scrollStates: MutableMap<String
                 .padding(horizontal = 16.dp, vertical = 14.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Text(
-                "任何兼容 WebDAV 协议的网盘或服务器都可以存放备份（坚果云、Nextcloud、" +
-                    "群晖 NAS 等）。备份通过服务器地址直连传输，不需要安装对应的网盘 APP。",
-                style = body(12f, FontWeight.Normal, c.n600).copy(lineHeight = 18.sp),
-            )
             OutlinedTextField(
                 value = url, onValueChange = { url = it },
                 label = { Text("服务器地址", style = body(12f, FontWeight.Normal, c.n600)) },
                 placeholder = { Text("例如 https://dav.jianguoyun.com/dav/", style = body(13f, FontWeight.Normal, c.n500)) },
-                supportingText = {
-                    Text(
-                        "坚果云固定填 https://dav.jianguoyun.com/dav/（只填主机名会自动补 /dav/）。" +
-                            "备份会存进这个地址下的 PickUpMusic 文件夹，没有会自动创建；" +
-                            "想自己指定位置，就写成 …/dav/文件夹名/（该文件夹需已存在）。" +
-                            "「测试连接」会真的写一个临时文件再删掉，通过即代表备份能成。",
-                        style = body(11f, FontWeight.Normal, c.n500),
-                    )
-                },
                 singleLine = true, modifier = Modifier.fillMaxWidth(),
                 textStyle = body(13f, FontWeight.Normal, c.text), colors = tfColors,
             )
@@ -202,12 +198,6 @@ private fun CloudBackupScreen(vm: MainViewModel, scrollStates: MutableMap<String
             OutlinedTextField(
                 value = pass, onValueChange = { pass = it },
                 label = { Text("密码 / 应用密码", style = body(12f, FontWeight.Normal, c.n600)) },
-                supportingText = {
-                    Text(
-                        "坚果云等网盘要求在网页端生成「应用密码」，不要填登录密码。",
-                        style = body(11f, FontWeight.Normal, c.n500),
-                    )
-                },
                 singleLine = true, modifier = Modifier.fillMaxWidth(),
                 textStyle = body(13f, FontWeight.Normal, c.text),
                 visualTransformation = if (passVisible) androidx.compose.ui.text.input.VisualTransformation.None
@@ -414,7 +404,14 @@ private fun LogsScreen(vm: MainViewModel, scrollStates: MutableMap<String, Scrol
             .padding(horizontal = 20.dp).padding(top = 22.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        SubPageHeader("日志") { vm.navFilesBack() }
+        SubPageHeader(
+            "日志",
+            help = "日志记了什么" to
+                "记录本机的使用情况（启动、扫描、歌词匹配、AI 翻译、备份等的结果），" +
+                "用于遇到问题时定位原因。只记「做了什么」，不记录歌词内容、搜索词、账号与密钥。\n\n" +
+                "按天分文件，只保留最近 ${com.shiyin.music.data.log.UsageLog.KEEP_DAYS} 天" +
+                "；崩溃报告同样按此保留期清理。",
+        ) { vm.navFilesBack() }
 
         SectionLabel("说明")
         Column(
@@ -424,19 +421,9 @@ private fun LogsScreen(vm: MainViewModel, scrollStates: MutableMap<String, Scrol
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             Text(
-                "记录本机的使用情况（启动、扫描、歌词匹配、AI 翻译、备份等的结果），" +
-                    "用于遇到问题时定位原因。只记「做了什么」，不记录歌词内容、搜索词、" +
-                    "账号与密钥。",
-                style = body(12f, FontWeight.Normal, c.n600).copy(lineHeight = 18.sp),
-            )
-            Text(
-                "按天分文件，只保留最近 ${com.shiyin.music.data.log.UsageLog.KEEP_DAYS} 天" +
-                    if (crashCount > 0) "；另有 $crashCount 份崩溃报告（同样按此保留期清理）" else "",
-                style = body(11.5f, FontWeight.Normal, c.n500),
-            )
-            Text(
-                "当前占用 ${"%.0f".format(bytes / 1024.0)} KB",
-                style = body(11.5f, FontWeight.Normal, c.n500),
+                "当前占用 ${"%.0f".format(bytes / 1024.0)} KB" +
+                    if (crashCount > 0) " · $crashCount 份崩溃报告" else "",
+                style = body(12f, FontWeight.Normal, c.n600),
             )
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 PillButton(
@@ -562,10 +549,34 @@ private fun SectionLabel(text: String) {
 }
 
 @Composable
-private fun SubPageHeader(title: String, onBack: () -> Unit) {
+private fun SubPageHeader(title: String, help: Pair<String, String>? = null, onBack: () -> Unit) {
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
         BackButton(onBack)
-        Text(title, style = heading(24))
+        Text(title, style = heading(24), modifier = Modifier.weight(1f))
+        if (help != null) HelpInfoButton(help.first, help.second)
+    }
+}
+
+/**
+ * A37/A38: 「？」式说明按钮 —— 页面正文不再堆成段小字，必要的解释点开再看。
+ * 只在该说的话确实「不看就可能用错」时才挂；自明的一律不写。
+ */
+@Composable
+private fun HelpInfoButton(title: String, text: String) {
+    val c = LocalOrganic.current
+    var open by remember { mutableStateOf(false) }
+    Box(
+        Modifier.size(28.dp).clip(CircleShape).clickableNoRipple { open = true },
+        contentAlignment = Alignment.Center,
+    ) { OIcon(Lucide.CircleInfo, 17.dp, c.n500) }
+    if (open) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { open = false },
+            containerColor = c.surface,
+            title = { Text(title, style = body(15f, FontWeight.ExtraBold, c.text)) },
+            text = { Text(text, style = body(12.5f, FontWeight.Normal, c.n700).copy(lineHeight = 19.sp)) },
+            confirmButton = { DialogActionsRow(listOf(DialogAction("知道了") { open = false })) },
+        )
     }
 }
 
@@ -1077,7 +1088,7 @@ private fun DataManageScreen(vm: MainViewModel, scrollStates: MutableMap<String,
                     verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
                     Text(
-                        "本地快照（最多保留 3 份，点一下可恢复到该时点）",
+                        "本地快照（最多保留 3 份）",
                         style = body(11f, FontWeight.Normal, c.n600),
                     )
                     for (f in snaps) {
@@ -1298,7 +1309,6 @@ private fun LyricsBookScreen(vm: MainViewModel, scrollStates: MutableMap<String,
             // v1.3.10 需求 A29:歌词源管理入口(用户指定位置:就在「自动匹配歌词」下面)
             SettingsRowScaffold(
                 title = "歌词源管理",
-                sub = "开关内置歌词源 / 添加你自己的歌词 API",
                 leading = { OIcon(Lucide.ListMusic, 19.dp, c.n700) },
                 divider = true,
                 trailing = { OIcon(Lucide.ChevronRight, 16.dp, c.n400) },
@@ -1390,8 +1400,12 @@ private fun LyricsBookScreen(vm: MainViewModel, scrollStates: MutableMap<String,
             SettingRow(Lucide.Languages, "外语歌自动翻译", null, divider = true) {
                 OrganicSwitch(vm.translateAutoForeign) { vm.setTranslateAutoForeign(!vm.translateAutoForeign) }
             }
-            SettingRow(Lucide.Captions, "默认显示译文", null, divider = false) {
+            SettingRow(Lucide.Captions, "默认显示译文", null, divider = true) {
                 OrganicSwitch(vm.translateDefaultShow) { vm.setTranslateDefaultShow(!vm.translateDefaultShow) }
+            }
+            // A36: 失败提示默认关——用户嫌"翻译失败"toast 太频繁,想安静时就不弹。
+            SettingRow(Lucide.Bell, "翻译失败时提示", null, divider = false) {
+                OrganicSwitch(vm.translateErrorToast) { vm.setTranslateErrorToast(!vm.translateErrorToast) }
             }
         }
         Box(Modifier.height(114.dp))
@@ -1572,7 +1586,11 @@ private fun FoldersScreen(vm: MainViewModel) {
             .padding(top = 22.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        SubPageHeader("文件夹管理") { vm.navFilesBack() }
+        SubPageHeader(
+            "文件夹管理",
+            help = "忽略与删除" to
+                "忽略的文件夹不再出现在音乐库，可随时在这里恢复；删除的文件先进入回收站（见清理建议页）。",
+        ) { vm.navFilesBack() }
 
         // ── 段1: 音频文件夹 ──
         SectionLabel("音频文件夹 · ${vm.foldersMap().size}")
@@ -1684,10 +1702,6 @@ private fun FoldersScreen(vm: MainViewModel) {
                 }
             }
         }
-        Text(
-            "忽略的文件夹不再出现在音乐库，可随时恢复；删除的文件先进入回收站（见清理建议页）。",
-            style = body(12.5f, FontWeight.Normal, c.n500).copy(lineHeight = 18.sp),
-        )
         Box(Modifier.height(114.dp))
     }
 }
@@ -1807,10 +1821,6 @@ private fun DevicesScreen(vm: MainViewModel) {
                 }
             }
         }
-        Text(
-            "v5.2：点击设备即可切换至该输出。已选蓝牙设备的地址会被记下，下次该设备重连时自动切回。",
-            style = body(12.5f, FontWeight.Normal, c.n500).copy(lineHeight = 18.sp),
-        )
         Box(Modifier.height(114.dp))
     }
 }
@@ -1827,7 +1837,10 @@ private fun MergesScreen(vm: MainViewModel) {
             .padding(top = 22.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        SubPageHeader("歌手合并") { vm.navFilesBack() }
+        SubPageHeader(
+            "歌手合并",
+            help = "合并影响什么" to "合并只影响显示归属，不改动文件；撤销后立即还原。",
+        ) { vm.navFilesBack() }
         if (vm.aliases.isEmpty()) {
             Column(
                 Modifier
@@ -1877,10 +1890,6 @@ private fun MergesScreen(vm: MainViewModel) {
                 }
             }
         }
-        Text(
-            "合并只影响显示归属，不改动文件；撤销后立即还原。",
-            style = body(12.5f, FontWeight.Normal, c.n500).copy(lineHeight = 18.sp),
-        )
         Box(Modifier.height(114.dp))
     }
 }
@@ -2571,11 +2580,6 @@ private fun TranslateButtonModeRow(vm: MainViewModel) {
             OIcon(Lucide.Eye, 19.dp, c.n700)
             Text("翻译按钮显示", style = body(15f, FontWeight.SemiBold, c.text))
         }
-        Text(
-            "根据外文数量决定是否开启",
-            style = body(12.5f, FontWeight.Normal, c.n600),
-            modifier = Modifier.padding(top = 2.dp, start = 32.dp),
-        )
         Spacer(Modifier.height(10.dp))
         ThreeStopSegmentedControl(
             labels = modes.map { it.second },
@@ -2729,7 +2733,7 @@ internal fun MemoryScreen(vm: MainViewModel, onBack: () -> Unit) {
         )
     } else {
         MemoryListScreen(
-            memories = vm.memories,
+            vm = vm,
             onBack = onBack,
             onOpen = { m -> detailId = m.id; detailEditing = false },
             onEdit = { m -> detailId = m.id; detailEditing = true },
@@ -2767,7 +2771,7 @@ internal fun MemoryScreen(vm: MainViewModel, onBack: () -> Unit) {
  */
 @Composable
 private fun MemoryListScreen(
-    memories: List<com.shiyin.music.data.memory.Memory>,
+    vm: MainViewModel,
     onBack: () -> Unit,
     onOpen: (com.shiyin.music.data.memory.Memory) -> Unit,
     onEdit: (com.shiyin.music.data.memory.Memory) -> Unit,
@@ -2775,6 +2779,7 @@ private fun MemoryListScreen(
     onAdd: () -> Unit,
 ) {
     val c = LocalOrganic.current
+    val memories = vm.memories
     val groups = com.shiyin.music.data.memory.MemoryPresentation.group(memories)
     Column(Modifier.fillMaxSize()) {
         SubPageHeader("拾光记忆") { onBack() }
@@ -2788,6 +2793,32 @@ private fun MemoryListScreen(
                     style = body(13f, FontWeight.Normal, c.n600).copy(lineHeight = 19.sp),
                     modifier = Modifier.padding(bottom = 18.dp),
                 )
+            }
+            // v1.3.12:两个开关(参考成熟产品的记忆设置:上面是"要不要记"的策略,下面是记了什么)。
+            // 都是**真实生效**的开关,不是摆设:
+            //  · 自动记住 → 关掉后只有你明说「记住…」才落库;
+            //  · 连情绪也记 → 打开后才收「今天有点累」这类一次性的(默认拒收)。
+            item(key = "switches") {
+                Column(
+                    Modifier.fillMaxWidth().shadowSm(RoundedCornerShape(20.dp))
+                        .clip(RoundedCornerShape(20.dp)).background(c.surface)
+                        .padding(horizontal = 16.dp, vertical = 2.dp),
+                ) {
+                    MemoryToggleRow(
+                        title = "从对话里自动记住",
+                        sub = "拾光会自己总结值得长期留下的信息。关掉后只有你说「记住…」才会存。",
+                        checked = vm.memoryAutoExtract,
+                        onToggle = { vm.setMemoryAutoExtract(!vm.memoryAutoExtract) },
+                    )
+                    MemoryRowDivider()
+                    MemoryToggleRow(
+                        title = "连情绪与近况也记",
+                        sub = "默认只记稳定的偏好与背景;打开后「今天有点累」这类也会留下。",
+                        checked = vm.memoryIncludeTransient,
+                        onToggle = { vm.setMemoryIncludeTransient(!vm.memoryIncludeTransient) },
+                    )
+                }
+                Spacer(Modifier.height(18.dp))
             }
             if (groups.isEmpty()) {
                 item(key = "empty") {
@@ -2829,6 +2860,27 @@ private fun MemoryRowDivider() {
     Box(Modifier.fillMaxWidth().height(1.dp).background(c.divider))
 }
 
+/** 记忆页的策略开关行(标题 + 一行说明 + 右侧开关)。 */
+@Composable
+private fun MemoryToggleRow(title: String, sub: String, checked: Boolean, onToggle: () -> Unit) {
+    val c = LocalOrganic.current
+    Row(
+        Modifier.fillMaxWidth().clickableNoRipple(onClick = onToggle).padding(vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(title, style = body(14f, FontWeight.SemiBold, c.text))
+            Text(
+                sub,
+                style = body(11.5f, FontWeight.Normal, c.n600).copy(lineHeight = 16.sp),
+                modifier = Modifier.padding(top = 3.dp),
+            )
+        }
+        OrganicSwitch(checked, onToggle)
+    }
+}
+
 /**
  * 一条记忆(Row):
  *
@@ -2858,7 +2910,9 @@ private fun MemoryRowView(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                Text(P.typeLabel(memory.type), style = body(12.5f, FontWeight.Bold, c.n600))
+                // v1.3.12:类型标签是**重点信息**,不能用灰色(n500/n600 是"次要说明"的语气)。
+                // 用主文字色 + Bold,与正文靠字号/字重分层;次要信息只有下面那行来源·日期。
+                Text(P.typeLabel(memory.type), style = body(12.5f, FontWeight.Bold, c.text))
                 Text(
                     memory.content,
                     style = body(14f, FontWeight.SemiBold, c.text),
@@ -2953,10 +3007,6 @@ private fun MemoryDetailScreen(
                     ),
                 )
                 Spacer(Modifier.height(10.dp))
-                Text(
-                    "改完点右上角的 ✓ 保存。",
-                    style = body(11.5f, FontWeight.Normal, c.n500),
-                )
             } else {
                 SectionLabel("最后更新")
                 Spacer(Modifier.height(6.dp))
@@ -3097,14 +3147,15 @@ private fun LyricsSourcesScreen(vm: MainViewModel, scrollStates: MutableMap<Stri
     var editing by remember { mutableStateOf<com.shiyin.music.data.lyrics.CustomLyricsSourceDef?>(null) }
     var adding by remember { mutableStateOf(false) }
     Column(
-        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp),
+        Modifier.fillMaxSize().verticalScroll(scrollStateOf(scrollStates, "lyricssources"))
+            .padding(horizontal = 20.dp).padding(top = 22.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        SubPageHeader("歌词源管理") { vm.navFilesBack() }
-        Text(
-            "自动匹配与「歌词来源」菜单会按下面的顺序依次尝试。关掉的源不再参与,也不出现在菜单里。",
-            style = body(12.5f, FontWeight.Normal, c.n600).copy(lineHeight = 18.sp),
-            modifier = Modifier.padding(bottom = 6.dp),
-        )
+        SubPageHeader(
+            "歌词源管理",
+            help = "歌词源怎么工作" to
+                "自动匹配与「歌词来源」菜单会按列表顺序依次尝试。关掉的源不再参与，也不出现在菜单里。",
+        ) { vm.navFilesBack() }
         SectionLabel("内置歌词源")
         Column(
             Modifier.fillMaxWidth().shadowSm(RoundedCornerShape(28.dp)).clip(RoundedCornerShape(28.dp))
@@ -3123,55 +3174,49 @@ private fun LyricsSourcesScreen(vm: MainViewModel, scrollStates: MutableMap<Stri
             Modifier.fillMaxWidth().shadowSm(RoundedCornerShape(28.dp)).clip(RoundedCornerShape(28.dp))
                 .background(c.surface).padding(horizontal = 16.dp, vertical = 6.dp),
         ) {
+            vm.customLyricsSources.forEachIndexed { i, def ->
+                SettingsRowScaffold(
+                    title = def.name,
+                    sub = def.searchUrl,
+                    leading = { OIcon(Lucide.Music, 19.dp, c.n700) },
+                    divider = true,
+                    trailing = {
+                        Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Box(
+                                Modifier.size(34.dp).clip(CircleShape).clickableNoRipple { editing = def },
+                                contentAlignment = Alignment.Center,
+                            ) { OIcon(Lucide.Pencil, 16.dp, c.n500) }
+                            Box(
+                                Modifier.size(34.dp).clip(CircleShape).clickableNoRipple { vm.removeCustomLyricsSource(def.id) },
+                                contentAlignment = Alignment.Center,
+                            ) { OIcon(Lucide.Trash, 16.dp, c.n500) }
+                        }
+                    },
+                )
+            }
             if (vm.customLyricsSources.isEmpty()) {
                 Text(
-                    "还没有。按你的歌词 API 文档填几个字段就能加一个——下面写了每个字段怎么填。",
-                    style = body(12.5f, FontWeight.Normal, c.n600).copy(lineHeight = 18.sp),
-                    modifier = Modifier.padding(vertical = 10.dp),
+                    "还没有自定义歌词源",
+                    style = body(12.5f, FontWeight.Normal, c.n600),
+                    modifier = Modifier.padding(vertical = 13.dp),
                 )
-            } else {
-                vm.customLyricsSources.forEachIndexed { i, def ->
-                    Row(
-                        Modifier.fillMaxWidth().padding(vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Column(Modifier.weight(1f)) {
-                            Text(
-                                def.name, style = body(14f, FontWeight.SemiBold, c.text),
-                                maxLines = 1, overflow = TextOverflow.Ellipsis,
-                            )
-                            Text(
-                                def.searchUrl, style = body(11f, FontWeight.Normal, c.n600),
-                                maxLines = 1, overflow = TextOverflow.Ellipsis,
-                            )
-                        }
-                        TextButton(onClick = { editing = def }) {
-                            Text("编辑", style = body(13f, FontWeight.Bold, c.a700))
-                        }
-                        TextButton(onClick = { vm.removeCustomLyricsSource(def.id) }) {
-                            Text("删除", style = body(13f, FontWeight.Bold, c.n600))
-                        }
-                    }
-                    if (i != vm.customLyricsSources.lastIndex) {
-                        Box(Modifier.fillMaxWidth().height(1.dp).background(c.divider))
-                    }
-                }
+            }
+            // 「添加」作为卡片内最后一行(不再页尾悬浮一颗药丸)
+            Row(
+                Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp))
+                    .clickableNoRipple { adding = true }
+                    .padding(vertical = 13.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(13.dp),
+            ) {
+                Box(
+                    Modifier.size(19.dp),
+                    contentAlignment = Alignment.Center,
+                ) { OIcon(Lucide.Plus, 17.dp, c.accent) }
+                Text("添加自定义歌词源", style = body(15f, FontWeight.SemiBold, c.accent))
             }
         }
-        Spacer(Modifier.height(12.dp))
-        PillButton("添加自定义歌词源", onClick = { adding = true })
-        Spacer(Modifier.height(10.dp))
-        Text(
-            "填写说明:\n" +
-                "· 名称:显示在「歌词来源」菜单里的名字;\n" +
-                "· 搜索地址:你的接口地址,用 {title} {artist} 作占位符(会自动做 URL 编码);\n" +
-                "· 取歌曲 id 的路径:从搜索响应里指出歌曲 id 在哪,例如 data.items[0].id;\n" +
-                "· 歌词地址:用 {id} 作占位符,例如 https://api.example.com/lyric/{id};\n" +
-                "· 取歌词的路径:例如 data.lrc 或 lyric;\n" +
-                "· 请求头:需要鉴权时一行一个(如 Authorization: Bearer xxx);不需要就留空。",
-            style = body(11.5f, FontWeight.Normal, c.n600).copy(lineHeight = 17.sp),
-        )
-        Spacer(Modifier.height(120.dp))
+        Box(Modifier.height(114.dp))
     }
     if (adding || editing != null) {
         CustomLyricsSourceDialog(
@@ -3228,10 +3273,26 @@ private fun CustomLyricsSourceDialog(
                 .padding(horizontal = 18.dp, vertical = 16.dp)
                 .verticalScroll(rememberScrollState()),
         ) {
-            Text(
-                if (initial == null) "添加自定义歌词源" else "编辑自定义歌词源",
-                style = heading(18),
-            )
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    if (initial == null) "添加自定义歌词源" else "编辑自定义歌词源",
+                    style = heading(18),
+                    modifier = Modifier.weight(1f),
+                )
+                // A37: 六行「填写说明」从页面空白处收进这里——填表时顺手点开看
+                HelpInfoButton(
+                    "字段怎么填",
+                    "名称：显示在「歌词来源」菜单里的名字。\n\n" +
+                        "搜索地址：你的接口地址，用 {title} {artist} 作占位符（会自动做 URL 编码）。\n\n" +
+                        "取歌曲 id 的路径：从搜索响应里指出歌曲 id 在哪，例如 data.items[0].id。\n\n" +
+                        "歌词地址：用 {id} 作占位符，例如 https://api.example.com/lyric/{id}。\n\n" +
+                        "取歌词的路径：例如 data.lrc 或 lyric。\n\n" +
+                        "请求头：需要鉴权时一行一个（如 Authorization: Bearer xxx）；不需要就留空。",
+                )
+            }
             LyricSourceField("名称", "显示在来源菜单里的名字", name) { name = it }
             LyricSourceField("搜索地址", "如 https://api.x.com/search?q={title}&a={artist}", searchUrl) { searchUrl = it }
             LyricSourceField("取歌曲 id 的路径", "如 data.items[0].id", idPath) { idPath = it }

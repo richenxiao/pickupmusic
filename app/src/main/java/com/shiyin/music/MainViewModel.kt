@@ -231,6 +231,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      *  默认行为:只有**未同步**(无时间戳、需要人工打轴)的歌词显示校对入口——正常在线
      *  抓到的歌词本来就有时间戳,不该摆一个校对入口在那儿。开了这个开关才常显(便于反复微调)。 */
     var lyricsCalibAlwaysOn by mutableStateOf(false); private set
+    // ── v1.3.12:拾光 Agent 行为偏好(设置页可改,见 SettingsStore 的 key 说明) ──
+    /** 思考链默认收起(设置 → 拾光Agent)。 */
+    var agentThinkingCollapsed by mutableStateOf(false); private set
+    /** 允许从对话里自动记住用户信息。 */
+    var memoryAutoExtract by mutableStateOf(true); private set
+    /** 连"情绪与近况"这类一次性的也记。 */
+    var memoryIncludeTransient by mutableStateOf(false); private set
     /** v1.3.10 A29:歌词源管理——被关掉的内置源名 + 用户自定义源(设置页可改)。 */
     var lyricsDisabledSources by mutableStateOf<Set<String>>(emptySet()); private set
     var customLyricsSources by mutableStateOf<List<com.shiyin.music.data.lyrics.CustomLyricsSourceDef>>(emptyList())
@@ -272,6 +279,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      *  any=检测到任何外文就显示。**只影响按钮显隐**,不影响「外语歌自动翻译」(那条仍按
      *  占比判定,见 [isForeignLyrics])。 */
     var translateButtonMode by mutableStateOf("majority"); private set
+    /** A36: 翻译失败时是否弹提示(默认关——用户嫌失败提示太频繁,想安静时就不弹)。 */
+    var translateErrorToast by mutableStateOf(false); private set
 
     // ── v1.3.x 播放设置(设置·播放页,用户 2026-09-22 指定分组)──────────────────
     /** 音量均衡:平衡所有曲目的播放音量(响度归一,ExoPlayer setVolume 实现见 PlaybackService)。 */
@@ -1002,6 +1011,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 furiganaAutoVerify = s.furiganaAutoVerify
                 lyricsColorMode = s.lyricsColorMode
                 lyricsCalibAlwaysOn = s.lyricsCalibAlwaysOn
+                agentThinkingCollapsed = s.agentThinkingCollapsed
+                memoryAutoExtract = s.memoryAutoExtract
+                memoryIncludeTransient = s.memoryIncludeTransient
                 // v1.3.10 A29:歌词源配置 → 运行时(取歌词链路读它)
                 lyricsDisabledSources = s.lyricsDisabledSources
                 customLyricsSources = s.customLyricsSources
@@ -1009,6 +1021,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 // v1.3.x 歌词本翻译设置同步
                 translateAutoForeign = s.translateAutoForeign
                 translateDefaultShow = s.translateDefaultShow
+                translateErrorToast = s.translateErrorToast
                 translateButtonMode = s.translateButtonMode
                 // v1.3.x 播放设置同步
                 volumeNormalize = s.volumeNormalize
@@ -2611,7 +2624,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         for (c in cands) {
             // userSaid 传原始话术:MemoryRules 据此判"用户是否明确要求记住"
             // (命中则抬 importance 并绕过一次性情绪拒表)
-            val res = runCatching { memoryManager.remember(c.copy(userSaid = userSaid)) }
+            val res = runCatching {
+                // v1.3.12:设置里开了「连情绪与近况也记」→ 绕过一次性情绪拒表(默认关)
+                memoryManager.remember(c.copy(userSaid = userSaid), allowTransient = memoryIncludeTransient)
+            }
             val outcome = res.getOrNull()
             val ok = res.isSuccess && outcome !is com.shiyin.music.data.memory.RememberOutcome.Rejected
             if (!ok) allOk = false
@@ -2629,6 +2645,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      * 其余轮次保持既有行为——异步、不影响回复速度。
      */
     private fun extractMemories(userText: String, agentReply: String) {
+        // v1.3.12:自动记忆关掉 → 连兜底提取也不做(明说的「记住…」走确定性路径,不经这里)
+        if (!memoryAutoExtract) return
         if (activeLlmConfig() == null) return
         appScope.launch(Dispatchers.IO) {
             try {
@@ -3059,7 +3077,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             // "回复后还要不要再提取一次"——已经处理过的不重复花一次调用。
             val memoryExplicit = com.shiyin.music.data.memory.MemoryRules.explicitCandidate(text)
             val memoryWarrants = com.shiyin.music.data.memory.MemoryRules.memoryWarrantsTrace(text)
-            val memoryPreExtract = com.shiyin.music.data.memory.MemoryRules.shouldExtractSave(text)
+            // v1.3.12:自动记忆总开关(设置 → 拾音记忆「从对话里自动记住」)。
+            // 关掉后:不预提取、回复后也不兜底提取 —— 只有明说「记住…」才落库(确定性路径不受影响)。
+            val memoryPreExtract = memoryAutoExtract &&
+                com.shiyin.music.data.memory.MemoryRules.shouldExtractSave(text)
             try {
                 // 1. v1.3.8: 单次流式工具调用分发。原生 tool calling 让「选技能 / 聊天回答 /
                 //    要不要联网」在**同一次请求**里完成——取代旧的「决策调用 + 路由调用」
@@ -3392,6 +3413,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     if (guardNote != null) {
                         android.util.Log.i("Agent", "playback guard: $decision · skill=${skill.key} · target=$guardTarget")
                         com.shiyin.music.data.log.UsageLog.event(getApplication(), "Agent", "playback guard $decision")
+                        // ⚠️ 工具表**保持原样**(v1.3.12 真机 bug 修正):曾经在这里传
+                        // blockPlayback=true 把 playback_control 摘掉,结果提示词第 6 条
+                        // ("想听歌就直接调 playback_control")还在、tools 里却没它 —— 模型
+                        // 在思考里抱怨"提示词让我调用但工具列表里没有这个工具",用户看到的就是
+                        // "第一次能放、切了页面就不能放"。**执行与否由闸门决定,工具面不能残缺**。
                         val again = com.shiyin.music.data.ai.AgentTools.dispatch(
                             config = config,
                             tavilyKey = tavilyApiKey,
@@ -3400,7 +3426,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                                 .filter { it.isNotBlank() }.joinToString("\n"),
                             memoryBlock = memoryBlock,
                             history = history,
-                            blockPlayback = true,   // 手里没有播放工具 → 只能按聊天回答
                             onThinking = { th ->
                                 mainHandler.post {
                                     if (turnSealed.get()) return@post
@@ -3428,11 +3453,22 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                                 )
                             }
                         }
-                        // 摘掉播放工具后它只能聊天;万一仍然没正文,给一句诚实的兜底——
-                        // **绝不**回落到执行播放(这一步的意义就是"宁可少放,不要误放")。
-                        val said = again.chatReply?.takeIf { it.isNotBlank() }
-                            ?: streamedReply?.takeIf { it.isNotBlank() }
-                            ?: "这句我当成在聊音乐了——想放歌的话跟我说一声「放一下《歌名》」。"
+                        // 模型可能又想吃掉这条播放请求 —— 那就**不执行**(闸门说了算),
+                        // 用确定性文案收尾。绝不说"我没有播放工具"(工具其实在),只说实话。
+                        val insisted = again.skill?.key in com.shiyin.music.data.ai.AgentEngine.PLAYBACK_EXEC_SKILLS
+                        val grounded = when (decision) {
+                            com.shiyin.music.data.ai.PlaybackIntentGuard.Decision.AlreadyPlaying ->
+                                "《${curTitle.orEmpty()}》已经在放了(进度 ${fmtProgress(player.positionMs)})。要重新从头听,说一句「重新播放」就行。"
+                            else ->
+                                "这句我先当成在聊音乐了——想放歌的话跟我说一声「放一下《歌名》」。"
+                        }
+                        val said = if (insisted) grounded
+                            else again.chatReply?.takeIf { it.isNotBlank() }
+                                ?: streamedReply?.takeIf { it.isNotBlank() }
+                                ?: grounded
+                        if (insisted) {
+                            android.util.Log.i("Agent", "playback guard: 模型仍想执行播放,已按闸门改为确定性回复")
+                        }
                         agentMessages = agentMessages.replaceAt(
                             msgIdx,
                             AgentMessage("agent", said, null, tokens = routeTokens, thinking = dispatchThinking, thinkingMs = dispatchThinkingMs),
@@ -4688,10 +4724,19 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun setFuriganaAutoVerify(v: Boolean) = viewModelScope.launch { settingsStore.setFuriganaAutoVerify(v) }
     fun setTranslateAutoForeign(v: Boolean) = viewModelScope.launch { settingsStore.setTranslateAutoForeign(v) }
     fun setTranslateDefaultShow(v: Boolean) = viewModelScope.launch { settingsStore.setTranslateDefaultShow(v) }
+    /** A36: 翻译失败提示开关(默认关)。 */
+    fun setTranslateErrorToast(v: Boolean) = viewModelScope.launch { settingsStore.setTranslateErrorToast(v) }
     /** v1.3.10: 「翻译按钮显示」档位。 */
     fun setTranslateButtonMode(mode: String) = viewModelScope.launch { settingsStore.setTranslateButtonMode(mode) }
     /** v1.3.10 需求 A26:时间轴校对入口常显开关。 */
     fun setLyricsCalibAlwaysOn(v: Boolean) = viewModelScope.launch { settingsStore.setLyricsCalibAlwaysOn(v) }
+
+    // ── v1.3.12:拾光 Agent 行为偏好 ─────────────────────────────────────────
+    fun setAgentThinkingCollapsed(v: Boolean) = viewModelScope.launch { settingsStore.setAgentThinkingCollapsed(v) }
+
+    fun setMemoryAutoExtract(v: Boolean) = viewModelScope.launch { settingsStore.setMemoryAutoExtract(v) }
+
+    fun setMemoryIncludeTransient(v: Boolean) = viewModelScope.launch { settingsStore.setMemoryIncludeTransient(v) }
 
     /** v1.3.x 播放设置 setter(设置·播放页)。 */
     fun setVolumeNormalize(v: Boolean) = viewModelScope.launch { settingsStore.setVolumeNormalize(v) }
@@ -6022,12 +6067,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             val stillCurrent = lyricsTranslation.mediaId == ly.mediaId
             if (stillCurrent) {
                 lyricsTranslation.finish(out.byLine, failure)
-                if (failure != null) showToast(failure, null)
+                // A36: 失败提示默认不弹(用户嫌太频繁)——设置→歌词本里可自主打开
+                if (failure != null && translateErrorToast) showToast(failure, null)
             } else if (failure != null) {
                 // v1.3.x 反馈⑤(20s 无声失败):stillCurrent=false 时静默丢弃——
                 // 用户只看到"动画转了 20 秒又回到没翻译的状态"。失败原因必须透出,
                 // 即使不是当前曲(可能 LyricsScreen 重组导致 mediaId 短暂错位)。
-                showToast("翻译失败：$failure", null)
+                // A36: 同上,受「翻译失败时提示」开关门控;日志始终留痕。
+                if (translateErrorToast) showToast("翻译失败：$failure", null)
                 android.util.Log.w("LyricsTranslate", "dropped failure (stillCurrent=false): $failure")
             }
             // v1.3.x 需求6:译完即存——下次打开歌词本自动恢复,不再重复烧 token

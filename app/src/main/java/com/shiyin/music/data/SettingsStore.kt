@@ -60,12 +60,21 @@ class SettingsStore(private val context: Context) {
     private val keyTranslateButtonMode = stringPreferencesKey("translate_button_mode")
     /** v1.3.10: 时间轴校对入口是否常显(缺省 false = 只有未同步歌词显示)。 */
     private val keyLyricsCalibAlwaysOn = booleanPreferencesKey("lyrics_calib_always_on")
+    // ── v1.3.12:拾光 Agent 的两项行为偏好 ────────────────────────────────────
+    /** 思考链**默认收起**(只在点开时才看推理过程)。默认 false = 保持"边思考边摊开看"。 */
+    private val keyAgentThinkingCollapsed = booleanPreferencesKey("agent_thinking_collapsed")
+    /** 允许拾光从对话里**自动**记住你的信息(关掉后只有明说「记住…」才落库)。默认开。 */
+    private val keyMemoryAutoExtract = booleanPreferencesKey("memory_auto_extract")
+    /** 连"情绪与近况"这类一次性的也记(默认不记——见 MemoryRules 的一次性情绪拒表)。默认关。 */
+    private val keyMemoryIncludeTransient = booleanPreferencesKey("memory_include_transient")
     /** v1.3.10 A29: 被用户关掉的歌词源名集合(内置源开关)。 */
     private val keyLyricsDisabledSources = stringSetPreferencesKey("lyrics_disabled_sources")
     /** v1.3.10 A29: 用户自定义歌词源列表(JSON,见 CustomLyricsSourceCodec)。 */
     private val keyCustomLyricsSources = stringPreferencesKey("custom_lyrics_sources")
     /** v1.3.x 歌词本翻译:有保存的译文时默认显示(默认 true——译完即存,进来就给看)。 */
     private val keyTranslateDefaultShow = booleanPreferencesKey("translate_default_show")
+    /** A36: 翻译失败时弹提示(默认关——用户嫌失败提示太频繁,想安静时就不弹)。 */
+    private val keyTranslateErrorToast = booleanPreferencesKey("translate_error_toast")
 
     // ── v1.3.x 播放设置(设置·播放页,用户 2026-09-22 指定分组)─────────────────
     /** 音量均衡:平衡所有曲目的播放音量(响度归一)。 */
@@ -107,10 +116,16 @@ class SettingsStore(private val context: Context) {
         val translateAutoForeign: Boolean,
         /** v1.3.x 歌词本翻译:有保存译文时默认显示(默认 true)。 */
         val translateDefaultShow: Boolean,
+        /** A36: 翻译失败时是否弹提示(默认 false)。 */
+        val translateErrorToast: Boolean,
         /** v1.3.10 「翻译按钮显示」三档:"never"/"majority"(默认,现状)/"any"。 */
         val translateButtonMode: String,
         /** v1.3.10: 已同步歌词是否也始终显示时间轴校对入口(默认 false)。 */
         val lyricsCalibAlwaysOn: Boolean,
+        // v1.3.12:拾光 Agent 行为偏好(见 key 处的说明)
+        val agentThinkingCollapsed: Boolean,
+        val memoryAutoExtract: Boolean,
+        val memoryIncludeTransient: Boolean,
         /** v1.3.10 A29: 被用户关掉的歌词源名(内置源开关;缺省全开)。 */
         val lyricsDisabledSources: Set<String>,
         /** v1.3.10 A29: 用户自定义歌词源。 */
@@ -150,9 +165,14 @@ class SettingsStore(private val context: Context) {
             lyricsColorMode = (p[keyLyricsColorMode] ?: "default").let { if (it in listOf("default", "white", "black")) it else "default" },
             translateAutoForeign = p[keyTranslateAutoForeign] ?: false,
             translateDefaultShow = p[keyTranslateDefaultShow] ?: true,
+            translateErrorToast = p[keyTranslateErrorToast] ?: false,
             translateButtonMode = (p[keyTranslateButtonMode] ?: "majority")
                 .let { if (it in listOf("never", "majority", "any")) it else "majority" },
             lyricsCalibAlwaysOn = p[keyLyricsCalibAlwaysOn] ?: false,
+            // 默认值即"保持现状":思考链照旧展开、自动记忆照旧开、情绪照旧不记
+            agentThinkingCollapsed = p[keyAgentThinkingCollapsed] ?: false,
+            memoryAutoExtract = p[keyMemoryAutoExtract] ?: true,
+            memoryIncludeTransient = p[keyMemoryIncludeTransient] ?: false,
             lyricsDisabledSources = p[keyLyricsDisabledSources] ?: emptySet(),
             customLyricsSources =
                 com.shiyin.music.data.lyrics.CustomLyricsSourceCodec.decode(p[keyCustomLyricsSources] ?: ""),
@@ -203,6 +223,7 @@ class SettingsStore(private val context: Context) {
     suspend fun setFuriganaAutoVerify(v: Boolean) = context.dataStore.edit { it[keyFuriganaAutoVerify] = v }
     suspend fun setTranslateAutoForeign(v: Boolean) = context.dataStore.edit { it[keyTranslateAutoForeign] = v }
     suspend fun setTranslateDefaultShow(v: Boolean) = context.dataStore.edit { it[keyTranslateDefaultShow] = v }
+    suspend fun setTranslateErrorToast(v: Boolean) = context.dataStore.edit { it[keyTranslateErrorToast] = v }
     /** v1.3.10: 翻译按钮显隐档位写入(只收 never/majority/any,其余回 default=majority)。 */
     suspend fun setTranslateButtonMode(mode: String) =
         context.dataStore.edit { it[keyTranslateButtonMode] = if (mode in listOf("never", "any")) mode else "majority" }
@@ -210,6 +231,16 @@ class SettingsStore(private val context: Context) {
     /** v1.3.10: 时间轴校对入口常显开关(已同步歌词是否也显示校对入口)。 */
     suspend fun setLyricsCalibAlwaysOn(v: Boolean) =
         context.dataStore.edit { it[keyLyricsCalibAlwaysOn] = v }
+
+    // ── v1.3.12:拾光 Agent 行为偏好 ──────────────────────────────────────────
+    suspend fun setAgentThinkingCollapsed(v: Boolean) =
+        context.dataStore.edit { it[keyAgentThinkingCollapsed] = v }
+
+    suspend fun setMemoryAutoExtract(v: Boolean) =
+        context.dataStore.edit { it[keyMemoryAutoExtract] = v }
+
+    suspend fun setMemoryIncludeTransient(v: Boolean) =
+        context.dataStore.edit { it[keyMemoryIncludeTransient] = v }
 
     /** v1.3.10 A29: 开关某个歌词源(enabled=false → 记入禁用集)。 */
     suspend fun setLyricsSourceEnabled(source: String, enabled: Boolean) = context.dataStore.edit { p ->
@@ -301,6 +332,10 @@ class SettingsStore(private val context: Context) {
         "lastfm_api_key" to SettingsValueCodec.STR,
         "disabled_image_sources" to SettingsValueCodec.STR_SET,
         "custom_image_sources" to SettingsValueCodec.STR,
+        // v1.3.12:拾光 Agent 行为偏好(用户偏好,换机后应恢复)
+        "agent_thinking_collapsed" to SettingsValueCodec.BOOL,
+        "memory_auto_extract" to SettingsValueCodec.BOOL,
+        "memory_include_transient" to SettingsValueCodec.BOOL,
     )
 
     /** 导出白名单设置（值已编码成"类型前缀 + 原文"，见 [SettingsValueCodec]）。 */
