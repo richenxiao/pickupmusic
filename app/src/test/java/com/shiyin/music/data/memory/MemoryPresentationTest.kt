@@ -22,8 +22,8 @@ class MemoryPresentationTest {
     // ── 分组 ───────────────────────────────────────────────────────────────
 
     @Test
-    fun `分组就是你与主题两组`() {
-        assertEquals(listOf("你", "主题"), MemoryPresentation.SECTIONS.map { it.title })
+    fun `分组固定为 YOU 与 TOPICS 两组`() {
+        assertEquals(listOf("YOU", "TOPICS"), MemoryPresentation.SECTIONS.map { it.title })
     }
 
     @Test
@@ -34,9 +34,9 @@ class MemoryPresentationTest {
     }
 
     @Test
-    fun `个人信息与偏好归你 - 音乐关系经历归主题`() {
-        val you = MemoryPresentation.SECTIONS.first { it.title == "你" }.types
-        val topic = MemoryPresentation.SECTIONS.first { it.title == "主题" }.types
+    fun `个人信息与偏好归 YOU - 音乐关系经历归 TOPICS`() {
+        val you = MemoryPresentation.SECTIONS.first { it.title == "YOU" }.types
+        val topic = MemoryPresentation.SECTIONS.first { it.title == "TOPICS" }.types
         assertTrue(MemoryType.PERSONAL in you)
         assertTrue(MemoryType.PREFERENCE in you)
         assertTrue(MemoryType.MUSIC in topic)
@@ -49,8 +49,8 @@ class MemoryPresentationTest {
         val only = listOf(m("1", MemoryType.MUSIC, "用户喜欢《Pretender》"))
         val g = MemoryPresentation.group(only)
         assertEquals("只有音乐有内容时,只应有一个分组", 1, g.size)
-        assertEquals("主题", g.single().first.title)
-        assertTrue("「你」下没有内容,不该出现", g.none { it.first.title == "你" })
+        assertEquals("TOPICS", g.single().first.title)
+        assertTrue("「YOU」下没有内容,不该出现", g.none { it.first.title == "YOU" })
     }
 
     @Test

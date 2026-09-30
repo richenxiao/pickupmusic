@@ -36,6 +36,11 @@ class MemoryManager(
         if (!explicit && !allowTransient && MemoryRules.isTransient(content)) {
             return RememberOutcome.Rejected(RememberOutcome.Reason.TRANSIENT)
         }
+        // v1.3.13:只是"用户让播放过 X"这类**指令流水** → 拒。这不是偏好,记多了会把
+        // 对用户的印象记歪(用户实测反馈)。用户明说记住 / 手加的条目不受此限。
+        if (!explicit && MemoryRules.isCommandRecord(content)) {
+            return RememberOutcome.Rejected(RememberOutcome.Reason.COMMAND_RECORD)
+        }
 
         val ts = now()
         // 明确要求记住 → importance 抬到最高、来源标 explicit(绕过拒表已在上面处理)

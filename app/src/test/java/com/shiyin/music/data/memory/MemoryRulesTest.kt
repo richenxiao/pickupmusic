@@ -342,6 +342,36 @@ class MemoryRulesTest {
         assertFalse(MemoryRules.shouldExtractSave("我叫什么?"))
     }
 
+    // ── 11. v1.3.13:「指令流水」不是偏好 ──────────────────────────────────
+    // 真机反馈:记忆里出现《用户喜欢 X,曾要求播放》。用户让播放某首歌只说明他此刻想听,
+    // 不代表他喜欢它——这种条目会把拾光对用户的印象记歪。
+
+    @Test
+    fun `只在记录播放指令的条目被识别出来`() {
+        for (t in listOf(
+            "用户喜欢 X,曾要求播放",
+            "用户要求播放《Pretender》",
+            "用户让播放过《Pretender》",
+            "用户点播了《Pretender》",
+            "用户要求听这首",
+            "用户播放了《Pretender》",
+        )) {
+            assertTrue("「$t」只是指令流水", MemoryRules.isCommandRecord(t))
+        }
+    }
+
+    @Test
+    fun `真正的偏好不会被当成指令流水`() {
+        for (t in listOf(
+            "用户喜欢 aiko",
+            "用户最喜欢胡子男的《Pretender》",
+            "用户偏好完整听完一张专辑",
+            "用户最近常听 City Pop",
+        )) {
+            assertFalse("「$t」是真实偏好,不该被拒", MemoryRules.isCommandRecord(t))
+        }
+    }
+
     private fun identityMemory() = Memory(
         id = "1", type = MemoryType.PERSONAL, content = "用户叫 Richen",
         createdAt = 0, updatedAt = 0, importance = 3, source = MemorySource.EXPLICIT,

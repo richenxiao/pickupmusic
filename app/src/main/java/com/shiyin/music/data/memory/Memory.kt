@@ -86,5 +86,7 @@ sealed interface RememberOutcome {
         BAD_TYPE,
         /** 一次性情绪("今天有点累")——默认不入长期记忆。 */
         TRANSIENT,
+        /** v1.3.13:只是"用户让播放过 X"这类**指令流水**,不是偏好(会把对用户的印象记歪)。 */
+        COMMAND_RECORD,
     }
 }

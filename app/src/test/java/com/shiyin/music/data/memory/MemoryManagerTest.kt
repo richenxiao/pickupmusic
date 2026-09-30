@@ -341,4 +341,27 @@ class MemoryManagerTest {
         assertTrue(m.remember(cand("banana", "今天有点累"), allowTransient = true) is RememberOutcome.Rejected)
         assertTrue(s.rows.isEmpty())
     }
+
+    // ── ⑮ v1.3.13:「用户让播放过 X」不是偏好 ────────────────────────────────
+
+    @Test
+    fun `把点播当偏好的条目默认被拒`() = runBlocking {
+        val s = InMemoryStore(); val m = manager(s)
+        val out = m.remember(cand(MemoryType.MUSIC, "用户喜欢《Pretender》,曾要求播放"))
+        assertTrue("这类条目会把对用户的印象记歪,必须拒", out is RememberOutcome.Rejected)
+        assertEquals(
+            RememberOutcome.Reason.COMMAND_RECORD,
+            (out as RememberOutcome.Rejected).reason,
+        )
+        assertTrue(s.rows.isEmpty())
+    }
+
+    @Test
+    fun `用户明说要记住时仍然放行 - 那是他亲自给的`() = runBlocking {
+        val s = InMemoryStore(); val m = manager(s)
+        val out = m.remember(
+            cand(MemoryType.MUSIC, "用户要求播放《Pretender》", userSaid = "记住,我要求播放《Pretender》"),
+        )
+        assertTrue("用户明确要求记住 → 不该被这条规则挡", out is RememberOutcome.Saved)
+    }
 }

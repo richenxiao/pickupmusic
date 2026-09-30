@@ -16,10 +16,12 @@ object MemoryPresentation {
     /** 一个分组:标题 + 它包含的记忆类型。 */
     data class Section(val title: String, val types: List<String>)
 
-    /** 页面分组顺序 = 显示顺序。 */
+    /** 页面分组顺序 = 显示顺序。
+     *  ⚠️ v1.3.13:标题暂用 YOU / TOPICS(用户要求"先改成 YOU、TOPICS,等后面再改"),
+     *  只是**显示名**,不影响分组归属(归属仍由下面的 types 决定)。 */
     val SECTIONS: List<Section> = listOf(
-        Section("你", listOf(MemoryType.PERSONAL, MemoryType.PREFERENCE)),
-        Section("主题", listOf(MemoryType.MUSIC, MemoryType.RELATIONSHIP, MemoryType.EPISODIC)),
+        Section("YOU", listOf(MemoryType.PERSONAL, MemoryType.PREFERENCE)),
+        Section("TOPICS", listOf(MemoryType.MUSIC, MemoryType.RELATIONSHIP, MemoryType.EPISODIC)),
     )
 
     /** 全部类型(顺序与页面分组一致)——供「添加一条」的类型选择用。 */
