@@ -123,13 +123,22 @@ object PlaybackIntentGuard {
         return Decision.Allow
     }
 
-    /** 歌名比对:剥括号副标题 + 全半角/繁简/大小写归一,再做包含判定。 */
+    /**
+     * 歌名比对:剥括号副标题 + 全半角/繁简/大小写归一。
+     *
+     * ⚠️ 包含判定必须带**长度下限**:否则 target=「夜」会被判成与正在播放的《夜に駆ける》
+     * 是同一首 → 用户明明要换一首歌,却被当成"已经在放了"(真机 bug 的放大器:短歌名/单字
+     * 在中文日文曲库里太常见)。长度 ≥ [SAME_TRACK_MIN_CONTAIN] 才允许包含判定。
+     */
     internal fun sameTrack(a: String, b: String): Boolean {
         val x = norm(a)
         val y = norm(b)
         if (x.isEmpty() || y.isEmpty()) return false
-        return x == y || x.contains(y) || y.contains(x)
+        if (x == y) return true
+        return minOf(x.length, y.length) >= SAME_TRACK_MIN_CONTAIN && (x.contains(y) || y.contains(x))
     }
+
+    private const val SAME_TRACK_MIN_CONTAIN = 3
 
     private val BRACKET_SUFFIX = Regex("[(（\\[【].*?[)）\\]】]")
 

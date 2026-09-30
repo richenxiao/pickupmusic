@@ -147,4 +147,23 @@ class PlaybackIntentGuardTest {
         assertTrue(PlaybackIntentGuard.sameTrack("晴天", "晴天 (Live)"))
         assertTrue(!PlaybackIntentGuard.sameTrack("晴天", "雨天"))
     }
+
+    @Test
+    fun `短歌名不会被误判成同一首 - 换歌请求不能被当成已在播放`() {
+        // 真机 bug 的放大器:target 是当前标题的子串时被判成"同一首",于是用户明明在换歌,
+        // 却被回了"已经在放了"。一字/两字歌名在中日曲库里很常见,必须挡住。
+        assertTrue("「夜」不是《夜に駆ける》", !PlaybackIntentGuard.sameTrack("夜", "夜に駆ける"))
+        assertTrue("「恋」不是《恋愛写真》", !PlaybackIntentGuard.sameTrack("恋", "恋愛写真"))
+        assertTrue("「花」不是《花束》", !PlaybackIntentGuard.sameTrack("花", "花束"))
+        // 长歌名的包含仍然成立(带副标题/后缀的同一首)
+        assertTrue(PlaybackIntentGuard.sameTrack("Pretender", "Pretender - Single Version"))
+    }
+
+    @Test
+    fun `换一首别的歌不会被判成已在播放 - 必须放行`() {
+        assertEquals(Decision.Allow,
+            PlaybackIntentGuard.guard("播放 夜に駆ける", "夜に駆ける", "Pretender", true))
+        assertEquals(Decision.Allow,
+            PlaybackIntentGuard.guard("放一下 花束", "花束", "Pretender", true))
+    }
 }
