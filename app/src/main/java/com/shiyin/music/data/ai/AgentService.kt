@@ -167,7 +167,10 @@ object AgentService {
         } else {
             Confidence.LOW
         }
-        onStep("analyze", AgentEngine.StepStatus.DONE)
+        // v1.3.14(真机 bug):解析不出排序时**不能标 analyze 成功** —— 否则面板会出现
+        // "AI 核对生成顺序 ✓,但文案说失败"这种自相矛盾的状态。这里只在真的有结果时标 DONE;
+        // 判不出来就留 RUNNING,由技能按自己的结论落终态(技能失败 → MainViewModel 统一标 FAILED)。
+        if (ordered.isNotEmpty()) onStep("analyze", AgentEngine.StepStatus.DONE)
         SortResult(ordered, confidence, resp.promptTokens, resp.completionTokens, cacheTokens = resp.cacheTokens, webSearched = !tavilyContext.isNullOrBlank(), thinking = resp.thinking, hadUnknown = hadUnknown)
     }
 
