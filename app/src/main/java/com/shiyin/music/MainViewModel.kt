@@ -3793,7 +3793,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     android.util.Log.i("Agent", "技能 ${skill.key} 给了 ${result.options.size} 个可点选项")
                     agentClarify = com.shiyin.music.data.ai.AgentTools.ClarifyRequest(
                         question = "想听哪一首?",
-                        options = result.options.take(4),
+                        // v1.3.15:上限 5(与推荐卡的候选条数一致);副文案随选项一起给
+                        // ("每项有理由"——理由显示在选项下方,点选发出的仍是干净的指令句)。
+                        options = result.options.take(5),
+                        optionNotes = result.optionNotes.take(5),
                     )
                 }
                 // v1.3.2: 按本轮任务结果更新建议(点过/发过即消失,不常驻)

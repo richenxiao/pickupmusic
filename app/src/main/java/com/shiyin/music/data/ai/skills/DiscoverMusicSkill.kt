@@ -14,6 +14,76 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 /**
+ * 推荐卡的**文案模板**(文档 §4.2.8)。抽成纯函数是为了逐条单测:文案错了是"用户第一眼
+ * 就看见"的回归,而它完全由情形决定(有没有场景/歌手/专辑、模型判定的契合度、是否解析失败)。
+ *
+ * 纪律:标题**必须在清单最前面**(它是这一段话的主句);选项文本必须是干净的可执行指令
+ * (点选会被当用户消息发出去),所以"为什么挑这首"走副文案通道([note])而不是拼进选项。
+ */
+internal object DiscoverCopy {
+
+    /** 限定范围的说法:"方大同" / "《X》" / "方大同的《X》";都没有则 null(不限范围)。 */
+    private fun subjectOf(artistLabel: String?, album: String?): String? = when {
+        // 注意:模板里紧跟中文时必须写 ${...} —— Kotlin 认 CJK 为合法标识符字符,
+        // "$artistLabel的…" 会被解析成标识符 `artistLabel的`(踩过,编译期 Unresolved reference)。
+        artistLabel != null && album != null -> "${artistLabel}的《$album》"
+        artistLabel != null -> artistLabel
+        album != null -> "《$album》"
+        else -> null
+    }
+
+    /**
+     * 副文案:模型的理由;**没有理由就显示专辑名**(用户定调)。
+     * 理由会被上游截断到 30 字,(推荐卡一行放得下)。
+     */
+    fun note(why: String?, album: String?): String =
+        why?.trim()?.takeIf { it.isNotBlank() } ?: album?.trim().orEmpty()
+
+    /** 歌手不在库:如实说 + (有近似时)给建议。 */
+    fun artistMissing(name: String, suggestions: List<String>): String = buildString {
+        append("库里没有「$name」的歌。")
+        if (suggestions.isNotEmpty()) {
+            append("你是不是想找：").append(suggestions.joinToString(" / ")).append("？")
+        }
+    }
+
+    /**
+     * 标题。
+     *
+     * @param fit 模型判定的契合度;**null = 没走模型**(仅歌手/仅专辑,没有场景可判)。
+     * @param parseFailed 模型两次都没给出可解析的结果(显式降级,与"模型说 none"区分开)。
+     */
+    fun title(scene: String?, artistLabel: String?, album: String?, fit: Fit?, parseFailed: Boolean): String {
+        val subject = subjectOf(artistLabel, album)
+        if (parseFailed) {
+            // 显式降级:说清"这次没挑出来" + 范围 + 场景(用户得知道我给的是哪一批、针对什么)
+            val scopeText = subject ?: "库里"
+            return "这次没能挑出适合${scene ?: "这一刻"}的，先给你${scopeText}最常听的几首："
+        }
+        // 没调模型 / 本来就没场景 → 只按最常听给,不假装是"挑过的"
+        if (fit == null || scene.isNullOrBlank()) {
+            return when {
+                artistLabel != null && album != null -> "这是${artistLabel}的《$album》里的几首："
+                artistLabel != null -> "这是${artistLabel}你最常听的几首："
+                album != null -> "这是《$album》里的几首："
+                else -> "这是按平时常听挑的几首："
+            }
+        }
+        return when (fit) {
+            Fit.STRONG ->
+                if (subject != null) "以下是${subject}适合${scene}的歌曲，想听哪一首？"
+                else "下面这几首我觉得适合${scene}，想听哪一首？"
+            Fit.WEAK ->
+                if (subject != null) "${subject}里没有太贴合${scene}的，这几首稍微接近，想听哪一首？"
+                else "没有太贴合${scene}的，这几首稍微接近，想听哪一首？"
+            Fit.NONE ->
+                if (subject != null) "${subject}里没有适合${scene}的，这是最常听的几首："
+                else "库里没有适合${scene}的，这是你平时最常听的几首："
+        }
+    }
+}
+
+/**
  * v1.3.15 起:按**场景/歌手/专辑**挑歌(重构自 v1.3.10 的"开放式选曲")。
  *
  * 真机缺陷(用户报):
@@ -127,12 +197,8 @@ object DiscoverMusicSkill : AgentEngine.AgentSkill {
         // 用户点了名但库里没有这个歌手 → **如实说 + 给近似建议**,不拿别的歌手顶上
         if (resolution.unresolved != null) {
             onStep("resolve", AgentEngine.StepStatus.FAILED)
-            val u = resolution.unresolved
             return@withContext AgentEngine.SkillResult(
-                summary = buildString {
-                    append("库里没有「$u」这位歌手。")
-                    if (resolution.suggestions.isNotEmpty()) append("你是想找:${resolution.suggestions.joinToString("、")} 吗?")
-                },
+                summary = DiscoverCopy.artistMissing(resolution.unresolved, resolution.suggestions),
                 options = resolution.suggestions.map { "推荐${it}的歌" },
                 success = false,
             )
@@ -181,8 +247,8 @@ object DiscoverMusicSkill : AgentEngine.AgentSkill {
         val scene = merged.scene
         if (scene == null) {
             return@withContext pickResult(
-                header = plainHeader(artistLabel, albumArg),
-                items = pool.take(MAX_PICKS),
+                title = DiscoverCopy.title(scene = null, artistLabel = artistLabel, album = albumArg, fit = null, parseFailed = false),
+                items = pool.take(MAX_PICKS).map { it to null },
             )
         }
 
@@ -207,7 +273,10 @@ object DiscoverMusicSkill : AgentEngine.AgentSkill {
             )
         }
         val ok = outcome as? PickOutcome.Ok
-        val chosen = ok?.picks?.mapNotNull { p -> pool.firstOrNull { it.no == p.no } }.orEmpty()
+        // 带上模型的理由(why):它进选项**副文案**,不拼进选项文本(点选发出去的是干净指令)。
+        val chosen: List<Pair<RecCandidate, String?>> = ok?.picks
+            ?.mapNotNull { p -> pool.firstOrNull { it.no == p.no }?.let { it to p.why } }
+            .orEmpty()
         ctx.recordDiag(
             skill = "discover_music", stage = "pick_validate",
             ok = ok != null && ok.fit != Fit.NONE && chosen.isNotEmpty(),
@@ -225,12 +294,19 @@ object DiscoverMusicSkill : AgentEngine.AgentSkill {
 
         // ── ⑤ 显式降级:挑不出贴合的就说清楚"这是按最常听给的",不假装成推荐 ──
         if (chosen.isEmpty()) {
+            val failed = ok == null || ok.picks.isEmpty()
             return@withContext pickResult(
-                header = degradedHeader(scene, artistLabel, albumArg),
-                items = pool.take(MAX_PICKS),
+                title = DiscoverCopy.title(
+                    scene = scene, artistLabel = artistLabel, album = albumArg,
+                    fit = ok?.fit, parseFailed = failed,
+                ),
+                items = pool.take(MAX_PICKS).map { it to null },
             )
         }
-        return@withContext pickResult(header = matchHeader(scene, artistLabel, albumArg), items = chosen)
+        return@withContext pickResult(
+            title = DiscoverCopy.title(scene, artistLabel, albumArg, ok?.fit, parseFailed = false),
+            items = chosen,
+        )
     }
 
     /** 让模型判断"候选里哪几首贴合这个场景"。只输出 JSON(解析与校验在 [RecommendationPlan.parsePickResult])。 */
@@ -272,34 +348,19 @@ object DiscoverMusicSkill : AgentEngine.AgentSkill {
     }
 
     /**
-     * 组装最终结果:**首行就是标题**,且文本清单条数与可点选项条数**一致**
-     * (列了却点不到,用户会以为卡片坏了)。
+     * 组装最终结果:
+     *  - **首行就是标题**(整段话的主句);
+     *  - 文本清单条数、可点选项条数、副文案条数**三者一致**(列了却点不到,用户会以为卡片坏了);
+     *  - 副文案 = 模型的理由,没理由就用专辑名([DiscoverCopy.note]);
+     *  - 清单正文只写曲名与歌手,理由不重复写进正文 —— 它已由副文案承载,而正文会进对话历史
+     *    (上一轮回复只保留 300 字),把理由塞进去会把后面的条目挤出历史,反而丢掉上下文。
      */
-    private fun pickResult(header: String, items: List<RecCandidate>) = AgentEngine.SkillResult(
+    private fun pickResult(title: String, items: List<Pair<RecCandidate, String?>>) = AgentEngine.SkillResult(
         summary = buildString {
-            appendLine(header)
-            items.forEach { appendLine("《${it.title}》 — ${it.artist}") }
+            appendLine(title)
+            items.forEach { appendLine("《${it.first.title}》 — ${it.first.artist}") }
         }.trimEnd(),
-        options = items.map { "播放《${it.title}》" },
+        options = items.map { "播放《${it.first.title}》" },
+        optionNotes = items.map { DiscoverCopy.note(it.second, it.first.album) },
     )
-
-    private fun plainHeader(artistLabel: String?, albumArg: String?): String = when {
-        artistLabel != null && albumArg != null -> "$artistLabel 的《$albumArg》里,这几首点一下就放:"
-        albumArg != null -> "《$albumArg》里的这几首,点一下就放:"
-        artistLabel != null -> "$artistLabel 里最常听的这几首,点一下就放:"
-        else -> "这几首是按平时常听挑的,点一下就放:"
-    }
-
-    private fun matchHeader(scene: String, artistLabel: String?, albumArg: String?): String = when {
-        artistLabel != null && albumArg != null -> "《$albumArg》里适合「$scene」的这几首,点一下就放:"
-        artistLabel != null -> "$artistLabel 里适合「$scene」的这几首,点一下就放:"
-        else -> "适合「$scene」的这几首,点一下就放:"
-    }
-
-    /** 显式降级:**说清"没挑出特别贴合的"**,而不是让用户以为这是筛选过的推荐。 */
-    private fun degradedHeader(scene: String, artistLabel: String?, albumArg: String?): String = when {
-        artistLabel != null -> "没有明显贴合「$scene」的,$artistLabel 这几首是按最常听给你的:"
-        albumArg != null -> "没有明显贴合「$scene」的,《$albumArg》这几首是按最常听给你的:"
-        else -> "没有明显贴合「$scene」的,这几首是按最常听给你的:"
-    }
 }

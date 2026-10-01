@@ -136,6 +136,7 @@ import kotlinx.coroutines.launch
 private fun AgentClarifyCard(
     question: String,
     options: List<String>,
+    notes: List<String> = emptyList(),
     onPick: (String) -> Unit,
     onDismiss: () -> Unit,
     onOther: () -> Unit,
@@ -198,7 +199,20 @@ private fun AgentClarifyCard(
                         ),
                     )
                 }
-                Text(opt, style = body(14f, FontWeight.Normal, c.text), modifier = Modifier.weight(1f))
+                // v1.3.15:主文本 + 副文案(推荐卡里是"为什么挑这首";没有理由时给专辑名)。
+                // 点选的仍是 [opt];副文案只是给人看的,不参与发送,所以放在第二行而不是拼进
+                // 同一个字符串 —— 否则点选发出的消息会带上理由,变成一句没法执行的怪话。
+                Column(Modifier.weight(1f)) {
+                    Text(opt, style = body(14f, FontWeight.Normal, c.text))
+                    notes.getOrNull(i)?.takeIf { it.isNotBlank() }?.let { note ->
+                        Text(
+                            note,
+                            style = body(11.5f, FontWeight.Normal, c.n500),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
             }
         }
         Spacer(Modifier.height(8.dp))
@@ -429,6 +443,7 @@ fun AgentScreen(vm: MainViewModel) {
                 AgentClarifyCard(
                     question = cq.question,
                     options = cq.options,
+                    notes = cq.optionNotes,
                     onPick = { vm.chooseAgentClarify(it) },
                     onDismiss = { vm.dismissAgentClarify() },
                     // 「其他」= 去真正的输入框打自己的答案:卡片留着(问题还看得见),

@@ -223,6 +223,15 @@ object AgentEngine {
          * 消息会被当成闲聊,白白兜一圈。
          */
         val options: List<String> = emptyList(),
+        /**
+         * v1.3.15:与 [options] **一一对应**的副文案(选项下方那行小字)。
+         *
+         * 用途:推荐卡要"每项有理由" —— 理由给的是**为什么挑这首**,而选项文本本身必须是
+         * 干净的可执行指令(点选后它会被当成用户消息发出去),两者的诉求不同,所以分成两个
+         * 通道:点选发送 [options],展示 [optionNotes]。
+         * 个数不足时缺的位置不显示副文案(不补齐、不报错)。
+         */
+        val optionNotes: List<String> = emptyList(),
     )
 
     /** 意图理解返回的计划(skillKey + 步骤标签 + 给技能的参数)。 */

@@ -256,7 +256,12 @@ object AgentTools {
     data class SkillInvocation(val key: String, val args: Map<String, String>)
 
     /** 模型要求澄清(第三态):不执行任何技能,把问题交还给用户。 */
-    data class ClarifyRequest(val question: String, val options: List<String>)
+    /** 追问用户的选项卡片。[optionNotes] 与 [options] 一一对应(选项下方小字,可空)。 */
+    data class ClarifyRequest(
+        val question: String,
+        val options: List<String>,
+        val optionNotes: List<String> = emptyList(),
+    )
 
     /**
      * 分发结果。**失败与降级都是返回值的一部分**,调用方不读 [LlmClient.lastError]

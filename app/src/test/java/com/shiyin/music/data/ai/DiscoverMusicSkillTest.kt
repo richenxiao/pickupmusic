@@ -74,8 +74,9 @@ class DiscoverMusicSkillTest {
     fun `只给歌手时不走模型 - 因此文案不是降级文案`() {
         val ctx = Fake(fangdaTong + others)
         val r = run(ctx, mapOf("artist" to "方大同"))
-        assertFalse("没有场景时不存在'贴合度'可判,不该出现降级措辞", r.summary.contains("没有明显贴合"))
+        assertEquals("标题用文档模板(仅歌手)", "这是方大同你最常听的几首：", r.summary.lines().first())
         assertTrue("应给可点选项", r.options.isNotEmpty())
+        assertTrue("没理由时副文案给专辑名", r.optionNotes.all { it == "专辑X" })
         assertTrue("不该记录 pick_parse 阶段(根本没调模型)", diagOf(ctx, "pick_parse").isEmpty())
     }
 
@@ -84,6 +85,7 @@ class DiscoverMusicSkillTest {
         val ctx = Fake(fangdaTong + others)
         val r = run(ctx, mapOf("artist" to "方大同"))
         assertEquals("列出来的每一条都要能点到,否则用户以为卡片坏了", itemLines(r.summary), r.options.size)
+        assertEquals("每项都要有副文案位(理由或专辑名)", r.options.size, r.optionNotes.size)
         assertTrue("选项要写成能被当成指令的句子", r.options.all { it.startsWith("播放《") })
     }
 
@@ -92,10 +94,10 @@ class DiscoverMusicSkillTest {
     @Test
     fun `旧参数 mood 按 scene 处理`() {
         val ctx = Fake(fangdaTong + others)
-        // 未配置模型 → 场景路径必然走到"显式降级",而降级文案里会念出场景词
+        // 未配置模型 → 场景路径两次解析都失败 → 显式降级,而降级文案里会念出场景词
         val r = run(ctx, mapOf("mood" to "睡觉", "artist" to "方大同"))
         assertTrue("mood 应被当成 scene(降级文案里要出现「睡觉」):${r.summary}", r.summary.contains("睡觉"))
-        assertTrue("降级文案必须说清楚这是按最常听给的", r.summary.contains("没有明显贴合"))
+        assertTrue("降级文案必须说清楚这次没挑出来", r.summary.contains("没能挑出适合睡觉的"))
         assertTrue("降级也要在限定范围内(不能越出方大同)", r.summary.contains("方大同"))
     }
 
