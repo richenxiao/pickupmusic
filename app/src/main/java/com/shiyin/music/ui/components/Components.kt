@@ -267,14 +267,9 @@ object ArtCache {
             return withContext(Dispatchers.IO) {
                 try {
                     val uri = android.net.Uri.parse(artUrl)
-                    context.contentResolver.openInputStream(uri)?.use { input ->
-                        android.graphics.BitmapFactory.decodeStream(input)?.let { bmp ->
-                            if (bmp.width > px && bmp.height > px) {
-                                val ratio = minOf(px.toFloat() / bmp.width, px.toFloat() / bmp.height)
-                                android.graphics.Bitmap.createScaledBitmap(bmp, (bmp.width * ratio).toInt().coerceAtLeast(1), (bmp.height * ratio).toInt().coerceAtLeast(1), true)
-                            } else bmp
-                        }
-                    }
+                    // v1.3.15: 先读文件头拿宽高、再按目标尺寸降采样解码。旧实现整张解码后
+                    // createScaledBitmap —— 手机拍的 8000×6000 原图同样会撞 Canvas 上限闪退。
+                    decodeScaledStream({ context.contentResolver.openInputStream(uri) }, px)
                 } catch (_: Exception) { null }
             }
         }
@@ -312,21 +307,15 @@ object ArtCache {
         // 直接解码即可 —— loadThumbnail 是给 content:// 用的，对 file:// 会抛异常再回退，
         // 每次都白吃一次异常。
         if (scheme == "file") {
-            return try {
-                android.graphics.BitmapFactory.decodeFile(uri.path)
-            } catch (_: Exception) {
-                null
-            }
+            // v1.3.15: 同样按目标尺寸降采样 —— 手机原图当封面会撞 Canvas 上限闪退。
+            val path = uri.path ?: return null
+            return decodeScaledFile(path, px)
         }
         return try {
             context.contentResolver.loadThumbnail(uri, Size(px, px), null)
         } catch (_: Exception) {
             // loadThumbnail unavailable for some schemes — fall back to decodeStream.
-            try {
-                context.contentResolver.openInputStream(uri)?.use {
-                    android.graphics.BitmapFactory.decodeStream(it)
-                }
-            } catch (_: Exception) { null }
+            decodeScaledStream({ context.contentResolver.openInputStream(uri) }, px)
         }
     }
 
@@ -670,7 +659,7 @@ object ArtCache {
                 // 1) 磁盘命中：读字节解码。key 含 bucket(px)，不同分辨率分开存——
                 //    大图(1024)永远读 1024 高清，小图(160)单独存，不互相污染分辨率。
                 diskCache.read(context, artUrl, bucket(px))?.let { bytes ->
-                    android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.also {
+                    decodeScaledBytes(bytes, px)?.also {
                         android.util.Log.d("ArtCache", "disk hit artUrl=${artUrl.takeLast(40)} px=$px bucket=${bucket(px)}")
                     } ?: run {
                         // v1.3.10: 盘上是解不开的字节(旧版本把 403/404 错误页也落了盘)→
@@ -700,7 +689,7 @@ object ArtCache {
                         android.util.Log.d("AIM", "img download fail code=${resp.code} ${artUrl.take(50)}")
                         return@run null
                     }
-                    val bmp = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                    val bmp = decodeScaledBytes(bytes, px)
                     if (bmp == null) {
                         android.util.Log.d("AIM", "img decode FAIL bytes=${bytes.size} code=${resp.code} ${artUrl.take(50)}")
                         return@run null
@@ -716,6 +705,40 @@ object ArtCache {
             }
         }
     }
+
+    /**
+     * v1.3.15: 按目标显示尺寸**降采样**解码字节,永不交出原尺寸位图。
+     *
+     * 真机闪退(2026-10-01):某歌手的候选写真是一张 8192×6144 的扫描件,
+     * 原尺寸解码 = 192MB,Compose 一画就抛
+     * `Canvas: trying to draw too large(201326592bytes) bitmap` —— 搜写真必崩。
+     * 网图与磁盘缓存回读都走这里;采样系数由 [bitmapSampleSize] 定(长边封顶 + 目标 2 倍)。
+     * 读不出宽高(非图片字节/坏缓存)返回 null,交由调用方按"解码失败"处理。
+     */
+    private fun decodeScaledBytes(bytes: ByteArray, targetPx: Int): Bitmap? {
+        val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+        val opts = android.graphics.BitmapFactory.Options().apply {
+            inSampleSize = bitmapSampleSize(bounds.outWidth, bounds.outHeight, targetPx)
+        }
+        return runCatching { android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts) }.getOrNull()
+    }
+
+    /** [decodeScaledBytes] 的流版本:本地文件/相册图片用。[open] 会被调用两次(先量尺寸再解)。 */
+    private fun decodeScaledStream(open: () -> java.io.InputStream?, targetPx: Int): Bitmap? = runCatching {
+        val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        open()?.use { android.graphics.BitmapFactory.decodeStream(it, null, bounds) } ?: return@runCatching null
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return@runCatching null
+        val opts = android.graphics.BitmapFactory.Options().apply {
+            inSampleSize = bitmapSampleSize(bounds.outWidth, bounds.outHeight, targetPx)
+        }
+        open()?.use { android.graphics.BitmapFactory.decodeStream(it, null, opts) }
+    }.getOrNull()
+
+    /** [decodeScaledStream] 的本地文件版本(用户手选的本地图片)。 */
+    private fun decodeScaledFile(path: String, targetPx: Int): Bitmap? =
+        decodeScaledStream({ java.io.FileInputStream(path) }, targetPx)
 }
 
 @Composable
