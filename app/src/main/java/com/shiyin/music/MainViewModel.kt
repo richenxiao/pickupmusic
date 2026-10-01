@@ -6968,7 +6968,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         // v1.3.3 返回恢复:tab 即将从非 Library 切到 Library → 记来源(仅第一次离开,
         // 连续下钻歌手→专辑时不清,返回层层恢复仍回原 tab)。
         if (tab != Tab.Library && prevTab == null) prevTab = tab
-        plId = pid; tab = Tab.Library; libChip = "pls"
+        // v1.3.15:不再顺手把 libChip 设成 "pls" —— 用户反馈"点我的喜欢再退出,歌单筛选
+        // 被自动选中了"。歌单行在 chip==null 时本来就显示(见 LibraryScreen 的 chip==null
+        // 分支),所以这里改选筛选既没必要、又会在退出后留下一个用户没选过的筛选态。
+        plId = pid; tab = Tab.Library
         settingsOpen = false; albumKey = null; artistKey = null
     }
 
