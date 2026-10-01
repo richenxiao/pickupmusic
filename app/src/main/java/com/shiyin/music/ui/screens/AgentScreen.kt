@@ -2107,6 +2107,29 @@ private fun TokenTrendPanel(vm: MainViewModel) {
                         pathEffect = androidx.compose.ui.graphics.PathEffect.dashPathEffect(floatArrayOf(10f, 8f)),
                     ),
                 )
+                // v1.3.15:在**真实数据点**位置画圆点(当天 1、3 天 3、7 天 7 个点)。
+                // 为什么必须标:"按天聚合"的采样本来就少,画之前又被线性重采样到 48 个点 ——
+                // 于是 3 个采样看起来像一条平滑的持续上升趋势,用户(以及外部模型)据此误判成
+                // "上下文在不断膨胀、每次都在重复发送"。标出真实点位,"这是 N 个采样"一目了然,
+                // 不会再被读成连续趋势。点多时(14/30 天)不标,免得串成糖葫芦。
+                val realN = data.size
+                if (realN in 2..14 && realN < chartN) {
+                    val dotR = 2.4.dp.toPx()
+                    for (i in 0 until realN) {
+                        // 反解 resampleTo 的线性映射:第 i 个真实点落在第 si 个采样位上(四舍五入)
+                        val si = ((i * (chartN - 1) + (realN - 1) / 2) / (realN - 1)).coerceIn(0, chartN - 1)
+                        val dotX = si * stepX
+                        fun dot(series: FloatArray, dotColor: Color, r: Float) {
+                            val dotY = yOfNorm(series[si])
+                            // 先铺一圈底色再画点:压在两条曲线交叠处也读得出来
+                            drawCircle(color = c.surface, radius = r + 1.2.dp.toPx(), center = Offset(dotX, dotY))
+                            drawCircle(color = dotColor, radius = r, center = Offset(dotX, dotY))
+                        }
+                        dot(curves.inp, inColor, dotR)
+                        dot(curves.out, outColor, dotR)
+                        if (curves.cache.any { it > 0.0005f }) dot(curves.cache, cacheColor, dotR * 0.8f)
+                    }
+                }
                 // v1.3.10 A19:手指位置的十字准线 + 各序列圆点。
                 // 圆点取**当前正在绘制的曲线**在该处的值(而非原始值单独归一化)——
                 // 这样 morph 过程中圆点始终贴在线上,不会飘到线外。
