@@ -36,6 +36,11 @@ object AgentService {
          * 诊断用:定性"排序失败怪联网还是怪模型"必须让资料与模型回复同框(见 AgentDiag.webHead)。
          */
         val webSnippet: String? = null,
+        /**
+         * v1.3.15: 最后一次调用的**结束原因**(stop/length…)。真机实测《龙年》拿到资料却
+         * `titleLines=0`、回复为空 —— "被截断"与"模型就是不回答"是两回事,只有它+用量能分开。
+         */
+        val finishReason: String? = null,
         /** v1.3.3: 分析那次 LLM 调用的思考链(推理模型才有)——透出给 UI 折叠展示。 */
         val thinking: String? = null,
         /** v1.3.3: 模型明确输出 UNKNOWN(它判断不了)——与"格式不遵守"区分,
@@ -154,18 +159,21 @@ object AgentService {
         var resp = first
         var ordered = parseOrder(first.content)
         val hadUnknown = first.content?.lines()?.any { it.trim().equals("UNKNOWN", ignoreCase = true) } == true
-        // v1.3.13:UNKNOWN 与"格式不对"**都要重试一次** —— 旧实现是 UNKNOWN 直接放弃,
-        // 于是弱模型一句 UNKNOWN 就把整个排序判死(用户实测)。重试只多花一次调用。
-        if (ordered.isEmpty() && !first.content.isNullOrBlank()) {
+        // v1.3.15 修重试闸门(真机实测的洞):原条件是 `ordered.isEmpty() && !content.isNullOrBlank()`
+        // —— **回复为空时直接跳过重试**,而"回复为空"恰恰是推理/轻量模型最常见的失败形态
+        // (《龙年》实测:拿到完整官方 tracklist,却回了个空串 → titleLines=0,一次都没重试)。
+        // 现在只要没解析出顺序就重试,并且**给足预算**(输出按实际生成长度计费,要大了不浪费;
+        // 顶到上限才可能被服务端 400,故用 LLM_MAX_OUTPUT_TOKENS 这个安全上限)。
+        if (ordered.isEmpty()) {
             val retry = com.shiyin.music.data.ai.LlmClient.call(
                 config,
-                messages + listOf(
-                    "assistant" to first.content,
+                messages + listOfNotNull(
+                    first.content?.takeIf { it.isNotBlank() }?.let { "assistant" to it },
                     "user" to "请重新输出:按官方顺序,每行一首,**照抄我上面给你的本地曲目写法**;不要编号、不要歌手名、不要解释;不确定的不要写。",
                 ),
-                maxTokens = 2048,  // 纠错轮推理模型同样要吃 reasoning token
+                maxTokens = com.shiyin.music.data.ai.LLM_MAX_OUTPUT_TOKENS,  // 8600 级预算,给推理留足
             )
-            if (retry != null) {
+            if (retry != null && retry.content?.isNotBlank() == true) {
                 resp = retry
                 ordered = parseOrder(retry.content)
             }
@@ -181,7 +189,7 @@ object AgentService {
         // "AI 核对生成顺序 ✓,但文案说失败"这种自相矛盾的状态。这里只在真的有结果时标 DONE;
         // 判不出来就留 RUNNING,由技能按自己的结论落终态(技能失败 → MainViewModel 统一标 FAILED)。
         if (ordered.isNotEmpty()) onStep("analyze", AgentEngine.StepStatus.DONE)
-        SortResult(ordered, confidence, resp.promptTokens, resp.completionTokens, cacheTokens = resp.cacheTokens, webSearched = !tavilyContext.isNullOrBlank(), webSnippet = tavilyContext, thinking = resp.thinking, hadUnknown = hadUnknown, rawReply = resp.content)
+        SortResult(ordered, confidence, resp.promptTokens, resp.completionTokens, cacheTokens = resp.cacheTokens, webSearched = !tavilyContext.isNullOrBlank(), webSnippet = tavilyContext, finishReason = resp.finishReason, thinking = resp.thinking, hadUnknown = hadUnknown, rawReply = resp.content)
     }
 
     /** 单条模糊匹配的最低分(低于它宁可不认,也不要张冠李戴)。 */

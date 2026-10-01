@@ -87,6 +87,7 @@ object AlbumSortSkill : AgentEngine.AgentSkill {
             //   ② 清单出来了、但全对不上本地写法(它写了官方名而不是本地名)。
             // 这两件的修法完全不同,所以这里按"模型输出了几行曲目"分档讲,并把它记进诊断。
             val titleLines = AgentService.parseTitleLines(result.rawReply).size
+            val thinkLen = result.thinking?.length ?: 0
             // 另注:文案里过去写的是"曲目**编号**" —— v1.3.13 起协议早已改成**曲名**
             // (编号格式是弱模型的老坑),留着这句话会把排查带偏。
             val msg = when {
@@ -94,8 +95,19 @@ object AlbumSortSkill : AgentEngine.AgentSkill {
                     "AI 判断《$albumName》曲序时未能确定答案(它识别为 UNKNOWN)。可能专辑名与官方写法不一致——在专辑 ⋮ 里检查专辑名/歌手名识别是否正确后重试。"
                 !result.webSearched ->
                     "联网搜索《$albumName》没有找到相关资料(专辑名/歌手名识别有误、网络不可达或搜索 Key 失效)。先核对专辑名识别是否正确,再重试。"
-                titleLines == 0 ->
-                    "AI 联网查到《$albumName》的资料了,但这次**没有输出曲目清单**(回复被截断,或只回了一句 UNKNOWN)。可点重试。"
+                // v1.3.15:没输出清单时,**按事实说清是哪一种**(真机实测:拿到完整 tracklist
+                // 却回了空串 —— 这跟"截断"与"不肯回答"是三种完全不同的病,别用一句猜的话糊过去)
+                titleLines == 0 -> buildString {
+                    append("AI 联网查到《$albumName》的资料了,但这次**没有输出曲目清单**")
+                    append(
+                        when {
+                            result.finishReason == "length" -> "(回复被截断:输出预算用尽,finish=length)"
+                            thinkLen > 0 -> "(它只思考了、正文为空,finish=${result.finishReason ?: "?"})"
+                            else -> "(空回复:finish=${result.finishReason ?: "?"},正文与思考都为空)"
+                        },
+                    )
+                    append("。可点重试。")
+                }
                 else ->
                     "AI 认出了 $titleLines 首,但**写法与本地曲目对不上**(本地 ${currentTitles.size} 首一首都没匹配上)。它需要照抄本地写法——可点重试;反复出现建议换更强模型。"
             }
@@ -107,15 +119,19 @@ object AlbumSortSkill : AgentEngine.AgentSkill {
                     "titleLines" to titleLines,
                     "ordered" to result.orderedIndices.size,
                     "webSearched" to if (result.webSearched) 1 else 0,
+                    // v1.3.15:输出用量与思考长度 —— "被截断"与"只思考不回答"靠这两个数分开
+                    "ct" to result.completionTokens,
+                    "thinkLen" to thinkLen,
                 ),
                 replyRaw = result.rawReply,
                 errorCode = when {
                     result.webSearched && result.hadUnknown -> "UNKNOWN"
                     !result.webSearched -> "NO_WEB_DATA"
+                    titleLines == 0 && result.finishReason == "length" -> "NO_LIST_TRUNCATED"
                     titleLines == 0 -> "NO_LIST"
                     else -> "NO_MATCH"
                 },
-                errorDetail = msg.replace("**", "").take(120),
+                errorDetail = msg.replace("**", "").take(150),
                 // v1.3.15:把**当时喂给模型的联网资料**一并记下 —— 只有"模型回了什么"是定不了性的,
                 // 资料与回复同框才能分辨"联网没给到料"还是"模型拿到了料却不照格式输出"。
                 webRaw = result.webSnippet,
