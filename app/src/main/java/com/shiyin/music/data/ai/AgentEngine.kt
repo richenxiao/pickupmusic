@@ -165,6 +165,26 @@ object AgentEngine {
         /** 记录一次 LLM 调用的 token 消耗(落 token_usage_log 表,供设置页累计显示)。
          *  v1.3.6: cacheTokens=缓存命中 token(用量面板曲线;0=供应商不报)。 */
         fun logUsage(promptTokens: Int, completionTokens: Int, cacheTokens: Int = 0)
+
+        /**
+         * v1.3.14:记一条**诊断样本** —— "模型到底回了什么、解析命中了多少"。
+         *
+         * 为什么走桥:`AgentDiag` 要写文件、需要 `Context`,而技能手里只有本接口
+         * (与 [logUsage] 同一个缘由)。脱敏与截断由实现方统一做(见 MainViewModel),
+         * 技能只管把**事实**报上来:阶段、成败、量、以及模型回复原文。
+         *
+         * @param replyRaw 模型回复原文(实现方负责脱敏 + 截断);只在"排查这一步需要看
+         *                 模型原话"时传,**不要**传用户输入或请求体。
+         */
+        fun recordDiag(
+            skill: String,
+            stage: String,
+            ok: Boolean,
+            counts: Map<String, Int> = emptyMap(),
+            replyRaw: String? = null,
+            errorCode: String? = null,
+            errorDetail: String? = null,
+        )
     }
 
     /** 技能执行结果。summary 给对话面板展示;needsConfirm→UI 提示用户走 pending 确认。 */

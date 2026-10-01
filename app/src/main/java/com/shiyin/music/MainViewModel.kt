@@ -239,6 +239,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     var memoryAutoExtract by mutableStateOf(true); private set
     /** 连"情绪与近况"这类一次性的也记。 */
     var memoryIncludeTransient by mutableStateOf(false); private set
+    /** v1.3.14:是否记录 Agent 诊断样本(含模型回复开头)。 */
+    var agentDiagEnabled by mutableStateOf(true); private set
     /** v1.3.10 A29:歌词源管理——被关掉的内置源名 + 用户自定义源(设置页可改)。 */
     var lyricsDisabledSources by mutableStateOf<Set<String>>(emptySet()); private set
     var customLyricsSources by mutableStateOf<List<com.shiyin.music.data.lyrics.CustomLyricsSourceDef>>(emptyList())
@@ -1015,6 +1017,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 agentThinkingCollapsed = s.agentThinkingCollapsed
                 memoryAutoExtract = s.memoryAutoExtract
                 memoryIncludeTransient = s.memoryIncludeTransient
+                agentDiagEnabled = s.agentDiagEnabled
                 // v1.3.10 A29:歌词源配置 → 运行时(取歌词链路读它)
                 lyricsDisabledSources = s.lyricsDisabledSources
                 customLyricsSources = s.customLyricsSources
@@ -3039,6 +3042,23 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 )
             }
         }
+
+        override fun recordDiag(
+            skill: String, stage: String, ok: Boolean, counts: Map<String, Int>,
+            replyRaw: String?, errorCode: String?, errorDetail: String?,
+        ) {
+            // 脱敏与截断统一在这里(技能只管报事实);开关关闭时 AgentDiag 自己会跳过写入。
+            com.shiyin.music.data.log.AgentDiag.record(
+                getApplication(),
+                com.shiyin.music.data.log.AgentDiag.Sample(
+                    tsMs = System.currentTimeMillis(),
+                    skill = skill, stage = stage, ok = ok, counts = counts,
+                    replyHead = com.shiyin.music.data.log.AgentDiag.replyHeadOf(replyRaw),
+                    errorCode = errorCode, errorDetail = errorDetail,
+                ),
+                enabled = agentDiagEnabled,
+            )
+        }
     }
 
     /** 用户在 Agent 页发指令。 */
@@ -4897,6 +4917,35 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun setMemoryAutoExtract(v: Boolean) = viewModelScope.launch { settingsStore.setMemoryAutoExtract(v) }
 
     fun setMemoryIncludeTransient(v: Boolean) = viewModelScope.launch { settingsStore.setMemoryIncludeTransient(v) }
+
+    fun setAgentDiagEnabled(v: Boolean) = viewModelScope.launch { settingsStore.setAgentDiagEnabled(v) }
+
+    // ── v1.3.14:「Agent 诊断样本」页(入口在拾光 Agent 设置里) ───────────────
+    /** 诊断页开关。 */
+    var agentDiagOpen by mutableStateOf(false)
+    /** 诊断页当前展示的样本(新的在前)。 */
+    var agentDiagSamples by mutableStateOf<List<com.shiyin.music.data.log.AgentDiag.Sample>>(emptyList())
+        private set
+
+    /** 进诊断页 / 清空后刷新(读文件,放 IO)。 */
+    fun refreshAgentDiag() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val list = com.shiyin.music.data.log.AgentDiag.readAll(getApplication())
+            withContext(Dispatchers.Main) { agentDiagSamples = list }
+        }
+    }
+
+    /** 清空全部诊断样本(用户手动)。 */
+    fun clearAgentDiag() {
+        viewModelScope.launch(Dispatchers.IO) {
+            com.shiyin.music.data.log.AgentDiag.clear(getApplication())
+            refreshAgentDiag()
+        }
+    }
+
+    /** 「复制全部」用:导出为纯文本(时间/技能/阶段/量/模型回复开头)。 */
+    fun agentDiagExportText(): String =
+        com.shiyin.music.data.log.AgentDiag.exportText(getApplication())
 
     /** v1.3.x 播放设置 setter(设置·播放页)。 */
     fun setVolumeNormalize(v: Boolean) = viewModelScope.launch { settingsStore.setVolumeNormalize(v) }

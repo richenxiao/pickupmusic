@@ -62,6 +62,10 @@ object DiscoverMusicSkill : AgentEngine.AgentSkill {
         }
         onStep("search", AgentEngine.StepStatus.DONE)
         android.util.Log.i("Agent", "discover_music: mood=「$mood」→ 候选 ${candidates.size} 首(直接命中 ${matched.size})")
+        ctx.recordDiag(
+            skill = "discover_music", stage = "candidates", ok = true,
+            counts = mapOf("matched" to matched.size, "candidates" to candidates.size),
+        )
 
         // 只回人话(可被直接念出来),不含 id / 工具名 / 内部指示。
         // v1.3.13:同时给出**可点选项** —— 用户定调"列了 A/B/C 还让人打字说歌名很蠢,

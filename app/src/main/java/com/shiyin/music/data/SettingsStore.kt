@@ -67,6 +67,8 @@ class SettingsStore(private val context: Context) {
     private val keyMemoryAutoExtract = booleanPreferencesKey("memory_auto_extract")
     /** 连"情绪与近况"这类一次性的也记(默认不记——见 MemoryRules 的一次性情绪拒表)。默认关。 */
     private val keyMemoryIncludeTransient = booleanPreferencesKey("memory_include_transient")
+    /** v1.3.14:是否记录 Agent 诊断样本(含模型回复开头)。默认开——单人使用,需要能排查。 */
+    private val keyAgentDiagEnabled = booleanPreferencesKey("agent_diag_enabled")
     /** v1.3.10 A29: 被用户关掉的歌词源名集合(内置源开关)。 */
     private val keyLyricsDisabledSources = stringSetPreferencesKey("lyrics_disabled_sources")
     /** v1.3.10 A29: 用户自定义歌词源列表(JSON,见 CustomLyricsSourceCodec)。 */
@@ -126,6 +128,8 @@ class SettingsStore(private val context: Context) {
         val agentThinkingCollapsed: Boolean,
         val memoryAutoExtract: Boolean,
         val memoryIncludeTransient: Boolean,
+        /** v1.3.14:记录 Agent 诊断样本(含模型回复开头)。 */
+        val agentDiagEnabled: Boolean,
         /** v1.3.10 A29: 被用户关掉的歌词源名(内置源开关;缺省全开)。 */
         val lyricsDisabledSources: Set<String>,
         /** v1.3.10 A29: 用户自定义歌词源。 */
@@ -173,6 +177,7 @@ class SettingsStore(private val context: Context) {
             agentThinkingCollapsed = p[keyAgentThinkingCollapsed] ?: false,
             memoryAutoExtract = p[keyMemoryAutoExtract] ?: true,
             memoryIncludeTransient = p[keyMemoryIncludeTransient] ?: false,
+            agentDiagEnabled = p[keyAgentDiagEnabled] ?: true,
             lyricsDisabledSources = p[keyLyricsDisabledSources] ?: emptySet(),
             customLyricsSources =
                 com.shiyin.music.data.lyrics.CustomLyricsSourceCodec.decode(p[keyCustomLyricsSources] ?: ""),
@@ -241,6 +246,9 @@ class SettingsStore(private val context: Context) {
 
     suspend fun setMemoryIncludeTransient(v: Boolean) =
         context.dataStore.edit { it[keyMemoryIncludeTransient] = v }
+
+    suspend fun setAgentDiagEnabled(v: Boolean) =
+        context.dataStore.edit { it[keyAgentDiagEnabled] = v }
 
     /** v1.3.10 A29: 开关某个歌词源(enabled=false → 记入禁用集)。 */
     suspend fun setLyricsSourceEnabled(source: String, enabled: Boolean) = context.dataStore.edit { p ->
@@ -336,6 +344,7 @@ class SettingsStore(private val context: Context) {
         "agent_thinking_collapsed" to SettingsValueCodec.BOOL,
         "memory_auto_extract" to SettingsValueCodec.BOOL,
         "memory_include_transient" to SettingsValueCodec.BOOL,
+        "agent_diag_enabled" to SettingsValueCodec.BOOL,
     )
 
     /** 导出白名单设置（值已编码成"类型前缀 + 原文"，见 [SettingsValueCodec]）。 */

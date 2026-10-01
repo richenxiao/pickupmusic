@@ -36,6 +36,11 @@ object AgentService {
         /** v1.3.3: 模型明确输出 UNKNOWN(它判断不了)——与"格式不遵守"区分,
          *  用户看到的是不同的真实原因而不是同一句套话。 */
         val hadUnknown: Boolean = false,
+        /**
+         * v1.3.14:模型这次回复的**原文**(供诊断样本用;只用于排查"它到底回了什么",
+         * 由调用方经 AgentDiag 脱敏+截断后落盘)。
+         */
+        val rawReply: String? = null,
     )
 
     /**
@@ -171,7 +176,7 @@ object AgentService {
         // "AI 核对生成顺序 ✓,但文案说失败"这种自相矛盾的状态。这里只在真的有结果时标 DONE;
         // 判不出来就留 RUNNING,由技能按自己的结论落终态(技能失败 → MainViewModel 统一标 FAILED)。
         if (ordered.isNotEmpty()) onStep("analyze", AgentEngine.StepStatus.DONE)
-        SortResult(ordered, confidence, resp.promptTokens, resp.completionTokens, cacheTokens = resp.cacheTokens, webSearched = !tavilyContext.isNullOrBlank(), thinking = resp.thinking, hadUnknown = hadUnknown)
+        SortResult(ordered, confidence, resp.promptTokens, resp.completionTokens, cacheTokens = resp.cacheTokens, webSearched = !tavilyContext.isNullOrBlank(), thinking = resp.thinking, hadUnknown = hadUnknown, rawReply = resp.content)
     }
 
     /** 单条模糊匹配的最低分(低于它宁可不认,也不要张冠李戴)。 */

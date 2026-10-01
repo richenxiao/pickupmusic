@@ -94,6 +94,22 @@ object AlbumSortSkill : AgentEngine.AgentSkill {
                 else ->
                     "联网搜索《$albumName》没有找到相关资料(专辑名/歌手名识别有误、网络不可达或搜索 Key 失效)。先核对专辑名识别是否正确,再重试。"
             }
+            // v1.3.14:失败可诊断 —— 记下"命中多少 / 模型这次回了什么",日志被系统抑制时靠它排查
+            ctx.recordDiag(
+                skill = "album_sort", stage = "parse", ok = false,
+                counts = mapOf(
+                    "candidates" to currentTitles.size,
+                    "ordered" to result.orderedIndices.size,
+                    "webSearched" to if (result.webSearched) 1 else 0,
+                ),
+                replyRaw = result.rawReply,
+                errorCode = when {
+                    result.webSearched && result.hadUnknown -> "UNKNOWN"
+                    result.webSearched -> "PARSE_FAIL"
+                    else -> "NO_WEB_DATA"
+                },
+                errorDetail = msg.take(120),
+            )
             return AgentEngine.SkillResult(msg, success = false)
         }
         onStep("writeback", AgentEngine.StepStatus.RUNNING)
@@ -104,6 +120,10 @@ object AlbumSortSkill : AgentEngine.AgentSkill {
         val msg = if (result.confidence == AgentService.Confidence.LOW)
             "已按可查到的信息排序(置信度低,建议核对)。"
         else "已按官方顺序排列《$albumName》。"
+        ctx.recordDiag(
+            skill = "album_sort", stage = "parse", ok = true,
+            counts = mapOf("candidates" to currentTitles.size, "ordered" to result.orderedIndices.size),
+        )
         return AgentEngine.SkillResult(msg, needsConfirm = ctx.hasPendingOrder(), thinking = result.thinking)
     }
 }

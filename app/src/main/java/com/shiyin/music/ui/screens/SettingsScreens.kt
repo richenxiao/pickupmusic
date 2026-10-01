@@ -3338,3 +3338,120 @@ private fun CustomLyricsSourceDialog(
         }
     }
 }
+
+// ── v1.3.14:「Agent 诊断样本」页 ────────────────────────────────────────────
+
+/**
+ * 「Agent 诊断样本」—— 排查 Agent 时的**唯一可用手段**。
+ *
+ * 背景(logcat 在本机被系统抑制、UsageLog 只记成败且不记内容):出了"模型没按格式回"
+ * 这类问题,没有任何东西可看。这里把"卡在哪一步、命中多少、模型回了什么开头"摆出来,
+ * 并提供「复制全部」—— 用户可直接粘贴给开发窗口。
+ *
+ * 刻意做**最简**:列表 + 复制全部 + 开关 + 一句提示。不做详情页/筛选(用户定调)。
+ */
+@Composable
+internal fun AgentDiagScreen(vm: MainViewModel, onBack: () -> Unit) {
+    val c = LocalOrganic.current
+    androidx.compose.runtime.LaunchedEffect(Unit) { vm.refreshAgentDiag() }
+    val samples = vm.agentDiagSamples
+    Column(Modifier.fillMaxSize()) {
+        Box(Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 22.dp)) {
+            SubPageHeader("Agent 诊断样本") { onBack() }
+        }
+        LazyColumn(
+            Modifier.weight(1f).fillMaxWidth(),
+            contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 8.dp, bottom = 24.dp),
+        ) {
+            item(key = "warn") {
+                // 隐私提示必须显眼:样本里有模型回复原文(=对话内容)
+                Text(
+                    "样本含对话内容(模型回复开头),分享给他人前请先检查。",
+                    style = body(12.5f, FontWeight.Normal, c.n600).copy(lineHeight = 18.sp),
+                    modifier = Modifier.padding(bottom = 12.dp),
+                )
+            }
+            item(key = "switch") {
+                Column(
+                    Modifier.fillMaxWidth().shadowSm(RoundedCornerShape(20.dp))
+                        .clip(RoundedCornerShape(20.dp)).background(c.surface)
+                        .padding(horizontal = 16.dp),
+                ) {
+                    MemoryToggleRow(
+                        title = "记录诊断样本",
+                        checked = vm.agentDiagEnabled,
+                        onToggle = { vm.setAgentDiagEnabled(!vm.agentDiagEnabled) },
+                    )
+                }
+                Spacer(Modifier.height(16.dp))
+            }
+            if (samples.isEmpty()) {
+                item(key = "empty") {
+                    Text("还没有样本。", style = body(14f, FontWeight.SemiBold, c.text))
+                    Text(
+                        "触发一次 Agent 任务(例如让它排一次曲序)后回来看。",
+                        style = body(12.5f, FontWeight.Normal, c.n600),
+                        modifier = Modifier.padding(top = 6.dp),
+                    )
+                }
+            } else {
+                item(key = "listlabel") {
+                    Column(Modifier.padding(top = 4.dp, bottom = 6.dp)) {
+                        Text("最近 " + samples.size + " 条", style = body(13f, FontWeight.ExtraBold, c.text))
+                    }
+                }
+                items(samples, key = { it.tsMs.toString() + it.stage }) { s ->
+                    AgentDiagRow(s)
+                    MemoryRowDivider()
+                }
+            }
+            item(key = "actions") {
+                Spacer(Modifier.height(14.dp))
+                val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    PillButton("复制全部", onClick = {
+                        clipboard.setText(androidx.compose.ui.text.AnnotatedString(vm.agentDiagExportText()))
+                        vm.showToast("已复制", null)
+                    })
+                    PillButton("清空", onClick = { vm.clearAgentDiag() })
+                }
+            }
+        }
+    }
+}
+
+/** 一条诊断样本(紧凑两行 + 可选的模型回复开头)。 */
+@Composable
+private fun AgentDiagRow(s: com.shiyin.music.data.log.AgentDiag.Sample) {
+    val c = LocalOrganic.current
+    val time = java.text.SimpleDateFormat("MM-dd HH:mm:ss", java.util.Locale.CHINA)
+        .format(java.util.Date(s.tsMs))
+    Column(Modifier.fillMaxWidth().padding(vertical = 10.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(time, style = body(11.5f, FontWeight.Normal, c.n500))
+            Text(s.skill, style = body(13f, FontWeight.Bold, c.text))
+            Text(s.stage, style = body(11.5f, FontWeight.Normal, c.n600))
+            Text(
+                if (s.ok) "OK" else "FAIL",
+                style = body(11.5f, FontWeight.Bold, if (s.ok) c.n700 else c.n400),
+            )
+        }
+        if (s.counts.isNotEmpty()) {
+            Text(
+                s.counts.entries.joinToString(", ") { "${it.key}=${it.value}" },
+                style = body(11.5f, FontWeight.Normal, c.n600),
+                modifier = Modifier.padding(top = 3.dp),
+            )
+        }
+        s.errorCode?.let {
+            Text("error: $it", style = body(11.5f, FontWeight.Normal, c.n400), modifier = Modifier.padding(top = 3.dp))
+        }
+        s.replyHead?.let {
+            Text(
+                "模型回复开头: " + it,
+                style = body(11.5f, FontWeight.Normal, c.n500).copy(lineHeight = 16.sp),
+                modifier = Modifier.padding(top = 3.dp),
+            )
+        }
+    }
+}

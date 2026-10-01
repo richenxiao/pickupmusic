@@ -48,4 +48,12 @@ open class FakeSkillContext : AgentEngine.SkillContext {
     override suspend fun sortArtistAlbumsByDate(artistName: String): AgentEngine.AlbumDateOutcome =
         AgentEngine.AlbumDateOutcome(0, "fake")
     override fun logUsage(promptTokens: Int, completionTokens: Int, cacheTokens: Int) = Unit
+    /** v1.3.14:测试里只记录调用,不落盘。 */
+    val diag = mutableListOf<String>()
+    override fun recordDiag(
+        skill: String, stage: String, ok: Boolean, counts: Map<String, Int>,
+        replyRaw: String?, errorCode: String?, errorDetail: String?,
+    ) {
+        diag += "$skill/$stage/ok=$ok/$counts/${errorCode ?: ""}"
+    }
 }

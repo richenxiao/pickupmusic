@@ -503,6 +503,21 @@ fun AgentScreen(vm: MainViewModel) {
     if (vm.agentHistoryOpen) AgentHistoryDialog(vm) { vm.agentHistoryOpen = false }
     // v1.3.11:「拾光记忆」管理页 —— 由 Agent 设置页进入(同域,不分家)。
     // 声明在设置弹窗**之后** → 盖在它上面;页内返回只关这一层,退回设置页。
+    // v1.3.14:「Agent 诊断样本」页 —— 由 Agent 设置页进入(同域,不分家)
+    if (vm.agentDiagOpen) {
+        Dialog(
+            onDismissRequest = { vm.agentDiagOpen = false },
+            properties = DialogProperties(
+                usePlatformDefaultWidth = false,
+                dismissOnClickOutside = false,
+                decorFitsSystemWindows = false,
+            ),
+        ) {
+            Column(Modifier.fillMaxSize().background(c.bg).statusBarsPadding().navigationBarsPadding()) {
+                AgentDiagScreen(vm) { vm.agentDiagOpen = false }
+            }
+        }
+    }
     if (vm.agentMemoryScreenOpen) {
         Dialog(
             onDismissRequest = { vm.agentMemoryScreenOpen = false },
@@ -684,6 +699,33 @@ private fun AgentSettingsDialog(vm: MainViewModel, onDismiss: () -> Unit) {
                         OrganicSwitch(vm.agentThinkingCollapsed) {
                             vm.setAgentThinkingCollapsed(!vm.agentThinkingCollapsed)
                         }
+                    }
+                }
+
+                // ── Agent 诊断样本(v1.3.14)─────────────────────────────────────────
+                // 排查用:logcat 在本机被系统抑制、使用日志只记成败,出了"模型没按格式回"
+                // 这类问题只有这里能看。
+                Column(
+                    Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(c.surface)
+                        .padding(horizontal = 16.dp),
+                ) {
+                    Row(
+                        Modifier.fillMaxWidth()
+                            .clickable { vm.refreshAgentDiag(); vm.agentDiagOpen = true }
+                            .padding(vertical = 14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        OIcon(Lucide.Info, 19.dp, c.n700)
+                        Column(Modifier.weight(1f)) {
+                            Text("Agent 诊断样本", style = body(14.5f, FontWeight.SemiBold, c.text))
+                            Text(
+                                "看最近几次 Agent 任务卡在哪一步(含对话内容)",
+                                style = body(12f, FontWeight.Normal, c.n600),
+                                modifier = Modifier.padding(top = 2.dp),
+                            )
+                        }
+                        OIcon(Lucide.ChevronRight, 18.dp, c.n500)
                     }
                 }
 
