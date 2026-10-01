@@ -2135,8 +2135,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** 写入一张专辑的发布日期(iTunes 已有/AI 补查都用此入口),刷新内存缓存。
-     *  review#2: state 写入切主线程,DB 写留 IO。 */
-    fun saveAlbumReleaseDate(albumId: Long, iso: String) {
+     *  review#2: state 写入切主线程,DB 写留 IO。
+     *  @param invalidateArtistOrder **用户手改**日期时传 true(默认):日期变了就把该歌手的
+     *  手动顺序作废、回落到按日期排。AI 按时间排序那条路传 false —— 它自己会在最后重写整份
+     *  顺序,中途作废只会让"AI 跑到一半失败"把用户原有的拖拽顺序也清掉。 */
+    fun saveAlbumReleaseDate(albumId: Long, iso: String, invalidateArtistOrder: Boolean = true) {
         // v1.3.5: iso 允许空串=清除日期(编辑弹窗把年/月/日滑到 0 保存 → 清除);
         // albumId<=0 仍然忽略。空串也走缓存+落库,专辑页/歌手栏随即不再显示日期。
         if (albumId <= 0) return
@@ -2145,7 +2148,22 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             albumDateRevision++
         }
         viewModelScope.launch(Dispatchers.IO) {
+            val prev = runCatching { dao.albumArtCache(albumId)?.releaseDate }.getOrNull()
             try { dao.updateAlbumReleaseDate(albumId, iso) } catch (_: Exception) { }
+            // v1.3.15:日期真的变了 → 该歌手的手动专辑顺序**作废**。
+            // 真机反馈:「1999 被识别成 2022,排在 1997、2002 前面;改成 1999 后还是排在最前」——
+            // 根因是歌手栏的优先级"手动顺序 > 日期",而 AI 按时间排序写下的那份顺序仍压着日期,
+            // 于是手工修正永远不生效。作废后回落到按日期排,修正立刻可见。
+            if (!invalidateArtistOrder) return@launch
+            if (!com.shiyin.music.data.AlbumOrderRules.dateChanged(prev, iso)) return@launch
+            val artists = lib().filter { it.albumId == albumId }
+                .flatMap { com.shiyin.music.data.MediaScanner.splitArtists(it.artist) }
+                .filter { it.isNotBlank() }.distinct()
+            if (artists.isEmpty()) return@launch
+            android.util.Log.i("AlbumOrder", "日期 $prev → $iso,作废手动顺序:$artists")
+            artists.forEach { a -> runCatching { dao.deleteArtistAlbumOrder(a) } }
+            val next = com.shiyin.music.data.AlbumOrderRules.invalidate(artistAlbumOrders, artists)
+            withContext(Dispatchers.Main) { artistAlbumOrders = next }
         }
     }
 
@@ -5251,7 +5269,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 ?: dateByName.entries.firstOrNull { it.key.contains(norm(a.third)) || norm(a.third).contains(it.key) }?.value
             if (hit != null) {
                 dated.add(a to hit)
-                if (a.second > 0) saveAlbumReleaseDate(a.second, hit)
+                // v1.3.15: AI 这条路**不**作废手动顺序(invalidateArtistOrder=false)——
+                // 它随后会按新日期重写整份顺序;中途作废只会在"AI 跑一半失败"时把用户
+                // 原有的拖拽顺序白白清掉。
+                if (a.second > 0) saveAlbumReleaseDate(a.second, hit, invalidateArtistOrder = false)
             } else undated.add(a)
         }
         if (dated.isEmpty()) {
