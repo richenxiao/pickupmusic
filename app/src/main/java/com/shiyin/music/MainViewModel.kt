@@ -3673,27 +3673,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 // 说明流程走完)、没跑过的 PENDING 行从面板移除(不误导"还有事没做")。
                 // IO 协程里同步改 steps + 主线程写消息,一次落定。
                 //
-                // v1.3.14(真机 bug):面板终态必须**以技能返回值为准**。
-                // 原来无论成败都把 RUNNING 标 DONE → 出现过"analyze ✓ 但文案说失败"
-                // (技能的 FAILED 回调是 mainHandler.post 投递的,晚于 seal() 被丢弃)。
-                // 现在:成功 → RUNNING 标 DONE;失败 → RUNNING 标 FAILED,并且
-                // **保证面板上至少有一行 FAILED**,让"失败"在 UI 上看得见、与文案一致。
-                val stepFinal = if (result.success) com.shiyin.music.data.ai.AgentEngine.StepStatus.DONE
-                                else com.shiyin.music.data.ai.AgentEngine.StepStatus.FAILED
-                for (i in steps.indices) {
-                    if (steps[i].status == com.shiyin.music.data.ai.AgentEngine.StepStatus.RUNNING) {
-                        steps[i] = steps[i].copy(status = stepFinal)
-                    }
-                }
-                steps.removeAll { it.status == com.shiyin.music.data.ai.AgentEngine.StepStatus.PENDING }
-                if (!result.success && steps.none { it.status == com.shiyin.music.data.ai.AgentEngine.StepStatus.FAILED }) {
-                    // 技能一上来就失败(行都还是 PENDING 被移除)→ 把最后一行标 FAILED。
-                    // 没有任何行时(技能没声明 panelSteps)不硬造行。
-                    val last = steps.lastIndex
-                    if (last >= 0) {
-                        steps[last] = steps[last].copy(status = com.shiyin.music.data.ai.AgentEngine.StepStatus.FAILED)
-                    }
-                }
+                // v1.3.14:终态规则收在纯函数里(见 StepStatusFinalizer,有单测)——
+                // 成功 → 进行中的行标 DONE;失败 → 标 FAILED 且保证至少一行 FAILED,
+                // 但**不覆盖**已被技能/服务标出的真实失败行;PENDING 行移除。
+                val finalized = com.shiyin.music.data.ai.finalizeStepStatuses(steps.toList(), result.success)
+                steps.clear()
+                steps.addAll(finalized)
                 // v1.3.3: 最终消息带上思考链(意图理解 + 技能内 LLM 调用,取最全的一条)+ 真实耗时。
                 val finalThinking = result.thinking ?: intentThinking
                 // v1.3.9: 空正文兜底——技能成功返回但 summary 为空时,绝不让气泡停在
