@@ -34,6 +34,8 @@ import com.shiyin.music.ui.theme.LocalOrganic
  *   - Star 亮度 0.55-1.0 + 缩放 1.0-1.05,周期 1481ms(2000/1.35)
  *   - Note 漂浮 5.0 SVG 单位对角 + 透明度 0.72-1.0,周期 2222ms
  * 速度倍率是整体系数,接入层(speedMultiplier)再调。
+ * v1.3.15:接入层**统一传 2f**(原先只有步骤面板传 2f、思考中用默认 1f → 用户实测"同一个
+ * Logo 前面慢一半",同一轮对话里节奏跳变)。默认值仍留 1f,供将来别的场景复用。
  *
  * ⚠️ 不再手画/近似图形,一切几何来自源 SVG。
  */
@@ -41,7 +43,7 @@ import com.shiyin.music.ui.theme.LocalOrganic
 fun AgentLogoThinking(
     modifier: Modifier = Modifier,
     size: Dp = 88.dp,
-    /** TOOL/SEARCH 阶段节奏加快,平时 1f。 */
+    /** 整体节奏倍率。接入层统一传 2f(见文件头 v1.3.15 说明)。 */
     speedMultiplier: Float = 1f,
 ) {
     val isDark = LocalOrganic.current.isDark

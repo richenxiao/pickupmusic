@@ -1033,7 +1033,7 @@ private fun AgentBubble(
         if (!isUser && msg.steps?.isNotEmpty() == true) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 if (stepsLive) {
-                    AgentLogoThinking(size = 40.dp, speedMultiplier = 2f)
+                    AgentLogoThinking(size = 60.dp, speedMultiplier = 2f)
                     Spacer(Modifier.width(8.dp))
                 }
                 Column(Modifier.padding(bottom = 6.dp).widthIn(max = 320.dp)) {
@@ -1138,9 +1138,8 @@ private fun AgentBubble(
                 )
 
                 // v1.3.8: 状态机 Logo——根据消息状态动态显示
-                // THINKING/TOOL: 无内容但执行中 → 动态 Logo 24dp (period=2800ms)
-                // GENERATING: 有内容且仍在运行 → 动态 Logo 22dp (period=2400ms)
-                // COMPLETED: 有内容且完成 → 静态 Logo 30dp
+                // 动画标(思考中/执行中):均 60dp、2x 速度(全局统一,前期与中期不再有节奏差)
+                // 静止标(生成中/已完成署名):均 66dp
                 // v1.3.13:打字中(typingNow)也算"还在执行" —— 操作栏与署名只在**真正完成**
                 // (模型答完 **且** 打字机追平)之后出现。
                 val isExecuting = (vm.agentRunning && isLast) || (isLast && typingNow)
@@ -1153,7 +1152,7 @@ private fun AgentBubble(
                         androidx.compose.foundation.Image(
                             painter = androidx.compose.ui.res.painterResource(agentBrandRes(c.isDark)),
                             contentDescription = null,
-                            modifier = Modifier.padding(top = 6.dp).size(44.dp),
+                            modifier = Modifier.padding(top = 6.dp).size(66.dp),
                         )
                     }
                     // COMPLETED 状态：有内容且已完成
@@ -1189,9 +1188,11 @@ private fun AgentBubble(
                                 androidx.compose.foundation.Image(
                                     painter = androidx.compose.ui.res.painterResource(agentBrandRes(c.isDark)),
                                     contentDescription = null,
-                                    // 44dp:drawable 已按裁剪视口重生成,盒子多大图案就多大。
+                                    // v1.3.15: 44→66dp(用户反馈署名标偏小,要 1.5~2 倍;
+                                    // 与生成中的静止标同尺寸,署名出现时不再有大小跳变)。
+                                    // drawable 已按裁剪视口重生成,盒子多大图案就多大。
                                     // 左缘与消息列对齐(x=0);思考中胶囊的 Logo 也对齐到这里。
-                                    modifier = Modifier.padding(top = 6.dp).size(44.dp),
+                                    modifier = Modifier.padding(top = 6.dp).size(66.dp),
                                 )
                             }
                         }
@@ -1223,9 +1224,12 @@ private fun AgentBubble(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                // 与 ThinkingBlock 内的 Logo 同尺寸(40dp)、同速(1x)——占位气泡到
-                // 思考块的切换不应有任何大小/速度跳变。
-                AgentLogoThinking(size = 40.dp)
+                // v1.3.15: 尺寸 40→60dp、速度与"执行中"统一为 2x(用户反馈:刚发命令时的
+                // 思考中比执行中**慢一半**,同一个 Logo 前后换了节奏。原因就是这处用默认 1f、
+                // 步骤面板那处传 2f,文件里的注释还写着"平时 1f"—— 视觉上就是两档速度)。
+                // 与 ThinkingBlock 内的 Logo 始终保持同尺寸、同速:占位气泡到思考块的切换
+                // 不应有任何大小/速度跳变。
+                AgentLogoThinking(size = 60.dp, speedMultiplier = 2f)
                 Text(
                     // v1.3.9: Kotlin 字符串模板——"$elapsedSec" 后接中文须 ${} 包住变量名。
                     "思考中 · ${elapsedSec}s",
@@ -1318,7 +1322,7 @@ private fun ThinkingBlock(
             // v1.3.9: live 态用动态品牌标志替换呼吸圆点（规格：THINKING = 动态 Logo +
             // 实际耗时计时）；右侧加「思考中 · Ns」秒表。
             if (live) {
-                if (showLogo) com.shiyin.music.ui.components.AgentLogoThinking(size = 40.dp)
+                if (showLogo) com.shiyin.music.ui.components.AgentLogoThinking(size = 60.dp, speedMultiplier = 2f)
                 AgentElapseText(running = true, cText = c.n600)
             } else {
                 Text(
