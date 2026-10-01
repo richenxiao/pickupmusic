@@ -81,40 +81,47 @@ object AlbumSortSkill : AgentEngine.AgentSkill {
             // 信息不足:search/analyze 已完成(✓),但 analyze 结果为空 → 标 analyze ✗ + writeback ✗。
             onStep("analyze", AgentEngine.StepStatus.FAILED)
             onStep("writeback", AgentEngine.StepStatus.FAILED)
-            // v1.3.3 按实际情况回复,不用"可能专辑太小众"套话——用户每次失败看到
-            // 同一句猜测式文案,像 AI 在敷衍。按真实失败点分别说明:
-            //  - 有联网资料但解析不出编号:AI 的回答没遵守编号格式(模型没按指令输出)
-            //  - 完全无返回/UNKNOWN:AI 判断不了,建议核实专辑名识别
-            //  - 无联网资料:搜索环节问题(网络/Key/识别名)
+            // v1.3.15:失败要能分辨**败在哪一半**。真机连着两次《龙年》都是 ordered=0,但一句
+            // 笼统的"没按格式输出"看不出到底是:
+            //   ① 模型压根没输出曲目清单(回复被截断/只回了 UNKNOWN),还是
+            //   ② 清单出来了、但全对不上本地写法(它写了官方名而不是本地名)。
+            // 这两件的修法完全不同,所以这里按"模型输出了几行曲目"分档讲,并把它记进诊断。
+            val titleLines = AgentService.parseTitleLines(result.rawReply).size
+            // 另注:文案里过去写的是"曲目**编号**" —— v1.3.13 起协议早已改成**曲名**
+            // (编号格式是弱模型的老坑),留着这句话会把排查带偏。
             val msg = when {
                 result.webSearched && result.hadUnknown ->
                     "AI 判断《$albumName》曲序时未能确定答案(它识别为 UNKNOWN)。可能专辑名与官方写法不一致——在专辑 ⋮ 里检查专辑名/歌手名识别是否正确后重试。"
-                result.webSearched ->
-                    "AI 联网查到了《$albumName》的资料,但回答没有按要求的格式输出(未给出可解析的曲目编号)。可点重试;反复出现建议换更强模型(当前模型对编号格式遵守度不稳定)。"
-                else ->
+                !result.webSearched ->
                     "联网搜索《$albumName》没有找到相关资料(专辑名/歌手名识别有误、网络不可达或搜索 Key 失效)。先核对专辑名识别是否正确,再重试。"
+                titleLines == 0 ->
+                    "AI 联网查到《$albumName》的资料了,但这次**没有输出曲目清单**(回复被截断,或只回了一句 UNKNOWN)。可点重试。"
+                else ->
+                    "AI 认出了 $titleLines 首,但**写法与本地曲目对不上**(本地 ${currentTitles.size} 首一首都没匹配上)。它需要照抄本地写法——可点重试;反复出现建议换更强模型。"
             }
             // v1.3.14:失败可诊断 —— 记下"命中多少 / 模型这次回了什么",日志被系统抑制时靠它排查
             ctx.recordDiag(
                 skill = "album_sort", stage = "parse", ok = false,
                 counts = mapOf(
                     "candidates" to currentTitles.size,
+                    "titleLines" to titleLines,
                     "ordered" to result.orderedIndices.size,
                     "webSearched" to if (result.webSearched) 1 else 0,
                 ),
                 replyRaw = result.rawReply,
                 errorCode = when {
                     result.webSearched && result.hadUnknown -> "UNKNOWN"
-                    result.webSearched -> "PARSE_FAIL"
-                    else -> "NO_WEB_DATA"
+                    !result.webSearched -> "NO_WEB_DATA"
+                    titleLines == 0 -> "NO_LIST"
+                    else -> "NO_MATCH"
                 },
-                errorDetail = msg.take(120),
+                errorDetail = msg.replace("**", "").take(120),
             )
-            return AgentEngine.SkillResult(msg, success = false)
+            return AgentEngine.SkillResult(msg.replace("**", ""), success = false)
         }
         onStep("writeback", AgentEngine.StepStatus.RUNNING)
-        // v1.3.3: AI 输出的是本地编号序列——直接按编号重排,零文本匹配;名字与官方
-        // 的差异由 AI 在分析阶段理清对应关系(用户定调:AI 智能决策,不是本地兜底)。
+        // v1.3.15:模型给的已是**本地曲目名序列**(v1.3.13 起协议从"编号"改为"照抄本地写法",
+        // 因为编号格式是弱模型的老坑)→ 照它的顺序写下标即可,零文本匹配。
         ctx.applyAlbumOrderIndices(key, result.orderedIndices)
         onStep("writeback", AgentEngine.StepStatus.DONE)
         val msg = if (result.confidence == AgentService.Confidence.LOW)

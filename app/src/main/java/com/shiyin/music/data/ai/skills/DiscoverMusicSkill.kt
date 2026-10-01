@@ -342,7 +342,11 @@ object DiscoverMusicSkill : AgentEngine.AgentSkill {
         prompt: String,
     ): String? {
         if (!config.isConfigured) return null
-        val resp = LlmClient.call(config, listOf("user" to prompt), temperature = 0.3, maxTokens = 500) ?: return null
+        // v1.3.15:maxTokens 500 → 2048。500 是**我引入的坑**:推理模型(reasoning)的思考
+        // 也计入 completion_tokens,500 会在思考阶段就花光 → content 为空/截断 → 每次
+        // pick_parse 都是 INVALID_JSON(真机连测 4 次全空)。项目里 AgentService 早就因为
+        // 同一个原因把 512 提到 2048(见其注释),这里照同样的口径留足余量。
+        val resp = LlmClient.call(config, listOf("user" to prompt), temperature = 0.3, maxTokens = 2048) ?: return null
         ctx.logUsage(resp.promptTokens, resp.completionTokens, resp.cacheTokens)
         return resp.content
     }
