@@ -3385,6 +3385,36 @@ internal fun AgentDiagScreen(vm: MainViewModel, onBack: () -> Unit) {
                 }
                 Spacer(Modifier.height(16.dp))
             }
+            item(key = "dump") {
+                // v1.3.15:「导出对话」——把完整现场(文字/思考链/工具调用/样本)写成文件。
+                // 为什么放这里:诊断样本只有每阶段 500 字的回复开头,深度排查需要完整对话;
+                // 而 release 包读不到内部存储,所以由 App 写到外部私有目录供 adb pull。
+                val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
+                Column(
+                    Modifier.fillMaxWidth().shadowSm(RoundedCornerShape(20.dp))
+                        .clip(RoundedCornerShape(20.dp)).background(c.surface)
+                        .padding(16.dp),
+                ) {
+                    Text("导出对话现场", style = body(14.5f, FontWeight.Bold, c.text))
+                    Text(
+                        "把本次会话的文字、思考链、工具调用一起写成文件;含对话内容,分享给他人前请先检查。",
+                        style = body(12f, FontWeight.Normal, c.n600).copy(lineHeight = 17.sp),
+                        modifier = Modifier.padding(top = 4.dp, bottom = 10.dp),
+                    )
+                    PillButton("导出到文件", onClick = { vm.exportAgentChatDump() })
+                    vm.agentDumpPath?.let { p ->
+                        Text(
+                            p,
+                            style = body(11f, FontWeight.Normal, c.n500),
+                            modifier = Modifier.padding(top = 8.dp).clickableNoRipple {
+                                clipboard.setText(androidx.compose.ui.text.AnnotatedString(p))
+                                vm.showToast("路径已复制", null)
+                            },
+                        )
+                    }
+                }
+                Spacer(Modifier.height(16.dp))
+            }
             if (samples.isEmpty()) {
                 item(key = "empty") {
                     Text("还没有样本。", style = body(14f, FontWeight.SemiBold, c.text))

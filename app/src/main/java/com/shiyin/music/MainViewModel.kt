@@ -2441,6 +2441,68 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** 本轮用户原话(推荐技能要在原话里兜底扫库内歌手名,见 resolveArtists)。 */
     private var agentTurnUserText = ""
 
+    /**
+     * v1.3.15:工具调用轨迹(「导出对话」用)。
+     *
+     * 为什么另记一份:技能调用与参数只打在 logcat 里,而真机 release 包的 logcat 被系统抑制
+     * (用户实测自定义 tag 打不出来)——深度排查时**看不到模型到底调了什么、带了什么参数、返回了什么**。
+     * 跨轮保留(不每轮清空),只留最近 [toolTrailMax] 行,避免长会话无限增长。
+     */
+    private val agentToolTrail = ArrayDeque<String>()
+    private val toolTrailMax = 60
+
+    private fun trailAdd(line: String) {
+        agentToolTrail.addLast(line)
+        while (agentToolTrail.size > toolTrailMax) agentToolTrail.removeFirst()
+    }
+
+    /** v1.3.15:「导出对话」写到外部私有目录后的绝对路径(null=未导出/失败)。 */
+    var agentDumpPath by mutableStateOf<String?>(null)
+        private set
+
+    /**
+     * v1.3.15:导出本次会话现场(文字 + 思考链 + 工具调用 + 诊断样本)到
+     * `Android/data/<pkg>/files/agent_dump/chat_<ts>.json`,返回路径供 App 内复制、adb pull 读取。
+     *
+     * 为什么需要:设备上装的是 release 包(非 debuggable)——Room 库、内部存储、logcat 都取不到,
+     * 而"模型看了什么提示、回了什么、被解析成什么"这类深度调查必须有完整现场。[AgentChatDump]
+     * 负责脱敏与构造(纯函数,可脱机单测)。
+     */
+    fun exportAgentChatDump() {
+        val ctx = getApplication<android.app.Application>()
+        val msgs = agentMessages.map { m ->
+            com.shiyin.music.data.log.AgentChatDump.Msg(
+                role = m.role,
+                text = m.text,
+                thinking = m.thinking,
+                steps = m.steps?.map { "${it.label}:${it.status}" }.orEmpty(),
+                tokens = m.tokens,
+            )
+        }
+        val active = llmProviders.firstOrNull { it.key == llmActiveProvider }
+        val meta = com.shiyin.music.data.log.AgentChatDump.Meta(
+            appVersion = currentVersion,
+            device = android.os.Build.MODEL ?: "?",
+            android = android.os.Build.VERSION.SDK_INT.toString(),
+            provider = active?.displayName ?: llmActiveProvider,
+            model = active?.model.orEmpty(),
+            skills = com.shiyin.music.data.ai.AgentEngine.skills.map { it.key },
+            diagEnabled = agentDiagEnabled,
+        )
+        viewModelScope.launch(Dispatchers.IO) {
+            val ts = System.currentTimeMillis()
+            val text = com.shiyin.music.data.log.AgentChatDump.build(
+                messages = msgs,
+                toolTrail = agentToolTrail.toList(),
+                samples = com.shiyin.music.data.log.AgentDiag.readAll(ctx),
+                meta = meta,
+                tsMs = ts,
+            )
+            val f = com.shiyin.music.data.log.AgentChatDump.write(ctx, text, ts)
+            withContext(Dispatchers.Main) { agentDumpPath = f?.absolutePath }
+        }
+    }
+
     /** 把状态机的当前相位同步给 UI。 */
     private fun publishMemory() {
         agentMemoryTrace = agentMemoryFlow.current?.takeIf {
@@ -3596,6 +3658,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     return@launch
                 }
                 android.util.Log.i("Agent", "plan: skill=${plan.skillKey} args=${plan.args}")
+                trailAdd("call ${plan.skillKey} ${plan.args}")
                 // 2. 技能解析 + 步骤面板
                 val skill = com.shiyin.music.data.ai.AgentEngine.skillByKey(plan.skillKey)
                 if (skill == null) {
@@ -3760,6 +3823,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                         agentMessages = agentMessages.replaceAt(msgIdx, AgentMessage("agent", "", steps.toList(), lastTokens))
                     }
                 }
+                // v1.3.15:工具返回也记一笔(导出对话时能还原"模型调了什么 → 系统返回了什么")
+                trailAdd("result ${skill.key} ${result.summary.lineSequence().firstOrNull().orEmpty().take(160)}")
                 // v1.3.12:记下"上一轮做了什么"——下一轮会被摆进 [上一轮动作] 让模型知道
                 // 这件事已经成功完成(真机 bug:模型看不到"已经放过",就把感想读成"再放一遍")。
                 lastAgentAction = AgentAction(
