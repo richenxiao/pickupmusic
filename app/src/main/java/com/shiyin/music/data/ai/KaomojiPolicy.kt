@@ -1,0 +1,129 @@
+package com.shiyin.music.data.ai
+
+/**
+ * 颜文字策略(v1.3.13)——方案 C:**白名单库 + 模型挑语境 + 确定性清洗**。
+ *
+ * 为什么三件套缺一不可:
+ *  · 纯白名单(代码按情绪挑)挑不准语境:同一句"这次失败了",当面被点破与自己发现,
+ *    该配哪个颜文字是语境问题,规则覆盖不完,最后退化成"随机贴一个"——那正是傻气的来源。
+ *  · 纯自由生成无上界即无底线:模型的默认倾向是大眼萌/亮片/夸张((＾▽＾)、٩(◕‿◕)۶、
+ *    (*^▽^*) 这一类),恰是人设明确禁掉的那类"傻气、迟钝、油腻"。
+ *  · 本方案:清单给**风格护栏**,模型做**语境判断**,[sanitize] 做**越界兜底**——
+ *    "不指望模型自觉"与工具返回值纪律、LrcShare 署名清洗是同一思路。
+ *
+ * 单一真源:清单与纪律只在本文件定义一处。[directive] 供两条链路注入(prompt 侧),
+ * [sanitize] 供两条链路收尾(输出侧)。改颜文字只改这里。
+ *
+ * 为什么纪律段**不**并进 `AgentEngine.persona`:人设那段刻意只承载人格(见其边界注释)。
+ * 把 15 条候选挂进去会把"人格描述"变成"可抄的模板",反而诱发机械使用——人设里本就
+ * 警告过"不能变成口头禅""不规定每条一个"。故清单单独成段、紧随人设之后注入。
+ */
+internal object KaomojiPolicy {
+
+    /**
+     * 按情绪分组的允许清单。风格约束:半角日式、克制——无大眼、无亮片、无夸张动态。
+     *
+     * 条目写**提示词里要显示给模型的样子**,可以带括号外的手臂(`(๑•̀ㅂ•́)و✧`);
+     * 比对时只取括号体(见 [ALLOWED]),所以手臂不影响归属。
+     */
+    private val LIBRARY: List<Pair<String, List<String>>> = listOf(
+        "开心 / 被夸" to listOf("(´ ▽ `)", "(｡・ω・｡)", "(๑˃ᴗ˂)"),
+        "得意 / 嘴硬" to listOf("(￣ー￣)", "(｀・ω・´)", "(￣ω￣)"),
+        "害羞 / 不坦率" to listOf("(・_・;)", "(〃ω〃)"),
+        "无奈 / 认栽" to listOf("(￣▽￣)", "(・∀・)"),
+        "委屈 / 不甘" to listOf("(T_T)", "(╥﹏╥)", "(╥╥)"),
+        "认真 / 含蓄" to listOf("(´_ゝ`)", "(・_・)"),
+        "打气 / 小宣言" to listOf("(๑•̀ㅂ•́)و✧"),
+    )
+
+    /**
+     * 识别"疑似颜文字"的字符集——**只收日式颜文字的专有字符,绝不收拉丁字母/数字/下划线**。
+     *
+     * 这是防误删的关键:`(T_T)` 这类靠字母构成的颜文字故意**不被识别**——它本就在清单里,
+     * 识别不到只是"不会被删";但若把 T/o/x/0/下划线也算作特征,「（Windows）」「（T 恤）」
+     * 「（见上文）」「（2020）」都会被当成颜文字删掉,那是在改用户的正文。
+     * 误漏(极少数清单外颜文字残留)只是观感小瑕,误删是事故——两个方向的代价不对称。
+     */
+    private const val KAOMOJI_MARKS = "ωゝ⌒▽´`￣｀・ᴗ˃˂〃∀✧々╥﹏ー゜゛ㅂ•◕‿︶⌣ˊ˙"
+
+    /**
+     * 颜文字的"手臂":成对括号**外侧**的收尾字符(如 `٩(◕‿◕)۶` 的 ٩ ۶、`(๑•̀ㅂ•́)و✧` 的 و✧)。
+     *
+     * 只收这些极冷僻的符号——它们几乎不可能出现在正常中文/英文正文里,所以误伤面可忽略。
+     */
+    private const val KAOMOJI_LIMBS = "٩۶وヽノﾉ✧"
+
+    /** 括号体的本体形状(判定清单归属只用这一段,手臂不影响)。 */
+    private const val CORE = """[（(][^（()）\n]{1,20}[）)]"""
+
+    /**
+     * 候选 = 手臂* + 括号体 + 手臂*:整串一起删,才不会留下"و✧"这种半截残迹。
+     * 手臂允许**多个**(连续出现),单字符量词会让 `و✧` 剩下 `✧`。
+     */
+    private val CANDIDATE = Regex("""[$KAOMOJI_LIMBS]*$CORE[$KAOMOJI_LIMBS]*""")
+
+    /** 从候选里取出括号体本体(用于查清单)。 */
+    private val CORE_ONLY = Regex(CORE)
+
+    /**
+     * 归一化后的允许集合——**取每条清单项的括号体**再归一化。
+     *
+     * 这样清单里可以写完整形态(`(๑•̀ㅂ•́)و✧`,提示词里显示的就是模型该写的样子),
+     * 而比对仍然只看括号体,手臂不影响归属。
+     *
+     * 声明位置必须在 [CORE_ONLY]/[coreOf] **之后**——object 的属性按源码顺序初始化,
+     * 放前面会在初始化时读到 null 的 Regex。
+     */
+    private val ALLOWED: Set<String> = LIBRARY.flatMap { it.second }
+        .map { normalize(coreOf(it)) }
+        .toSet()
+
+    /** 清洗后被删处可能留下"你好 ！"这类空档——收一下再交给下一位。 */
+    private val SPACE_BEFORE_PUNCT = Regex("""[ \t]+([，。！？、；：,.!?;:])""")
+
+    /**
+     * 注入给模型的纪律段(紧随人设之后)。
+     *
+     * 关键三句:①只能说"偶尔";②**只能从清单里挑、自创会被删**(越界要有代价,否则等于没约束);
+     * ③严肃场合一律不用。清单按情绪分组呈现——分组本身就在暗示"先对情绪、再挑一个",
+     * 比一串平铺的候选更难被机械照抄。
+     */
+    val directive: String = buildString {
+        appendLine("【颜文字】")
+        appendLine(
+            "只在轻松闲聊、被夸、被调侃、小小得意、无奈、轻微委屈这类情绪点偶尔用一个;" +
+                "**只能从下面这份清单里挑,不要自创**(自创的会被系统删掉,等于白写,句子还会缺一块)。" +
+                "一份回复至多一个,放句尾;严肃说明、技术排错、错误诊断、重要警告里一律不用;" +
+                "绝大多数回复不带颜文字才是常态——不要形成「每条一个」的固定格式。",
+        )
+        appendLine("允许清单(按情绪分组):")
+        for ((mood, faces) in LIBRARY) appendLine("· $mood: " + faces.joinToString(" "))
+    }.trimEnd()
+
+    /**
+     * 输出侧兜底:删掉清单外的颜文字。
+     *
+     * 保留原文形态(只决定留不留),所以清单内的照原样留着;清单外连同其周边的多余空格
+     * 一起清掉,避免出现"你好 ！"这种残迹。无颜文字专有字符时走快速路径直接返回。
+     */
+    fun sanitize(text: String): String {
+        if (text.isEmpty()) return text
+        if (KAOMOJI_MARKS.none { text.contains(it) }) return text
+        val cleaned = CANDIDATE.replace(text) { m ->
+            val candidate = m.value
+            // 只看括号体是否在清单里:手臂不参与判定,否则 "(´ ▽ `)۶" 这种清单内的会被连带删掉
+            val core = coreOf(candidate)
+            val looksKaomoji = KAOMOJI_MARKS.any { core.contains(it) }
+            if (looksKaomoji && normalize(core) !in ALLOWED) "" else candidate
+        }
+        return SPACE_BEFORE_PUNCT.replace(cleaned, "$1").trimEnd()
+    }
+
+    /** 取出一段文本里的括号体(清单归属只看它);没有括号体时原样返回。 */
+    private fun coreOf(s: String): String = CORE_ONLY.find(s)?.value ?: s
+
+    /** 归一化:去空白 + 全角括号折半角——模型时常省略颜文字里的空格。 */
+    private fun normalize(s: String): String = s
+        .replace(" ", "").replace("　", "")
+        .replace('（', '(').replace('）', ')')
+}
