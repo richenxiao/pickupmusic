@@ -2973,7 +2973,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun retryAgentMessage(agentIndex: Int) {
         if (agentRunning) return
         val userIdx = (agentIndex - 1 downTo 0).firstOrNull { agentMessages[it].role == "user" } ?: return
-        agentDraft = agentMessages[userIdx].text
+        // v1.3.15:不再把原问句回填输入框(用户反馈:点【重试】后问句被塞进输入框,还得手动清掉)。
+        // 重试只是"用同一句重发一遍":问句本来就在上方那条用户气泡里看得见,回填纯属噪音。
+        // 仍需 agentEditFromIndex-覆盖语义:从该用户消息起替换后续内容,而不是追加。
         agentEditFromIndex = userIdx
         sendAgentMessage(agentMessages[userIdx].text)
     }
