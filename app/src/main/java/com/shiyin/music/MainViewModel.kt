@@ -2405,6 +2405,24 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** 本轮的状态机:相位推进全部由真实执行结果驱动,模型既不产生也影响不了它。 */
     private val agentMemoryFlow = com.shiyin.music.data.memory.MemoryTraceFlow()
 
+    // ── v1.3.15:推荐槽位(上一轮"他让你挑的什么")─────────────────────────────
+    /**
+     * 上一轮 [com.shiyin.music.data.ai.skills.DiscoverMusicSkill] 的槽位(场景/歌手/专辑)。
+     *
+     * 为什么要有它:真机里「推荐方大同适合睡觉的歌」→ 用户补一句「方大同的」时,弱模型
+     * 常常把场景丢掉,于是推荐变成"按热度排"。这里存住合并后的槽位,下轮既注入提示
+     * (让模型自己接得上)又在技能里兜底继承(代码保底)。
+     *
+     * **只在内存**:不落库、不进 messagesJson、**只在当前会话内有效**(换对话/清屏即清空)。
+     */
+    private var agentRecIntent: com.shiyin.music.data.ai.RecIntent? = null
+
+    /** 用户回合序号(推荐槽位的 TTL 按**回合**算,与按时间算的那条独立过期)。 */
+    private var agentTurnIndex = 0
+
+    /** 本轮用户原话(推荐技能要在原话里兜底扫库内歌手名,见 resolveArtists)。 */
+    private var agentTurnUserText = ""
+
     /** 把状态机的当前相位同步给 UI。 */
     private fun publishMemory() {
         agentMemoryTrace = agentMemoryFlow.current?.takeIf {
@@ -2484,6 +2502,28 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     "[上一轮动作] ${it.kind}:${it.detail.ifBlank { "—" }} · " +
                         (if (it.success) "已成功" else "失败") +
                         " —— **已完成,除非用户本轮明确要求,不要重复执行**",
+                )
+            }
+        }
+        // ── v1.3.15:上一轮的推荐槽位 ─────────────────────────────────────────
+        // 真机缺陷:「推荐方大同适合睡觉的歌」→ 用户补一句「方大同的」,弱模型把"睡觉"丢了,
+        // 于是推荐退化成按热度排。这里把上一轮**合并后**的槽位贴给模型,让它自己接得上;
+        // 技能里还有一层代码兜底继承(见 RecommendationPlan.mergeIntent),两层用同一 TTL。
+        val rec = agentRecIntent
+        if (com.shiyin.music.data.ai.RecommendationPlan.isIntentValid(
+                rec, agentTurnIndex, System.currentTimeMillis(),
+            )
+        ) {
+            val slots = listOfNotNull(
+                rec?.scene?.let { "场景「$it」" },
+                rec?.artist?.let { "歌手「$it」" },
+                rec?.album?.let { "专辑「$it」" },
+            )
+            if (slots.isNotEmpty()) {
+                appendLine(
+                    "[上一轮的推荐] 他上一轮让你挑的是 ${slots.joinToString("、")}。" +
+                        "这一轮若只是就同一件事做补充(例如只说「方大同的」),按**同一个场景**继续;" +
+                        "若是换了新话题,当这段不存在。",
                 )
             }
         }
@@ -2783,6 +2823,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 agentConversationId = id
                 agentMessages = msgs
                 agentHistoryOpen = false
+                // v1.3.15:换到另一段对话 → 推荐槽位跟着断(它属于刚才那段会话)。
+                agentRecIntent = null
                 // 最后一条用户消息复制进输入框 + 置覆盖锚点（发送 = 替换该条起的后续）
                 val lastUserIdx = msgs.indexOfLast { it.role == "user" }
                 if (lastUserIdx >= 0) {
@@ -2813,6 +2855,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         // v1.3.11:清屏也把记忆状态收掉——它属于刚才那一轮,不该跟着新对话留在界面上
         agentMemoryFlow.reset()
         publishMemory()
+        // v1.3.15:推荐槽位同理——"上一轮让你挑的睡觉的歌"属于那个会话,开了新对话就该忘掉
+        // (否则新对话第一句"方大同的"会莫名其妙接上上一段会话的场景)。
+        agentRecIntent = null
     }
 
     fun renameAgentConversation(id: String, title: String) {
@@ -3059,11 +3104,37 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 enabled = agentDiagEnabled,
             )
         }
+
+        /** v1.3.15:本轮推荐槽位(上一轮意图 + 回合序号 + 时间 + 本轮原话)。技能据此自行
+         *  判定"是否继承上一轮场景"。 */
+        override fun recTurnContext(): com.shiyin.music.data.ai.RecTurnContext =
+            com.shiyin.music.data.ai.RecTurnContext(
+                prev = agentRecIntent,
+                turnIndex = agentTurnIndex,
+                nowMs = System.currentTimeMillis(),
+                userMessage = agentTurnUserText,
+            )
+
+        /** v1.3.15:技能执行完把**合并后**的槽位写回(含代码继承来的场景,补充轮不冲掉场景)。 */
+        override fun recordRecIntent(scene: String?, artist: String?, album: String?) {
+            if (scene.isNullOrBlank() && artist.isNullOrBlank() && album.isNullOrBlank()) return
+            agentRecIntent = com.shiyin.music.data.ai.RecIntent(
+                scene = scene?.takeIf { it.isNotBlank() },
+                artist = artist?.takeIf { it.isNotBlank() },
+                album = album?.takeIf { it.isNotBlank() },
+                turnIndex = agentTurnIndex,
+                timestampMs = System.currentTimeMillis(),
+            )
+        }
     }
 
     /** 用户在 Agent 页发指令。 */
     fun sendAgentMessage(text: String) {
         if (agentRunning || text.isBlank()) return
+        // v1.3.15:新一轮 → 回合序号 +1,并记下原话(推荐槽位的 TTL 按回合算;
+        // 技能还要在原话里兜底扫"用户到底点了哪个歌手")。
+        agentTurnIndex += 1
+        agentTurnUserText = text.trim()
         // v1.3.11:记忆状态是**本回合**的过程反馈——新一轮开始即清空重来。
         // 上一轮的终态(记忆已保存/未找到相关记忆)故意保留到这一刻才清:用户回复后
         // 仍能回头看"刚才到底存下来没有",而不会永久占据聊天记录。
