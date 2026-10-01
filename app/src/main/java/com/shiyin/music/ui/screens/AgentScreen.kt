@@ -1533,7 +1533,6 @@ private fun TypewriterGreeting(
     }
 
     val shownText = full.take(shown)
-    val ramp = remember(shownText, c.text) { greetingRamp(shownText, c.text) }
 
     Column(
         Modifier.fillMaxWidth().clickableNoRipple { skip = true },
@@ -1554,7 +1553,7 @@ private fun TypewriterGreeting(
                 } ?: GREETING_SIZES.last()
             }
             Text(
-                text = ramp,
+                text = shownText,
                 style = probe.copy(fontSize = size.sp, lineHeight = 34.sp),
                 textAlign = TextAlign.Center,
                 softWrap = false,
@@ -1567,30 +1566,11 @@ private fun TypewriterGreeting(
     }
 }
 
-/** 末尾 [GREETING_ALPHA_RAMP] 个字素做 0.35→1 渐入;按字素边界切,不拆代理对。 */
-private fun greetingRamp(text: String, color: Color): AnnotatedString {
-    if (text.isEmpty()) return AnnotatedString("")
-    val breaker = java.text.BreakIterator.getCharacterInstance()
-    breaker.setText(text)
-    var start = text.length
-    repeat(GREETING_ALPHA_RAMP) {
-        if (start > 0) start = breaker.preceding(start).coerceAtLeast(0)
-    }
-    return buildAnnotatedString {
-        append(text.substring(0, start))
-        var idx = start
-        var k = 0
-        while (idx < text.length) {
-            val next = breaker.following(idx)
-            k++
-            val alpha = (0.35f + 0.65f * (k.toFloat() / GREETING_ALPHA_RAMP)).coerceAtMost(1f)
-            withStyle(SpanStyle(color = color.copy(alpha = alpha))) {
-                append(text.substring(idx, next))
-            }
-            idx = next
-        }
-    }
-}
+/**
+ * v1.3.15:删掉问候语尾部的**逐字渐入**(原实现:末尾 4 个字素 0.35→1 alpha)。
+ * 用户反馈"打字到倒数第三个字时有打光效果,显示并不好"—— 打字机本身已经把"正在写"讲清楚了,
+ * 再给尾字加一道由浅到深的光只会让那两个字看起来像没渲染出来。现在所有字素同色,写出来即完整。
+ */
 
 /**
  * v1.3.8: 简化 Markdown 解析器——支持 **bold** / *italic* / `code`。
