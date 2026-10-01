@@ -10,6 +10,9 @@
    - 只写 `<exclude>`、不写 `<include>` 时，默认的"全备"依然生效，只是扣掉排除项。
    - 没有 `<device-transfer>` 段时，**换机迁移（D2D）保持全量启用** —— 这正是我们要的：
      图片与快照走 D2D 没有 25MB 限制，应该带上。
+   - v1.3.14：Agent 诊断样本（`filesDir/agent_diag`，**含模型回复开头＝对话内容**）
+     既不上云也不随换机迁移 —— 所以补了 `<device-transfer>` 段，**只排除它一项**，
+     其余（图片/快照等）保持原来的"换机全量迁移"意图不变。
 
   注意：本 app 自带的 zip 备份（本地 / WebDAV）才是主力方案，这里的规则只是让
   海外用户与国产换机工具也能沾光。
@@ -21,5 +24,11 @@
         <!-- 本地快照与导出包：体积大，且用户可自行分享 -->
         <exclude domain="file" path="backup_snapshots" />
         <exclude domain="file" path="crash_logs" />
+        <!-- 含对话内容：不上云 -->
+        <exclude domain="file" path="agent_diag" />
     </cloud-backup>
+    <!-- 换机迁移：只排除诊断样本，其余保持全量 -->
+    <device-transfer>
+        <exclude domain="file" path="agent_diag" />
+    </device-transfer>
 </data-extraction-rules>
