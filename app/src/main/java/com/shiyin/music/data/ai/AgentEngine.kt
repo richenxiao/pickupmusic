@@ -184,6 +184,11 @@ object AgentEngine {
             replyRaw: String? = null,
             errorCode: String? = null,
             errorDetail: String? = null,
+            /**
+             * v1.3.15:**当时喂给模型的联网资料**(可选)。定性"联网 vs 模型"必须两者同框——
+             * 只记模型回复的话,资料是不是空的根本看不出来(实现方负责脱敏与截断)。
+             */
+            webRaw: String? = null,
         )
 
         /**

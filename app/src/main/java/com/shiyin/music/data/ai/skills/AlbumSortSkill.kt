@@ -116,6 +116,9 @@ object AlbumSortSkill : AgentEngine.AgentSkill {
                     else -> "NO_MATCH"
                 },
                 errorDetail = msg.replace("**", "").take(120),
+                // v1.3.15:把**当时喂给模型的联网资料**一并记下 —— 只有"模型回了什么"是定不了性的,
+                // 资料与回复同框才能分辨"联网没给到料"还是"模型拿到了料却不照格式输出"。
+                webRaw = result.webSnippet,
             )
             return AgentEngine.SkillResult(msg.replace("**", ""), success = false)
         }
@@ -130,6 +133,8 @@ object AlbumSortSkill : AgentEngine.AgentSkill {
         ctx.recordDiag(
             skill = "album_sort", stage = "parse", ok = true,
             counts = mapOf("candidates" to currentTitles.size, "ordered" to result.orderedIndices.size),
+            // 成功样本也带联网资料:好的一次和坏的一次对比,能看出"资料长什么样时才成功"
+            webRaw = result.webSnippet,
         )
         return AgentEngine.SkillResult(msg, needsConfirm = ctx.hasPendingOrder(), thinking = result.thinking)
     }

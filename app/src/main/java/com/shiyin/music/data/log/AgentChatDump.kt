@@ -89,6 +89,7 @@ internal object AgentChatDump {
             sb.append("},\n")
             sb.append("      \"errorCode\": ").append(str(s.errorCode ?: "")).append(",\n")
             sb.append("      \"errorDetail\": ").append(str(s.errorDetail ?: "")).append(",\n")
+            sb.append("      \"webHead\": ").append(str(s.webHead ?: "")).append(",\n")
             sb.append("      \"replyHead\": ").append(str(s.replyHead ?: "")).append("\n")
             sb.append("    }").append(if (i == samples.lastIndex) "" else ",").append("\n")
         }

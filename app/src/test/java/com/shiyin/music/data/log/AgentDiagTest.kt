@@ -65,12 +65,13 @@ class AgentDiagTest {
 
     @Test
     fun `内容里的分隔符不会把一行拆坏`() {
-        // 模型回复里出现 '|'(markdown 表格很常见)时必须仍是一行:分隔符被压平成空格
-        val s = sample(reply = "| 序号 | 曲名 |\n| 1 | A |")
-        val line = AgentDiag.encode(s)
-        assertEquals("整行应恰好只有 7 个字段分隔符", 7, line.count { it == '|' })
-        val back = AgentDiag.decode(line)
-        assertEquals("序号 曲名 1 A", back?.replyHead)
+        // 模型回复里出现 '|'(markdown 表格很常见)时必须仍是一行:分隔符被压平成空格。
+        // 断言方式:与"内容不含 '|' 的对照样本"比分隔符个数 —— 比写死字段数更准,
+        // 以后再加字段也不会假红(v1.3.15 加第 9 段时就踩到过写死 7 的那种写法)。
+        val control = AgentDiag.encode(sample(reply = "纯文本"))
+        val line = AgentDiag.encode(sample(reply = "| 序号 | 曲名 |\n| 1 | A |"))
+        assertEquals("含 '|' 的内容不该多出任何分隔符", control.count { it == '|' }, line.count { it == '|' })
+        assertEquals("序号 曲名 1 A", AgentDiag.decode(line)?.replyHead)
     }
 
     @Test
@@ -111,7 +112,6 @@ class AgentDiagTest {
     }
 
     // ── 「复制全部」的文本 ─────────────────────────────────────────────────
-
     @Test
     fun `复制全部的文本要带全量与错因 - 不只是列表摘要`() {
         // 用户拿这段文本是要判断"模型没按格式回 / 解析丢了 / 候选池本来就空"三者中的哪一个,
@@ -134,5 +134,36 @@ class AgentDiagTest {
         )
         assertTrue(text.contains("OK"))
         assertTrue("没有错因就不该出现 error 段:$text", !text.contains("error:"))
+    }
+
+    // ── 联网资料字段(v1.3.15) ─────────────────────────────────────────────
+
+    @Test
+    fun `联网资料能存取 - 定性"联网还是模型"必须两者同框`() {
+        val s = sample().copy(webHead = "Tracklist: 1. A 2. B")
+        val round = AgentDiag.decode(AgentDiag.encode(s))
+        assertEquals("联网资料必须原样存取", "Tracklist: 1. A 2. B", round?.webHead)
+        assertEquals("其余字段不受影响", s.errorCode, round?.errorCode)
+        assertEquals(s.replyHead, round?.replyHead)
+    }
+
+    @Test
+    fun `老样本文件只有 8 段 - 仍要能读出来`() {
+        // 升级前写下的行没有第 9 段:读了不能崩、也不能把整行判成坏行(否则历史样本全丢)
+        val legacy = "1700000000000|0|album_sort|parse|ordered=0|{somejson}|PARSE_FAIL|没按格式"
+        val s = AgentDiag.decode(legacy)
+        assertEquals("album_sort", s?.skill)
+        assertEquals("PARSE_FAIL", s?.errorCode)
+        assertEquals("{somejson}", s?.replyHead)
+        assertEquals("没有第 9 段 → 联网资料留空", null, s?.webHead)
+    }
+
+    @Test
+    fun `联网资料也进「复制全部」的文本`() {
+        val text = AgentDiag.sampleText(
+            sample().copy(webHead = "Tracklist A B C"),
+            java.text.SimpleDateFormat("MM-dd HH:mm:ss", java.util.Locale.US),
+        )
+        assertTrue("$text", text.contains("联网资料开头") && text.contains("Tracklist A B C"))
     }
 }

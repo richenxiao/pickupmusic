@@ -35,6 +35,9 @@ object AgentDiag {
     /** 回复原文保留长度(超出截断)。 */
     const val REPLY_HEAD_MAX = 500
 
+    /** 联网资料保留长度(定性"联网 vs 模型"够用即可,不必存全文)。 */
+    const val WEB_HEAD_MAX = 400
+
     private const val DIR_NAME = "agent_diag"
     private const val FILE_NAME = "diag.log"
 
@@ -60,6 +63,14 @@ object AgentDiag {
         val replyHead: String? = null,
         val errorCode: String? = null,
         val errorDetail: String? = null,
+        /**
+         * v1.3.15:**联网搜索返回的资料开头**(需要"联网 vs 模型"定性时必需)。
+         *
+         * 为什么加:排查"排序失败到底怪搜索还是怪模型"时,只有"模型回了什么"是**定不了性**的
+         * —— 必须同时看到"当时喂给它的资料是什么"。两者都在同一条样本里,一眼就能分辨:
+         * 资料是空的 → 联网问题;资料有料而模型不照格式 → 模型问题。
+         */
+        val webHead: String? = null,
     )
 
     // ── 纯编解码(可单测) ──────────────────────────────────────────────────
@@ -84,6 +95,7 @@ object AgentDiag {
             flatten(s.replyHead.orEmpty()),
             flatten(s.errorCode.orEmpty()),
             flatten(s.errorDetail.orEmpty()),
+            flatten(s.webHead.orEmpty()),
         ).joinToString(SEP.toString())
     }
 
@@ -106,6 +118,8 @@ object AgentDiag {
             replyHead = parts[5].ifBlank { null },
             errorCode = parts[6].ifBlank { null },
             errorDetail = parts[7].ifBlank { null },
+            // 第 9 段是 v1.3.15 才加的:老样本文件里只有 8 段,读不到就留空(向后兼容)
+            webHead = parts.getOrNull(8)?.ifBlank { null },
         )
     }
 
@@ -135,6 +149,13 @@ object AgentDiag {
         val t = raw?.trim().orEmpty()
         if (t.isEmpty()) return null
         return sanitize(t).take(REPLY_HEAD_MAX)
+    }
+
+    /** 联网资料 → 脱敏 + 截断到 [WEB_HEAD_MAX];空则 null。比回复短一些(只需够判断"有没有料")。 */
+    fun webHeadOf(raw: String?): String? {
+        val t = raw?.trim().orEmpty()
+        if (t.isEmpty()) return null
+        return sanitize(t).take(WEB_HEAD_MAX)
     }
 
     // ── 落盘 ───────────────────────────────────────────────────────────────
@@ -196,6 +217,7 @@ object AgentDiag {
         }
         s.errorCode?.let { append("\n  error: ").append(it) }
         s.errorDetail?.let { append("\n  detail: ").append(it) }
+        s.webHead?.let { append("\n  联网资料开头: ").append(it) }
         s.replyHead?.let { append("\n  模型回复开头: ").append(it) }
     }
 }

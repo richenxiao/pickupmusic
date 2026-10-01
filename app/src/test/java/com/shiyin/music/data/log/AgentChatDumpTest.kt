@@ -54,7 +54,7 @@ class AgentChatDumpTest {
         val sample = AgentDiag.Sample(
             tsMs = 5L, skill = "discover_music", stage = "pick_parse", ok = false,
             counts = mapOf("candidates" to 30), replyHead = "{\"fit\":\"maybe\"}",
-            errorCode = "BAD_FIT", errorDetail = null,
+            errorCode = "BAD_FIT", errorDetail = null, webHead = "Tracklist: 1. A 2. B",
         )
         val out = AgentChatDump.build(
             listOf(msg()), listOf("call discover_music {artist=方大同}"), listOf(sample), meta, 1L,
@@ -64,6 +64,7 @@ class AgentChatDumpTest {
         val s = root.getAsJsonArray("diagSamples")[0].asJsonObject
         assertEquals("BAD_FIT", s.get("errorCode").asString)
         assertEquals("{\"fit\":\"maybe\"}", s.get("replyHead").asString)
+        assertEquals("联网资料必须一起导出(定性'联网 vs 模型'靠它)", "Tracklist: 1. A 2. B", s.get("webHead").asString)
         assertEquals(30, s.getAsJsonObject("counts").get("candidates").asInt)
     }
 

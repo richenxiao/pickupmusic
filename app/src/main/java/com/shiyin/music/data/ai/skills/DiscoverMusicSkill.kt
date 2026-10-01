@@ -192,7 +192,10 @@ object DiscoverMusicSkill : AgentEngine.AgentSkill {
                 "suggestions" to resolution.suggestions.size,
             ),
             errorCode = if (resolution.unresolved != null) "UNRESOLVED_ARTIST" else null,
-            errorDetail = resolution.unresolved,
+            // v1.3.15:detail 里带上**解析到的歌手名**(排查"有没有认错人"只能靠它;
+            // 计数看不出是谁)。成功时也带 —— 这个字段是"上下文说明",不只是报错。
+            errorDetail = resolution.unresolved
+                ?: resolution.artists.joinToString("、").ifBlank { "modelArtist=${merged.artist ?: "(无)"}" },
         )
         // 用户点了名但库里没有这个歌手 → **如实说 + 给近似建议**,不拿别的歌手顶上
         if (resolution.unresolved != null) {

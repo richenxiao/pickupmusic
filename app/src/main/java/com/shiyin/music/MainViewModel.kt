@@ -3172,7 +3172,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
         override fun recordDiag(
             skill: String, stage: String, ok: Boolean, counts: Map<String, Int>,
-            replyRaw: String?, errorCode: String?, errorDetail: String?,
+            replyRaw: String?, errorCode: String?, errorDetail: String?, webRaw: String?,
         ) {
             // 脱敏与截断统一在这里(技能只管报事实);开关关闭时 AgentDiag 自己会跳过写入。
             com.shiyin.music.data.log.AgentDiag.record(
@@ -3182,6 +3182,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     skill = skill, stage = stage, ok = ok, counts = counts,
                     replyHead = com.shiyin.music.data.log.AgentDiag.replyHeadOf(replyRaw),
                     errorCode = errorCode, errorDetail = errorDetail,
+                    webHead = com.shiyin.music.data.log.AgentDiag.webHeadOf(webRaw),
                 ),
                 enabled = agentDiagEnabled,
             )

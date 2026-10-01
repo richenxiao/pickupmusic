@@ -31,6 +31,11 @@ object AgentService {
         val cacheTokens: Int = 0,
         /** v1.3.2: 联网是否真的搜到了资料(决定"无法确定"时给用户哪种提示)。 */
         val webSearched: Boolean = false,
+        /**
+         * v1.3.15: 本次喂给模型的**联网资料原文**(未搜到则 null)。
+         * 诊断用:定性"排序失败怪联网还是怪模型"必须让资料与模型回复同框(见 AgentDiag.webHead)。
+         */
+        val webSnippet: String? = null,
         /** v1.3.3: 分析那次 LLM 调用的思考链(推理模型才有)——透出给 UI 折叠展示。 */
         val thinking: String? = null,
         /** v1.3.3: 模型明确输出 UNKNOWN(它判断不了)——与"格式不遵守"区分,
@@ -176,7 +181,7 @@ object AgentService {
         // "AI 核对生成顺序 ✓,但文案说失败"这种自相矛盾的状态。这里只在真的有结果时标 DONE;
         // 判不出来就留 RUNNING,由技能按自己的结论落终态(技能失败 → MainViewModel 统一标 FAILED)。
         if (ordered.isNotEmpty()) onStep("analyze", AgentEngine.StepStatus.DONE)
-        SortResult(ordered, confidence, resp.promptTokens, resp.completionTokens, cacheTokens = resp.cacheTokens, webSearched = !tavilyContext.isNullOrBlank(), thinking = resp.thinking, hadUnknown = hadUnknown, rawReply = resp.content)
+        SortResult(ordered, confidence, resp.promptTokens, resp.completionTokens, cacheTokens = resp.cacheTokens, webSearched = !tavilyContext.isNullOrBlank(), webSnippet = tavilyContext, thinking = resp.thinking, hadUnknown = hadUnknown, rawReply = resp.content)
     }
 
     /** 单条模糊匹配的最低分(低于它宁可不认,也不要张冠李戴)。 */

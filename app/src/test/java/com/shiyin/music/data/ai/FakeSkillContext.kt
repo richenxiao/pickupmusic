@@ -52,7 +52,7 @@ open class FakeSkillContext : AgentEngine.SkillContext {
     val diag = mutableListOf<String>()
     override fun recordDiag(
         skill: String, stage: String, ok: Boolean, counts: Map<String, Int>,
-        replyRaw: String?, errorCode: String?, errorDetail: String?,
+        replyRaw: String?, errorCode: String?, errorDetail: String?, webRaw: String?,
     ) {
         diag += "$skill/$stage/ok=$ok/$counts/${errorCode ?: ""}"
     }
