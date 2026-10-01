@@ -177,18 +177,25 @@ object AgentDiag {
         val samples = readAll(context)
         if (samples.isEmpty()) return ""
         val fmt = SimpleDateFormat("MM-dd HH:mm:ss", Locale.US)
-        return samples.joinToString("\n\n") { s ->
-            buildString {
-                append(fmt.format(Date(s.tsMs)))
-                append("  [").append(s.skill).append("] ").append(s.stage)
-                append(if (s.ok) " · OK" else " · FAIL")
-                if (s.counts.isNotEmpty()) {
-                    append("\n  counts: ").append(s.counts.entries.joinToString(", ") { "${it.key}=${it.value}" })
-                }
-                s.errorCode?.let { append("\n  error: ").append(it) }
-                s.errorDetail?.let { append("\n  detail: ").append(it) }
-                s.replyHead?.let { append("\n  模型回复开头: ").append(it) }
-            }
+        return samples.joinToString("\n\n") { sampleText(it, fmt) }
+    }
+
+    /**
+     * 单条样本的纯文本(供「复制全部」)。
+     *
+     * 要**自成一条能读懂的证据**:时间/技能/阶段/成败,外加**量与错因**(counts / errorCode /
+     * errorDetail)与**模型回复开头** —— 只给一行列表摘要的话,拿到文本也没法判断"是模型没
+     * 按格式回、还是解析丢了、还是候选池本来就空"。抽成纯函数是为了可脱机单测(见 AgentDiagTest)。
+     */
+    internal fun sampleText(s: Sample, fmt: SimpleDateFormat): String = buildString {
+        append(fmt.format(Date(s.tsMs)))
+        append("  [").append(s.skill).append("] ").append(s.stage)
+        append(if (s.ok) " · OK" else " · FAIL")
+        if (s.counts.isNotEmpty()) {
+            append("\n  counts: ").append(s.counts.entries.joinToString(", ") { "${it.key}=${it.value}" })
         }
+        s.errorCode?.let { append("\n  error: ").append(it) }
+        s.errorDetail?.let { append("\n  detail: ").append(it) }
+        s.replyHead?.let { append("\n  模型回复开头: ").append(it) }
     }
 }

@@ -402,7 +402,7 @@ object AgentTools {
                     add("options", JsonObject().apply {
                         addProperty("type", "array")
                         add("items", JsonObject().apply { addProperty("type", "string") })
-                        addProperty("description", "2-4 个候选选项,尽量给(用户点一下就回答)")
+                        addProperty("description", "2-5 个候选选项,尽量给(用户点一下就回答)")
                     })
                 })
                 add("required", JsonArray().apply { add("question") })
@@ -412,8 +412,23 @@ object AgentTools {
 
     /** tool_call 的 arguments JSON → 字符串参数表。数组拼成空格分隔串(容错)。 */
     private fun parseArgs(argumentsJson: String): Map<String, String> = try {
-        val obj = JsonParser.parseString(argumentsJson).asJsonObject
-        obj.entrySet().mapNotNull { (k, v) ->
+        argsFromJson(JsonParser.parseString(argumentsJson).asJsonObject)
+    } catch (e: Exception) {
+        android.util.Log.w("Agent", "tool_call arguments 解析失败: ${argumentsJson.take(120)}")
+        emptyMap()
+    }
+
+    /**
+     * args JSON 对象 → 字符串参数表。**原生 tool_calls 与回退路由(route 的
+     * `{"skill":…,"args":{…}}`)共用这一份实现** —— 两处各写一遍就会漂移。
+     *
+     * **不做关键字白名单**:技能声明什么参数就原样传什么。加白名单的代价是"新参数在
+     * 回退链路上静默丢失"(模型传了 artist,技能读不到 → 硬约束失效),而收益为零:
+     * 参数值都要经过技能自己的解析与校验,多余的键技能根本不读。
+     */
+    internal fun argsFromJson(obj: JsonObject?): Map<String, String> {
+        obj ?: return emptyMap()
+        return obj.entrySet().mapNotNull { (k, v) ->
             val s = when {
                 v.isJsonPrimitive -> v.asString
                 v.isJsonArray -> v.asJsonArray.mapNotNull { e -> if (e.isJsonPrimitive) e.asString else null }
@@ -422,9 +437,6 @@ object AgentTools {
             }
             s?.takeIf { it.isNotBlank() }?.let { k to it }
         }.toMap()
-    } catch (e: Exception) {
-        android.util.Log.w("Agent", "tool_call arguments 解析失败: ${argumentsJson.take(120)}")
-        emptyMap()
     }
 
     private fun parseClarify(argumentsJson: String): ClarifyRequest {
@@ -434,13 +446,13 @@ object AgentTools {
         val opts = obj?.getAsJsonArray("options")?.mapNotNull {
             if (it?.isJsonPrimitive == true) it.asString.takeIf { s -> s.isNotBlank() } else null
         } ?: emptyList()
-        // v1.3.10: 选项上限 4(规格:2-4 个)。模型偶尔一次给十几条——卡片会变成一屏菜单,
-        // 与"选择题"的定位不符。超出部分丢弃并留痕(可诊断),不静默变形。
+        // v1.3.15: 选项上限 5(与 discover_music 的候选条数一致——推荐卡上列 5 条
+        // 文字却只能点 4 个,用户会以为第 5 个是坏的)。超出部分丢弃并留痕(可诊断)。
         val capped = opts.distinct()
-        if (capped.size > 4) {
-            android.util.Log.w("Agent", "clarify 选项 ${capped.size} 个,截断到 4:${capped.drop(4)}")
+        if (capped.size > 5) {
+            android.util.Log.w("Agent", "clarify 选项 ${capped.size} 个,截断到 5:${capped.drop(5)}")
         }
-        return ClarifyRequest(q, capped.take(4))
+        return ClarifyRequest(q, capped.take(5))
     }
 
     /** assistant 的 tool_calls 原样回显(OpenAI 协议要求,下一轮请求要带)。

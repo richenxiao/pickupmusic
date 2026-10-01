@@ -18,8 +18,9 @@ import com.shiyin.music.data.search.FuzzySearch
  *  - [mergeIntent] 多轮槽位继承(带 TTL)
  */
 
-/** 解析到的库内歌手实体。 */
-data class ResolvedArtist(val id: Long, val name: String)
+/** 解析到的库内歌手。库里歌手没有独立 id(歌手是曲目上的一个字符串维度),
+ *  下游一律按**名字**过滤曲目,所以这里只带名字,不带假 id。 */
+data class ResolvedArtist(val name: String)
 
 /** [resolveArtists] 的结果。 */
 data class ArtistResolution(
@@ -73,7 +74,44 @@ data class MergedIntent(
     val inheritedScene: Boolean = false,
 )
 
+/**
+ * 本轮推荐槽位的**外部状态**(上一轮意图 / 会话序号 / 时间 / 本轮原话)。
+ *
+ * 技能本身是无状态的,不知道"上一轮说过什么、这是第几轮、现在几点"——这些只有持有会话
+ * 状态的一侧(vm)知道,所以经 [AgentEngine.SkillContext.recTurnContext] 交给技能,
+ * 技能自己调 [RecommendationPlan.mergeIntent] 完成继承判定。
+ */
+data class RecTurnContext(
+    val prev: RecIntent? = null,
+    val turnIndex: Int = 0,
+    val nowMs: Long = 0L,
+    val userMessage: String = "",
+)
+
+/** [poolPolicy] 的结果:候选池上限与是否做"同歌手多样性"削峰。 */
+data class PoolPolicy(val cap: Int, val perArtistCap: Int?)
+
 object RecommendationPlan {
+
+    /** 限定歌手/专辑时候选池上限。 */
+    const val POOL_CAP_ENTITY = 80
+
+    /** 仅场景(无歌手/专辑限定)时候选池上限。 */
+    const val POOL_CAP_SCENE = 150
+
+    /**
+     * 候选池策略(用户定调):**同歌手上限只用于"仅场景、无歌手"的召回路径**。
+     *
+     * 有歌手/专辑限定 → 上限 80、**关闭**同歌手上限。那正是用户点名要的歌手,
+     * 拿"同歌手最多 2 首"去削他 = 把需求削没了(真机缺陷:指名要方大同,推荐里没有方大同)。
+     * 仅场景 → 上限 150、同歌手最多 2,否则"适合睡觉的"很容易整批同一个人。
+     */
+    fun poolPolicy(hasEntity: Boolean): PoolPolicy =
+        if (hasEntity) PoolPolicy(POOL_CAP_ENTITY, null)
+        else PoolPolicy(POOL_CAP_SCENE, DIVERSIFY_PER_ARTIST)
+
+    /** 仅场景路径的"同歌手最多几首"。 */
+    const val DIVERSIFY_PER_ARTIST = 2
 
     /** 单条模糊匹配的最低分(低于它宁可不认)。 */
     private const val MIN_FUZZY_SCORE = 400
@@ -99,12 +137,13 @@ object RecommendationPlan {
     fun resolveArtists(
         modelArtist: String?,
         userMessage: String,
-        libraryArtists: List<Pair<Long, String>>,
+        libraryArtists: List<String>,
         minScanLen: Int = 3,
         maxArtists: Int = 3,
     ): ArtistResolution {
-        val lib = libraryArtists.map { (id, name) -> ResolvedArtist(id, name) to FuzzySearch.normalize(name) }
-            .filter { it.second.isNotEmpty() }
+        val lib = libraryArtists.mapNotNull { n ->
+            FuzzySearch.normalize(n).takeIf { it.isNotEmpty() }?.let { ResolvedArtist(n) to it }
+        }
 
         // ── 模型参数优先 ──
         val model = modelArtist?.trim().orEmpty()
@@ -261,6 +300,15 @@ object RecommendationPlan {
         if (nowMs - prev.timestampMs > INTENT_TTL_MS) return false
         return true
     }
+
+    /**
+     * 上一轮意图是否还在有效期内(≤4 轮 且 ≤10 分钟)。
+     *
+     * 注入提示(「上一轮他在让你挑睡觉的歌」)与代码继承([mergeIntent])必须用**同一个判据**
+     * ——两边各写一遍就会出现"提示里说还在、代码却已当它失效"的错位。
+     */
+    fun isIntentValid(prev: RecIntent?, turnIndex: Int, nowMs: Long): Boolean =
+        intentValid(prev, turnIndex, nowMs)
 
     /**
      * 合并本轮槽位与上一轮意图。

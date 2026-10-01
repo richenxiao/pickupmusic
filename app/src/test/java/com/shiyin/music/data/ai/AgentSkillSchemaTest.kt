@@ -136,10 +136,15 @@ class AgentSkillSchemaTest {
             listOf("search"),
             AgentEngine.skillByKey("lyrics_fetch")!!.panelSteps(emptyMap()).map { it.id },
         )
-        // v1.3.10 自主选曲:discover_music 给候选 → play_track 按 id 落地。
+        // v1.3.15 推荐重构:先解析歌手/专辑(硬约束),再取候选池;有场景才多一步"让模型看
+        // 哪几首贴合"(没有场景不调模型,面板上也不该挂这一行)。
         assertEquals(
-            listOf("search"),
+            listOf("resolve", "pool"),
             AgentEngine.skillByKey("discover_music")!!.panelSteps(emptyMap()).map { it.id },
+        )
+        assertEquals(
+            listOf("resolve", "pool", "pick"),
+            AgentEngine.skillByKey("discover_music")!!.panelSteps(mapOf("scene" to "睡觉")).map { it.id },
         )
         assertEquals(
             listOf("apply"),

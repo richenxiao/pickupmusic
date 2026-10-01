@@ -19,11 +19,11 @@ class RecommendationPlanTest {
     // ── ① resolveArtists ──────────────────────────────────────────────────
 
     private val lib = listOf(
-        1L to "方大同",
-        2L to "藤井风",
-        3L to "周杰倫",   // 繁体写法:归一化后应与"周杰伦"等价
-        4L to "Vaundy",
-        5L to "万青",     // 2 字歌手
+        "方大同",
+        "藤井风",
+        "周杰倫",   // 繁体写法:归一化后应与"周杰伦"等价
+        "Vaundy",
+        "万青",     // 2 字歌手
     )
 
     @Test
@@ -60,9 +60,9 @@ class RecommendationPlanTest {
 
     @Test
     fun `库里没有这个歌手 - 如实 unresolved 并给近似建议,不换成别的歌手`() {
-        val r = RecommendationPlan.resolveArtists("周杰伦", "", listOf(1L to "周杰倫"))
+        val r = RecommendationPlan.resolveArtists("周杰伦", "", listOf("周杰倫"))
         // 「周杰伦」归一化后 == 「周杰倫」→ 这其实能命中,所以换一个真的没有的:
-        val r2 = RecommendationPlan.resolveArtists("陳奕迅", "", listOf(1L to "方大同", 2L to "Vaundy"))
+        val r2 = RecommendationPlan.resolveArtists("陳奕迅", "", listOf("方大同", "Vaundy"))
         assertEquals("应如实报告库里没有", "陳奕迅", r2.unresolved)
         assertTrue("不该拿别的歌手顶上", r2.artists.isEmpty())
         assertEquals("能命中时不该报 unresolved", 1, r.artists.size)
@@ -108,6 +108,22 @@ class RecommendationPlanTest {
         assertTrue("最常听的 40 首必须全在", out.take(40).all { it.title.startsWith("热") })
         // 补进来的 10 首应来自多张专辑(均匀抽样),而不是同一张
         assertTrue("尾部应跨专辑", out.drop(40).mapNotNull { it.album }.distinct().size > 1)
+    }
+
+    @Test
+    fun `限定歌手时关闭同歌手上限 - 该歌手 30 首应全进池`() {
+        val policy = RecommendationPlan.poolPolicy(hasEntity = true)
+        assertEquals(RecommendationPlan.POOL_CAP_ENTITY, policy.cap)
+        assertNull("限定歌手/专辑时不该削同歌手的歌", policy.perArtistCap)
+        val out = RecommendationPlan.buildCandidatePool(pool(30), policy.cap, policy.perArtistCap)
+        assertEquals("点名的歌手 30 首就该给 30 首,而不是被砍到 2 首", 30, out.size)
+    }
+
+    @Test
+    fun `仅场景时上限 150 且同歌手最多 2`() {
+        val policy = RecommendationPlan.poolPolicy(hasEntity = false)
+        assertEquals(RecommendationPlan.POOL_CAP_SCENE, policy.cap)
+        assertEquals("无歌手限定才做多样性削峰", 2, policy.perArtistCap)
     }
 
     @Test
@@ -240,5 +256,19 @@ class RecommendationPlanTest {
             userMessage = "方大同的", scene = null, artist = "方大同", album = null,
         )
         assertNull(m.scene)
+    }
+
+    @Test
+    fun `有效性判据与继承判定共用一套 TTL`() {
+        // 注入提示(告诉模型"上一轮他在让你挑睡觉的歌")必须与代码的继承判定**同时**有效/失效,
+        // 否则会出现"提示里说还在、代码已当它失效"的错位。
+        assertTrue(RecommendationPlan.isIntentValid(prev("睡觉", turn = 1), turnIndex = 2, nowMs = t0 + 1_000))
+        assertFalse(RecommendationPlan.isIntentValid(prev("睡觉", turn = 1), turnIndex = 6, nowMs = t0 + 1_000))
+        assertFalse(
+            RecommendationPlan.isIntentValid(
+                prev("睡觉", turn = 1), turnIndex = 2, nowMs = t0 + RecommendationPlan.INTENT_TTL_MS + 1,
+            ),
+        )
+        assertFalse(RecommendationPlan.isIntentValid(null, turnIndex = 2, nowMs = t0))
     }
 }

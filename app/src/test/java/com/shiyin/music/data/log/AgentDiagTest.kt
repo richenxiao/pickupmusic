@@ -109,4 +109,30 @@ class AgentDiagTest {
         assertNull(AgentDiag.replyHeadOf("   "))
         assertNull(AgentDiag.replyHeadOf(null))
     }
+
+    // ── 「复制全部」的文本 ─────────────────────────────────────────────────
+
+    @Test
+    fun `复制全部的文本要带全量与错因 - 不只是列表摘要`() {
+        // 用户拿这段文本是要判断"模型没按格式回 / 解析丢了 / 候选池本来就空"三者中的哪一个,
+        // 所以 counts / errorCode / errorDetail / 模型回复开头 一个都不能少。
+        val text = AgentDiag.sampleText(
+            sample(reply = """{"fit":"maybe"}"""),
+            java.text.SimpleDateFormat("MM-dd HH:mm:ss", java.util.Locale.US),
+        )
+        assertTrue("阶段与成败:$text", text.contains("parse") && text.contains("FAIL"))
+        assertTrue("量:$text", text.contains("candidates=5") && text.contains("valid=2"))
+        assertTrue("错因码:$text", text.contains("PARSE_FAIL"))
+        assertTrue("错因详情:$text", text.contains("no ordered indices"))
+        assertTrue("模型回复开头:$text", text.contains("模型回复开头") && text.contains("maybe"))
+    }
+
+    @Test
+    fun `成功样本的文本不写错因段`() {
+        val text = AgentDiag.sampleText(
+            sample(ok = true), java.text.SimpleDateFormat("MM-dd HH:mm:ss", java.util.Locale.US),
+        )
+        assertTrue(text.contains("OK"))
+        assertTrue("没有错因就不该出现 error 段:$text", !text.contains("error:"))
+    }
 }

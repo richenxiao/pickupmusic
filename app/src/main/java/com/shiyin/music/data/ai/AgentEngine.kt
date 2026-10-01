@@ -185,6 +185,24 @@ object AgentEngine {
             errorCode: String? = null,
             errorDetail: String? = null,
         )
+
+        /**
+         * v1.3.15: 本轮**推荐槽位**的外部状态(上一轮意图 + 会话序号 + 时间 + 本轮原话)。
+         *
+         * 为什么走桥:技能是无状态的,不知道"上一轮说过什么、这是第几轮、现在几点"。
+         * 而「推荐适合睡觉的歌」→ 下一轮只补一句「方大同的」要能接上场景,必须由持有
+         * 会话状态的一侧(vm)提供;技能据此自行调 [RecommendationPlan.mergeIntent] 判定,
+         * 不在分发层做特例。
+         */
+        fun recTurnContext(): RecTurnContext = RecTurnContext()
+
+        /**
+         * v1.3.15: 记下**本轮推荐槽位**(场景/歌手/专辑) —— discover_music 执行完调用。
+         *
+         * 记的是**合并后**的槽位(含代码从上一轮继承来的场景),这样「方大同的」这种
+         * 补充轮不会把上一轮的场景冲掉。只活在内存里、只在本会话内有效,新会话清空。
+         */
+        fun recordRecIntent(scene: String?, artist: String?, album: String?) = Unit
     }
 
     /** 技能执行结果。summary 给对话面板展示;needsConfirm→UI 提示用户走 pending 确认。 */
@@ -564,7 +582,9 @@ object AgentEngine {
             if (skillKey == "unknown") return null
             // 技能 key 必须真实存在,模型编造的 key 归为聊天(用户能看到模型的困惑回复)
             if (skillByKey(skillKey) == null) return null
-            val args = obj.getAsJsonObject("args")?.entrySet()?.associate { it.key to (it.value?.takeIf { p -> p.isJsonPrimitive }?.asString ?: "") } ?: emptyMap()
+            // v1.3.15: 与原生 tool_calls 共用同一份参数解析(不再各写一遍)——回退链路的
+            // 新参数(artist/scene/album)必须原样到达技能,按关键字白名单过滤会让硬约束失效。
+            val args = AgentTools.argsFromJson(obj.getAsJsonObject("args"))
             val steps = obj.getAsJsonArray("steps")?.mapNotNull { it?.takeIf { p -> p.isJsonPrimitive }?.asString } ?: emptyList()
             IntentPlan(skillKey, args, steps)
         } catch (_: Exception) { null }
