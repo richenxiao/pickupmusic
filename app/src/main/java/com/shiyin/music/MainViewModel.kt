@@ -6118,7 +6118,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             com.shiyin.music.data.log.UsageLog.event(
                 getApplication(), "云备份",
                 if (err == null) "上传成功 ${"%.1f".format(bytes.size / 1024.0 / 1024.0)}MB"
-                else "上传失败：$err",
+                // v1.4.0:日志里**只留错误类别**。WebDAV 的失败文案带远端地址与目录路径
+                // (「服务器返回 404：… https://dav.jianguoyun.com/dav/」),而日志会随云备份上移、
+                // 也会被用户导出分享 —— 原文不进日志。(UI 文案 cloudMsg 仍给用户看完整的。)
+                else "上传失败 · ${com.shiyin.music.data.log.UsageLogError.reasonOf(err)}",
             )
             if (err == null) cloudFiles = withContext(Dispatchers.IO) { c.list() }
             cloudBusy = false
@@ -6522,7 +6525,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 com.shiyin.music.data.log.UsageLog.event(
                     getApplication(), "翻译",
                     "成功 ${out.byLine.size}/${out.requested.size} 行 · rounds=${out.rounds}" +
-                        (if (failure != null) " · ${failure.take(60)}" else ""),
+                        // v1.4.0:只记**类别**,不记失败原文(可能是模型输出片段)。
+                        // 给用户看的 failure 文案不变(它同时用于 toast)。
+                        (if (failure != null) " · ${com.shiyin.music.data.log.UsageLogError.reasonOf(failure)}" else ""),
                 )
             }
         }
