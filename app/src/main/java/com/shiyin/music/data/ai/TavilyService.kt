@@ -17,15 +17,20 @@ import java.util.concurrent.TimeUnit
  *
  * 免费额度 100 RPM,手动单次触发(1-3 次搜索)绰绰有余。
  * 失败/无结果 → null,AgentService 据此判 LOW confidence(信息不足)。
+ *
+ * v1.3.15 起还提供 [extract]:直接抽某个页面的正文。排序链路用它去拿**豆瓣专辑页的"曲目"段**
+ * ——实测能把官方曲序原样抓下来,于是不必再让模型"照着一段搜索结果猜"。
  */
 object TavilyService {
 
     private const val ENDPOINT = "https://api.tavily.com/search"
+    private const val EXTRACT_ENDPOINT = "https://api.tavily.com/extract"
     private val JSON = "application/json".toMediaType()
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(10, TimeUnit.SECONDS)
-        .readTimeout(15, TimeUnit.SECONDS)
+        // 抽取整页正文比搜摘要慢,读超时放宽一倍
+        .readTimeout(30, TimeUnit.SECONDS)
         .build()
 
     /**
@@ -35,18 +40,19 @@ object TavilyService {
      * [includeAnswer] 为 true 时把 Tavily 的综合回答(answer 字段)拼在最前——
      * 专辑年表这类事实型查询,answer 常直接给出关键日期,比 3 条正文摘要更有用。
      *
-     * v1.3.15:[includeDomains] 非空时,只搜这些域名。
+     * [withUrls] 为 true 时把每条结果的 URL 也拼进文本(`【标题】(url)`)——
+     * 豆瓣路线靠它从搜索结果里挖出专辑页链接。
      *
-     * 为什么需要:通用网页搜索对"官方曲目顺序"这种**事实型**查询太杂 —— 真机实测《龙年》
-     * 抓到的是 B 站一段同名作品/搬运视频的简介,曲目与用户库里**一首都不重合**,却被当权威用。
-     * 中文专辑的官方曲序,可靠来源是**豆瓣音乐 / MusicBrainz / Discogs** 这类有结构化曲目表的站点
-     * (豆瓣 v2 API 已关闭,但其专辑页是服务端渲染的,Tavily 能直接抓到曲目段,无需自建爬虫)。
+     * [includeDomains] 非空时只搜这些域名。⚠️ 实测教训:**别用它来限定豆瓣** ——
+     * 搜索命中的是移动域名 `m.douban.com`,写死 `music.douban.com` 会把结果挡光。
+     * 正确的做法是在**查询词**里带上"豆瓣音乐"关键词(见 AgentService)。
      */
     suspend fun search(
         apiKey: String,
         query: String,
         includeAnswer: Boolean = false,
         includeDomains: List<String> = emptyList(),
+        withUrls: Boolean = false,
     ): String? = withContext(Dispatchers.IO) {
         if (apiKey.isBlank()) return@withContext null
         try {
@@ -89,9 +95,12 @@ object TavilyService {
                     val o = results[i].asJsonObject
                     val title = o.get("title")?.asString ?: ""
                     val content = o.get("content")?.asString ?: ""
+                    val url = o.get("url")?.asString ?: ""
                     if (content.isNotBlank()) {
                         if (sb.isNotEmpty()) sb.append("\n\n---\n\n")
-                        sb.append("【").append(title).append("】\n").append(content)
+                        sb.append("【").append(title).append("】")
+                        if (withUrls && url.isNotBlank()) sb.append("(").append(url).append(")")
+                        sb.append("\n").append(content)
                     }
                 }
             }
@@ -105,4 +114,51 @@ object TavilyService {
             null
         }
     }
+
+    /**
+     * v1.3.15: 抽取指定页面的正文(Tavily `/extract`)。
+     *
+     * 用途:**直接拿豆瓣专辑页的"曲目"段**(实测《龙年》能原样抓下 14 首官方曲序)。
+     * 失败/无内容 → null。
+     */
+    suspend fun extract(apiKey: String, urls: List<String>, depth: String = "advanced"): String? =
+        withContext(Dispatchers.IO) {
+            if (apiKey.isBlank() || urls.isEmpty()) return@withContext null
+            try {
+                val body = JsonObject().apply {
+                    addProperty("api_key", apiKey)
+                    add("urls", com.google.gson.JsonArray().apply { urls.forEach { add(it) } })
+                    addProperty("extract_depth", depth)
+                    addProperty("include_images", false)
+                }.toString()
+                val req = Request.Builder()
+                    .url(EXTRACT_ENDPOINT)
+                    .header("Content-Type", "application/json")
+                    .post(body.toRequestBody(JSON))
+                    .build()
+                val resp = client.newCall(req).execute()
+                val respBody = resp.body?.string() ?: return@withContext null
+                if (!resp.isSuccessful) {
+                    android.util.Log.w("Tavily", "extract http=${resp.code}")
+                    return@withContext null
+                }
+                val json = JsonParser.parseString(respBody).asJsonObject
+                val sb = StringBuilder()
+                json.getAsJsonArray("results")?.forEach { el ->
+                    val o = el.asJsonObject
+                    val u = o.get("url")?.asString ?: ""
+                    val raw = o.get("raw_content")?.asString ?: ""
+                    if (raw.isNotBlank()) {
+                        if (sb.isNotEmpty()) sb.append("\n\n---\n\n")
+                        sb.append("(url: ").append(u).append(")\n").append(raw)
+                    }
+                }
+                sb.toString().ifBlank { null }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                android.util.Log.w("Tavily", "extract failed: ${e.javaClass.simpleName} ${e.message}")
+                null
+            }
+        }
 }

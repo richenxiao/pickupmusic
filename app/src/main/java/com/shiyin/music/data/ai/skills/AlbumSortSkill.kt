@@ -197,11 +197,13 @@ object AlbumSortSkill : AgentEngine.AgentSkill {
             counts = mapOf(
                 "candidates" to currentTitles.size,
                 "ordered" to result.orderedIndices.size,
-                // v1.3.15:资料与本地曲目的重合条数(0 = 资料很可能不是这张专辑的)
+                // v1.3.15:资料与本地曲目的重合条数(0 = 资料很可能不是这张专辑的);
+                // detail 里记**顺序来源**(豆瓣路线会写 douban:<页面 URL>),事后可复查
                 "webHits" to result.webHits,
             ),
             // 成功样本也带联网资料:好的一次和坏的一次对比,能看出"资料长什么样时才成功"
             webRaw = result.webSnippet,
+            errorDetail = result.orderedSource,
         )
         return AgentEngine.SkillResult(msg, needsConfirm = ctx.hasPendingOrder(), thinking = result.thinking)
     }

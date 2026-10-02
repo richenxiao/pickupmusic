@@ -42,6 +42,11 @@ object AgentService {
          */
         val webHits: Int = 0,
         /**
+         * v1.3.15: 这次顺序的**来源**(诊断用)。豆瓣路线写成 `douban:<专辑页 URL>` ——
+         * 一眼能看出"用哪张页面排的",不必再猜。LLM 路线为 null。
+         */
+        val orderedSource: String? = null,
+        /**
          * v1.3.15: 最后一次调用的**结束原因**(stop/length…)。真机实测《龙年》拿到资料却
          * `titleLines=0`、回复为空 —— "被截断"与"模型就是不回答"是两回事,只有它+用量能分开。
          */
@@ -77,34 +82,52 @@ object AgentService {
     ): SortResult? = withContext(Dispatchers.IO) {
         if (!config.isConfigured || currentTracks.isEmpty()) return@withContext null
 
+        // ── 0. 先试**豆瓣路线**:直接拿页面上的官方曲目表 ────────────────────────────
+        // 为什么放最前:通用搜索给的是"一段可能不对题的资料",模型还得照着猜;而豆瓣专辑页的
+        // "曲目"段**本身就是官方顺序**(实测《龙年》:抽出来的 14 首与用户手贴的官方序一字不差)。
+        // 这一步不需要模型参与 —— 名字能对上就直接排完,对不上才落到下面的模型链路。
+        runCatching { fetchDoubanTracklist(tavilyKey, album, artist, currentTracks) }.getOrNull()?.let { hit ->
+            val ordered = officialToLocalIndices(hit.titles, currentTracks)
+            val need = maxOf(3, kotlin.math.ceil(currentTracks.size * 0.8).toInt())
+            if (ordered.size >= need) {
+                android.util.Log.i(
+                    "Agent",
+                    "album_sort: 豆瓣曲目表命中 ${ordered.size}/${currentTracks.size} 首(${hit.url})",
+                )
+                onStep("search", AgentEngine.StepStatus.DONE)
+                onStep("analyze", AgentEngine.StepStatus.DONE)
+                return@withContext SortResult(
+                    orderedIndices = ordered,
+                    confidence = Confidence.HIGH,
+                    webSearched = true,
+                    webSnippet = hit.titles.joinToString("\n"),
+                    webHits = hit.hits,
+                    orderedSource = "douban:${hit.url}",
+                )
+            }
+            android.util.Log.i("Agent", "album_sort: 豆瓣表覆盖不足(${ordered.size}/${currentTracks.size}),转模型链路")
+        }
+
         // 1. Tavily 联网搜官方曲目顺序资料。主/备查询并行发——总耗时 = max(两查询)。
         //    备用查询去掉括号副标题(如《X (Deluxe Edition)》),整串搜无结果时兜底。
         //    v1.3.3: 多语言关键词——日语专辑用日语关键词,中文用中文,英文用英文,
         //    否则日语专辑搜不到(中文关键词对日语内容无效)。
         val queryLang = detectLanguage(album + artist)
+        // v1.3.15:中文去掉写死的"曲目顺序 tracklist" —— 实测那句修饰词会把结果带偏
+        // (返回一堆"专辑曲目"乐评页),朴素的"专辑 曲目"反而更准。权威曲序已由上面的
+        // 豆瓣抽取路线负责,这里只是通用兜底。
         val (primaryQuery, altQuery) = when (queryLang) {
-            "ja" -> "$album $artist アルバム 曲目 順番 tracklist" to "$album $artist アルバム 曲目 順番 tracklist"
-            "zh" -> "$album $artist 专辑 曲目顺序 tracklist" to "$album $artist 专辑 曲目顺序 tracklist"
-            else -> "$album $artist album tracklist order" to "$album $artist album tracklist order"
+            "ja" -> "$album $artist アルバム 曲目" to "$album $artist アルバム 曲目"
+            "zh" -> "$album $artist 专辑 曲目" to "$album $artist 专辑 曲目"
+            else -> "$album $artist album tracklist" to "$album $artist album tracklist"
         }
         val tavilyContext = coroutineScope {
-            // v1.3.15:**先只搜权威曲目源,抓不到再退回通用搜索**。
-            // 为什么:通用搜索对"官方曲序"这种事实型查询太杂 —— 真机实测《龙年》抓到的是
-            // B 站一段同名作品的视频简介,曲目与本地一首都不重合,却被当权威用。中文专辑的官方
-            // 曲序在 豆瓣音乐 / MusicBrainz / Discogs 这类有结构化曲目表的站点(豆瓣 v2 API 已关,
-            // 但专辑页是服务端渲染的,Tavily 能直接抓到"曲目"段,不必自建爬虫)。
+            // 主/备并行:主查询 + (专辑名带括号副标题时)去括号的查询。
+            // 注:v1.3.15 一度在这里加过"只搜权威域名"(豆瓣/MusicBrainz/Discogs),**已撤** ——
+            // 实测限定域名反而啥也搜不到(豆瓣命中的是移动域名 m.douban.com,被白名单挡掉,
+            // 结果只剩一堆无关乐评页)。权威来源改由上面那条**豆瓣抽取路线**专门解决;
+            // 这里只做通用兜底。
             val primary = async {
-                runCatching {
-                    com.shiyin.music.data.ai.TavilyService.search(
-                        tavilyKey, primaryQuery, includeDomains = TRACKLIST_SOURCES,
-                    )
-                }.getOrNull()
-            }
-            val first = primary.await()?.takeIf { it.isNotBlank() }
-            if (first != null) return@coroutineScope first
-            android.util.Log.i("Agent", "album_sort: 权威源无结果,退回通用搜索")
-            // 退回通用搜索(不带域名限制);专辑名带括号副标题时再试一条"去括号"的查询。
-            val generic = async {
                 runCatching { com.shiyin.music.data.ai.TavilyService.search(tavilyKey, primaryQuery) }.getOrNull()
             }
             val altAlbum = album.replace(Regex("[(（].*[)）]"), "").trim()
@@ -112,7 +135,7 @@ object AgentService {
             val alt = if (altAlbum != album || altArtist != artist) async {
                 runCatching { com.shiyin.music.data.ai.TavilyService.search(tavilyKey, altQuery) }.getOrNull()
             } else null
-            generic.await()?.takeIf { it.isNotBlank() }
+            primary.await()?.takeIf { it.isNotBlank() }
                 ?: alt?.await()?.takeIf { it.isNotBlank() }
         }
         // 搜到资料才标 DONE;没搜到标 FAILED(✗)——面板必须诚实。
@@ -228,15 +251,53 @@ object AgentService {
     /** 单条模糊匹配的最低分(低于它宁可不认,也不要张冠李戴)。 */
     private const val MIN_FUZZY_SCORE = 400
 
-    /**
-     * v1.3.15: 优先搜的**权威曲目源**。中文专辑的官方曲序在这些站上有结构化曲目表
-     * (豆瓣音乐页面是服务端渲染,Tavily 可直接抓"曲目"段;MusicBrainz/Discogs 是曲目数据库)。
-     * 只在这几个域名里搜不到时,才退回通用搜索。
-     */
-    private val TRACKLIST_SOURCES = listOf("music.douban.com", "musicbrainz.org", "discogs.com")
-
     /** 曲名归一(与 [officialToLocalIndices] 同一套:剥括号副标题 + FuzzySearch.normalize)。 */
     internal fun normTitleForMatch(s: String): String = normTitle(s)
+
+    /** 豆瓣路线的命中结果。[titles] 是页面上的官方曲序。 */
+    private data class DoubanHit(val titles: List<String>, val url: String, val hits: Int)
+
+    /**
+     * v1.3.15: 走**豆瓣**拿官方曲目表。
+     *
+     * 两步:①搜索(查询词**带"豆瓣音乐"关键词**)找到专辑页 URL;②抽取该页正文 → 解析"曲目"段。
+     *
+     * 查询词的坑(实测):原先把"曲目顺序 tracklist"写死在查询里 → 限定豆瓣时返回一堆无关乐评页;
+     * 改成「专辑名 歌手名 豆瓣音乐」后,**第 1 条就是那张专辑页**。所以这里不再拼那些修饰词。
+     *
+     * @return 命中且与本地曲目有重合 → 结果;否则 null(交给下面的模型链路)
+     */
+    private suspend fun fetchDoubanTracklist(
+        tavilyKey: String,
+        album: String,
+        artist: String,
+        localTitles: List<String>,
+    ): DoubanHit? {
+        if (tavilyKey.isBlank()) return null
+        val searched = runCatching {
+            com.shiyin.music.data.ai.TavilyService.search(
+                tavilyKey, "$album $artist 豆瓣音乐", withUrls = true,
+            )
+        }.getOrNull()
+        val urls = DoubanTracklist.subjectUrls(searched).take(2)
+        if (urls.isEmpty()) {
+            android.util.Log.i("Agent", "album_sort: 豆瓣路线没搜到专辑页 URL,转模型链路")
+            return null
+        }
+        var best: DoubanHit? = null
+        val need = maxOf(3, kotlin.math.ceil(localTitles.size * 0.8).toInt())
+        for (u in urls) {
+            val page = runCatching {
+                com.shiyin.music.data.ai.TavilyService.extract(tavilyKey, listOf(u))
+            }.getOrNull() ?: continue
+            val titles = DoubanTracklist.parseTracklist(page)
+            if (titles.isEmpty()) continue
+            val ov = DoubanTracklist.overlap(titles, localTitles)
+            if (best == null || ov > best.hits) best = DoubanHit(titles, u, ov)
+            if (ov >= need) break   // 已经够覆盖,不再多抽页面(省一次网络往返)
+        }
+        return best?.takeIf { it.hits > 0 }
+    }
 
     /**
      * v1.3.15: 联网资料里**能对上本地曲目的条数**。
