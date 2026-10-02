@@ -427,12 +427,18 @@ fun PlayerScreen(vm: MainViewModel) {
                         .clip(RoundedCornerShape(3.dp))
                         .background(c.accent)
                 )
-                // v1.4.0:必须显式 Center —— BoxWithConstraints 默认 contentAlignment 是 TopStart,
+                // v1.4.0:必须显式竖直居中 —— BoxWithConstraints 默认 contentAlignment 是 TopStart,
                 // 而滑块用 requiredSize(15.dp) 真的溢出父级 6dp 高度 → 它会被摆在盒子**顶部**,
                 // 圆心比条身圆心低 (15-6)/2 = 4.5dp,视觉上"旋钮吊在进度条下方"。
+                //
+                // ⚠️ 必须用 CenterStart 而**不是 Center**:Center = BiasAlignment(0,0) 会**连水平
+                // 一起居中**,把滑块先摆到条中央(50%),随后 `.offset(x = …*shownPct)` 再叠加上去
+                // → 圆心实际落在「50% + 进度」。表现为"刚开始播,圆心就已经过半",进度接近末尾时
+                // 圆心直接跑出条外看不见。CenterStart = BiasAlignment(-1, 0):水平靠 start、
+                // 竖直居中,offset 便从条首起算,圆心才与填充头部重合。
                 androidx.compose.foundation.layout.BoxWithConstraints(
                     Modifier.fillMaxWidth(),
-                    contentAlignment = Alignment.Center,
+                    contentAlignment = Alignment.CenterStart,
                 ) {
                     Box(
                         Modifier
