@@ -40,6 +40,12 @@
              不上云。密钥不该交给第三方云备份；**换机迁移仍然保留**（用户自己的两台设备之间），
              App 自带的 zip 备份也照旧（UI 已有"含密钥请妥善保管"提示）。 -->
         <exclude domain="file" path="datastore" />
+        <!-- v1.4.0：使用日志（filesDir/usage_logs/usage-*.log）不上云。
+             它按设计只记"做了什么"（本轮同时把两处未脱敏的错误串改成只记类别），
+             但属于**本机运行痕迹**，没有上云的必要 —— 与 crash_logs 同样的处置。
+             注意 domain：它是 **internal**（UsageLog.baseDir = File(filesDir, "usage_logs")），
+             所以要写 file 而不是 external（crash_logs 反过来，它走 getExternalFilesDir）。 -->
+        <exclude domain="file" path="usage_logs" />
     </cloud-backup>
     <!-- 换机迁移：排除"含对话内容"的两处，其余（图片/快照/设置）保持全量迁移 -->
     <device-transfer>
