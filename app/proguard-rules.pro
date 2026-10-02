@@ -93,3 +93,11 @@
 -keep class com.shiyin.music.MainViewModel$AgentMessage { *; }
 -keep class com.shiyin.music.MainViewModel$ProcessStep { *; }
 -keep class com.shiyin.music.data.ai.AgentEngine$Step { *; }
+
+# ── v1.4.0: 自定义写真源（Gson 写 / 字面键名读，与上面同一种不对称）──
+# CustomImageSourceCodec.encode 走 `Gson().toJson(list)`（键名 = 字段名），
+# decode 走 `o.get("urlTemplate")` / `o.get("apiKey")` 等**字面键名**。
+# 字段名一旦被 R8 混淆，写出的键名漂移 → decode 读不到 id 就 return@mapNotNull null →
+# **用户加的自定义写真源（含其中保存的 API Key）在 release 包里静默全部丢失**。
+# （同族的 data.db.** 与 data.update.** 已各自加过同类规则，这里补上 data.image。）
+-keep class com.shiyin.music.data.image.** { *; }
