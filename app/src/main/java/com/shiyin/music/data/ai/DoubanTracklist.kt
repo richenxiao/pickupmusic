@@ -31,6 +31,20 @@ internal object DoubanTracklist {
     }
 
     /**
+     * v1.3.15: 把专辑页 URL 规范化成**桌面版** —— 这是整条路线成败的关键一步。
+     *
+     * 实测(2026-10-02《龙年》,同一个 Tavily):
+     *  - 搜索结果**命中的是移动版** `m.douban.com/music/subject/<id>`;
+     *  - 抽取**移动版** → "曲目"段是**空的**(只有 `## 曲目 · · · · · ·` 标题,曲目靠 JS 渲染);
+     *  - 抽取**桌面版** `music.douban.com/subject/<id>/` → **完整 14 首官方曲序**。
+     * 于是"搜到了却解析不出曲目"的怪异现象有了唯一解释:抓错了版本。
+     */
+    fun desktopUrl(url: String): String {
+        val id = Regex("""/subject/(\d+)""").find(url)?.groupValues?.get(1) ?: return url
+        return "https://music.douban.com/subject/$id/"
+    }
+
+    /**
      * 解析抽取出来的页面正文 → 官方曲目名列表(保持页面顺序)。
      *
      * 实测形态(豆瓣专辑页):

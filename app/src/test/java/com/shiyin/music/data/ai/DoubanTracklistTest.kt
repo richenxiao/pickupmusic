@@ -98,4 +98,20 @@ class DoubanTracklistTest {
     fun `重合度按归一口径算 - 繁简全半角副标题不挡`() {
         assertEquals(2, DoubanTracklist.overlap(listOf("枣庄市马思唯", "轨道飞虎 (Live)"), expected14))
     }
+
+    @Test
+    fun `移动版地址会被改写成桌面版 - 这是曲目能不能抽出来的关键`() {
+        // 实测:移动版 m.douban.com 的"曲目"段是 JS 渲染的,抽出来是空的;桌面版才有曲目表。
+        assertEquals(
+            "https://music.douban.com/subject/37372564/",
+            DoubanTracklist.desktopUrl("https://m.douban.com/music/subject/37372564"),
+        )
+        // 已经是桌面版 → 保持(只需补尾斜杠)
+        assertEquals(
+            "https://music.douban.com/subject/37372564/",
+            DoubanTracklist.desktopUrl("https://music.douban.com/subject/37372564"),
+        )
+        // 认不出来 → 原样返回(不去瞎改)
+        assertEquals("https://example.com/x", DoubanTracklist.desktopUrl("https://example.com/x"))
+    }
 }

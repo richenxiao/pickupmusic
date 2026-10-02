@@ -301,18 +301,26 @@ object AgentService {
         var extractedOk = 0
         var titlesSeen = 0
         val need = maxOf(3, kotlin.math.ceil(localTitles.size * 0.8).toInt())
-        for (u in urls) {
-            val page = runCatching {
-                com.shiyin.music.data.ai.TavilyService.extract(tavilyKey, listOf(u))
-            }.getOrNull()
-            if (page.isNullOrBlank()) continue
-            extractedOk++
-            val titles = DoubanTracklist.parseTracklist(page)
-            if (titles.isEmpty()) continue
-            titlesSeen += titles.size
-            val ov = DoubanTracklist.overlap(titles, localTitles)
-            if (best == null || ov > best.hits) best = DoubanHit(titles, u, ov)
-            if (ov >= need) break   // 已经够覆盖,不再多抽页面(省一次网络往返)
+        // v1.3.15:**改写成桌面版再抽**。搜索结果命中的是移动版 m.douban.com,而移动版的
+        // "曲目"段是 JS 渲染的 → 抽出来是空的(实测);桌面版才有完整曲目表。先试桌面版,
+        // 桌面版抽不出再退回原地址(万一将来豆瓣改版,不至于一次都抽不到)。
+        for (raw in urls) {
+            val desktop = DoubanTracklist.desktopUrl(raw)
+            val tries = if (desktop == raw) listOf(raw) else listOf(desktop, raw)
+            for (u in tries) {
+                val page = runCatching {
+                    com.shiyin.music.data.ai.TavilyService.extract(tavilyKey, listOf(u))
+                }.getOrNull()
+                if (page.isNullOrBlank()) continue
+                extractedOk++
+                val titles = DoubanTracklist.parseTracklist(page)
+                if (titles.isEmpty()) continue
+                titlesSeen += titles.size
+                val ov = DoubanTracklist.overlap(titles, localTitles)
+                if (best == null || ov > best.hits) best = DoubanHit(titles, u, ov)
+                if (ov >= need) break
+            }
+            if ((best?.hits ?: 0) >= need) break   // 已够覆盖,不再多抽页面
         }
         if (best == null) {
             onDiag(
