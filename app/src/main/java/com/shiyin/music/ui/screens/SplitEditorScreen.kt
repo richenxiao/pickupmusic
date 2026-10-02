@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -80,7 +81,7 @@ fun SplitEditorScreen(vm: MainViewModel) {
         ?: vm.trackById(SplitIds.containerId(src))
     val fileDurMs = srcTrack?.durationMs ?: 0L
 
-    Column(Modifier.fillMaxSize().background(c.bg)) {
+    Column(Modifier.fillMaxSize().background(c.bg).imePadding()) {
         Row(
             Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 16.dp, bottom = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
