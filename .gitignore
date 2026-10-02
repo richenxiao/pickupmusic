@@ -68,6 +68,11 @@ tools/jmdict-build/tools/
 # ─── v1.2.0 开发过程产物（设计文档/本地写真原图/Claude 会话记录，仅本地保留，不入库）───
 docs/design/
 docs/photos/
+
+# ─── 内部资料：仅供维护者长期参考的内部设计依据与工作台账，不进公开仓库 ───
+# 只放"未来维护时会反复查阅"的极少数文档；一次性需求/验证/草稿一律移出仓库，
+# 不要往这里堆。已被跟踪的文件必须先 `git rm --cached` 解除跟踪，光加规则无效。
+docs/internal/
 *-this-session-is-being-continued-*.txt
 
 # agent 调试日志与 review 临时产物,不入库
