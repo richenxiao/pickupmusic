@@ -81,6 +81,39 @@ class KaomojiPolicyTest {
     }
 
     @Test
+    fun `含日文长音符或间隔号的普通括注不得被删`() {
+        // v1.4.0 修「误删是事故」的实例:・(U+30FB) 与 ー(U+30FC) 是**普通日文标点**,
+        // 不是颜文字专有字符。它们一旦算作特征,下面这些正常括注会被整段删掉。
+        assertEquals("（ヨルシカ・ナブナ）", KaomojiPolicy.sanitize("（ヨルシカ・ナブナ）"))
+        assertEquals("（ノーカット）", KaomojiPolicy.sanitize("（ノーカット）"))
+        assertEquals("（Live）", KaomojiPolicy.sanitize("（Live）"))
+        assertEquals("（feat. X）", KaomojiPolicy.sanitize("（feat. X）"))
+        assertEquals("（マイケル・ジャクソン）", KaomojiPolicy.sanitize("（マイケル・ジャクソン）"))
+        assertEquals("（リミックス・バージョン）", KaomojiPolicy.sanitize("（リミックス・バージョン）"))
+        // 句子层面:括注被保住,句子仍完整
+        assertEquals(
+            "这张专辑是ヨルシカ・ナブナ做的(2020 年版)。",
+            KaomojiPolicy.sanitize("这张专辑是ヨルシカ・ナブナ做的(2020 年版)。"),
+        )
+    }
+
+    @Test
+    fun `移除普通标点后真颜文字仍能识别 - 它们都带其它专有字符`() {
+        // 这三个在既有用例里已确认属于清单内(含 ω / ▽ 等专有字符)——把 ・/ー 移出特征集
+        // 不影响它们的识别与保留。
+        assertEquals("今天有点累。(´ ▽ `)", KaomojiPolicy.sanitize("今天有点累。(´ ▽ `)"))
+        assertEquals("我记住了。(｡・ω・｡)", KaomojiPolicy.sanitize("我记住了。(｡・ω・｡)"))
+        assertEquals("嗯。(´▽`)", KaomojiPolicy.sanitize("嗯。(´▽`)"))
+    }
+
+    @Test
+    fun `纯间隔号构成的颜文字不再被识别 - 这是刻意的误漏`() {
+        // 明知取舍:・/ー 移出特征集后,`(・_・)` 这类只由普通标点+下划线构成的颜文字
+        // 会残留不删。按文件的代价原则(误漏是观感小瑕、误删是事故),这里选择保留。
+        assertEquals("(・_・)", KaomojiPolicy.sanitize("(・_・)"))
+    }
+
+    @Test
     fun `完全不含颜文字专有字符的文本走快速路径且内容不变`() {
         val t = "这首歌的编曲我很喜欢,尤其是第二段副歌(大概 2 分 40 秒那里)。"
         assertEquals(t, KaomojiPolicy.sanitize(t))
