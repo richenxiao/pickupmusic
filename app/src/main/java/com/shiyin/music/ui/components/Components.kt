@@ -931,6 +931,11 @@ fun CoverArt(
             flipFrom = null
             flipRot.snapTo(0f)
             fadeAlpha.snapTo(1f)
+            // v1.4.0:**同时"认下"新专辑**。不更新 lastAlbumId 会留下一个永远成立的
+            // pendingFlip(下文:`lastAlbumId != track.albumId` → 一直画 lastArt),
+            // 于是"有封面的 A → 无封面的 B"之后,迷你条会**永久**显示 A 的封面,
+            // 且因为槽位实例不重建(见调用方 key)不会自愈,直到再播一首有封面的歌。
+            lastAlbumId = track?.albumId ?: Long.MIN_VALUE
             return@LaunchedEffect
         }
         val albumChanged = track?.albumId != lastAlbumId
