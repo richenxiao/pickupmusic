@@ -36,6 +36,10 @@
              两个 domain 都排，覆盖回落路径。 -->
         <exclude domain="external" path="agent_dump" />
         <exclude domain="file" path="agent_dump" />
+        <!-- v1.4.0：设置与 API Key 所在的 DataStore（filesDir/datastore/settings.preferences_pb）
+             不上云。密钥不该交给第三方云备份；**换机迁移仍然保留**（用户自己的两台设备之间），
+             App 自带的 zip 备份也照旧（UI 已有"含密钥请妥善保管"提示）。 -->
+        <exclude domain="file" path="datastore" />
     </cloud-backup>
     <!-- 换机迁移：排除"含对话内容"的两处，其余（图片/快照/设置）保持全量迁移 -->
     <device-transfer>
