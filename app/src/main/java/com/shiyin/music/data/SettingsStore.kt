@@ -371,6 +371,12 @@ class SettingsStore(private val context: Context) {
             for ((name, encoded) in values) {
                 val expected = backupKeyTypes[name] ?: continue
                 if (SettingsValueCodec.typeOf(encoded) != expected) continue
+                // v1.4.0：**密钥类设置仅在本机为空时才写入**。
+                // 导入别人的备份（或自己那份但已换过密钥）时，原实现无条件覆盖 → 用户配好的
+                // Key 被静默换掉，而"Agent 突然用不了"极难联想到导入这一步。反过来完全不写也有代价
+                // （换机后密钥没了），所以只让"本机为空"这一种情况接受备份值：换机（新机为空）照旧恢复，
+                // 本机已配置的一律不动。
+                if (!shouldWriteBackupValue(name, localBlank = prefs[stringPreferencesKey(name)].isNullOrBlank())) continue
                 when (expected) {
                     SettingsValueCodec.BOOL -> SettingsValueCodec.boolOf(encoded)?.let {
                         prefs[booleanPreferencesKey(name)] = it; n++
@@ -403,3 +409,20 @@ class SettingsStore(private val context: Context) {
         p[keyRecent] = next.joinToString(",")
     }
 }
+
+/**
+ * v1.4.0：备份里**含密钥**的设置项 —— 这些采用"仅本机为空时才写入"（见 [SettingsStore.importBackupSettings]）。
+ *
+ * `llm_providers` 也在内：它是供应商列表的 JSON，每项都带 apiKey。
+ */
+internal val SECRET_BACKUP_KEYS = setOf(
+    "deepseek_api_key",
+    "tavily_api_key",
+    "fanart_api_key",
+    "lastfm_api_key",
+    "llm_providers",
+)
+
+/** 该设置项这次要不要从备份写入：非密钥项照旧；密钥项**只在本机为空时**接受备份值。 */
+internal fun shouldWriteBackupValue(name: String, localBlank: Boolean): Boolean =
+    name !in SECRET_BACKUP_KEYS || localBlank
