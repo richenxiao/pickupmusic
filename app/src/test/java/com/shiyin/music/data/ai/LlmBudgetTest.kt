@@ -87,4 +87,16 @@ class LlmBudgetTest {
         assertTrue("重试后必须显著更大", second > first)
         assertTrue("重试后应能容纳 48 行译文(~1536)+ 充裕思考余量", second >= 5000)
     }
+
+    // ── v1.3.15:关思考只发给 DeepSeek ───────────────────────────────────────
+
+    @Test
+    fun `thinking 字段只发给 DeepSeek 端点`() {
+        // 发错供应商 = 未知字段 400 = 整次调用失败,比"不省预算"糟得多
+        assertTrue(shouldSendNoThinking("https://api.deepseek.com", noThinking = true))
+        assertTrue(shouldSendNoThinking("https://api.deepseek.com/v1", noThinking = true))
+        assertFalse("别的供应商一律不发", shouldSendNoThinking("https://openrouter.ai/api/v1", noThinking = true))
+        assertFalse(shouldSendNoThinking("https://open.bigmodel.cn/api/paas/v4", noThinking = true))
+        assertFalse("没要求关思考就不发", shouldSendNoThinking("https://api.deepseek.com", noThinking = false))
+    }
 }

@@ -145,7 +145,10 @@ object AgentService {
         // v1.3.3: maxTokens 从 512 回调到 2048——推理模型(sensenova/DeepSeek-R1 等)的
         // reasoning 也计入 completion_tokens,思考就能吃掉几百 token,512 会让 content
         // 被截断 → 解析不出排序 → 误报"未找到足够信息"(正是 JTW 排序失败的根因)。
-        val first = com.shiyin.music.data.ai.LlmClient.call(config, messages, maxTokens = 2048)
+        // v1.3.15:noThinking=true —— 这一步是**照抄曲名重排**的机械任务,不需要思考。
+        // 真机实测(2026-10-02《龙年》):默认开思考时 thinkLen=11294、ct 打满 4096、
+        // finish=length、正文为空 → 一直"排不出来"。关掉思考后正文才有预算。
+        val first = com.shiyin.music.data.ai.LlmClient.call(config, messages, maxTokens = 2048, noThinking = true)
         if (first == null) {
             onStep("analyze", AgentEngine.StepStatus.FAILED)
             return@withContext null
@@ -172,6 +175,7 @@ object AgentService {
                     "user" to "请重新输出:按官方顺序,每行一首,**照抄我上面给你的本地曲目写法**;不要编号、不要歌手名、不要解释;不确定的不要写。",
                 ),
                 maxTokens = com.shiyin.music.data.ai.LLM_MAX_OUTPUT_TOKENS,  // 8600 级预算,给推理留足
+                noThinking = true,   // 同上:机械任务,别让思考再吃预算
             )
             if (retry != null && retry.content?.isNotBlank() == true) {
                 resp = retry

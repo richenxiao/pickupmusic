@@ -133,15 +133,36 @@ object LlmClient {
         maxTokens: Int = 2048,
         callSec: Long = 120,
         retries: Int = 1,
+        /**
+         * v1.3.15:**结构化提取类调用关掉思考**(仅对 DeepSeek 端点发该字段)。
+         *
+         * 真机定性(2026-10-02,《龙年》曲序):样本显示 `ct=4096 / thinkLen=11294 /
+         * finish=length / 正文空` —— 模型把整份输出预算都花在"想"上(1.1 万字思考),
+         * 一个字正文都没留下。DeepSeek V4 系列**默认开 thinking**,而"照抄曲名排个序"
+         * 这种机械任务根本不需要思考:关掉它,既拿得到正文,又快又省。
+         *
+         * ⚠️ `thinking` 是 DeepSeek 专有字段:其它 OpenAI 兼容供应商收到未知字段可能直接 400,
+         * 所以只对 baseUrl 含 deepseek 的供应商发送,并在撞到 4xx 时**去掉字段再试一次**。
+         */
+        noThinking: Boolean = false,
     ): LlmResponse? {
         var attempt = 0
         var backoffMs = 1000L
         while (true) {
             val t0 = android.os.SystemClock.elapsedRealtime()
-            val r = callOnce(config, messages, temperature, maxTokens, callSec)
+            val r = callOnce(config, messages, temperature, maxTokens, callSec, noThinking)
             logCallLine(r, android.os.SystemClock.elapsedRealtime() - t0, callSec, maxTokens)
             // 成功 / 非网络类失败(服务端响应了:HTTP 错误码、配置问题) → 直接返回
             if (r != null || lastError?.startsWith("网络异常") != true) {
+                // v1.3.15:供应商不认 `thinking` 字段(4xx)时,去掉它再试一次 ——
+                // "省预算"不该变成"直接失败"。
+                if (r == null && noThinking && lastError?.startsWith("HTTP 4") == true) {
+                    android.util.Log.w(TAG, "thinking 字段被拒(${lastError?.take(60)}),去掉后重试一次")
+                    val t2 = android.os.SystemClock.elapsedRealtime()
+                    val r3 = callOnce(config, messages, temperature, maxTokens, callSec, noThinking = false)
+                    logCallLine(r3, android.os.SystemClock.elapsedRealtime() - t2, callSec, maxTokens)
+                    if (r3 != null) return r3
+                }
                 // v1.3.11:正文空 + 思考非空 = 思考型模型把预算吃光(见 LlmBudget 的实证)。
                 // 用**双倍预算**再要一次:一次点击最多多花一次调用,换掉"时好时坏、点两三次"。
                 if (r != null &&
@@ -154,7 +175,7 @@ object LlmClient {
                             "→ 预算 $maxTokens → $bigger,重试一次",
                     )
                     val t1 = android.os.SystemClock.elapsedRealtime()
-                    val r2 = callOnce(config, messages, temperature, bigger, callSec)
+                    val r2 = callOnce(config, messages, temperature, bigger, callSec, noThinking)
                     logCallLine(r2, android.os.SystemClock.elapsedRealtime() - t1, callSec, bigger)
                     // 加大预算仍拿不到 → 返回原始结果(调用方按"空响应"处理并报错),
                     // 不返回 null:HTTP 层这次是成功的,别谎报成网络失败。
@@ -327,7 +348,7 @@ object LlmClient {
     }
 
     /** 单次调用(无重试)。网络异常时 lastError 以"网络异常"开头,供 call 判定可重试。 */
-    private suspend fun callOnce(config: LlmProviderConfig, messages: List<Pair<String, String>>, temperature: Double, maxTokens: Int, callSec: Long = 120): LlmResponse? =
+    private suspend fun callOnce(config: LlmProviderConfig, messages: List<Pair<String, String>>, temperature: Double, maxTokens: Int, callSec: Long = 120, noThinking: Boolean = false): LlmResponse? =
         withContext(Dispatchers.IO) {
             if (!config.isConfigured) {
                 lastError = "供应商未配置(缺 API Key 或模型名)"
@@ -351,6 +372,10 @@ object LlmClient {
                     // (512)既省 token 又加快服务端生成;闲聊用默认 2048。
                     addProperty("max_tokens", maxTokens)
                     addProperty("temperature", temperature)
+                    // v1.3.15:结构化提取关思考(见 noThinking 说明)。字段只发给 DeepSeek 端点。
+                    if (shouldSendNoThinking(config.baseUrl, noThinking)) {
+                        add("thinking", JsonObject().apply { addProperty("type", "disabled") })
+                    }
                 }.toString()
 
                 val req = Request.Builder()

@@ -61,7 +61,9 @@ internal object AgentLibrarySearch {
             - 常见别名、简称、正式全名
             不要编号、不要解释、不要引号、不要标点修饰;不确定的就不要写。
         """.trimIndent()
-        val resp = LlmClient.call(config, listOf("user" to prompt), temperature = 0.2, maxTokens = 200)
+        // v1.3.15:关思考 + 预算留余量。这一步只要"几个候选写法",而 DeepSeek V4 默认开思考、
+        // 思考计入 completion 预算 —— 200 token 的预算会被思考整段吃光(正文空 → 兜底失效)。
+        val resp = LlmClient.call(config, listOf("user" to prompt), temperature = 0.2, maxTokens = 512, noThinking = true)
             ?: return emptyList()
         resp.let { ctx.logUsage(it.promptTokens, it.completionTokens, it.cacheTokens) }
         val bullet = Regex("""^[\s\-*·>#]*(?:\d+[.、)]\s*)?""")
@@ -112,7 +114,8 @@ internal object AgentLibrarySearch {
             用来在本地库里搜出契合此刻的歌。例如「今天早上天气很好」→ 朝 / 夜明け / morning / sunrise / 阳光。
             每行一个词,不要编号、不要解释、不要整句;没想到就少写几个。
         """.trimIndent()
-        val resp = LlmClient.call(config, listOf("user" to prompt), temperature = 0.4, maxTokens = 160)
+        // 同 proposeVariants:只要"能出现在曲名/专辑名里的词",不需要思考
+        val resp = LlmClient.call(config, listOf("user" to prompt), temperature = 0.4, maxTokens = 512, noThinking = true)
             ?: return emptyList()
         resp.let { ctx.logUsage(it.promptTokens, it.completionTokens, it.cacheTokens) }
         val bullet = Regex("""^[\s\-*·>#]*(?:\d+[.、)]\s*)?""")

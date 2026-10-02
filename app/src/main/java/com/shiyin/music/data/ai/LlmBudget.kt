@@ -46,3 +46,12 @@ internal fun shouldRetryWithBiggerBudget(
 /** 双倍预算,封顶 [LLM_MAX_OUTPUT_TOKENS](超上限会被服务端 HTTP 400 拒绝)。 */
 internal fun doubledBudget(maxTokens: Int): Int =
     (maxTokens * 2).coerceAtMost(LLM_MAX_OUTPUT_TOKENS)
+
+/**
+ * v1.3.15:要不要在请求体里发 `thinking: {type: disabled}`。
+ *
+ * 该字段是 DeepSeek 专有(见官方 Thinking Mode 文档);发给别的 OpenAI 兼容供应商,
+ * 未知字段可能直接 400 —— 把"省预算"变成"整次调用失败"。所以只认 DeepSeek 端点。
+ */
+internal fun shouldSendNoThinking(baseUrl: String, noThinking: Boolean): Boolean =
+    noThinking && baseUrl.contains("deepseek", ignoreCase = true)
