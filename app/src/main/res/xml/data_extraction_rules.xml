@@ -31,9 +31,16 @@
         <exclude domain="file" path="crash_logs" />
         <!-- 含对话内容：不上云 -->
         <exclude domain="file" path="agent_diag" />
+        <!-- v1.4.0：「导出对话」写的是 getExternalFilesDir("agent_dump")（拿不到才回落 filesDir），
+             内容含完整对话原文 + 思考链——与 agent_diag 同级别的隐私物，故同样不上云；
+             两个 domain 都排，覆盖回落路径。 -->
+        <exclude domain="external" path="agent_dump" />
+        <exclude domain="file" path="agent_dump" />
     </cloud-backup>
-    <!-- 换机迁移：只排除诊断样本，其余保持全量 -->
+    <!-- 换机迁移：排除"含对话内容"的两处，其余（图片/快照/设置）保持全量迁移 -->
     <device-transfer>
         <exclude domain="file" path="agent_diag" />
+        <exclude domain="external" path="agent_dump" />
+        <exclude domain="file" path="agent_dump" />
     </device-transfer>
 </data-extraction-rules>
