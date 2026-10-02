@@ -243,15 +243,6 @@ object AgentTools {
 
     const val CLARIFY = "clarify"
 
-    /**
-     * ⚠️ v1.3.10 **临时诊断开关**——用途唯一:验证"模型触发的 clarify → VM 状态 → UI 渲染"
-     * 这条链路确实接通(用户要求实测,不接受只读代码推断)。用户发这句就强制返回一次澄清,
-     * 不调模型、不花钱。
-     *
-     * **验证完成、截图确认后必须删除**:本常量 + [dispatch] 里的 PROBE 分支。
-     */
-    private const val CLARIFY_PROBE = "⚡clarify自检"
-
     /** 模型选中的技能调用。args 已从 JSON 抽成字符串表。 */
     data class SkillInvocation(val key: String, val args: Map<String, String>)
 
@@ -508,18 +499,6 @@ object AgentTools {
         onSearch: (String) -> Unit = {},
         onSearchComplete: (String, Boolean) -> Unit = { _, _ -> },
     ): DispatchResult {
-        // ⚠️ 临时诊断分支(见 [CLARIFY_PROBE],验证后删除)
-        // 两种写法都认:带 ⚡ 的原串,或纯文字 "clarify自检"(手机上少打一个 emoji)。
-        val probeText = userText.trim()
-        if (probeText == CLARIFY_PROBE || probeText.equals("clarify自检", ignoreCase = true)) {
-            android.util.Log.i("Agent", "clarify PROBE: 强制返回一次澄清(未调模型)")
-            return DispatchResult(
-                clarify = ClarifyRequest(
-                    question = "要我把这首加进队列,还是直接播放?",
-                    options = listOf("加进队列", "直接播放", "换一首风格接近的"),
-                ),
-            )
-        }
         val tools = buildTools(includeWebSearch = tavilyKey.isNotBlank())
         val messages = JsonArray().apply {
             add(JsonObject().apply {
