@@ -85,6 +85,15 @@ object AlbumSortSkill : AgentEngine.AgentSkill {
             artist = artistName,
             currentTracks = currentTitles,
             onStep = onStep,  // AgentService 内部推进 search DONE → analyze RUNNING/DONE
+            // v1.3.15:豆瓣路线/联网路线的**每一步**都记进诊断 —— "走了但没命中"与"压根没走"
+            // 在真机上必须能分开(否则只能像这次一样靠猜)。
+            onDiag = { counts, code, detail ->
+                ctx.recordDiag(
+                    skill = "album_sort", stage = "douban",
+                    ok = code == null,
+                    counts = counts, errorCode = code, errorDetail = detail,
+                )
+            },
         )
         if (result == null) {
             val err = com.shiyin.music.data.ai.LlmClient.lastError ?: "未知错误"

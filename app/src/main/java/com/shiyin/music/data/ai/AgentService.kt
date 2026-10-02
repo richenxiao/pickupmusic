@@ -79,6 +79,8 @@ object AgentService {
         artist: String,
         currentTracks: List<String>,
         onStep: (String, com.shiyin.music.data.ai.AgentEngine.StepStatus) -> Unit = { _, _ -> },
+        /** 诊断回调(见 fetchDoubanTracklist) —— 技能侧接到 ctx.recordDiag 上。 */
+        onDiag: (Map<String, Int>, String?, String?) -> Unit = { _, _, _ -> },
     ): SortResult? = withContext(Dispatchers.IO) {
         if (!config.isConfigured || currentTracks.isEmpty()) return@withContext null
 
@@ -86,7 +88,7 @@ object AgentService {
         // 为什么放最前:通用搜索给的是"一段可能不对题的资料",模型还得照着猜;而豆瓣专辑页的
         // "曲目"段**本身就是官方顺序**(实测《龙年》:抽出来的 14 首与用户手贴的官方序一字不差)。
         // 这一步不需要模型参与 —— 名字能对上就直接排完,对不上才落到下面的模型链路。
-        runCatching { fetchDoubanTracklist(tavilyKey, album, artist, currentTracks) }.getOrNull()?.let { hit ->
+        runCatching { fetchDoubanTracklist(tavilyKey, album, artist, currentTracks, onDiag) }.getOrNull()?.let { hit ->
             val ordered = officialToLocalIndices(hit.titles, currentTracks)
             val need = maxOf(3, kotlin.math.ceil(currentTracks.size * 0.8).toInt())
             if (ordered.size >= need) {
@@ -198,7 +200,9 @@ object AgentService {
         // v1.3.15:noThinking=true —— 这一步是**照抄曲名重排**的机械任务,不需要思考。
         // 真机实测(2026-10-02《龙年》):默认开思考时 thinkLen=11294、ct 打满 4096、
         // finish=length、正文为空 → 一直"排不出来"。关掉思考后正文才有预算。
-        val first = com.shiyin.music.data.ai.LlmClient.call(config, messages, maxTokens = 2048, noThinking = true)
+        // ⚠️ thinking 参数是 DeepSeek 专有:换到别的"默认带思考"的 flash 模型(如 sensenova)
+        // 时它不生效,那种情况下只能靠预算 —— 所以首次预算也给 4096 这一档(跨供应商安全)。
+        val first = com.shiyin.music.data.ai.LlmClient.call(config, messages, maxTokens = 4096, noThinking = true)
         if (first == null) {
             onStep("analyze", AgentEngine.StepStatus.FAILED)
             return@withContext null
@@ -224,8 +228,11 @@ object AgentService {
                     first.content?.takeIf { it.isNotBlank() }?.let { "assistant" to it },
                     "user" to "请重新输出:按官方顺序,每行一首,**照抄我上面给你的本地曲目写法**;不要编号、不要歌手名、不要解释;不确定的不要写。",
                 ),
-                maxTokens = com.shiyin.music.data.ai.LLM_MAX_OUTPUT_TOKENS,  // 8600 级预算,给推理留足
-                noThinking = true,   // 同上:机械任务,别让思考再吃预算
+                // v1.3.15:预算用 4096 而不是上限 8192 —— 上限是**按最宽松的供应商**定的,
+                // 小/新供应商(如 sensenova-flash-lite)超限会直接 HTTP 400,那就从"截断"
+                // 变成"整次失败"。4096 是跨供应商都安全的一档。
+                maxTokens = 4096,
+                noThinking = true,   // 机械任务,别让思考再吃预算(仅 DeepSeek 端点生效)
             )
             if (retry != null && retry.content?.isNotBlank() == true) {
                 resp = retry
@@ -272,29 +279,53 @@ object AgentService {
         album: String,
         artist: String,
         localTitles: List<String>,
+        /** 诊断回调:(counts, errorCode, detail)。豆瓣路线失败在哪一步**必须能看见** —— 否则
+         *  "走了但没命中"和"压根没走"在真机上完全无法区分(2026-10-02 实测踩到)。 */
+        onDiag: (Map<String, Int>, String?, String?) -> Unit = { _, _, _ -> },
     ): DoubanHit? {
-        if (tavilyKey.isBlank()) return null
+        if (tavilyKey.isBlank()) {
+            onDiag(emptyMap(), "NO_TAVILY_KEY", null)
+            return null
+        }
+        val query = "$album $artist 豆瓣音乐"
         val searched = runCatching {
-            com.shiyin.music.data.ai.TavilyService.search(
-                tavilyKey, "$album $artist 豆瓣音乐", withUrls = true,
-            )
+            com.shiyin.music.data.ai.TavilyService.search(tavilyKey, query, withUrls = true)
         }.getOrNull()
         val urls = DoubanTracklist.subjectUrls(searched).take(2)
         if (urls.isEmpty()) {
             android.util.Log.i("Agent", "album_sort: 豆瓣路线没搜到专辑页 URL,转模型链路")
+            onDiag(mapOf("searchLen" to (searched?.length ?: 0)), "DOUBAN_NO_URL", "q=$query")
             return null
         }
         var best: DoubanHit? = null
+        var extractedOk = 0
+        var titlesSeen = 0
         val need = maxOf(3, kotlin.math.ceil(localTitles.size * 0.8).toInt())
         for (u in urls) {
             val page = runCatching {
                 com.shiyin.music.data.ai.TavilyService.extract(tavilyKey, listOf(u))
-            }.getOrNull() ?: continue
+            }.getOrNull()
+            if (page.isNullOrBlank()) continue
+            extractedOk++
             val titles = DoubanTracklist.parseTracklist(page)
             if (titles.isEmpty()) continue
+            titlesSeen += titles.size
             val ov = DoubanTracklist.overlap(titles, localTitles)
             if (best == null || ov > best.hits) best = DoubanHit(titles, u, ov)
             if (ov >= need) break   // 已经够覆盖,不再多抽页面(省一次网络往返)
+        }
+        if (best == null) {
+            onDiag(
+                mapOf("urls" to urls.size, "extracted" to extractedOk, "titles" to titlesSeen),
+                if (extractedOk == 0) "DOUBAN_EXTRACT_FAIL" else "DOUBAN_NO_TRACKLIST",
+                urls.first(),
+            )
+        } else {
+            onDiag(
+                mapOf("urls" to urls.size, "extracted" to extractedOk, "titles" to best.titles.size, "hits" to best.hits),
+                if (best.hits >= need) null else "DOUBAN_LOW_COVER",
+                best.url,
+            )
         }
         return best?.takeIf { it.hits > 0 }
     }
