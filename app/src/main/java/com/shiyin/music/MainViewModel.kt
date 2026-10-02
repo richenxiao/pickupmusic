@@ -648,7 +648,45 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     // lyrics runtime
     var lyState by mutableStateOf(LyState.Idle)
-    var currentLyrics by mutableStateOf<LoadedLyrics?>(null); private set
+    /**
+     * 当前歌词。**写入即触发一次 hash 搬键**（见 [maybeMigrateLyricsHash]）。
+     *
+     * 为什么挂在 setter 而不是各个加载点：歌词有 6 条加载路径（已存 / 内嵌 ID3 / 同名 .lrc /
+     * 联网匹配 / Agent 联网搜 / 导入文本），逐个挂容易漏，将来再加一条也会漏。
+     */
+    private val currentLyricsState = mutableStateOf<LoadedLyrics?>(null)
+    var currentLyrics: LoadedLyrics?
+        get() = currentLyricsState.value
+        private set(value) {
+            currentLyricsState.value = value
+            value?.let { maybeMigrateLyricsHash(it) }
+        }
+
+    /**
+     * v1.4.0:把**旧 hash 名下**的注音/译文搬到新 hash 名下（一次性）。
+     *
+     * 背景：hash 算法改过（改为剥掉行首 `[mm:ss.xx]`，修"打轴后翻译恢复不到"）。升级后按新
+     * hash 查不到升级前存的数据 → 用户表现为"我的注音/译文不见了"。搬键后所有读取点（它们
+     * 一律用 `LyricsHash.of`）自然命中，无需逐个改。
+     *
+     * 守卫：新 hash 名下**已经有行**就跳过（用户升级后又存取过，旧行属下堂），
+     * 避免 UPDATE 撞主键。无时间戳的歌词两个算法同值，[needsMigration] 直接短路。
+     */
+    private fun maybeMigrateLyricsHash(ly: LoadedLyrics) {
+        val fg = com.shiyin.music.data.furigana.LyricsHash
+        if (!fg.needsMigration(ly.raw)) return
+        val newHash = fg.of(ly.raw)
+        val oldHash = fg.ofLegacy(ly.raw)
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching {
+                if (dao.countRowsUnderHash(ly.mediaId, newHash) > 0) return@runCatching
+                dao.migrateReadingOverrideHash(ly.mediaId, oldHash, newHash)
+                dao.migrateExternalEvidenceHash(ly.mediaId, oldHash, newHash)
+                dao.migrateLyricsTranslationHash(ly.mediaId, oldHash, newHash)
+                android.util.Log.i("Lyrics", "歌词 hash 搬键完成 mediaId=${ly.mediaId}")
+            }
+        }
+    }
     /** v1.3.x: 手动匹配的实时进度文案(agent websearch 两阶段:联网搜索→AI 生成);
      *  null=普通匹配,预览卡用默认"正在匹配歌词…"。 */
     var lyProgressText by mutableStateOf<String?>(null); private set

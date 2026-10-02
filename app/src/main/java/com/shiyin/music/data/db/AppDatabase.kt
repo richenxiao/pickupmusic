@@ -906,6 +906,29 @@ interface ShiyinDao {
     @Query("DELETE FROM lyrics_translation WHERE mediaId = :mediaId")
     suspend fun deleteLyricsTranslationForMedia(mediaId: Long)
 
+    // ── v1.4.0: 歌词 hash 语义变更的**一次性搬键** ──────────────────────────
+    // 背景:hash 算法改为"剥掉行首 [mm:ss.xx] 时间戳"(修"打轴后翻译恢复不到")。
+    // 于是升级后按**新** hash 查不到升级前存下的注音/译文 —— 用户看到"我的注音/译文不见了"。
+    // 迁移 = 把旧 hash 名下的行改写到新 hash 名下;搬完所有读取点(都用 LyricsHash.of)自然命中。
+    //
+    // 守卫:先查"新 hash 名下是否已经有行"(countRowsUnderHash)。有 = 用户升级后又存取过,
+    // 旧行属下堂,直接跳过 —— 避免 UPDATE 撞主键(三张表的 PK 都含 lyricsHash)。
+    @Query(
+        "SELECT (SELECT COUNT(*) FROM reading_override WHERE scope = 'SONG' AND mediaId = :mediaId AND lyricsHash = :newHash)" +
+            " + (SELECT COUNT(*) FROM external_reading_evidence WHERE mediaId = :mediaId AND lyricsHash = :newHash)" +
+            " + (SELECT COUNT(*) FROM lyrics_translation WHERE mediaId = :mediaId AND lyricsHash = :newHash)",
+    )
+    suspend fun countRowsUnderHash(mediaId: Long, newHash: String): Int
+
+    @Query("UPDATE reading_override SET lyricsHash = :newHash WHERE scope = 'SONG' AND mediaId = :mediaId AND lyricsHash = :oldHash")
+    suspend fun migrateReadingOverrideHash(mediaId: Long, oldHash: String, newHash: String)
+
+    @Query("UPDATE external_reading_evidence SET lyricsHash = :newHash WHERE mediaId = :mediaId AND lyricsHash = :oldHash")
+    suspend fun migrateExternalEvidenceHash(mediaId: Long, oldHash: String, newHash: String)
+
+    @Query("UPDATE lyrics_translation SET lyricsHash = :newHash WHERE mediaId = :mediaId AND lyricsHash = :oldHash")
+    suspend fun migrateLyricsTranslationHash(mediaId: Long, oldHash: String, newHash: String)
+
     // ── v1.3.9: Agent 对话持久化 ──────────────────────────────────────────
     /** 全部对话，收藏置顶 + 最近更新在前。 */
     @Query("SELECT * FROM agent_conversation ORDER BY pinned DESC, updatedAt DESC")

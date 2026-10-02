@@ -28,8 +28,28 @@ object LyricsHash {
             // 匹配 [mm:ss.xx] 或 [mm:ss] 前缀(含前导空格),剥掉后保留纯文本
             t.replace(Regex("""^\[\d{1,3}:\d{1,2}(?:[.:]\d{1,3})?]\s*"""), "")
         }
+        return digest(textOnly)
+    }
+
+    /**
+     * **旧算法**(v1.3.x 之前):只做行尾归一,不剥时间戳。
+     *
+     * 保留它**只为迁移**:算法改成功后,按新 hash 查不到升级前存下的注音/译文
+     * (用户表现为"我的注音/译文不见了")。加载歌词时用旧 hash 兜底找一次,
+     * 找到就把那些行改写到新 hash 下(见 MainViewModel.setCurrentLyrics)。
+     * **新写入一律用 [of]**。
+     */
+    fun ofLegacy(raw: String): String = digest(raw.replace("\r\n", "\n").replace('\r', '\n').trimEnd())
+
+    /**
+     * 这份歌词的两个算法是否给出不同 hash(= 需要搬键)。
+     * 无时间戳/无缩进的歌词两者相同 —— 绝大多数曲目**不需要**任何迁移。
+     */
+    fun needsMigration(raw: String): Boolean = of(raw) != ofLegacy(raw)
+
+    private fun digest(text: String): String {
         val md = MessageDigest.getInstance("SHA-256")
-        val digest = md.digest(textOnly.toByteArray(Charsets.UTF_8))
+        val digest = md.digest(text.toByteArray(Charsets.UTF_8))
         val sb = StringBuilder(16)
         for (i in 0 until 8) {
             val b = digest[i].toInt() and 0xFF
