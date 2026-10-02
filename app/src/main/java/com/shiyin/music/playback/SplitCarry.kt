@@ -7,9 +7,30 @@ import com.shiyin.music.data.split.SplitPlan
 import com.shiyin.music.data.split.SplitPlanCodec
 import com.shiyin.music.data.split.VirtualTrack
 
-/** 一个队列条目携带的拆分信息：所属方案 + 当前落在第几首。 */
-data class PlanCarry(val plan: SplitPlan, val index: Int) {
+/** 一个队列条目携带的拆分信息：所属方案 + 当前落在第几首 + **本条负责的分段区间**。 */
+data class PlanCarry(
+    val plan: SplitPlan,
+    val index: Int,
+    /** 本条目负责的分段区间（闭区间，段下标）。-1 = 未标注（旧条目/普通构造）。 */
+    val startSeg: Int = -1,
+    val lastSeg: Int = -1,
+) {
     val current: VirtualTrack? get() = plan.tracks.getOrNull(index)
+
+    /** 可播放的起点：未标注时退回 0（= 整张方案），与修复前行为一致。 */
+    val segStart: Int get() = if (startSeg >= 0) startSeg else 0
+
+    /** 可播放的上界：未标注时退回方案末段（= 整张方案）。 */
+    val segLast: Int get() = if (lastSeg >= 0) lastSeg else plan.tracks.size - 1
+
+    /**
+     * 本条目是否需要「到段末即结束」的引擎裁剪。
+     *
+     * 只有当上界**不在方案末段**时才需要：那意味着后面还有别的音频，若不裁剪，播完本段
+     * 会顺势播进下一段（用户实测：歌单里放一首拆分单曲，播完接着播同轨的下一段）。
+     * 整张专辑那种"一路到文件末尾"的条目不裁剪，无缝性不受影响。
+     */
+    val needsClip: Boolean get() = segLast < plan.tracks.size - 1
 }
 
 /**
@@ -32,6 +53,8 @@ object SplitCarry {
     const val KEY_IDX = "split_idx"
     private const val KEY_CONTAINER = "split_container"
     private const val KEY_SOURCE = "split_source"
+    private const val KEY_SEG_START = "split_seg_start"
+    private const val KEY_SEG_LAST = "split_seg_last"
 
     /** 把一个方案 + 下标写进 MediaMetadata.Builder。 */
     fun put(builder: MediaMetadata.Builder, carry: PlanCarry) {
@@ -40,6 +63,8 @@ object SplitCarry {
             putLong(KEY_CONTAINER, carry.plan.containerId)
             putLong(KEY_SOURCE, carry.plan.sourceMediaId)
             putInt(KEY_IDX, carry.index)
+            putInt(KEY_SEG_START, carry.startSeg)
+            putInt(KEY_SEG_LAST, carry.lastSeg)
         }
         builder.setExtras(extras)
     }
@@ -54,7 +79,13 @@ object SplitCarry {
             sourceMediaId = ex.getLong(KEY_SOURCE, 0L),
             tracks = tracks,
         )
-        return PlanCarry(plan, idx)
+        // 区间缺省写 -1：老条目没有这两个键 → segStart/segLast 退回整张方案（修复前行为）。
+        return PlanCarry(
+            plan = plan,
+            index = idx,
+            startSeg = ex.getInt(KEY_SEG_START, -1),
+            lastSeg = ex.getInt(KEY_SEG_LAST, -1),
+        )
     }
 
     /**

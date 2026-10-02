@@ -149,4 +149,58 @@ class SplitRunCollapseTest {
         val idx = SplitRunCollapse.representativeIndices(slots)
         assertEquals(idx.sorted(), idx)
     }
+
+    // ── v1.4.0: 每条代表负责的**分段区间**（止损"一个座位坐 11 个人"） ─────────────
+    // 真机 bug：把拆出的单曲放进歌单，播完会接着播同一整轨文件的下一段，而不是歌单的
+    // 下一首；手动「下一首」也要按十几次。根因是队列条目只带了 index、没带"管到第几首"。
+
+    /** 歌单里只有一首拆分单曲（前后都是普通曲目）→ 区间就是它自己那一首。 */
+    @Test fun playlistWithSingleSplitTrack_coversOnlyItself() {
+        val slots = listOf(null, slot(9, 6), null)
+        val runs = SplitRunCollapse.runs(slots)
+        assertEquals(3, runs.size)
+        assertEquals(SplitRunCollapse.Run(repIndex = 1, startSegment = 6, lastSegment = 6), runs[1])
+    }
+
+    /** 整张专辑（同源 + 下标连续）→ 一条，区间覆盖到末段。 */
+    @Test fun wholeAlbum_coversAllSegments() {
+        val slots = (0..12).map { slot(9, it) }
+        val runs = SplitRunCollapse.runs(slots)
+        assertEquals(1, runs.size)
+        assertEquals(SplitRunCollapse.Run(repIndex = 0, startSegment = 0, lastSegment = 12), runs[0])
+    }
+
+    /** 同源但不连续（歌单里同时有第 1 首和第 5 首）→ 各自成条，各覆盖自己。 */
+    @Test fun nonContiguousSameSource_eachCoversItself() {
+        val runs = SplitRunCollapse.runs(listOf(slot(9, 0), slot(9, 4)))
+        assertEquals(
+            listOf(
+                SplitRunCollapse.Run(repIndex = 0, startSegment = 0, lastSegment = 0),
+                SplitRunCollapse.Run(repIndex = 1, startSegment = 4, lastSegment = 4),
+            ),
+            runs,
+        )
+    }
+
+    /** 被点中的那首在段中间 → 区间从**它自己那段**起算（它前面的成员本来就不会被播到）。 */
+    @Test fun tappedInsideRun_startsAtTappedSegment() {
+        val slots = listOf(slot(9, 0), slot(9, 1), slot(9, 2), slot(9, 3))
+        val runs = SplitRunCollapse.runs(slots, tappedIndex = 2)
+        assertEquals(SplitRunCollapse.Run(repIndex = 2, startSegment = 2, lastSegment = 3), runs.single())
+    }
+
+    /** 普通曲目没有分段区间（-1/-1），不会被误判成"第一条"。 */
+    @Test fun plainTracks_haveNoSegmentRange() {
+        val runs = SplitRunCollapse.runs(listOf(null, null))
+        assertTrue(runs.all { it.startSegment == -1 && it.lastSegment == -1 })
+    }
+
+    /** runs 与前缀代表下标必须一一对应（同一趟扫描的两个视图，不能各自漂移）。 */
+    @Test fun runsAndRepresentativesAgree() {
+        val slots = listOf(slot(1, 0), null, slot(2, 0), slot(2, 1), null, slot(1, 1))
+        assertEquals(
+            SplitRunCollapse.representativeIndices(slots),
+            SplitRunCollapse.runs(slots).map { it.repIndex },
+        )
+    }
 }

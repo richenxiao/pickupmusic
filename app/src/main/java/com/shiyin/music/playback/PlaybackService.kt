@@ -215,9 +215,17 @@ class PlaybackService : MediaSessionService() {
         )
         if (forward) {
             val nextIdx = carry.index + 1
-            if (nextIdx >= carry.plan.tracks.size) return false   // 已是最后一首 → 交回默认
+            // v1.4.0: 只在**本条区间内**前进。到上界就交回默认逻辑（下一个队列条目），
+            // 不再一路走完整张方案（歌单里放一首拆分单曲时会误切到同轨下一段）。
+            if (nextIdx > carry.segLast) {
+                android.util.Log.i(
+                    "PlayerDiag",
+                    "handleSplitSeek 已到区间上界 idx=${carry.index} last=${carry.segLast} → 交回默认",
+                )
+                return false
+            }
             val nc = carry.copy(index = nextIdx)
-            android.util.Log.i("PlayerDiag", "  → 前进到 idx=$nextIdx seek=${SplitCarry.startMsOf(nc)}")
+            android.util.Log.i("PlayerDiag", "handleSplitSeek 段内前进 ${carry.index} → $nextIdx 区间=[${carry.segStart},${carry.segLast}]")
             player.replaceMediaItem(player.currentMediaItemIndex, SplitCarry.itemFor(item, nc))
             player.seekTo(SplitCarry.startMsOf(nc))
             player.play()
@@ -231,11 +239,17 @@ class PlaybackService : MediaSessionService() {
             player.play()
             return true
         }
-        val prevIdx = (carry.index - 1).coerceAtLeast(0)
-        if (prevIdx != carry.index) {
-            player.replaceMediaItem(player.currentMediaItemIndex, SplitCarry.itemFor(item, carry.copy(index = prevIdx)))
+        val prevIdx = carry.index - 1
+        // v1.4.0: 已在本条区间起点 → 交回默认（上一个队列条目），与 PlayerController.prev 对称。
+        if (prevIdx < carry.segStart) {
+            android.util.Log.i(
+                "PlayerDiag",
+                "handleSplitSeek 已到区间起点 idx=${carry.index} start=${carry.segStart} → 交回默认",
+            )
+            return false
         }
         android.util.Log.i("PlayerDiag", "  → 回到上一段 idx=$prevIdx seek=${SplitCarry.startMsOf(carry.copy(index = prevIdx))}")
+        player.replaceMediaItem(player.currentMediaItemIndex, SplitCarry.itemFor(item, carry.copy(index = prevIdx)))
         player.seekTo(SplitCarry.startMsOf(carry.copy(index = prevIdx)))
         player.play()
         return true

@@ -16,6 +16,7 @@ import androidx.media3.session.SessionCommand
 import androidx.media3.session.SessionToken
 import com.google.common.util.concurrent.ListenableFuture
 import com.shiyin.music.data.Track
+import com.shiyin.music.data.split.SplitRunCollapse
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -492,7 +493,20 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
             )
         }
         if (k < 0 || k == carry.index) return
-        android.util.Log.i("PlayerDiag", "boundary 换段: idx=${carry.index} → $k pos=$pos")
+        // v1.4.0: 越出本条负责的分段区间 → **不动作**，把收尾交给引擎的结束裁剪。
+        // 若这里替到区间外的段，就会和引擎的裁剪转场**重复推进** → 一次跳掉一整首。
+        if (k !in carry.segStart..carry.segLast) {
+            android.util.Log.i(
+                "PlayerDiag",
+                "boundary 越界不动作: k=$k 区间=[${carry.segStart},${carry.segLast}] " +
+                    "idx=${carry.index} pos=$pos 已裁剪=${carry.needsClip}",
+            )
+            return
+        }
+        android.util.Log.i(
+            "PlayerDiag",
+            "boundary 换段: idx=${carry.index} → $k pos=$pos 区间=[${carry.segStart},${carry.segLast}]",
+        )
         val next = carry.plan.tracks.getOrNull(k) ?: return
         // durationById 只作兜底（durationForThreshold 优先读方案里的分段时长）；
         // 这里顺手登记，供方案被清掉后的降级路径使用。
@@ -519,6 +533,25 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
      */
     var planProvider: ((Track) -> PlanCarry?)? = null
 
+    /**
+     * v1.4.0: trackId → 本条队列条目负责的分段区间 `(startSeg, lastSeg)`。
+     *
+     * 队列压缩（[com.shiyin.music.data.split.SplitRunCollapse]）把"同源 + 下标连续"的几首
+     * 合成一条时，只留下了代表那首；**这条到底管到第几首为止**必须在这里按**队列顺序**
+     * 重新算出来，否则段内推进无从知道该在哪里停手（真机 bug：歌单里放一首拆分单曲，
+     * 播完接着播同轨的下一段，而不是歌单的下一首）。
+     */
+    private var runBounds: Map<Long, Pair<Int, Int>> = emptyMap()
+
+    private fun computeRunBounds(tracks: List<Track>) {
+        val slots = tracks.map { t ->
+            planProvider?.invoke(t)?.let { SplitRunCollapse.Slot(it.plan.sourceMediaId, it.index) }
+        }
+        runBounds = SplitRunCollapse.runs(slots)
+            .filter { it.startSegment >= 0 }
+            .associate { r -> tracks[r.repIndex].id to (r.startSegment to r.lastSegment) }
+    }
+
     private fun buildItem(t: Track): MediaItem {
         durationById[t.id] = t.durationMs
         val mb = MediaMetadata.Builder()
@@ -531,12 +564,30 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
                 )
             )
         // v22: 拆分单曲带上方案（含各曲起点/终点/曲名），供边界无缝切歌与通知栏切歌。
-        planProvider?.invoke(t)?.let { SplitCarry.put(mb, it) }
-        return MediaItem.Builder()
+        // v1.4.0: 一并带上本条负责的分段区间，并按需设置结束裁剪。
+        var clipEndMs = -1L
+        planProvider?.invoke(t)?.let { raw ->
+            val b = runBounds[t.id]
+            val carry = if (b != null) raw.copy(startSeg = b.first, lastSeg = b.second) else raw
+            SplitCarry.put(mb, carry)
+            if (carry.needsClip) {
+                clipEndMs = carry.plan.tracks.getOrNull(carry.segLast)?.endMs ?: -1L
+            }
+        }
+        val builder = MediaItem.Builder()
             .setMediaId(t.id.toString())
             .setUri(t.uri)
             .setMediaMetadata(mb.build())
-            .build()
+        // 上界不在文件末尾（本条后面还有别的音频）→ 用引擎裁剪把它切到该段结束，
+        // 播完由引擎自然转场到下一个队列条目。
+        // ⚠️ startPositionMs 刻意保持 0：裁剪窗口是 [0, end]，播放位置因此仍是**文件绝对
+        // 坐标**——歌词时间戳、进度条（displayPositionMs）、播放统计全都建立在这个前提下。
+        if (clipEndMs > 0) {
+            builder.setClippingConfiguration(
+                MediaItem.ClippingConfiguration.Builder().setEndPositionMs(clipEndMs).build()
+            )
+        }
+        return builder.build()
     }
 
     /** v2.0: push album art bitmap data to the current MediaItem's metadata so
@@ -611,6 +662,8 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
         }
         // v22: 拆分单曲从它自己的区间起点开始播（整轨文件坐标）。
         val startPos = planProvider?.invoke(tracks[index])?.let { SplitCarry.startMsOf(it) } ?: 0L
+        // v1.4.0: 先按队列顺序算出每条负责的分段区间，buildItem 才能带上界/设裁剪。
+        computeRunBounds(tracks)
         c.setMediaItems(tracks.map(::buildItem), index, startPos)
         // Pending manual-queue items survive a context switch (v1.7 semantics).
         manualQueue.removeAll { it.id == startId }
@@ -631,6 +684,9 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
             return
         }
         val insertAt = (c.currentMediaItemIndex + 1 + manualQueue.size).coerceAtMost(c.mediaItemCount)
+        // v1.4.0: 单条追加时这条**自己就是区间**（不吞并同轨后续段）；否则会退回"整张方案"，
+        // 播完它还会继续播同一整轨文件的下一段。
+        planProvider?.invoke(track)?.let { runBounds = mapOf(track.id to (it.index to it.index)) }
         c.addMediaItem(insertAt, buildItem(track))
         manualQueue.add(track)
         queueVersion++
@@ -778,6 +834,7 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
         val index = tracks.indexOfFirst { it.id == cur }
         val pos = c.currentPosition
         val wasPlaying = c.playWhenReady
+        computeRunBounds(tracks)
         c.setMediaItems(tracks.map(::buildItem), index, pos)
         manualQueue.removeAll { m -> m.id == cur }
         manualQueue.forEachIndexed { i, t -> c.addMediaItem(index + 1 + i, buildItem(t)) }
@@ -821,15 +878,25 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
         val item = c.currentMediaItem
         if (carry != null && item != null) {
             val nextIdx = carry.index + 1
-            if (nextIdx < carry.plan.tracks.size) {
+            // v1.4.0: 只在**本条区间内**前进。到上界就落到下面的常规"下一个队列条目"，
+            // 不再一路走完整张方案（真机 bug：歌单里放一首拆分单曲，播完接同轨下一段）。
+            if (nextIdx <= carry.segLast) {
                 val nc = carry.copy(index = nextIdx)
+                android.util.Log.i(
+                    "PlayerDiag",
+                    "splitNext 段内: ${carry.index} → $nextIdx 区间=[${carry.segStart},${carry.segLast}]",
+                )
                 android.util.Log.w("PlayerDiag", "replaceMediaItem @splitNext pos=${c.currentPosition}")
                 c.replaceMediaItem(c.currentMediaItemIndex, SplitCarry.itemFor(item, nc))
                 c.seekTo(SplitCarry.startMsOf(nc))
                 c.play()
                 return
             }
-            // 已经是本条目最后一首 → 落到下面的常规"下一个队列条目"逻辑
+            android.util.Log.i(
+                "PlayerDiag",
+                "splitNext 已到区间上界: idx=${carry.index} last=${carry.segLast} → 转队列下一首",
+            )
+            // 已经是本条最后一首 → 落到下面的常规"下一个队列条目"逻辑
         }
         if (c.hasNextMediaItem()) {
             c.seekToNextMediaItem()
@@ -854,14 +921,25 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
                 c.play()
                 return
             }
-            val prevIdx = (carry.index - 1).coerceAtLeast(0)
-            if (prevIdx != carry.index) {
+            val prevIdx = carry.index - 1
+            // v1.4.0: 只在**本条区间内**回退。已在区间起点 → 落到下面的 c.seekToPrevious()
+            // （队列上一首）。此前用 coerceAtLeast(0)，导致拆分条目第一首永远只重播本曲、
+            // 与 next() 的"到上界转队列"不对称（台账第 17 条）。
+            if (prevIdx >= carry.segStart) {
+                android.util.Log.i(
+                    "PlayerDiag",
+                    "splitPrev 段内: ${carry.index} → $prevIdx 区间=[${carry.segStart},${carry.segLast}]",
+                )
                 android.util.Log.w("PlayerDiag", "replaceMediaItem @splitPrev pos=${c.currentPosition}")
                 c.replaceMediaItem(c.currentMediaItemIndex, SplitCarry.itemFor(item, carry.copy(index = prevIdx)))
+                c.seekTo(SplitCarry.startMsOf(carry.copy(index = prevIdx)))
+                c.play()
+                return
             }
-            c.seekTo(SplitCarry.startMsOf(carry.copy(index = prevIdx)))
-            c.play()
-            return
+            android.util.Log.i(
+                "PlayerDiag",
+                "splitPrev 已到区间起点: idx=${carry.index} start=${carry.segStart} → 转队列上一首",
+            )
         }
         c.seekToPrevious()
     }

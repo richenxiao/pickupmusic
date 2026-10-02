@@ -24,18 +24,39 @@ object SplitRunCollapse {
     data class Slot(val sourceMediaId: Long, val index: Int)
 
     /**
+     * 一条队列条目：代表下标 + 它负责的**分段区间**（闭区间，段下标）。
+     *
+     * 普通曲目（slot == null）没有分段概念，区间记 [-1, -1]。
+     *
+     * ⚠️ 为什么必须把区间交出来：队列条目只带 `index` 时，引擎侧无从知道"这条到底
+     * 管到第几首为止"，于是段内推进（ticker 越界检查 / next / 系统媒体键）会一路走完
+     * **整张方案**——歌单里放一首拆分单曲，播完会接着播同一整轨文件的下一段，而不是
+     * 歌单的下一首（用户实测："一个座位坐了 11 个人"）。
+     */
+    data class Run(val repIndex: Int, val startSegment: Int, val lastSegment: Int)
+
+    /**
      * 返回应当保留在引擎队列里的**下标**（按原顺序）。
      *
      * @param slots 与输入曲目列表等长；`null` = 普通曲目（自己就是代表）。
      * @param tappedIndex 用户点的那首在列表里的下标；-1 = 无明确起点。
      */
-    fun representativeIndices(slots: List<Slot?>, tappedIndex: Int = -1): List<Int> {
-        val out = ArrayList<Int>(slots.size)
+    fun representativeIndices(slots: List<Slot?>, tappedIndex: Int = -1): List<Int> =
+        runs(slots, tappedIndex).map { it.repIndex }
+
+    /**
+     * 与 [representativeIndices] **同一趟扫描**，额外给出每条代表负责的分段区间。
+     *
+     * 被点中的那首会成为代表，但**可播放区间从它自己那段起算**（它前面的成员本来也排在
+     * 它前面、不会被播到）——所以 `startSegment` 取的是代表那首的段下标，而不是整段的段首。
+     */
+    fun runs(slots: List<Slot?>, tappedIndex: Int = -1): List<Run> {
+        val out = ArrayList<Run>(slots.size)
         var i = 0
         while (i < slots.size) {
             val cur = slots[i]
             if (cur == null) {
-                out += i
+                out += Run(i, -1, -1)
                 i++
                 continue
             }
@@ -48,9 +69,9 @@ object SplitRunCollapse {
                 last++
                 idx++
             }
-            // 被点的那首在这段里 → 用它当代表；否则用段首
+            // 被点的那首在这段里 → 用它当代表，可播区间从它那段起；否则用段首
             val rep = if (tappedIndex in i..last) tappedIndex else i
-            out += rep
+            out += Run(repIndex = rep, startSegment = slots[rep]!!.index, lastSegment = idx)
             i = last + 1
         }
         return out
