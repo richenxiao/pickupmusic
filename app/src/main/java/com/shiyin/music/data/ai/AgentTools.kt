@@ -435,11 +435,16 @@ object AgentTools {
         }.toMap()
     }
 
-    private fun parseClarify(argumentsJson: String): ClarifyRequest {
+    internal fun parseClarify(argumentsJson: String): ClarifyRequest {
         val obj = runCatching { JsonParser.parseString(argumentsJson).asJsonObject }.getOrNull()
         val q = obj?.get("question")?.takeIf { it.isJsonPrimitive }?.asString?.takeIf { it.isNotBlank() }
             ?: "你想让我做什么?"
-        val opts = obj?.getAsJsonArray("options")?.mapNotNull {
+        // ⚠️ 必须用 `get(...)?.takeIf { it.isJsonArray }` 而不是 `getAsJsonArray(name)`:
+        // Gson 的 getAsJsonArray(name) 内部是 `(JsonArray) members.get(name)` —— 成员是
+        // **JsonNull** 时直接抛 ClassCastException,而这里在 runCatching 之外 → 模型回
+        // `{"question":"...","options":null}` 时整轮分发崩成「Agent 执行出错」,本该出现的
+        // 选择题没了。同文件的 choices/usage/tool_calls 都做了同样的 JsonNull 防御,这里补齐。
+        val opts = obj?.get("options")?.takeIf { it.isJsonArray }?.asJsonArray?.mapNotNull {
             if (it?.isJsonPrimitive == true) it.asString.takeIf { s -> s.isNotBlank() } else null
         } ?: emptyList()
         // v1.3.15: 选项上限 5(与 discover_music 的候选条数一致——推荐卡上列 5 条
