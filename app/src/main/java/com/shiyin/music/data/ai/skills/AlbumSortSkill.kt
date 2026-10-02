@@ -59,6 +59,24 @@ object AlbumSortSkill : AgentEngine.AgentSkill {
         val currentTitles = tracks.map { it.title }
         onStep("tracks", AgentEngine.StepStatus.DONE)
 
+        // ── v1.3.15:**用户自己报了顺序 → 直接按他报的排,不问模型、不联网** ──────────────
+        // 真机实测:用户把正确顺序整段贴进对话(「1.枣庄市马思唯 2.轨道飞虎 …」),程序依旧
+        // 回"已按官方顺序排列"却还是错的 —— 因为排序调用的提示里**只有本地曲目表和联网资料,
+        // 不含用户原话**。用户既然白纸黑字给了顺序,那就是最权威的依据:秒回、零成本、不会错。
+        // 门槛见 AgentService.userGivenOrder(≥3 首且覆盖 ≥80%,避免把闲聊误判成给了顺序)。
+        val userOrder = AgentService.userGivenOrder(ctx.recTurnContext().userMessage, currentTitles)
+        if (userOrder.isNotEmpty()) {
+            android.util.Log.i("Agent", "album_sort: 用户自己给了顺序(${userOrder.size}/${currentTitles.size} 首)→ 直接按它排")
+            onStep("writeback", AgentEngine.StepStatus.RUNNING)
+            ctx.applyAlbumOrderIndices(key, userOrder)
+            onStep("writeback", AgentEngine.StepStatus.DONE)
+            ctx.recordDiag(
+                skill = "album_sort", stage = "user_order", ok = true,
+                counts = mapOf("candidates" to currentTitles.size, "ordered" to userOrder.size),
+            )
+            return AgentEngine.SkillResult("已按你给的顺序排列《$albumName》。")
+        }
+
         onStep("search", AgentEngine.StepStatus.RUNNING)
         val result = AgentService.fetchOfficialTrackOrder(
             config = config,
@@ -122,6 +140,7 @@ object AlbumSortSkill : AgentEngine.AgentSkill {
                     // v1.3.15:输出用量与思考长度 —— "被截断"与"只思考不回答"靠这两个数分开
                     "ct" to result.completionTokens,
                     "thinkLen" to thinkLen,
+                    "webHits" to result.webHits,
                 ),
                 replyRaw = result.rawReply,
                 errorCode = when {
@@ -148,7 +167,12 @@ object AlbumSortSkill : AgentEngine.AgentSkill {
         else "已按官方顺序排列《$albumName》。"
         ctx.recordDiag(
             skill = "album_sort", stage = "parse", ok = true,
-            counts = mapOf("candidates" to currentTitles.size, "ordered" to result.orderedIndices.size),
+            counts = mapOf(
+                "candidates" to currentTitles.size,
+                "ordered" to result.orderedIndices.size,
+                // v1.3.15:资料与本地曲目的重合条数(0 = 资料很可能不是这张专辑的)
+                "webHits" to result.webHits,
+            ),
             // 成功样本也带联网资料:好的一次和坏的一次对比,能看出"资料长什么样时才成功"
             webRaw = result.webSnippet,
         )

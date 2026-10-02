@@ -37,6 +37,11 @@ object AgentService {
          */
         val webSnippet: String? = null,
         /**
+         * v1.3.15: 联网资料里**提到了几首本地曲目**(0 = 资料很可能讲的是另一张同名作品)。
+         * 诊断与置信度都用它 —— 今天这次失败就是"0 重合却报高置信度"。
+         */
+        val webHits: Int = 0,
+        /**
          * v1.3.15: 最后一次调用的**结束原因**(stop/length…)。真机实测《龙年》拿到资料却
          * `titleLines=0`、回复为空 —— "被截断"与"模型就是不回答"是两回事,只有它+用量能分开。
          */
@@ -108,10 +113,20 @@ object AgentService {
         //    正相关:角色设定删掉(不必要的人格铺垫)、要求合并成 3 条硬约束、
         //    输出示例直接给(模型照抄格式,不用推理输出形态)。
         val localBlock = currentTracks.mapIndexed { i, t -> "${i + 1}. $t" }.joinToString("\n")
-        val contextBlock = if (tavilyContext.isNullOrBlank()) {
-            "（未搜到网络资料,凭你的知识判断）"
-        } else {
-            "网络资料:\n$tavilyContext"
+        val webHits = webContextHits(currentTracks, tavilyContext)
+        // v1.3.15:资料**一首本地曲目都没提到**时,它极可能讲的是另一张同名作品(真机实测:
+        // 《龙年》搜到的是 B 站一个搬运视频,曲目表完全对不上,却因为"有资料"被判高置信度,
+        // 回用户"已按官方顺序排列" —— 错得还很自信)。这种情况仍把资料给它(官方写法可能与
+        // 本地不同,重合度低不等于没用),但**明说别当权威**,并且**不给高置信度**。
+        val webUsable = !tavilyContext.isNullOrBlank() && webHits > 0
+        if (!tavilyContext.isNullOrBlank() && webHits == 0) {
+            android.util.Log.w("Agent", "album_sort: 联网资料与本地曲目重合 0 首,按'疑似不是这张专辑'处理")
+        }
+        val contextBlock = when {
+            tavilyContext.isNullOrBlank() -> "（未搜到网络资料,凭你的知识判断）"
+            webUsable -> "网络资料:\n$tavilyContext"
+            else -> "网络资料(**注意:下面这段资料没有提到本地曲目里的任何一首,很可能不是这张专辑**" +
+                "——同名作品/搬运视频太多。**不要把它当官方顺序**,只当线索,以你自己的知识判断):\n$tavilyContext"
         }
         // v1.3.13(真机反馈"AI 判断《龙年》曲序时未能确定答案"/"没按格式输出"):换协议,
         // 但**判断权仍在模型手里**。旧协议要它"把歌名映射成编号再排" → 就崩在编号格式上。
@@ -183,8 +198,10 @@ object AgentService {
             }
         }
 
-        // 5. confidence:有联网资料且排全了 → HIGH,否则 LOW
-        val confidence = if (!tavilyContext.isNullOrBlank() && ordered.size >= currentTracks.size) {
+        // 5. confidence:资料**确实覆盖了本地曲目**且排全了 → HIGH,否则 LOW。
+        // v1.3.15:原判据只看"有没有资料",于是拿到一张同名作品的资料也敢说高置信度
+        // (真机实测《龙年》重合 0 首仍报"已按官方顺序排列")。现在要求资料与本地曲目有重合。
+        val confidence = if (webUsable && ordered.size >= currentTracks.size) {
             Confidence.HIGH
         } else {
             Confidence.LOW
@@ -193,11 +210,68 @@ object AgentService {
         // "AI 核对生成顺序 ✓,但文案说失败"这种自相矛盾的状态。这里只在真的有结果时标 DONE;
         // 判不出来就留 RUNNING,由技能按自己的结论落终态(技能失败 → MainViewModel 统一标 FAILED)。
         if (ordered.isNotEmpty()) onStep("analyze", AgentEngine.StepStatus.DONE)
-        SortResult(ordered, confidence, resp.promptTokens, resp.completionTokens, cacheTokens = resp.cacheTokens, webSearched = !tavilyContext.isNullOrBlank(), webSnippet = tavilyContext, finishReason = resp.finishReason, thinking = resp.thinking, hadUnknown = hadUnknown, rawReply = resp.content)
+        SortResult(ordered, confidence, resp.promptTokens, resp.completionTokens, cacheTokens = resp.cacheTokens, webSearched = !tavilyContext.isNullOrBlank(), webSnippet = tavilyContext, webHits = webHits, finishReason = resp.finishReason, thinking = resp.thinking, hadUnknown = hadUnknown, rawReply = resp.content)
     }
 
     /** 单条模糊匹配的最低分(低于它宁可不认,也不要张冠李戴)。 */
     private const val MIN_FUZZY_SCORE = 400
+
+    /** 曲名归一(与 [officialToLocalIndices] 同一套:剥括号副标题 + FuzzySearch.normalize)。 */
+    internal fun normTitleForMatch(s: String): String = normTitle(s)
+
+    /**
+     * v1.3.15: 联网资料里**能对上本地曲目的条数**。
+     *
+     * 为什么必须有它:通用网页搜索结果里同名作品/搬运视频极多(《龙年》实测抓到的是一段
+     * B 站视频简介,曲目表完全对不上),而代码此前只看"有没有资料"就把它当权威 →
+     * 排错了还报高置信度。这个数让"资料是不是这张专辑的"变成可判定的事实。
+     */
+    internal fun webContextHits(localTitles: List<String>, webContext: String?): Int {
+        val web = normTitle(webContext.orEmpty())
+        if (web.isEmpty()) return 0
+        return localTitles.count { t ->
+            val n = normTitle(t)
+            n.length >= 2 && web.contains(n)
+        }
+    }
+
+    /**
+     * v1.3.15: 用户**自己在对话里口述了顺序**时,把它抽成候选项名。
+     *
+     * 支持两种写法:多行编号列表("1.A\n2.B"),以及一行到底("1. A 2. B 3. C")。
+     * 只做"剥编号/项目符号 + 切段",不猜语义 —— 能不能对上本地曲目由
+     * [officialToLocalIndices] 判定(同一套三级匹配)。
+     */
+    internal fun extractListedNames(text: String): List<String> {
+        if (text.isBlank()) return emptyList()
+        // 编号标记作为**分隔符**:一行到底的列表也能切开
+        val parts = text.split(Regex("""(?:^|\s)\d{1,2}\s*[.、,，)）:：]\s*"""))
+        return parts.asSequence()
+            .map { it.lines().first() }                       // 一段只取第一行(用户常在编号后跟解释)
+            .map { it.trim().trim('-', '*', '·', '「', '」', '《', '》', '"', '“', '”', ' ') }
+            .map { it.trimEnd('。', '.', ',', '，', '、') }
+            .filter { it.isNotBlank() }
+            .filter { it.length <= 60 }                       // 过长的是句子,不是曲名
+            .toList()
+    }
+
+    /**
+     * v1.3.15: 若用户在对话里给了**完整(或接近完整)的官方顺序** → 直接返回本地下标序列。
+     *
+     * 为什么必须有:排序调用的提示里**只有本地曲目表和联网资料,不含用户原话**
+     * (真机实测:用户把正确顺序整段贴进聊天,程序依旧当没看见,还回"已按官方顺序排列")。
+     * 用户既然自己给了顺序,那就是**最权威的依据**,不该再交给模型去猜。
+     *
+     * 门槛(防止把普通闲聊误判成"给了顺序"):至少 3 首,且覆盖 ≥80% 的本地曲目。
+     * 不满足 → 返回空,走原来的"联网 + 模型"链路。
+     */
+    internal fun userGivenOrder(userMessage: String, localTitles: List<String>): List<Int> {
+        val names = extractListedNames(userMessage)
+        if (names.size < 3 || localTitles.isEmpty()) return emptyList()
+        val mapped = officialToLocalIndices(names, localTitles)
+        val need = maxOf(3, kotlin.math.ceil(localTitles.size * 0.8).toInt())
+        return if (mapped.size >= need) mapped else emptyList()
+    }
 
     /** 从模型回复里抽出"曲目名"行:去行首编号/项目符号/markdown 记号,丢掉 UNKNOWN 与空行。 */
     internal fun parseTitleLines(content: String?): List<String> {
