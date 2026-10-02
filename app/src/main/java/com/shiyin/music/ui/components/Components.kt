@@ -728,7 +728,17 @@ object ArtCache {
     /** [decodeScaledBytes] 的流版本:本地文件/相册图片用。[open] 会被调用两次(先量尺寸再解)。 */
     private fun decodeScaledStream(open: () -> java.io.InputStream?, targetPx: Int): Bitmap? = runCatching {
         val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        open()?.use { android.graphics.BitmapFactory.decodeStream(it, null, bounds) } ?: return@runCatching null
+        // ⚠️ 量尺寸这一趟的**返回值必须丢弃**：`inJustDecodeBounds = true` 时 decodeStream
+        // 按设计**必定返回 null**(它只负责把宽高填进 Options)。曾经写成
+        //     open()?.use { decodeStream(it, null, bounds) } ?: return@runCatching null
+        // elvis 就每次都命中 → 函数在拿到尺寸之前直接返回 null → **所有走流式的本地图片永远
+        // 解不出来**。这与同文件 decodeScaledBytes（把返回值丢掉、只看 Options）是同一个写法，
+        // 保持一致。
+        //
+        // 真机症状（v1.4.0 回归）：歌手写真的本地图/相册封面全部白屏，而 override 表里
+        // 的行好好的（日志 `override hit` 紧跟着 `bmp=false`）；同一次会话里 http 写真
+        // 走 downloadBitmap 正常（`bmp=true`）——因为它不经过这条流式路径。
+        open()?.use { android.graphics.BitmapFactory.decodeStream(it, null, bounds) }
         if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return@runCatching null
         val opts = android.graphics.BitmapFactory.Options().apply {
             inSampleSize = bitmapSampleSize(bounds.outWidth, bounds.outHeight, targetPx)
