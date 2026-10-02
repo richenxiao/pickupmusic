@@ -427,7 +427,13 @@ fun PlayerScreen(vm: MainViewModel) {
                         .clip(RoundedCornerShape(3.dp))
                         .background(c.accent)
                 )
-                androidx.compose.foundation.layout.BoxWithConstraints(Modifier.fillMaxWidth()) {
+                // v1.4.0:必须显式 Center —— BoxWithConstraints 默认 contentAlignment 是 TopStart,
+                // 而滑块用 requiredSize(15.dp) 真的溢出父级 6dp 高度 → 它会被摆在盒子**顶部**,
+                // 圆心比条身圆心低 (15-6)/2 = 4.5dp,视觉上"旋钮吊在进度条下方"。
+                androidx.compose.foundation.layout.BoxWithConstraints(
+                    Modifier.fillMaxWidth(),
+                    contentAlignment = Alignment.Center,
+                ) {
                     Box(
                         Modifier
                             .offset(x = (maxWidth - 15.dp) * shownPct)
