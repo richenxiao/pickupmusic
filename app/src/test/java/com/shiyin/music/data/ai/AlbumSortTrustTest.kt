@@ -45,6 +45,44 @@ class AlbumSortTrustTest {
         "02:31 2. Pain Wit Da Beatz 03:21 3. Cash Money 2 03:32 4. YioWerr药娃儿 03:01 5. Sin House " +
         "03:41 6. 插到底 03:21 7. 盆满钵满 02:58 12. “持续输出” Bonus Track 1. 555 Freestyle"
 
+    // ── 双语官方名 ↔ 纯中文本地名(真机:陶喆《I'm OK》只有《天天》对不上) ──────
+
+    /** 豆瓣《I'm OK》曲目段原文(2026-10-02 实抽,格式是"英文 中文")。 */
+    private val doubanImOk = listOf(
+        "Doxology", "Rain 找自己", "Small Town Girl 小镇姑娘", "Tuberose 夜来香",
+        "Regular Friends 普通朋友", "Im OK", "Leave 说走就走", "Thank You 多谢你",
+        "Circus 马戏团", "Close to You 天天", "Angeline", "Amen（vocals featuring Tension）",
+    )
+
+    @Test
+    fun `双语官方名能对上纯中文本地名 - 包括只有两个字的曲名`() {
+        // 本地乱序(纯中文写法)
+        val local = listOf(
+            "天天", "马戏团", "多谢你", "说走就走", "普通朋友", "夜来香", "小镇姑娘", "找自己",
+            "Doxology", "I'm OK", "Angeline", "Amen",
+        )
+        val idx = AgentService.officialToLocalIndices(doubanImOk, local)
+        assertEquals("12 首应全部对上(含 2 字的《天天》)", 12, idx.size)
+        // 顺序必须完全按官方曲序,尤其《天天》要落在第 10 位(Close to You 天天)
+        assertEquals(
+            listOf(
+                "Doxology", "找自己", "小镇姑娘", "夜来香", "普通朋友", "I'm OK", "说走就走",
+                "多谢你", "马戏团", "天天", "Angeline", "Amen",
+            ),
+            idx.map { local[it] },
+        )
+    }
+
+    @Test
+    fun `汉字核心只在完全相等时才算 - 不能拿包含关系硬配`() {
+        // 官方「Close to You 天天」↔ 本地「天天」→ 核心相等,认
+        assertEquals(listOf(0), AgentService.officialToLocalIndices(listOf("Close to You 天天"), listOf("天天")))
+        // 但官方若只剩英文(核心为空),**不能**去配中文曲目 —— 那种只有模型能对上,宁可留空
+        assertTrue(AgentService.officialToLocalIndices(listOf("Close to You"), listOf("天天")).isEmpty())
+        // 单字核心不参与(「夜」这类会误配)
+        assertTrue(AgentService.officialToLocalIndices(listOf("Night 夜"), listOf("夜曲")).isEmpty())
+    }
+
     // ── ① 用户给了顺序 → 直接按它排 ─────────────────────────────────────────
 
     @Test

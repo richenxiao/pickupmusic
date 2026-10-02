@@ -261,6 +261,16 @@ object AgentService {
     /** 曲名归一(与 [officialToLocalIndices] 同一套:剥括号副标题 + FuzzySearch.normalize)。 */
     internal fun normTitleForMatch(s: String): String = normTitle(s)
 
+    /**
+     * v1.3.15:**双语标题的"汉字核心"** —— 只保留汉字。
+     *
+     * 用途:豆瓣常把曲目写成"中文 + 拉丁副题"且**没有括号**,例如官方的「天天 Close To You」
+     * 对本地纯中文的「天天」。全等/包含/模糊都过不了(用户实测:陶喆《天天》"未能确认位置"),
+     * 而"汉字核心相等"恰好就是这一类。核心 <2 字不参与匹配(「夜」这类太容易误配)。
+     */
+    internal fun cjkCore(normalized: String): String =
+        normalized.filter { it in '一'..'鿿' }
+
     /** 豆瓣路线的命中结果。[titles] 是页面上的官方曲序。 */
     private data class DoubanHit(val titles: List<String>, val url: String, val hits: Int)
 
@@ -431,6 +441,19 @@ object AgentService {
                     val ln = localNorm[i]
                     if (ln.isEmpty()) continue
                     if (minOf(ln.length, on.length) >= 3 && (ln.contains(on) || on.contains(ln))) { pick = i; break }
+                }
+            }
+            // ②b v1.3.15:**双语标题**。豆瓣常把曲目写成"中文 + 拉丁副题"且**不带括号**,
+            //    例如官方的「天天 Close To You」对本地纯中文的「天天」—— 全等/包含都过不了,
+            //    模糊分也不够(用户实测:陶喆《天天》"AI 未能确认位置")。
+            //    取两侧的 **CJK 核心**(只留汉字)相等即算对上;核心 <2 字不认(「夜」这类会误配)。
+            if (pick < 0) {
+                val onCore = cjkCore(on)
+                if (onCore.length >= 2) {
+                    for (i in currentTracks.indices) {
+                        if (i in used) continue
+                        if (cjkCore(localNorm[i]) == onCore) { pick = i; break }
+                    }
                 }
             }
             // ③ 相似度最高。⚠️ 单字标题不走这一档:它的"包含"必然命中一堆无关曲目
