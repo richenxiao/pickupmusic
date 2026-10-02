@@ -46,6 +46,12 @@
              注意 domain：它是 **internal**（UsageLog.baseDir = File(filesDir, "usage_logs")），
              所以要写 file 而不是 external（crash_logs 反过来，它走 getExternalFilesDir）。 -->
         <exclude domain="file" path="usage_logs" />
+        <!-- v1.4.0：主题选择的**同步镜像**（SharedPreferences）也不上云。
+             排除路径：shared_prefs 目录下的 theme_mirror.xml（<domain="sharedpref"> 对应的就是
+             /data/user/0/<pkg>/shared_prefs/，path 写**文件名**）。
+             为什么必须排：DataStore 已不上云（见上），镜像若被云端还原成陈旧值，
+             首帧会用错主题 —— 那就把方案①刚修好的闪烁又请回来了。 -->
+        <exclude domain="sharedpref" path="theme_mirror.xml" />
     </cloud-backup>
     <!-- 换机迁移：排除"含对话内容"的两处，其余（图片/快照/设置）保持全量迁移 -->
     <device-transfer>

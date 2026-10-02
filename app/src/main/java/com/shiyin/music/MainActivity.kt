@@ -31,6 +31,16 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
+        // v1.4.0：**首帧就用对主题**（方案①）+ 让窗口/启动画面底色跟随应用内主题。
+        // 为什么在 setContent 之前：应用内主题存在 DataStore（异步），首帧拿不到 → 会先按系统
+        // 日夜画一帧窗口底（values/values-night），设置回来才翻 → 冷启动闪一下。
+        // 镜像（SharedPreferences，同步可读）回答"首帧该用哪套"；DataStore 仍是唯一权威，
+        // 读回后若不一致会以它为准并回写镜像（见 MainViewModel 的设置流）。
+        // 全新安装没有镜像 → 用与 DataStore 相同的默认值（浅色），并在这一次就设好系统夜间模式。
+        val mirroredDark = com.shiyin.music.data.ThemeMirror.read(this) ?: false
+        vm.applyInitialDark(mirroredDark)
+        com.shiyin.music.data.ThemeMode.apply(this, mirroredDark)
+
         vm.launchTrashIntent = { pi ->
             trashLauncher.launch(IntentSenderRequest.Builder(pi.intentSender).build())
         }

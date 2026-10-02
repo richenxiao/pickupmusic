@@ -192,7 +192,12 @@ class SettingsStore(private val context: Context) {
         )
     }
 
-    suspend fun setDark(v: Boolean) = context.dataStore.edit { it[keyDark] = v }
+    suspend fun setDark(v: Boolean) {
+        context.dataStore.edit { it[keyDark] = v }
+        // v1.4.0：同步镜像一份，供**首帧**读取（DataStore 是异步的，等它回来窗口底色已经画过一帧）。
+        // DataStore 仍是唯一权威：设置流回来时会以它为准并回写镜像。
+        ThemeMirror.write(context, v)
+    }
     suspend fun setGapless(v: Boolean) = context.dataStore.edit { it[keyGapless] = v }
     suspend fun setAutoMatch(v: Boolean) = context.dataStore.edit { it[keyAutoMatch] = v }
     suspend fun setOnboarded(v: Boolean) = context.dataStore.edit { it[keyOnboarded] = v }

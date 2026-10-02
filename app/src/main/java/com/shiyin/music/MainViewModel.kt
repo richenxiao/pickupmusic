@@ -193,6 +193,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     // settings
     var settingsLoaded by mutableStateOf(false); private set
     var darkTheme by mutableStateOf(false); private set
+
+    /**
+     * v1.4.0：把**镜像**里的主题作为首帧初值 —— `MainActivity.onCreate` 在 `setContent` 之前调用。
+     *
+     * 只负责"第一帧别画错色"：DataStore 读回来后仍以它为准（并回写镜像）。
+     * 全新安装没有镜像时调用方传 false（与 DataStore 的默认值一致）。
+     */
+    fun applyInitialDark(dark: Boolean) { darkTheme = dark }
     var gapless by mutableStateOf(true); private set
     var autoMatch by mutableStateOf(true); private set
     var onboarded by mutableStateOf(false); private set
@@ -1029,6 +1037,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             settingsStore.flow.collect { s ->
                 darkTheme = s.dark
+                // v1.4.0：DataStore 是**唯一权威** —— 这里把镜像与系统夜间模式都对齐到它。
+                // 镜像：万一陈旧（例如用户在国际版/别处改过、或镜像写入失败），以 DataStore 为准改写；
+                // 系统夜间模式：让 values-night 资源（窗口底/启动画面底）跟随应用内主题，
+                // 只在值变化时才真正调用（见 ThemeMode）。
+                com.shiyin.music.data.ThemeMirror.write(getApplication(), s.dark)
+                com.shiyin.music.data.ThemeMode.apply(getApplication(), s.dark)
                 gapless = s.gapless
                 player.gaplessEnabled = s.gapless
                 autoMatch = s.autoMatch
