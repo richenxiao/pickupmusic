@@ -78,4 +78,28 @@ class LyricsHashTest {
         assertEquals(a, LyricsHash.of(timestamped))
         assertEquals("SHA-256 取前 8 字节 = 16 hex 字符", 16, a.length)
     }
+
+    // ── 搬键决策(覆盖"导入旧 hash 版本的备份后,译文与注音还能找到") ────────────
+
+    @Test
+    fun `旧版本存下的行能被找到并搬到新 hash 下`() {
+        // 模拟"旧版本写入数据库的那一行":它的 lyricsHash 是**旧算法**对同一份 raw 算的值。
+        val storedByOldVersion = LyricsHash.ofLegacy(timestamped)
+        val plan = planHashMigration(timestamped, rowsUnderNewHash = 0)
+        assertEquals("搬键的 from 必须正好等于旧版本存下的那个 hash", storedByOldVersion, plan?.from)
+        assertEquals("搬到新算法算出的 hash", LyricsHash.of(timestamped), plan?.to)
+        // 搬完之后:所有读取点(一律用 of)自然命中 ✓
+        assertEquals("搬完再查就是新 hash", LyricsHash.of(timestamped), plan?.to)
+    }
+
+    @Test
+    fun `无时间戳的歌词压根不需要搬键 - 不开事务不碰库`() {
+        assertEquals(null, planHashMigration(plain, rowsUnderNewHash = 0))
+    }
+
+    @Test
+    fun `新 hash 名下已有行时跳过 - 防 UPDATE 撞主键`() {
+        // 用户升级后又存取过：新 hash 下已有行，旧行属下堂；硬搬会违反三张表含 lyricsHash 的主键约束
+        assertEquals(null, planHashMigration(timestamped, rowsUnderNewHash = 1))
+    }
 }

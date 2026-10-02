@@ -684,13 +684,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val fg = com.shiyin.music.data.furigana.LyricsHash
         if (!fg.needsMigration(ly.raw)) return
         val newHash = fg.of(ly.raw)
-        val oldHash = fg.ofLegacy(ly.raw)
         viewModelScope.launch(Dispatchers.IO) {
             runCatching {
-                if (dao.countRowsUnderHash(ly.mediaId, newHash) > 0) return@runCatching
-                dao.migrateReadingOverrideHash(ly.mediaId, oldHash, newHash)
-                dao.migrateExternalEvidenceHash(ly.mediaId, oldHash, newHash)
-                dao.migrateLyricsTranslationHash(ly.mediaId, oldHash, newHash)
+                // 决策抽成纯函数(planHashMigration),三种情形由单测钉住:
+                // 不需要搬 / 需要搬(from=旧算法 hash → to=新算法 hash) / 新 hash 下已有行(跳过防撞主键)。
+                val plan = com.shiyin.music.data.furigana.planHashMigration(
+                    ly.raw, dao.countRowsUnderHash(ly.mediaId, newHash),
+                ) ?: return@runCatching
+                dao.migrateReadingOverrideHash(ly.mediaId, plan.from, plan.to)
+                dao.migrateExternalEvidenceHash(ly.mediaId, plan.from, plan.to)
+                dao.migrateLyricsTranslationHash(ly.mediaId, plan.from, plan.to)
                 android.util.Log.i("Lyrics", "歌词 hash 搬键完成 mediaId=${ly.mediaId}")
             }
         }

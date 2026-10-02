@@ -60,3 +60,23 @@ object LyricsHash {
 
     private val HEX = "0123456789abcdef".toCharArray()
 }
+
+/** 一次搬键：把 [from] 名下的行改写到 [to] 名下。 */
+data class HashMigration(val from: String, val to: String)
+
+/**
+ * v1.4.0：算"这份歌词要不要搬键、从哪个 hash 搬到哪个"。**null = 不需要**。
+ *
+ * 三种情形各有测试钉住：
+ *  - 歌词不含时间戳/缩进 → 两个算法同值 → null（绝大多数曲目走这条，不碰库）；
+ *  - 含时间戳（旧版本存下的行用的是 [LyricsHash.ofLegacy] 的值）→ 给出 from/to；
+ *  - 新 hash 名下**已经有行**（用户升级后又存取过）→ null，旧行属下堂。**这条防的是
+ *    UPDATE 撞主键**：三张表的 PK 都含 lyricsHash，硬搬会直接报约束冲突。
+ *
+ * @param rowsUnderNewHash 该曲在新 hash 名下已有的行数（调用方查库后传入）
+ */
+internal fun planHashMigration(raw: String, rowsUnderNewHash: Int): HashMigration? {
+    if (!LyricsHash.needsMigration(raw)) return null
+    if (rowsUnderNewHash > 0) return null
+    return HashMigration(from = LyricsHash.ofLegacy(raw), to = LyricsHash.of(raw))
+}
