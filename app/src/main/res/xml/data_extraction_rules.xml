@@ -23,6 +23,11 @@
         <exclude domain="file" path="cover_cache" />
         <!-- 本地快照与导出包：体积大，且用户可自行分享 -->
         <exclude domain="file" path="backup_snapshots" />
+        <!-- ⚠️ v1.4.0 修正：crash_logs 的 domain 必须是 **external**。
+             UsageLog.crashDir 用的是 getExternalFilesDir("crash_logs")（拿不到才回落 filesDir），
+             原先只写 domain="file" → 规则与真实落盘位置对不上，崩溃栈一直在上云（等于没排除）。
+             两条都留：external 覆盖主路径，file 覆盖回落路径。 -->
+        <exclude domain="external" path="crash_logs" />
         <exclude domain="file" path="crash_logs" />
         <!-- 含对话内容：不上云 -->
         <exclude domain="file" path="agent_diag" />
