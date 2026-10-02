@@ -95,7 +95,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** v22: 设置也随备份走，故提到 backupManager 之前声明（原来在下面）。 */
     val settingsStore = SettingsStore(app)
     /** v1.2.0 阶段三：用户数据导出/导入（v22 起范围从"修正数据"扩到"用户资产"）。 */
-    private val backupManager = com.shiyin.music.data.db.BackupManager(dao, settingsStore)
+    private val backupManager = com.shiyin.music.data.db.BackupManager(db, settingsStore)
     // 共享 OkHttpClient，避免每次切歌新建连接池/线程池泄漏
     private val sharedHttpClient = okhttp3.OkHttpClient.Builder()
         .connectTimeout(8, java.util.concurrent.TimeUnit.SECONDS)

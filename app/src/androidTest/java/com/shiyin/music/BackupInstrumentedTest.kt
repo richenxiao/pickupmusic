@@ -24,7 +24,7 @@ class BackupInstrumentedTest {
     private val ctx = ApplicationProvider.getApplicationContext<android.content.Context>()
     private val db = AppDatabase.get(ctx)
     private val dao = db.dao()
-    private val mgr = BackupManager(dao)
+    private val mgr = BackupManager(db)
 
     @Before
     fun setup() = runBlocking {

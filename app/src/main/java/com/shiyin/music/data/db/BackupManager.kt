@@ -1,6 +1,7 @@
 package com.shiyin.music.data.db
 
 import com.google.gson.Gson
+import androidx.room.withTransaction
 import com.shiyin.music.data.SettingsStore
 import com.shiyin.music.data.db.AlbumOverrideEntity as ALO
 import com.shiyin.music.data.db.AlbumInfoOverrideEntity as AIO
@@ -55,10 +56,12 @@ import com.shiyin.music.data.db.AgentMemoryEntity as AME
  * 恢复出来的修正会全部挂到错误的歌上。
  */
 internal class BackupManager(
-    private val dao: ShiyinDao,
+    /** v1.4.0：改为接 DB 而非 DAO —— 导入需要 `withTransaction` 把全部写入包成一个原子操作。 */
+    private val db: AppDatabase,
     /** 设置也随备份走（v22）。为 null 时跳过设置部分（便于只测数据库的单元测试）。 */
     private val settings: SettingsStore? = null,
 ) {
+    private val dao: ShiyinDao = db.dao()
 
     data class BackupData(
         val version: Int = 2,
@@ -185,6 +188,22 @@ internal class BackupManager(
     suspend fun import(json: String): ImportStats {
         val data = Gson().fromJson(json, BackupData::class.java)
             ?: error("备份文件格式无法解析")
+        // v1.4.0：**DB 写入整体放进一个事务**。
+        // 原先是一串独立的 upsert（20+ 张表、含"先删 FTS 再重建"这类多步操作），中途失败
+        // （撞唯一索引 / 磁盘满 / 内存不足）会留下"前面写进去了、后面没写"的半截状态：
+        // UI 弹"导入失败"，用户以为没生效，再导一次 → 重复或半截。现在失败即**整体回滚**。
+        val stats = db.withTransaction { importDb(data) }
+        // 设置（DataStore）**不在**这个事务域里：放在事务提交**之后**写。
+        // 理由：若 DB 部分回滚，至少不会出现"设置已被备份覆盖、数据却没导入"的错位。
+        // 这一步失败不回滚已提交的 DB（回不去），只把写出条数记 0，由 ImportStats.settings 体现。
+        val settingsWritten = runCatching {
+            settings?.importBackupSettings(data.settings.orEmpty()) ?: 0
+        }.getOrDefault(0)
+        return stats.copy(settings = settingsWritten)
+    }
+
+    /** [import] 的 DB 部分：整体在一个事务里执行，失败即整体回滚。 */
+    private suspend fun importDb(data: BackupData): ImportStats {
         // 简单表：直接批量 upsert（主键不依赖自增 id）
         dao.upsertAllAlbumOverride(data.albumOverride)
         dao.upsertAllAlbumInfoOverride(data.albumInfoOverride)
@@ -286,8 +305,6 @@ internal class BackupManager(
             )
         }
 
-        val settingsWritten = settings?.importBackupSettings(data.settings.orEmpty()) ?: 0
-
         return ImportStats(
             albumOverride = data.albumOverride.size,
             albumInfoOverride = data.albumInfoOverride.size,
@@ -312,7 +329,8 @@ internal class BackupManager(
             playEventsSkipped = data.playEvents.orEmpty().size - newEvents.size,
             tokenUsage = newUsage.size,
             agentMemory = memories.size,
-            settings = settingsWritten,
+            // 设置条数由 import() 在事务提交后回填（见那里的注释）
+            settings = 0,
         )
     }
 
