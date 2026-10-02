@@ -158,6 +158,33 @@ object AlbumSortSkill : AgentEngine.AgentSkill {
             return AgentEngine.SkillResult(msg.replace("**", ""), success = false)
         }
         onStep("writeback", AgentEngine.StepStatus.RUNNING)
+        // v1.3.15:**资料与本地曲目一首都对不上时,不许"照排"**。
+        // 真机实测《龙年》:资料是同名作品的搬运视频(重合 0 首),模型照样给了 14 个下标,
+        // 旧逻辑直接写回并回"已按官方顺序排列" —— 排错了还很自信。现在改成**明说查不到可靠曲序,
+        // 并把出路告诉用户**:核对专辑名/歌手名识别,或者直接把顺序贴给我(新加的通道会照他说的排)。
+        if (result.webSearched && result.webHits == 0) {
+            android.util.Log.w("Agent", "album_sort: 联网资料与本地曲目 0 重合 → 不采用模型排出的顺序")
+            onStep("analyze", AgentEngine.StepStatus.FAILED)
+            onStep("writeback", AgentEngine.StepStatus.FAILED)
+            ctx.recordDiag(
+                skill = "album_sort", stage = "parse", ok = false,
+                counts = mapOf(
+                    "candidates" to currentTitles.size,
+                    "ordered" to result.orderedIndices.size,
+                    "webSearched" to 1, "webHits" to 0,
+                ),
+                replyRaw = result.rawReply,
+                errorCode = "WEB_MISMATCH",
+                errorDetail = "联网资料与本地曲目 0 重合(资料很可能不是这张专辑)",
+                webRaw = result.webSnippet,
+            )
+            return AgentEngine.SkillResult(
+                "网上查到的资料跟《$albumName》对不上(没能确认其中任何一首)。为避免排错,这次没动它。\n" +
+                    "两个办法:① 在专辑 ⋮ 里核对专辑名/歌手名识别是否正确;② **直接把正确顺序贴给我**" +
+                    "(像「1.曲名 2.曲名 …」这样),我照你说的排。",
+                success = false,
+            )
+        }
         // v1.3.15:模型给的已是**本地曲目名序列**(v1.3.13 起协议从"编号"改为"照抄本地写法",
         // 因为编号格式是弱模型的老坑)→ 照它的顺序写下标即可,零文本匹配。
         ctx.applyAlbumOrderIndices(key, result.orderedIndices)

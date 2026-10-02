@@ -88,19 +88,31 @@ object AgentService {
             else -> "$album $artist album tracklist order" to "$album $artist album tracklist order"
         }
         val tavilyContext = coroutineScope {
+            // v1.3.15:**先只搜权威曲目源,抓不到再退回通用搜索**。
+            // 为什么:通用搜索对"官方曲序"这种事实型查询太杂 —— 真机实测《龙年》抓到的是
+            // B 站一段同名作品的视频简介,曲目与本地一首都不重合,却被当权威用。中文专辑的官方
+            // 曲序在 豆瓣音乐 / MusicBrainz / Discogs 这类有结构化曲目表的站点(豆瓣 v2 API 已关,
+            // 但专辑页是服务端渲染的,Tavily 能直接抓到"曲目"段,不必自建爬虫)。
             val primary = async {
                 runCatching {
-                    com.shiyin.music.data.ai.TavilyService.search(tavilyKey, primaryQuery)
+                    com.shiyin.music.data.ai.TavilyService.search(
+                        tavilyKey, primaryQuery, includeDomains = TRACKLIST_SOURCES,
+                    )
                 }.getOrNull()
+            }
+            val first = primary.await()?.takeIf { it.isNotBlank() }
+            if (first != null) return@coroutineScope first
+            android.util.Log.i("Agent", "album_sort: 权威源无结果,退回通用搜索")
+            // 退回通用搜索(不带域名限制);专辑名带括号副标题时再试一条"去括号"的查询。
+            val generic = async {
+                runCatching { com.shiyin.music.data.ai.TavilyService.search(tavilyKey, primaryQuery) }.getOrNull()
             }
             val altAlbum = album.replace(Regex("[(（].*[)）]"), "").trim()
             val altArtist = artist.replace(Regex("[(（].*[)）]"), "").trim()
             val alt = if (altAlbum != album || altArtist != artist) async {
-                runCatching {
-                    com.shiyin.music.data.ai.TavilyService.search(tavilyKey, altQuery)
-                }.getOrNull()
+                runCatching { com.shiyin.music.data.ai.TavilyService.search(tavilyKey, altQuery) }.getOrNull()
             } else null
-            primary.await()?.takeIf { it.isNotBlank() }
+            generic.await()?.takeIf { it.isNotBlank() }
                 ?: alt?.await()?.takeIf { it.isNotBlank() }
         }
         // 搜到资料才标 DONE;没搜到标 FAILED(✗)——面板必须诚实。
@@ -215,6 +227,13 @@ object AgentService {
 
     /** 单条模糊匹配的最低分(低于它宁可不认,也不要张冠李戴)。 */
     private const val MIN_FUZZY_SCORE = 400
+
+    /**
+     * v1.3.15: 优先搜的**权威曲目源**。中文专辑的官方曲序在这些站上有结构化曲目表
+     * (豆瓣音乐页面是服务端渲染,Tavily 可直接抓"曲目"段;MusicBrainz/Discogs 是曲目数据库)。
+     * 只在这几个域名里搜不到时,才退回通用搜索。
+     */
+    private val TRACKLIST_SOURCES = listOf("music.douban.com", "musicbrainz.org", "discogs.com")
 
     /** 曲名归一(与 [officialToLocalIndices] 同一套:剥括号副标题 + FuzzySearch.normalize)。 */
     internal fun normTitleForMatch(s: String): String = normTitle(s)

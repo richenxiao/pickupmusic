@@ -34,8 +34,20 @@ object TavilyService {
      *
      * [includeAnswer] 为 true 时把 Tavily 的综合回答(answer 字段)拼在最前——
      * 专辑年表这类事实型查询,answer 常直接给出关键日期,比 3 条正文摘要更有用。
+     *
+     * v1.3.15:[includeDomains] 非空时,只搜这些域名。
+     *
+     * 为什么需要:通用网页搜索对"官方曲目顺序"这种**事实型**查询太杂 —— 真机实测《龙年》
+     * 抓到的是 B 站一段同名作品/搬运视频的简介,曲目与用户库里**一首都不重合**,却被当权威用。
+     * 中文专辑的官方曲序,可靠来源是**豆瓣音乐 / MusicBrainz / Discogs** 这类有结构化曲目表的站点
+     * (豆瓣 v2 API 已关闭,但其专辑页是服务端渲染的,Tavily 能直接抓到曲目段,无需自建爬虫)。
      */
-    suspend fun search(apiKey: String, query: String, includeAnswer: Boolean = false): String? = withContext(Dispatchers.IO) {
+    suspend fun search(
+        apiKey: String,
+        query: String,
+        includeAnswer: Boolean = false,
+        includeDomains: List<String> = emptyList(),
+    ): String? = withContext(Dispatchers.IO) {
         if (apiKey.isBlank()) return@withContext null
         try {
             val body = JsonObject().apply {
@@ -48,6 +60,11 @@ object TavilyService {
                 // 只要正文摘要,不要图片,省 token;answer 由调用方决定(事实型查询值得要)
                 addProperty("include_answer", includeAnswer)
                 addProperty("include_images", false)
+                if (includeDomains.isNotEmpty()) {
+                    add("include_domains", com.google.gson.JsonArray().apply {
+                        includeDomains.forEach { add(it) }
+                    })
+                }
             }.toString()
 
             val req = Request.Builder()
