@@ -17,6 +17,14 @@ private val Context.dataStore by preferencesDataStore(name = "settings")
 
 class SettingsStore(private val context: Context) {
     private val keyDark = booleanPreferencesKey("dark_theme")
+    /**
+     * v1.4.0:**跟随系统**深浅（设置页「系统主题」档）。默认 false。
+     *
+     * 主题本质仍只有浅/深两态，[keyDark] 就是那个选择；本开关只是决定"这份选择要不要
+     * 被系统的深浅覆盖"。所以**老用户不动**：没有这个键 → false → 完全保持原样；
+     * 打开后每一帧都用系统当时的值去解析成浅或深（含系统在后台切换时）。
+     */
+    private val keyThemeFollowSystem = booleanPreferencesKey("theme_follow_system")
     private val keyGapless = booleanPreferencesKey("gapless")
     private val keyAutoMatch = booleanPreferencesKey("auto_match")
     private val keyOnboarded = booleanPreferencesKey("onboarded")
@@ -100,6 +108,8 @@ class SettingsStore(private val context: Context) {
 
     data class Settings(
         val dark: Boolean,
+        /** v1.4.0: 跟随系统深浅（设置页三档里的「系统主题」）。 */
+        val themeFollowSystem: Boolean,
         val gapless: Boolean,
         val autoMatch: Boolean,
         val onboarded: Boolean,
@@ -158,6 +168,13 @@ class SettingsStore(private val context: Context) {
     val flow: Flow<Settings> = context.dataStore.data.map { p ->
         Settings(
             dark = p[keyDark] ?: false,
+            // v1.4.0: **默认跟随系统** —— 用户装 App 之前手机是什么主题就继续是什么主题，
+            // 不把深浅钉死。迁移规则（保老用户不动）：
+            //   · 新键有值 → 用新键；
+            //   · 新键没有、但老用户**显式设过** dark_theme → 不跟随，保持他选的那个；
+            //   · 新键没有、dark_theme 也从没写过（纯新装 / 从未碰过）→ 跟随系统。
+            themeFollowSystem = p[keyThemeFollowSystem]
+                ?: !p.asMap().containsKey(keyDark),
             gapless = p[keyGapless] ?: true,
             autoMatch = p[keyAutoMatch] ?: true,
             onboarded = p[keyOnboarded] ?: false,
@@ -205,11 +222,15 @@ class SettingsStore(private val context: Context) {
 
     suspend fun setDark(v: Boolean) {
         context.dataStore.edit { it[keyDark] = v }
-        // v1.4.0：同步镜像一份，供**首帧**读取（DataStore 是异步的，等它回来窗口底色已经画过一帧）。
-        // DataStore 仍是唯一权威：设置流回来时会以它为准并回写镜像。
-        ThemeMirror.write(context, v)
+        // 镜像不在这里写：设置流（MainViewModel 的 collector）是**唯一写入方**——
+        // 只有它同时知道"跟随系统开关"与"浅深选择"，能算出正确档位。
     }
     suspend fun setGapless(v: Boolean) = context.dataStore.edit { it[keyGapless] = v }
+
+    /** v1.4.0: 跟随系统深浅。**不使用镜像**——"系统"档的首帧本来就该跟系统资源，
+     *  不需要提前置位；镜像只服务于「强制浅/深」两档。 */
+    suspend fun setThemeFollowSystem(v: Boolean) =
+        context.dataStore.edit { it[keyThemeFollowSystem] = v }
     suspend fun setAutoMatch(v: Boolean) = context.dataStore.edit { it[keyAutoMatch] = v }
     suspend fun setOnboarded(v: Boolean) = context.dataStore.edit { it[keyOnboarded] = v }
     suspend fun setDeepSeekKey(v: String) = context.dataStore.edit { it[keyDeepSeek] = v }
@@ -343,6 +364,7 @@ class SettingsStore(private val context: Context) {
      */
     private val backupKeyTypes: Map<String, Char> = mapOf(
         "dark_theme" to SettingsValueCodec.BOOL,
+        "theme_follow_system" to SettingsValueCodec.BOOL,
         "gapless" to SettingsValueCodec.BOOL,
         "auto_match" to SettingsValueCodec.BOOL,
         "auto_save_recognition" to SettingsValueCodec.BOOL,

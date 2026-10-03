@@ -695,7 +695,7 @@ private fun AgentSettingsDialog(vm: MainViewModel, onDismiss: () -> Unit) {
 
                 // ── 对话显示(v1.3.12) ─────────────────────────────────────────────
                 // 用户实测:"思考链默认是展开的,应该在设置能够选择默认收起。"
-                SettingsSection("对话显示") {
+                SettingsSection("对话") {
                     Row(
                         Modifier.fillMaxWidth()
                             .clickable { vm.setAgentThinkingCollapsed(!vm.agentThinkingCollapsed) }
@@ -705,11 +705,6 @@ private fun AgentSettingsDialog(vm: MainViewModel, onDismiss: () -> Unit) {
                     ) {
                         Column(Modifier.weight(1f)) {
                             Text("思考过程默认收起", style = body(14f, FontWeight.Medium, c.text))
-                            Text(
-                                "开启后只显示「思考中 · Ns」,点一下才展开推理过程。",
-                                style = body(11.5f, FontWeight.Normal, c.n600),
-                                modifier = Modifier.padding(top = 2.dp),
-                            )
                         }
                         OrganicSwitch(vm.agentThinkingCollapsed) {
                             vm.setAgentThinkingCollapsed(!vm.agentThinkingCollapsed)
@@ -726,11 +721,6 @@ private fun AgentSettingsDialog(vm: MainViewModel, onDismiss: () -> Unit) {
                     ) {
                         Column(Modifier.weight(1f)) {
                             Text("强制联网搜索", style = body(14f, FontWeight.Medium, c.text))
-                            Text(
-                                "遇到没把握的事实先上网查再回答，不凭记忆猜；代价是多等一次联网。",
-                                style = body(11.5f, FontWeight.Normal, c.n600),
-                                modifier = Modifier.padding(top = 2.dp),
-                            )
                         }
                         OrganicSwitch(vm.agentForceSearch) {
                             vm.setAgentForceSearch(!vm.agentForceSearch)

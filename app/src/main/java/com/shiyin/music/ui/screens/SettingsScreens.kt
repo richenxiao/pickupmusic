@@ -714,9 +714,42 @@ private fun SettingsRoot(vm: MainViewModel, scrollStates: MutableMap<String, Scr
                 .background(c.surface)
                 .padding(horizontal = 16.dp, vertical = 6.dp),
         ) {
-            SettingRow(Lucide.Moon, "深色模式", null, divider = true) {
-                OrganicSwitch(vm.darkTheme) { vm.setDark(!vm.darkTheme) }
+            // v1.4.0: 主题三档（系统主题 / 浅色 / 深色）——替换原来的「深色模式」单个开关。
+            // 「系统主题」= 读手机当时的深浅再切过去（本质仍只有浅/深两态，由系统值决定）。
+            // 老用户落点不变：没有「跟随」键 → 走原来的 dark_theme（浅/深）。
+            // 上下各 13dp —— 与 SettingsRowScaffold 的行内边距一致，否则底下那条分界线
+            // 会贴住分段控件（真机反馈："这条线几乎就是贴着系统主题"）。
+            Column(Modifier.fillMaxWidth().padding(vertical = 13.dp)) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(13.dp),
+                ) {
+                    // 图标必须与三段的手机/太阳/月亮**都不同**（用户多次强调图标不要重复），
+                    // 且不能是"扫把"——用官方 palette（主题/外观语义）。
+                    OIcon(Lucide.Palette, 19.dp, c.n700)
+                    Text("系统主题", style = body(15f, FontWeight.SemiBold, c.text))
+                }
+                Spacer(Modifier.height(10.dp))
+                ThreeStopSegmentedControl(
+                    labels = listOf("系统主题", "浅色", "深色"),
+                    selectedIndex = when {
+                        vm.themeFollowSystem -> 0
+                        vm.darkTheme -> 2
+                        else -> 1
+                    },
+                    icons = listOf(Lucide.Smartphone, Lucide.Sun, Lucide.Moon),
+                    onSelect = { i ->
+                        vm.setThemeMode(
+                            when (i) {
+                                0 -> com.shiyin.music.data.ThemeMirror.MODE_SYSTEM
+                                2 -> com.shiyin.music.data.ThemeMirror.MODE_DARK
+                                else -> com.shiyin.music.data.ThemeMirror.MODE_LIGHT
+                            },
+                        )
+                    },
+                )
             }
+            Box(Modifier.fillMaxWidth().height(1.dp).background(c.divider))
             // v1.3.x: 睡眠定时可编辑——整行点击弹窗(时长档位/本曲结束/关闭),
             // 复用播放菜单同套 PlayerController 接口;不再只读展示。
             var sleepEditOpen by remember { mutableStateOf(false) }
@@ -2685,6 +2718,8 @@ private fun ThreeStopSegmentedControl(
     labels: List<String>,
     selectedIndex: Int,
     onSelect: (Int) -> Unit,
+    /** v1.4.0: 传了图标就画图标（主题三档：手机/太阳/月亮），否则画文字。 */
+    icons: List<androidx.compose.ui.graphics.vector.ImageVector>? = null,
 ) {
     val c = LocalOrganic.current
     val n = labels.size
@@ -2752,7 +2787,9 @@ private fun ThreeStopSegmentedControl(
                     Modifier.weight(1f).fillMaxHeight().clickableNoRipple { onSelect(i) },
                     contentAlignment = Alignment.Center,
                 ) {
-                    Text(
+                    if (icons != null && i < icons.size) {
+                        OIcon(icons[i], 17.dp, if (active) c.bg else c.n600)
+                    } else Text(
                         label,
                         style = body(
                             10.5f,

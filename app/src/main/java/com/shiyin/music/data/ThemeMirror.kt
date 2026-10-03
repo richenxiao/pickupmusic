@@ -20,18 +20,27 @@ import android.app.UiModeManager
 internal object ThemeMirror {
 
     private const val PREF = "theme_mirror"
-    private const val KEY_DARK = "dark"
+    private const val KEY_MODE = "mode"
 
-    /** 读镜像；没有记录（全新安装）返回 null。 */
-    fun read(context: Context): Boolean? {
+    /** 档位取值：跟随系统 / 强制浅 / 强制深。 */
+    const val MODE_SYSTEM = "system"
+    const val MODE_LIGHT = "light"
+    const val MODE_DARK = "dark"
+
+    /** 读镜像；没有记录（全新安装）返回 null。
+     *  v1.4.0: 改存**档位**（原先是布尔）。旧版本写下的 "dark" 键仍能读回并映射成档位，
+     *  保证升级首帧与用户原选择一致。 */
+    fun read(context: Context): String? {
         val p = context.getSharedPreferences(PREF, Context.MODE_PRIVATE)
-        return if (p.contains(KEY_DARK)) p.getBoolean(KEY_DARK, false) else null
+        p.getString(KEY_MODE, null)?.let { return it }
+        if (p.contains("dark")) return if (p.getBoolean("dark", false)) MODE_DARK else MODE_LIGHT
+        return null
     }
 
     /** 回写镜像（DataStore 的值变化时调用）。 */
-    fun write(context: Context, dark: Boolean) {
+    fun write(context: Context, mode: String) {
         runCatching {
-            context.getSharedPreferences(PREF, Context.MODE_PRIVATE).edit().putBoolean(KEY_DARK, dark).apply()
+            context.getSharedPreferences(PREF, Context.MODE_PRIVATE).edit().putString(KEY_MODE, mode).apply()
         }
     }
 }
@@ -40,23 +49,27 @@ internal object ThemeMirror {
  * v1.4.0：让**系统资源选择**跟随应用内主题（`values-night/` 的窗口底色、Android 12+ 启动画面底色）。
  *
  * 为什么需要：窗口底色由资源决定（所以跟的是**系统**日夜），而应用内主题是另一套（DataStore）——
- * 两者不一致时，启动画面与页间过渡会透出错误的底色（`values-night/themes.xml` 的注释里记过
- * 这个病根：AnimatedContent 交叉淡化时透出亮窗口底）。`setApplicationNightMode`（API 31，
+ * 两者不一致时，启动画面与页间过渡会透出错误的底色。`setApplicationNightMode`（API 31，
  * 本项目 minSdk=31，无需新依赖）把应用的夜间模式设成应用内选择，两套就一致了。
  *
- * 只在**值变化**时调用（重复设置会白白触发一次配置变更）。
+ * v1.4.0「系统主题」档 → 传 `UI_MODE_NIGHT_AUTO`：由系统日夜决定资源，应用不再强制。
+ *
+ * 只在**档位变化**时调用（重复设置会白白触发一次配置变更）。
  */
 internal object ThemeMode {
 
-    private var last: Boolean? = null
+    private var last: String? = null
 
-    fun apply(context: Context, dark: Boolean) {
-        if (last == dark) return
-        last = dark
+    fun apply(context: Context, mode: String) {
+        if (last == mode) return
+        last = mode
+        val night = when (mode) {
+            ThemeMirror.MODE_SYSTEM -> UiModeManager.MODE_NIGHT_AUTO
+            ThemeMirror.MODE_DARK -> Configuration.UI_MODE_NIGHT_YES
+            else -> Configuration.UI_MODE_NIGHT_NO
+        }
         runCatching {
-            context.getSystemService(UiModeManager::class.java)?.setApplicationNightMode(
-                if (dark) Configuration.UI_MODE_NIGHT_YES else Configuration.UI_MODE_NIGHT_NO,
-            )
+            context.getSystemService(UiModeManager::class.java)?.setApplicationNightMode(night)
         }
     }
 }

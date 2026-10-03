@@ -529,10 +529,16 @@ object LlmClient {
         callSec: Long = 120,
         retries: Int = 1,
         onDelta: (contentDelta: String?, reasoningDelta: String?) -> Unit = { _, _ -> },
+        /**
+         * v1.4.0: 请求的 tool_choice（**原始 JSON 文本**）。
+         * `"auto"` = 模型自己决定；`{"type":"function","function":{"name":"web_search"}}`
+         * = 强制它必须调用联网工具（「强制联网搜索」用后者，见 AgentTools.dispatch）。
+         */
+        toolChoiceJson: String = "\"auto\"",
     ): LlmToolResult = withContext(Dispatchers.IO) {
         var last: LlmToolResult = LlmToolResult.Err(null, "未发起调用")
         for (attempt in 0..retries) {
-            last = callWithToolsStreamOnce(config, messages, tools, temperature, maxTokens, callSec, onDelta)
+            last = callWithToolsStreamOnce(config, messages, tools, temperature, maxTokens, callSec, onDelta, toolChoiceJson)
             if (last is LlmToolResult.Ok) break
             val err = last as LlmToolResult.Err
             // 只重试"网络层失败"(无 HTTP 码):HTTP 错误重发同样请求只会再被拒一次
@@ -555,6 +561,7 @@ object LlmClient {
         maxTokens: Int,
         callSec: Long,
         onDelta: (contentDelta: String?, reasoningDelta: String?) -> Unit,
+        toolChoiceJson: String = "\"auto\"",
     ): LlmToolResult {
         if (!config.isConfigured) {
             val m = "供应商未配置(缺 API Key 或模型名)"
@@ -567,7 +574,8 @@ object LlmClient {
                 add("messages", messages)
                 if (tools != null && tools.size() > 0) {
                     add("tools", tools)
-                    addProperty("tool_choice", "auto")
+                    // v1.4.0: 默认 auto；「强制联网搜索」时调用方传强制调用 web_search 的 JSON。
+                    add("tool_choice", com.google.gson.JsonParser.parseString(toolChoiceJson))
                 }
                 addProperty("max_tokens", maxTokens)
                 addProperty("temperature", temperature)

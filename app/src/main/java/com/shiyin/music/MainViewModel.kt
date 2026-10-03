@@ -193,14 +193,33 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     // settings
     var settingsLoaded by mutableStateOf(false); private set
     var darkTheme by mutableStateOf(false); private set
+    /** v1.4.0: 跟随系统深浅（设置页三档里的「系统主题」）。 */
+    var themeFollowSystem by mutableStateOf(false); private set
+    /** 用户选的浅/深；[themeFollowSystem] 为真时被系统当时的值覆盖。 */
+    private var darkChoice = false
 
     /**
-     * v1.4.0：把**镜像**里的主题作为首帧初值 —— `MainActivity.onCreate` 在 `setContent` 之前调用。
+     * v1.4.0：把**镜像**里的主题**档位**作为首帧初值 —— `MainActivity.onCreate` 在 `setContent` 之前调用。
      *
      * 只负责"第一帧别画错色"：DataStore 读回来后仍以它为准（并回写镜像）。
-     * 全新安装没有镜像时调用方传 false（与 DataStore 的默认值一致）。
+     * 全新安装没有镜像时调用方传 light（与 DataStore 的默认值一致）。
      */
-    fun applyInitialDark(dark: Boolean) { darkTheme = dark }
+    fun applyInitialTheme(mode: String) {
+        themeFollowSystem = mode == com.shiyin.music.data.ThemeMirror.MODE_SYSTEM
+        darkChoice = mode == com.shiyin.music.data.ThemeMirror.MODE_DARK
+        darkTheme = if (themeFollowSystem) systemIsDark() else darkChoice
+    }
+
+    /** 系统当前是否深色。 */
+    private fun systemIsDark(): Boolean =
+        (getApplication<android.app.Application>().resources.configuration.uiMode and
+            android.content.res.Configuration.UI_MODE_NIGHT_MASK) ==
+            android.content.res.Configuration.UI_MODE_NIGHT_YES
+
+    /** 系统日夜切换时由 Activity 的 `onConfigurationChanged` 调用（只对「系统主题」档生效）。 */
+    fun onSystemUiModeChanged() {
+        if (themeFollowSystem) darkTheme = systemIsDark()
+    }
     var gapless by mutableStateOf(true); private set
     var autoMatch by mutableStateOf(true); private set
     var onboarded by mutableStateOf(false); private set
@@ -1041,13 +1060,21 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     init {
         viewModelScope.launch {
             settingsStore.flow.collect { s ->
-                darkTheme = s.dark
+                // v1.4.0：主题三档 = 跟随系统开关 + 浅/深选择。「系统」档用系统当时的日夜解析成浅或深。
+                themeFollowSystem = s.themeFollowSystem
+                darkChoice = s.dark
+                darkTheme = if (s.themeFollowSystem) systemIsDark() else s.dark
                 // v1.4.0：DataStore 是**唯一权威** —— 这里把镜像与系统夜间模式都对齐到它。
                 // 镜像：万一陈旧（例如用户在国际版/别处改过、或镜像写入失败），以 DataStore 为准改写；
                 // 系统夜间模式：让 values-night 资源（窗口底/启动画面底）跟随应用内主题，
-                // 只在值变化时才真正调用（见 ThemeMode）。
-                com.shiyin.music.data.ThemeMirror.write(getApplication(), s.dark)
-                com.shiyin.music.data.ThemeMode.apply(getApplication(), s.dark)
+                // 只在档位变化时才真正调用（见 ThemeMode）。
+                val themeMode = when {
+                    s.themeFollowSystem -> com.shiyin.music.data.ThemeMirror.MODE_SYSTEM
+                    s.dark -> com.shiyin.music.data.ThemeMirror.MODE_DARK
+                    else -> com.shiyin.music.data.ThemeMirror.MODE_LIGHT
+                }
+                com.shiyin.music.data.ThemeMirror.write(getApplication(), themeMode)
+                com.shiyin.music.data.ThemeMode.apply(getApplication(), themeMode)
                 gapless = s.gapless
                 player.gaplessEnabled = s.gapless
                 autoMatch = s.autoMatch
@@ -2963,14 +2990,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 agentHistoryOpen = false
                 // v1.3.15:换到另一段对话 → 推荐槽位跟着断(它属于刚才那段会话)。
                 agentRecIntent = null
-                // 最后一条用户消息复制进输入框 + 置覆盖锚点（发送 = 替换该条起的后续）
-                val lastUserIdx = msgs.indexOfLast { it.role == "user" }
-                if (lastUserIdx >= 0) {
-                    agentDraft = msgs[lastUserIdx].text
-                    agentEditFromIndex = lastUserIdx
-                } else {
-                    agentEditFromIndex = -1
-                }
+                // v1.4.0:打开历史对话**不再把最后一条用户消息回填输入框**。
+                // 原实现把它塞进 draft 并置覆盖锚点(当"重发/编辑"入口),但用户只是想翻看时,
+                // 输入框莫名粘上上一句问话(真机反馈)。编辑/重发留给用户在该条消息上显式触发。
+                agentEditFromIndex = -1
             }
         }
     }
@@ -3466,8 +3489,22 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 // 它常常直接凭记忆答。这里先搜好塞进上下文,回答就建立在真实资料上。
                 var webBlock = ""
                 if (fastPlan == null) {
-                    com.shiyin.music.data.ai.WebSearchPolicy.explicitQuery(text)?.let { q ->
+                    // v1.4.0:「强制联网搜索」由 **tool_choice 强制模型调用联网工具**实现
+                    // （见 AgentTools.dispatch），不再拿用户原话直接去搜——那样绕过了模型
+                    // 对"该搜什么"的判断。这里只保留用户**明确要求联网**时的预搜。
+                    val preQuery = com.shiyin.music.data.ai.WebSearchPolicy.explicitQuery(text)
+                    preQuery?.let { q ->
                         if (tavilyApiKey.isNotBlank()) {
+                            // v1.4.0: 预搜索也要在**实时步骤面板**里露面，否则用户只看到
+                            // "思考中"，不知道系统已经替他搜过（真机反馈：没见到联网搜索的图标）。
+                            mainHandler.post {
+                                if (turnSealed.get()) return@post
+                                steps.upsert(
+                                    "web", "联网搜索:$q",
+                                    com.shiyin.music.data.ai.AgentEngine.StepStatus.RUNNING,
+                                )
+                                agentMessages = agentMessages.replaceAt(msgIdx, liveAgentMsg(steps.toList()))
+                            }
                             val t0 = System.currentTimeMillis()
                             val ctxText = runCatching {
                                 com.shiyin.music.data.ai.TavilyService.search(tavilyApiKey, q, includeAnswer = true)
@@ -3479,8 +3516,20 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                                 getApplication(), "Agent", "web pre-search ${if (ok) "ok" else "empty"}",
                             )
                             processHistory.add(ProcessStep(type = "tool", label = "联网搜索:$q", durationMs = ms))
+                            mainHandler.post {
+                                if (turnSealed.get()) return@post
+                                val st = if (ok) com.shiyin.music.data.ai.AgentEngine.StepStatus.DONE
+                                         else com.shiyin.music.data.ai.AgentEngine.StepStatus.FAILED
+                                val body = buildString {
+                                    append("关键词：").append(q)
+                                    if (!ctxText.isNullOrBlank()) append("\n\n检索到：\n").append(ctxText.take(1200))
+                                    else append("\n\n（没有返回资料）")
+                                }
+                                steps.upsert("web", "联网搜索:$q", st, detail = body)
+                                agentMessages = agentMessages.replaceAt(msgIdx, liveAgentMsg(steps.toList()))
+                            }
                             if (ok) {
-                                webBlock = "[联网资料] 用户明确要求联网,系统已替他搜好「$q」。回答以下面资料为准,资料没提的不要编:\n" +
+                                webBlock = "[联网资料] 用户明确要求联网,系统已替他搜好「$q」。回答以下面资料为准;资料没提的不要编,也不要拿记忆补:\n" +
                                     ctxText!!.take(3000)
                             }
                         }
@@ -5131,6 +5180,25 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     // ── settings toggles ───────────────────────────────────────────────────
     fun setDark(v: Boolean) = viewModelScope.launch { settingsStore.setDark(v) }
+
+    /**
+     * v1.4.0: 主题三档（「系统主题」/ 浅色 / 深色）。落到两个既有键上：
+     * 跟随开关 + 浅深选择。选浅/深时**同时关掉跟随**（否则选择不会生效）。
+     */
+    fun setThemeMode(mode: String) = viewModelScope.launch {
+        when (mode) {
+            com.shiyin.music.data.ThemeMirror.MODE_SYSTEM ->
+                settingsStore.setThemeFollowSystem(true)
+            com.shiyin.music.data.ThemeMirror.MODE_DARK -> {
+                settingsStore.setThemeFollowSystem(false)
+                settingsStore.setDark(true)
+            }
+            else -> {
+                settingsStore.setThemeFollowSystem(false)
+                settingsStore.setDark(false)
+            }
+        }
+    }
     fun setGapless(v: Boolean) = viewModelScope.launch { settingsStore.setGapless(v) }
     fun setAutoMatch(v: Boolean) = viewModelScope.launch { settingsStore.setAutoMatch(v) }
     fun setAutoSaveRecognition(v: Boolean) = viewModelScope.launch { settingsStore.setAutoSaveRecognition(v) }

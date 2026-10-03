@@ -560,6 +560,16 @@ object AgentTools {
 
         while (rounds < hardCap) {
             rounds++
+            // v1.4.0:「强制联网搜索」= 强制**模型调用联网工具**，不是拿用户原话直接去搜。
+            // 只在第一轮强制：由模型自己判断"该搜什么"；工具返回后放开成 auto，
+            // 它可以选择再搜一轮，或者直接回答。
+            val hasWebSearch = tavilyKey.isNotBlank() && (tools?.size() ?: 0) > 0
+            val forceThisRound = forceSearch && rounds == 1 && hasWebSearch
+            val toolChoice = if (forceThisRound) {
+                """{"type":"function","function":{"name":"web_search"}}"""
+            } else {
+                "\"auto\""
+            }
             val resp = when (val r = LlmClient.callWithToolsStream(
                 config, messages, tools, maxTokens = 4096,
                 onDelta = { c, reason ->
@@ -572,6 +582,7 @@ object AgentTools {
                     reason?.let { thinkSb.append(it); onThinking(thinkSb.toString()) }
                     c?.let { contentSb.append(it); onContent(contentSb.toString()) }
                 },
+                toolChoiceJson = toolChoice,
             )) {
                 is LlmToolResult.Ok -> r.resp
                 is LlmToolResult.Err -> {

@@ -37,9 +37,10 @@ class MainActivity : ComponentActivity() {
         // 镜像（SharedPreferences，同步可读）回答"首帧该用哪套"；DataStore 仍是唯一权威，
         // 读回后若不一致会以它为准并回写镜像（见 MainViewModel 的设置流）。
         // 全新安装没有镜像 → 用与 DataStore 相同的默认值（浅色），并在这一次就设好系统夜间模式。
-        val mirroredDark = com.shiyin.music.data.ThemeMirror.read(this) ?: false
-        vm.applyInitialDark(mirroredDark)
-        com.shiyin.music.data.ThemeMode.apply(this, mirroredDark)
+        val mirroredMode = com.shiyin.music.data.ThemeMirror.read(this)
+            ?: com.shiyin.music.data.ThemeMirror.MODE_SYSTEM
+        vm.applyInitialTheme(mirroredMode)
+        com.shiyin.music.data.ThemeMode.apply(this, mirroredMode)
 
         vm.launchTrashIntent = { pi ->
             trashLauncher.launch(IntentSenderRequest.Builder(pi.intentSender).build())
@@ -69,6 +70,13 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         // Picks up a grant made from the system App-Info page.
         if (!vm.hasMediaPermission && hasAudioPermission()) vm.onPermissionGranted()
+    }
+
+    /** v1.4.0:「系统主题」档要跟着系统日夜走 —— 系统切换时重算深浅。
+     *  manifest 已声明 configChanges=uiMode，所以这里收到回调而不是重建 Activity。 */
+    override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
+        super.onConfigurationChanged(newConfig)
+        vm.onSystemUiModeChanged()
     }
 
     override fun onNewIntent(intent: android.content.Intent) {
