@@ -171,7 +171,8 @@ private fun CloudBackupScreen(vm: MainViewModel, scrollStates: MutableMap<String
                 "备份会存进这个地址下的 PickUpMusic 文件夹，没有会自动创建；想自己指定位置，" +
                 "就写成 …/dav/文件夹名/（该文件夹需已存在）。\n\n" +
                 "坚果云等网盘要求在网页端生成「应用密码」，不要填登录密码。" +
-                "「测试连接」会真的写一个临时文件再删掉，通过即代表备份能成。",
+                "「测试连接」会真的写一个临时文件再删掉，通过即代表备份能成。\n\n" +
+                "备份文件包含 API Key，明文存储，请勿放在公开位置。",
         ) { vm.navFilesBack() }
 
         // ── 服务器配置 ──────────────────────────────────────────────────
@@ -942,7 +943,7 @@ private fun DataManageScreen(vm: MainViewModel, scrollStates: MutableMap<String,
                 // v22: 备份里**含 API Key / 供应商配置**（用户定调：要进，否则换机最痛），
                 // 所以导出后必须明确提醒一句"含密钥"，让用户知道这个文件不能随便发。
                 backupMsg = "已备份（${"%.1f".format(bytes.size / 1024.0 / 1024.0)} MB）· " +
-                    "含密钥，请妥善保管"
+                    "含 API Key（明文），请勿放在公开位置"
                 lastExport = null
             } catch (e: Exception) { backupMsg = "备份失败：${e.message}" }
         }
@@ -1989,46 +1990,98 @@ private fun AboutScreen(vm: MainViewModel) {
                 // 规则:同大版本(v1.2.x)各修订版日志都保留;进入下一大版本(v1.3.x)时移除前一版本日志。
                 // 编写规范:用户视角,不写内部实现/类名/字段;分类 ✨新功能/🚀优化体验/🐛问题修复;
                 // 某类无内容不强行加;版本号不带日期。
+                /** 一个模块分组：模块名 + 该模块下逐行说明（模块名单独一行，子项缩进）。 */
+                data class VerGroup(val title: String, val items: List<String>)
                 data class VerChange(
                     val version: String,
-                    val newFeatures: List<String> = emptyList(),
-                    val improvements: List<String> = emptyList(),
+                    val newFeatures: List<VerGroup> = emptyList(),
+                    val improvements: List<VerGroup> = emptyList(),
+                    val upgradeNotes: List<String> = emptyList(),
                     val fixes: List<String> = emptyList(),
                 )
                 val versions = listOf(
                     VerChange(
-                        version = "v1.3.0",
+                        version = "v1.4.0",
                         newFeatures = listOf(
-                            "新增 Agent 对话页：用自然语言让 AI 帮你整理音乐库。支持联网搜证后自动排序专辑曲目、修正识别错的歌手名、为当前歌曲找歌词，每步执行进度可见，写回前需你确认。",
-                            "Agent 支持批量改歌名：说「把专辑里每首歌的XX后缀去掉」「繁体转简体」「片假名换成汉字官方名」，AI 逐首分析列出改动清单后写回；也可以直接点名「把 A 改成 B」，改完逐行对照验收。",
-                            "Agent 会主动检索本地音乐库：问「库里有没有这首歌」「我常听哪些」不再靠 AI 瞎编，答案基于你的真实曲库和播放次数。",
-                            "Agent 支持多家大模型：DeepSeek、OpenRouter、智谱、通义预设一键切换，也可自定义任意 OpenAI 兼容服务商；设置页可查看 Token 用量趋势（输入 / 输出 / 缓存命中 / 成本曲线）。",
-                            "歌手写真可在设置里手动配置来源：填入 Fanart / Last.fm 的 API Key 可获得更多写真，也可单独开关某个来源。",
+                            VerGroup(
+                                "整轨拆分",
+                                listOf(
+                                    "按曲目清单把整轨专辑拆成单曲",
+                                    "拆出的单曲可单独收藏、加入歌单、查看歌词",
+                                ),
+                            ),
+                            VerGroup(
+                                "拾光 Agent",
+                                listOf(
+                                    "长期记忆：偏好与近况跨对话保留，可开关",
+                                    "推荐选曲：按场景或歌手推荐，附理由",
+                                    "专辑曲序：按网络曲目资料整理",
+                                    "技能：放歌、播放控制、播放模式、睡眠定时、收听统计、保存歌词、曲库检索、歌曲故事、发现音乐",
+                                    "对话：历史回看、导出文件",
+                                ),
+                            ),
+                            VerGroup(
+                                "歌词",
+                                listOf(
+                                    "歌词翻译：外文歌词译为中文，与原文逐行对照",
+                                    "歌词来源：新增自定义来源、Agent 联网搜索",
+                                    "歌词本设置：振假名默认开关、自动校验、配色",
+                                    "日语注音：增加外部来源与模型校验",
+                                ),
+                            ),
+                            VerGroup("搜索", listOf("支持假名与罗马字")),
+                            VerGroup(
+                                "备份与更新",
+                                listOf(
+                                    "备份：zip 归档（含本地图片）、恢复前预览、本地自动快照、WebDAV",
+                                    "检查更新：设置页查看新版本与更新说明",
+                                ),
+                            ),
                         ),
                         improvements = listOf(
-                            "选择歌手写真时，候选图边找边显示，不再空等全部来源；搜索进度可见，不会再像卡住。",
-                            "专辑封面搜索支持多地区：日语、中文歌曲用原名即可匹配到对应地区商店的封面，不再需要英文名。",
-                            "已获取的专辑封面本地持久化保存：断网也能立即显示，不再每次冷启动都重新解码或下载。",
-                            "歌手页打开速度提升，封面加载更稳，减少了重复请求导致的卡顿。",
-                            "Agent 回复像逐字打字一样流式呈现；AI 思考过程收进可展开的思考面板，思考中亮橙色呼吸灯，完成后自动折叠。",
-                            "歌词本切到下一首时立即从顶部开始跟随，不再停留上一首的最后位置。",
-                            "专辑页日期前缀按真实类型显示（专辑 / EP / 单曲 / 合集 · 日期），不再一律写「专辑」。",
+                            VerGroup(
+                                "迷你播放条",
+                                listOf("左右滑动切歌", "下一首封面预加载"),
+                            ),
+                            VerGroup(
+                                "歌词本",
+                                listOf(
+                                    "展开、收起改为跟手过渡",
+                                    "顶部下拉退出",
+                                ),
+                            ),
+                            VerGroup(
+                                "播放页与设置",
+                                listOf(
+                                    "播放页菜单精简，睡眠定时、播放速度移至一级",
+                                    "设置页重新归类，睡眠定时可编辑",
+                                ),
+                            ),
+                            VerGroup(
+                                "专辑与歌手",
+                                listOf(
+                                    "多歌手选择弹窗显示写真",
+                                    "相册选图先落盘，重启后不再失效",
+                                ),
+                            ),
+                            VerGroup(
+                                "其他",
+                                listOf(
+                                    "收藏按钮：加号过渡为对勾",
+                                    "侧边栏：「拾光 Agent」移至「设置」之前",
+                                ),
+                            ),
                         ),
-                        fixes = listOf(
-                            "修复 Agent 修正歌手名时，因未把歌曲编号交给 AI 导致永远修正不成功的问题。",
-                            "修复 Agent 改歌名「提示成功但实际没改」的问题（改名的目标专辑与新旧歌名现在如实交给 AI）。",
-                            "修复部分 AI 模型把答案写在思考里导致改名无结果、却显示完成的问题；拿不准的歌名保持原样不动，不再瞎改。",
-                            "修复 Agent 设置页打开闪退、提示「未配置大模型」但配置其实存在的问题。",
-                            "修复更换封面来源或选择自定义封面后，旧封面仍缓存不清、不刷新的问题。",
-                            "修复部分情况下播放次数统计不准确的问题：误触、快速跳过不再被计入播放次数和热度排序（累计真实播放满 30 秒才算一次有效播放）。",
-                            "修复退出应用或切到后台后，正在播放的歌曲时长未被正确记录的问题。",
-                            "修复单曲循环时播放计数可能错乱、同一首歌重复计数异常的问题。",
-                            "修复歌手主页名字在内容较少的歌手上会突然瞬移到顶栏的问题，现在滚动到顶平滑到位。",
-                            "修复部分歌手名（含全角逗号等标点）无法正确识别为多位歌手的问题。",
-                            "修复音乐库「专辑」筛选仍混入单曲的问题。",
-                            "修复从专辑封面生成歌手写真时偶尔提示「无可用封面」的问题。",
-                            "修复专辑信息编辑里发布时间的年份列表固定到 2030 年的问题，现在跟随当前年份。",
+                        upgradeNotes = listOf(
+                            "备份文件包含 API Key，明文存储，包括 WebDAV 备份，请勿放在公开位置。",
+                            "系统云备份不再上传 API Key、设置、崩溃与使用日志、Agent 诊断与对话导出；" +
+                                "还原后需重新填写 API Key 和设置（应用自带备份与换机迁移不受影响）。",
+                            "导入备份时，本机已有的 API Key 不会被覆盖。",
+                            "歌词页的「AI 补全」按钮已移除，改由「更换歌词来源」里的拾光 Agent 联网搜索承担。",
                         ),
+                        // 🐛修复栏：只收在 V1.3.0 上复现确认过的条目（格式「位置：现象」），
+                        // 确认前留空 —— 空列表不会渲染该小节。
+                        fixes = emptyList(),
                     ),
                 )
                 for (ver in versions) {
@@ -2037,12 +2090,38 @@ private fun AboutScreen(vm: MainViewModel) {
                         style = body(12.5f, FontWeight.Bold, c.text).copy(letterSpacing = 0.5.sp),
                         modifier = Modifier.padding(top = 4.dp),
                     )
-                    val sections = listOf(
-                        "✨ 新功能" to ver.newFeatures,
-                        "🚀 优化体验" to ver.improvements,
-                        "🐛 问题修复" to ver.fixes,
+                    // 分组小节：模块名单独一行，子项缩进一级
+                    val grouped = listOf(
+                        "✨ 新增" to ver.newFeatures,
+                        "🚀 优化" to ver.improvements,
                     )
-                    for ((label, items) in sections) {
+                    for ((label, groups) in grouped) {
+                        if (groups.isEmpty()) continue
+                        Text(label, style = body(11.5f, FontWeight.Bold, c.n600).copy(letterSpacing = 0.5.sp), modifier = Modifier.padding(top = 4.dp))
+                        for (g in groups) {
+                            Text(
+                                g.title,
+                                style = body(12f, FontWeight.Bold, c.text),
+                                modifier = Modifier.padding(top = 3.dp, start = 2.dp),
+                            )
+                            for (ch in g.items) {
+                                Row(
+                                    Modifier.padding(start = 10.dp),
+                                    verticalAlignment = Alignment.Top,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                ) {
+                                    Text("·", style = body(12f, FontWeight.Bold, c.n700))
+                                    Text(ch, style = body(12f, FontWeight.Normal, c.n700).copy(lineHeight = 17.sp), modifier = Modifier.weight(1f))
+                                }
+                            }
+                        }
+                    }
+                    // 平铺小节：升级须知 / 修复
+                    val plain = listOf(
+                        "⚠️ 升级须知" to ver.upgradeNotes,
+                        "🐛 修复" to ver.fixes,
+                    )
+                    for ((label, items) in plain) {
                         if (items.isEmpty()) continue
                         Text(label, style = body(11.5f, FontWeight.Bold, c.n600).copy(letterSpacing = 0.5.sp), modifier = Modifier.padding(top = 4.dp))
                         for (ch in items) {
