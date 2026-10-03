@@ -24,13 +24,21 @@ data class PlanCarry(
     val segLast: Int get() = if (lastSeg >= 0) lastSeg else plan.tracks.size - 1
 
     /**
-     * 本条目是否需要「到段末即结束」的引擎裁剪。
+     * 本条目是否带**裁剪窗口**（= 区间已标注）。
      *
-     * 只有当上界**不在方案末段**时才需要：那意味着后面还有别的音频，若不裁剪，播完本段
-     * 会顺势播进下一段（用户实测：歌单里放一首拆分单曲，播完接着播同轨的下一段）。
-     * 整张专辑那种"一路到文件末尾"的条目不裁剪，无缝性不受影响。
+     * v1.4.0 定稿：窗口取 `[本运行区起点, 本运行区末段终点]`，不是 `[0, 末段终点]`。
+     * 区别很关键——
+     *  - `[0, 末]`：条目里仍含前面那些段的音频 → ①时长 = 末段终点的**绝对时间**
+     *    （真机：对 2.BBB 显示「两首歌之和」）②单曲循环重启落回文件 0 秒 → 响 1.AAA；
+     *  - `[起, 末]`：时长就是本条真实长度，重启天然回到本条起点，两个毛病一起消失。
+     * 代价是播放位置变成**运行区相对坐标**，由 PlayerController 的 absOf/relOf 统一换算回
+     * 文件绝对坐标后再交给歌词/进度/统计，下游无需感知。
      */
-    val needsClip: Boolean get() = segLast < plan.tracks.size - 1
+    val needsClip: Boolean get() = startSeg >= 0
+
+    /** 裁剪窗口的文件绝对起点（未裁剪 = 0）。 */
+    val clipStartMs: Long
+        get() = if (needsClip) plan.tracks.getOrNull(segStart)?.startMs ?: 0L else 0L
 }
 
 /**

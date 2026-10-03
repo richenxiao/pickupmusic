@@ -259,6 +259,8 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
                     "new(idx=${newPosition.mediaItemIndex}, pos=${newPosition.positionMs})",
                 Throwable("discontinuity caller"),
             )
+            // v1.4.0: 立即纠正「重启落回文件 0」（单曲循环），不等下一拍 ticker。
+            realignIfWrappedBeforeSegment()
         }
 
         override fun onPlaybackStateChanged(state: Int) {
@@ -285,7 +287,7 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
         repeatMode = c.repeatMode
         val dur = c.duration
         if (dur > 0) durationMs = dur
-        positionMs = c.currentPosition.coerceAtLeast(0)
+        positionMs = absOf(c.currentPosition.coerceAtLeast(0))
         // v1.2.1: 重连恢复分支——仅冷启动首次同步(controller 刚连上、服务已在播但 tracker 无 session)
         // 跑一次,补插 play_event 行。用 trackerInitialized 守卫:STATE_ENDED 后 finalizeCurrent 把
         // tracker 置 null,随后 controller.pause()/seekTo 触发 onEvents→syncFromPlayer,若不守卫会
@@ -305,7 +307,8 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
      * 无 tick 粒度延迟。仅歌词高亮这类"需要跟帧"的场景用它;进度条/时间显示
      * 继续读 [positionMs](300ms 粒度足够,且避免全页重组)。
      */
-    fun framePositionMs(): Long = controller?.currentPosition?.coerceAtLeast(0) ?: positionMs
+    fun framePositionMs(): Long =
+        controller?.let { absOf(it.currentPosition.coerceAtLeast(0)) } ?: positionMs
 
     /**
      * v23: 与 [framePositionMs] 同源（帧级插值），但换算到**当前曲目**坐标。
@@ -328,7 +331,9 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
                     // v22: 先检查拆分区间边界 —— 越过时无缝换 mediaId（引擎层零动作）。
                     // 放在取 positionMs 之前，使这一拍的统计采样落在新曲目的 session 上。
                     checkVirtualBoundary()
-                    val newPos = c.currentPosition.coerceAtLeast(0)
+                    // v1.4.0: 单曲循环重启若落回文件 0（裁剪窗口起点），立刻拨回本段起点。
+                    realignIfWrappedBeforeSegment()
+                    val newPos = absOf(c.currentPosition.coerceAtLeast(0))
                     // v1.3.10 诊断(A23):位置**无故后退**时留痕(没有任何 seek 请求却退回去)。
                     // 用户实测「1:37 静音 → 1:40 → 又跳回 1:37」正是这类症状。
                     if (newPos + 1500L < positionMs) {
@@ -444,6 +449,27 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
     /** 当前条目的拆分信息（普通曲目 / 容器模式返回 null）。 */
     private fun currentCarry(): PlanCarry? = SplitCarry.read(controller?.currentMediaItem)
 
+    // ── v1.4.0: 运行区裁剪的坐标换算 ──────────────────────────────────────
+    // 条目被裁成 [运行区起点, 运行区末] 后，播放器给的位置是**运行区相对坐标**；
+    // 而歌词时间戳/进度条/播放统计全都建立在**文件绝对坐标**上。统一在这里换算，
+    // 下游一律读 positionMs（= 绝对坐标），对裁剪无感知。
+
+    /** 当前条目裁剪窗口的文件绝对起点（未裁剪 = 0）。 */
+    private val currentClipStart: Long get() = currentCarry()?.clipStartMs ?: 0L
+
+    /** 播放器相对位置 → 文件绝对位置。 */
+    private fun absOf(rel: Long): Long = currentClipStart + rel
+
+    /** 文件绝对位置 → 播放器相对位置。 */
+    private fun relOf(abs: Long): Long = (abs - currentClipStart).coerceAtLeast(0L)
+
+    /** 用**文件绝对坐标**发起 seek（内部换算成裁剪后的相对坐标）。 */
+    private fun seekToAbsolute(abs: Long): Boolean {
+        val c = controller ?: return false
+        c.seekTo(relOf(abs))
+        return true
+    }
+
     /**
      * 进入一个拆分单曲条目时，把播放位置对齐到它的区间起点。
      *
@@ -457,9 +483,38 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
         val c = controller ?: return
         val carry = currentCarry() ?: return
         val t = carry.current ?: return
-        val pos = c.currentPosition
+        val pos = absOf(c.currentPosition)
         if (pos < t.startMs || pos >= t.endMs) {
-            c.seekTo(t.startMs.coerceAtLeast(0L))
+            seekToAbsolute(t.startMs)
+        }
+    }
+
+    /**
+     * v1.4.0: 把「重启落回文件 0」的位置拨回本段起点。
+     *
+     * 裁剪窗口是 `[0, 段末]`（startPositionMs 保持 0 以保住文件绝对坐标），因此条目里
+     * **仍包含它前面那些段的音频**。单曲循环重启时 Media3 回到窗口起点 = 文件 0 秒，
+     * 音频就跑回前面的段去了（真机：对 2.BBB 开单曲循环，BBB 放完接着响 1.AAA，
+     * 页面不变——因为媒体项没换）。
+     *
+     * 刻意**不依赖媒体项切换回调**：单曲循环重启不保证发 onMediaItemTransition，
+     * 所以同时挂在「位置不连续」（立即）与 300ms ticker（兜底）上。
+     */
+    private fun realignIfWrappedBeforeSegment() {
+        val c = controller ?: return
+        val carry = currentCarry() ?: return
+        if (!carry.needsClip) return
+        val t = carry.current ?: return
+        // 裁剪窗口起点 = 本条运行区起点。单曲循环重启会回到窗口起点：
+        //  - 本条只含一段（歌单里的单首拆分曲目）→ 起点就是本段起点，无需动作；
+        //  - 本条含多段（整轨专辑）→ 起点是第 1 段，需拨回**当前段**起点。
+        val segRel = relOf(t.startMs)
+        if (c.currentPosition < segRel) {
+            android.util.Log.i(
+                "PlayerDiag",
+                "重启落回 ${c.currentPosition}ms（本段相对起点 ${segRel}ms）→ 拨回段首",
+            )
+            seekToAbsolute(t.startMs)
         }
     }
 
@@ -480,7 +535,7 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
         val c = controller ?: return
         val item = c.currentMediaItem ?: return
         val carry = SplitCarry.read(item) ?: return
-        val pos = c.currentPosition
+        val pos = absOf(c.currentPosition)
         val k = carry.plan.indexAt(pos)
         val cur = carry.current
         // v1.3.10 诊断(A23):位置落在**当前分段之外**时留痕。
@@ -565,12 +620,14 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
             )
         // v22: 拆分单曲带上方案（含各曲起点/终点/曲名），供边界无缝切歌与通知栏切歌。
         // v1.4.0: 一并带上本条负责的分段区间，并按需设置结束裁剪。
+        var clipStartMs = -1L
         var clipEndMs = -1L
         planProvider?.invoke(t)?.let { raw ->
             val b = runBounds[t.id]
             val carry = if (b != null) raw.copy(startSeg = b.first, lastSeg = b.second) else raw
             SplitCarry.put(mb, carry)
             if (carry.needsClip) {
+                clipStartMs = carry.clipStartMs
                 clipEndMs = carry.plan.tracks.getOrNull(carry.segLast)?.endMs ?: -1L
             }
         }
@@ -578,13 +635,16 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
             .setMediaId(t.id.toString())
             .setUri(t.uri)
             .setMediaMetadata(mb.build())
-        // 上界不在文件末尾（本条后面还有别的音频）→ 用引擎裁剪把它切到该段结束，
-        // 播完由引擎自然转场到下一个队列条目。
-        // ⚠️ startPositionMs 刻意保持 0：裁剪窗口是 [0, end]，播放位置因此仍是**文件绝对
-        // 坐标**——歌词时间戳、进度条（displayPositionMs）、播放统计全都建立在这个前提下。
-        if (clipEndMs > 0) {
+        // v1.4.0: 把条目裁成 `[本运行区起点, 本运行区末]`。
+        //  - 时长、通知栏进度 = 本条真实长度（不再是被裁掉前缀的绝对时间）；
+        //  - 单曲循环重启天然回到本条起点（不再跑回文件 0 秒去放前面的段）。
+        // 位置因此变成运行区相对坐标，由 absOf/relOf 统一换算回文件绝对坐标交给下游。
+        if (clipStartMs >= 0 && clipEndMs > clipStartMs) {
             builder.setClippingConfiguration(
-                MediaItem.ClippingConfiguration.Builder().setEndPositionMs(clipEndMs).build()
+                MediaItem.ClippingConfiguration.Builder()
+                    .setStartPositionMs(clipStartMs)
+                    .setEndPositionMs(clipEndMs)
+                    .build()
             )
         }
         return builder.build()
@@ -660,10 +720,17 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
             repeatMode = Player.REPEAT_MODE_ALL
             c.repeatMode = Player.REPEAT_MODE_ALL
         }
-        // v22: 拆分单曲从它自己的区间起点开始播（整轨文件坐标）。
-        val startPos = planProvider?.invoke(tracks[index])?.let { SplitCarry.startMsOf(it) } ?: 0L
         // v1.4.0: 先按队列顺序算出每条负责的分段区间，buildItem 才能带上界/设裁剪。
         computeRunBounds(tracks)
+        // v22: 拆分单曲从它自己的区间起点开始播（整轨文件坐标）。
+        // v1.4.0: 被裁剪的条目，播放器时间轴从裁剪起点算起 → 相对起点恒为 0；
+        // 未裁剪（普通曲目，或拆分但没标注区间）沿用文件绝对起点。
+        val startCarry = planProvider?.invoke(tracks[index])
+        val startPos = if (startCarry != null && runBounds.containsKey(tracks[index].id)) {
+            0L
+        } else {
+            startCarry?.let { SplitCarry.startMsOf(it) } ?: 0L
+        }
         c.setMediaItems(tracks.map(::buildItem), index, startPos)
         // Pending manual-queue items survive a context switch (v1.7 semantics).
         manualQueue.removeAll { it.id == startId }
@@ -832,10 +899,15 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
         val oldIds = (0 until c.mediaItemCount).map { c.getMediaItemAt(it).mediaId }
         if (newIds == oldIds) return
         val index = tracks.indexOfFirst { it.id == cur }
-        val pos = c.currentPosition
+        // v1.4.0: 新旧条目都可能是**运行区裁剪**条目，位置要按各自裁剪起点换算，
+        // 否则重建队列后会跳位置。先取文件绝对坐标，再换算到新条目的相对坐标。
+        val absPos = absOf(c.currentPosition)
         val wasPlaying = c.playWhenReady
         computeRunBounds(tracks)
-        c.setMediaItems(tracks.map(::buildItem), index, pos)
+        val newClipStart = runBounds[tracks[index].id]?.let { (segStart, _) ->
+            planProvider?.invoke(tracks[index])?.plan?.tracks?.getOrNull(segStart)?.startMs
+        } ?: 0L
+        c.setMediaItems(tracks.map(::buildItem), index, (absPos - newClipStart).coerceAtLeast(0L))
         manualQueue.removeAll { m -> m.id == cur }
         manualQueue.forEachIndexed { i, t -> c.addMediaItem(index + 1 + i, buildItem(t)) }
         c.prepare()
@@ -888,7 +960,7 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
                 )
                 android.util.Log.w("PlayerDiag", "replaceMediaItem @splitNext pos=${c.currentPosition}")
                 c.replaceMediaItem(c.currentMediaItemIndex, SplitCarry.itemFor(item, nc))
-                c.seekTo(SplitCarry.startMsOf(nc))
+                seekToAbsolute(SplitCarry.startMsOf(nc))
                 c.play()
                 return
             }
@@ -916,8 +988,8 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
             val cur = carry.current
             // 与 setMaxSeekToPreviousPositionMs(4000) 的既有语义一致：
             // 本曲已播过 3 秒以上 → 回本曲开头；否则 → 上一首的起点。
-            if (cur != null && c.currentPosition - cur.startMs > 3000L) {
-                c.seekTo(cur.startMs)
+            if (cur != null && c.currentPosition - relOf(cur.startMs) > 3000L) {
+                seekToAbsolute(cur.startMs)
                 c.play()
                 return
             }
@@ -932,7 +1004,7 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
                 )
                 android.util.Log.w("PlayerDiag", "replaceMediaItem @splitPrev pos=${c.currentPosition}")
                 c.replaceMediaItem(c.currentMediaItemIndex, SplitCarry.itemFor(item, carry.copy(index = prevIdx)))
-                c.seekTo(SplitCarry.startMsOf(carry.copy(index = prevIdx)))
+                seekToAbsolute(SplitCarry.startMsOf(carry.copy(index = prevIdx)))
                 c.play()
                 return
             }
@@ -979,7 +1051,7 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
             "PlayerDiag",
             "seek displayFraction=$f → file=$target (段=[${t.startMs},${t.endMs}) 段内=${(target - t.startMs)})",
         )
-        c.seekTo(target)
+        seekToAbsolute(target)
         c.play()
     }
 
@@ -990,8 +1062,7 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
     }
 
     fun seekToMs(ms: Long) {
-        controller?.seekTo(ms.coerceAtLeast(0))
-        controller?.play()
+        if (seekToAbsolute(ms)) controller?.play()
     }
 
     /**
@@ -1018,7 +1089,7 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
         val span = (t.endMs - t.startMs).coerceAtLeast(0L)
         val target = t.startMs + ms.coerceIn(0L, span)
         android.util.Log.i("PlayerDiag", "seek displayMs=$ms → file=$target (段=[${t.startMs},${t.endMs}))")
-        c.seekTo(target)
+        seekToAbsolute(target)
         c.play()
     }
 

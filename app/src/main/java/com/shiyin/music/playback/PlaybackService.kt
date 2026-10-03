@@ -206,12 +206,19 @@ class PlaybackService : MediaSessionService() {
     private fun handleSplitSeek(player: Player, forward: Boolean): Boolean {
         val item = player.currentMediaItem ?: return false
         val carry = SplitCarry.read(item) ?: return false
+        // v1.4.0: 条目被裁成 [运行区起点, 运行区末]，player 的位置/seek 都是**运行区相对坐标**，
+        // 而 carry 里的 startMs/endMs 是**文件绝对坐标**。这里统一换算（与 PlayerController 的
+        // absOf/relOf 同构），保证 App 内按钮与通知栏/蓝牙耳机/车机行为一致。
+        val clip = carry.clipStartMs
+        fun rel(abs: Long) = (abs - clip).coerceAtLeast(0L)
         // v1.3.10 诊断(A23):这条路径的 seek **不经过 PlayerController**,此前完全无日志。
         // "位置每 3 秒被拉回上一段起点"的第一嫌疑就是它被反复触发。
         android.util.Log.i(
             "PlayerDiag",
             "handleSplitSeek forward=$forward idx=${carry.index}/${carry.plan.tracks.size} " +
-                "pos=${player.currentPosition} 当前段=[${carry.current?.startMs},${carry.current?.endMs})",
+                "区间=[${carry.segStart},${carry.segLast}] clip=$clip " +
+                "pos=${player.currentPosition}(绝对 ${clip + player.currentPosition}) " +
+                "当前段=[${carry.current?.startMs},${carry.current?.endMs})",
         )
         if (forward) {
             val nextIdx = carry.index + 1
@@ -227,15 +234,15 @@ class PlaybackService : MediaSessionService() {
             val nc = carry.copy(index = nextIdx)
             android.util.Log.i("PlayerDiag", "handleSplitSeek 段内前进 ${carry.index} → $nextIdx 区间=[${carry.segStart},${carry.segLast}]")
             player.replaceMediaItem(player.currentMediaItemIndex, SplitCarry.itemFor(item, nc))
-            player.seekTo(SplitCarry.startMsOf(nc))
+            player.seekTo(rel(SplitCarry.startMsOf(nc)))
             player.play()
             return true
         }
         val cur = carry.current
         // 与 setMaxSeekToPreviousPositionMs(4000) 的既有语义一致：播过 3 秒回本曲开头
-        if (cur != null && player.currentPosition - cur.startMs > 3000L) {
-            android.util.Log.i("PlayerDiag", "  → 回本段开头 seek=${cur.startMs}(段内已播 ${player.currentPosition - cur.startMs}ms)")
-            player.seekTo(cur.startMs)
+        if (cur != null && player.currentPosition - rel(cur.startMs) > 3000L) {
+            android.util.Log.i("PlayerDiag", "  → 回本段开头 seek=${cur.startMs}(段内已播 ${player.currentPosition - rel(cur.startMs)}ms)")
+            player.seekTo(rel(cur.startMs))
             player.play()
             return true
         }
@@ -250,7 +257,7 @@ class PlaybackService : MediaSessionService() {
         }
         android.util.Log.i("PlayerDiag", "  → 回到上一段 idx=$prevIdx seek=${SplitCarry.startMsOf(carry.copy(index = prevIdx))}")
         player.replaceMediaItem(player.currentMediaItemIndex, SplitCarry.itemFor(item, carry.copy(index = prevIdx)))
-        player.seekTo(SplitCarry.startMsOf(carry.copy(index = prevIdx)))
+        player.seekTo(rel(SplitCarry.startMsOf(carry.copy(index = prevIdx))))
         player.play()
         return true
     }
