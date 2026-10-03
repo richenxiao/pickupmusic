@@ -17,7 +17,7 @@ import java.net.URLEncoder
  * "解析失败"/"对齐失败"）。网络/IO 异常仍会抛，但包装为 reason=NETWORK。
  *
  * 合规：UtaTen ふりがな为其自有内容、利用規约通常禁止自动抓取——**不适合未经评估直接
- * 进正式发行版**（见 docs/design/external-reading-providers.md §1.2）。
+ * 进正式发行版**。
  */
 class UtaTenProvider(
     private val userAgent: String = "PickUpMusic-Furigana/1.1 (lyric reading evidence; contact: dev)",

@@ -176,7 +176,7 @@ dependencies {
     //    远超方案预估的 +2~4MB。原因：R8 裁不了原生库，libtranslate_jni.so 四个 ABI
     //    全带（arm64 15.60 + armeabi-v7a 11.07 + x86_64 16.57 + x86 16.46 MiB）。
     //    16KB page size 对齐已实测通过（PT_LOAD p_align = 16384）。
-    //    处置选项见 docs/handoff-*：①接受 87.5MB ②release 只留 arm 两 ABI（≈54.5 MiB，
+    //    处置选项（三选一，尚未拍板）：①接受 87.5MB ②release 只留 arm 两 ABI（≈54.5 MiB，
     //    但模拟器 x86_64 的 instrumented test 会受影响）③仅 arm64（≈43.4 MiB）。
     //    拍板后再放开这一行并补回 MlKitLyricsTranslator.kt。
 

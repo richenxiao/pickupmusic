@@ -28,8 +28,8 @@ import com.shiyin.music.ui.theme.LocalOrganic
 /**
  * v1.3.9: Agent Logo 动态思考组件。
  *
- * 几何从 docs/images/agent-logo/agent_brand.svg 精确复制(7 条 path 原样保留),
- * 单位/相位/幅度/周期严格按用户已拍板的 HTML 动画参数表:
+ * 几何取自品牌 logo 源稿的 7 条 path(原样保留,未做简化),
+ * 单位/相位/幅度/周期严格按用户已拍板的动画参数表:
  *   - Record 浮动: 3.0 SVG 单位(底稿),速度 1.35x,周期 2222ms(3000/1.35)
  *   - Star 亮度 0.55-1.0 + 缩放 1.0-1.05,周期 1481ms(2000/1.35)
  *   - Note 漂浮 5.0 SVG 单位对角 + 透明度 0.72-1.0,周期 2222ms

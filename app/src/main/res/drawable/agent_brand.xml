@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- 拾音音乐 · Agent Brand Logo · 浅色米白盘
-   源:docs/images/agent-logo/agent_brand.svg(等比裁剪 viewBox 0 0 512 512 -> 124.35 109.82 267.59 267.59)
+   源:品牌 logo SVG 源稿(等比裁剪 viewBox 0 0 512 512 -> 124.35 109.82 267.59 267.59)
    几何:所有 path 原样保留;底层增一枚 #E6D9BE 实心圆盘面(代替镂空背景) -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="88dp"

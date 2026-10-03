@@ -410,7 +410,7 @@ fun AppRoot(vm: MainViewModel) {
                     SidebarItem(Lucide.BarChart, "收听统计") { vm.sidebarOpen = false; vm.statsOpen = true; vm.settingsOpen = false }
                     SidebarItem(Lucide.Bell, "你的更新") { vm.sidebarOpen = false; vm.updatesOpen = true; vm.settingsOpen = false }
                     // v1.3.x: Agent 更名「拾光Agent」+ 换用定稿品牌图标
-                    // (docs/images/agent-logo 的线稿 → res/drawable/ic_agent.xml)。
+                    // (线稿即 res/drawable/ic_agent.xml)。
                     // vectorResource 直接把它变成 ImageVector，侧边栏签名不用改。
                     SidebarItem(
                         androidx.compose.ui.res.painterResource(com.shiyin.music.R.drawable.ic_agent),
