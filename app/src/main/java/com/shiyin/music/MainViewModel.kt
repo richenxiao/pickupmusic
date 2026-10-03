@@ -3524,6 +3524,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                             mainHandler.post {
                                 if (turnSealed.get()) return@post
                                 intentThinking = th
+                                // v1.4.0: 把流式思考同步写进「思考」步骤的可展开正文,
+                                // 使步骤面板里能展开看到推理过程（不只是"思考中 · Ns"）。
+                                steps.upsert(
+                                    "intent", "正在思考",
+                                    com.shiyin.music.data.ai.AgentEngine.StepStatus.RUNNING,
+                                    detail = th,
+                                )
                                 agentMessages = agentMessages.replaceAt(
                                     msgIdx, liveAgentMsg(steps.toList(), thinking = th),
                                 )
@@ -3550,12 +3557,18 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                                 ))
                             }
                         },
-                        onSearchComplete = { q, success ->
+                        onSearchComplete = { q, success, snippet ->
                             mainHandler.post {
                                 if (turnSealed.get()) return@post
                                 val status = if (success) com.shiyin.music.data.ai.AgentEngine.StepStatus.DONE
                                              else com.shiyin.music.data.ai.AgentEngine.StepStatus.FAILED
-                                steps.upsert("web", "联网搜索:$q", status)
+                                // v1.4.0: 展开正文 = 关键词 + 本次检索到的资料（模型据此的判断
+                                // 由后续思考增量继续写进**同一个** step，不另起一行）。
+                                val body = buildString {
+                                    append("关键词：").append(q)
+                                    if (snippet.isNotBlank()) append("\n\n检索到：\n").append(snippet)
+                                }
+                                steps.upsert("web", "联网搜索:$q", status, detail = body)
                                 agentMessages = agentMessages.replaceAt(msgIdx, liveAgentMsg(steps.toList()))
                             }
                         },
@@ -3609,8 +3622,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                         dispatchThinking = r.thinking ?: intentThinking
                         dispatchThinkingMs = r.thinkingMs
                     } else if (disp.failed) {
+                        // v1.4.0: 只给"人话类别 + 下一步动作"，不再把供应商的原始异常串
+                        // （含完整地址）摆到对话里。disp.error 已是 UsageLogError 的类别。
                         agentMessages = agentMessages.replaceAt(
-                            msgIdx, AgentMessage("agent", "分发失败:${disp.error ?: "未知错误"}", steps.toList()),
+                            msgIdx, AgentMessage(
+                                "agent",
+                                "这轮没能走通：${disp.error ?: "原因未知"}。可以重试，或换一个模型服务商。",
+                                steps.toList(),
+                            ),
                         )
                         seal()
                         return@launch
@@ -4042,13 +4061,19 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private fun MutableList<com.shiyin.music.data.ai.AgentEngine.Step>.upsert(
         id: String, label: String, status: com.shiyin.music.data.ai.AgentEngine.StepStatus,
         explicitError: String? = null,
+        /** v1.4.0: 可展开正文。传 null 表示"本次不改动它"（状态刷新不能把已写的正文冲掉）。 */
+        detail: String? = null,
     ) {
         val i = indexOfFirst { it.id == id }
         val err = if (status == com.shiyin.music.data.ai.AgentEngine.StepStatus.FAILED)
             explicitError ?: com.shiyin.music.data.ai.LlmClient.lastError
         else null
-        if (i >= 0) set(i, com.shiyin.music.data.ai.AgentEngine.Step(id, this[i].label, status, err))
-        else add(com.shiyin.music.data.ai.AgentEngine.Step(id, label, status, err))
+        if (i >= 0) {
+            val old = this[i]
+            set(i, com.shiyin.music.data.ai.AgentEngine.Step(id, old.label, status, err, detail ?: old.detail))
+        } else {
+            add(com.shiyin.music.data.ai.AgentEngine.Step(id, label, status, err, detail))
+        }
     }
 
     /** 对话消息:替换指定位置的那条(步骤面板逐帧更新用)。 */

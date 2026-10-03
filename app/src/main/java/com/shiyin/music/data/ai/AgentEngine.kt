@@ -64,6 +64,8 @@ object AgentEngine {
         val label: String,
         val status: StepStatus = StepStatus.PENDING,
         val error: String? = null,
+        /** v1.4.0: 可展开的正文。思考行放推理文本；搜索行放本次检索到的资料与据此的推理。 */
+        val detail: String? = null,
     )
 
     /** v1.3.8: 循环模式的语义表示——技能层不碰 Media3 的 REPEAT_MODE_* 常量,

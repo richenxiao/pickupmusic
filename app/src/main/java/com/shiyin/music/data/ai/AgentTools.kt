@@ -113,7 +113,7 @@ object AgentTools {
         maxTokens: Int = 4096,
         maxSearchRounds: Int = 4,
         onSearch: (String) -> Unit = {},
-        onSearchComplete: (String, Boolean) -> Unit = { _, _ -> },
+        onSearchComplete: (String, Boolean, String) -> Unit = { _, _, _ -> },
     ): WebLoopResult {
         val tools = JsonArray().apply { add(webSearchTool()) }
         val messages = JsonArray().apply {
@@ -213,7 +213,7 @@ object AgentTools {
                                 TavilyService.search(tavilyKey, q, includeAnswer = true)
                             }.getOrNull()
                             val success = ctx != null
-                            onSearchComplete(q, success)
+                            onSearchComplete(q, success, ctx.orEmpty().take(1200))
                             (ctx ?: "(本次搜索没有返回资料)").also { contexts += it }
                         }
                     }
@@ -300,6 +300,13 @@ object AgentTools {
         appendLine(KaomojiPolicy.directive)
         appendLine()
         appendLine("行为准则:")
+        // v1.4.0: 事实纪律——用户定调"说的话必须都是对的，不能大部分对、一小部分靠猜"。
+        appendLine(
+            "0. 【事实纪律】**只有工具返回、曲库数据、或本次检索到的内容才算事实**;" +
+                "你凭记忆或推理得到的,一律**明确标注为不确定**(「我记得是…但不一定准」「这需要查一下」)。" +
+                "**禁止**把猜测与查到的事实混在同一句里说成确定的事;没把握就先去查,查不到就直说没查到。" +
+                "宁可少说一句,也不要编。不确定的年份、人名、专辑名、曲序最容易出错,尤其不许凭印象填。",
+        )
         // v1.4.0:用户自选的「强制联网搜索」——放在规则最前面,让弱模型也能第一时间看到。
         if (forceSearch) {
             appendLine(
@@ -518,7 +525,7 @@ object AgentTools {
         onThinking: (String?) -> Unit = {},
         onContent: (String) -> Unit = {},
         onSearch: (String) -> Unit = {},
-        onSearchComplete: (String, Boolean) -> Unit = { _, _ -> },
+        onSearchComplete: (String, Boolean, String) -> Unit = { _, _, _ -> },
     ): DispatchResult {
         val tools = buildTools(includeWebSearch = tavilyKey.isNotBlank())
         val messages = JsonArray().apply {
@@ -572,7 +579,13 @@ object AgentTools {
                         // 第一轮就 400/422 → 供应商不认 tools,调用方回退旧链
                         return snap().copy(toolsSupported = false)
                     }
-                    return snap().copy(failed = true, error = r.message)
+                    // v1.4.0: 归成**类别**再抛给 UI（域名解析失败/连接失败/鉴权失败/超时…）。
+                    // 原先直接把 r.message（OkHttp 原始串，含完整地址）写进对话，
+                    // 既读不懂、又把服务商地址暴露在界面上。
+                    return snap().copy(
+                        failed = true,
+                        error = com.shiyin.music.data.log.UsageLogError.reasonOf(r.message),
+                    )
                 }
             }
             pt += resp.promptTokens; ct += resp.completionTokens; cache += resp.cacheTokens
@@ -635,7 +648,8 @@ object AgentTools {
                             val ctx = runCatchingCancellable { TavilyService.search(tavilyKey, q, includeAnswer = true) }
                                 .getOrNull()
                             val success = ctx != null
-                            onSearchComplete(q, success)
+                            // v1.4.0: 把本次检索到的资料一并回传，供步骤面板展开显示。
+                            onSearchComplete(q, success, ctx.orEmpty().take(1200))
                             ctx ?: "(本次搜索没有返回资料)"
                         }
                     }

@@ -1058,7 +1058,10 @@ private fun AgentBubble(
                     Spacer(Modifier.width(8.dp))
                 }
                 Column(Modifier.padding(bottom = 6.dp).widthIn(max = 320.dp)) {
-                    for (s in msg.steps) StepRow(s, c)
+                    // v1.4.0: 按语义排序后再渲染——「思考」在上、「联网搜索」在下。
+                    // 底层 steps 是**按加入顺序**追加的，搜索往往先于思考被 upsert，
+                    // 不排序就会出现"搜索在上、思考在下"（用户实测反馈）。
+                    for (s in msg.steps.sortedBy { stepOrder(it.id) }) StepRow(s, c)
                 }
             }
         }
@@ -1704,6 +1707,12 @@ private fun ProcessRecordRow(step: MainViewModel.ProcessStep, c: com.shiyin.musi
     }
 }
 
+private fun stepOrder(id: String): Int = when (id) {
+    "intent" -> 0   // 思考
+    "web" -> 1      // 联网搜索
+    else -> 2       // 其余（媒体/播放/记忆等）保持原有相对顺序
+}
+
 @Composable
 private fun StepRow(s: AgentEngine.Step, c: com.shiyin.music.ui.theme.OrganicColors) {
     // v1.3.9(P6): 行首换成**动作类型图标**(与折叠区同一套图标语言),不再用 ✓/✗ 字符——
@@ -1715,22 +1724,40 @@ private fun StepRow(s: AgentEngine.Step, c: com.shiyin.music.ui.theme.OrganicCol
         else -> c.n500
     }
     val animatedTint by animateColorAsState(tint, animationSpec = tween(250), label = "stepTint")
-    Row(
-        Modifier.fillMaxWidth().padding(vertical = 3.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
-    ) {
-        OIcon(processTypeIcon(s.id), 13.dp, animatedTint)
-        Text(
-            // FAILED 行内直接带出失败原因(错误码/网络异常),不只给一个叉
-            if (s.status == AgentEngine.StepStatus.FAILED && !s.error.isNullOrBlank()) "${s.label}（${s.error}）" else s.label,
-            style = body(12f, FontWeight.Normal, if (s.status == AgentEngine.StepStatus.DONE) c.n700 else c.text),
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f, fill = false),
-        )
-        if (s.status == AgentEngine.StepStatus.RUNNING) {
-            Box(Modifier.width(14.dp)) { EqBars(playing = true, barMaxHeight = 10.dp) }
+    // v1.4.0: 步骤行可展开——思考行展开是推理文本，搜索行展开是检索到的资料。
+    // 没有 detail 的行保持原样（不可点、无箭头）。
+    val hasDetail = !s.detail.isNullOrBlank()
+    var expanded by remember(s.id) { mutableStateOf(false) }
+    Column(Modifier.fillMaxWidth()) {
+        Row(
+            Modifier.fillMaxWidth()
+                .then(if (hasDetail) Modifier.clickable { expanded = !expanded } else Modifier)
+                .padding(vertical = 3.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            OIcon(processTypeIcon(s.id), 13.dp, animatedTint)
+            Text(
+                // FAILED 行内直接带出失败原因(错误码/网络异常),不只给一个叉
+                if (s.status == AgentEngine.StepStatus.FAILED && !s.error.isNullOrBlank()) "${s.label}（${s.error}）" else s.label,
+                style = body(12f, FontWeight.Normal, if (s.status == AgentEngine.StepStatus.DONE) c.n700 else c.text),
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f, fill = false),
+            )
+            if (hasDetail) {
+                OIcon(if (expanded) Lucide.ChevronUp else Lucide.ChevronDown, 12.dp, c.n500)
+            }
+            if (s.status == AgentEngine.StepStatus.RUNNING) {
+                Box(Modifier.width(14.dp)) { EqBars(playing = true, barMaxHeight = 10.dp) }
+            }
+        }
+        if (expanded && hasDetail) {
+            Text(
+                s.detail!!,
+                style = body(11.5f, FontWeight.Normal, c.n600).copy(lineHeight = 16.sp),
+                modifier = Modifier.padding(start = 19.dp, top = 2.dp, bottom = 4.dp),
+            )
         }
     }
 }
