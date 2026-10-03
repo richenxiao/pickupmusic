@@ -4478,6 +4478,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         player.playQueue(collapseSplitRuns(queue, id), id, null)
     }
 
+    /**
+     * v1.4.0: 用**给定列表**作播放队列（搜索页用：队列 = 搜索结果，不是整个音乐库）。
+     *
+     * 原来搜索页调 [play]，而 [play] 的队列是整库/筛选后的整库排序——于是搜一首歌放完，
+     * 下一首接到的是主列表里的下一首，跟搜索词八竿子打不着（用户实测反馈）。
+     */
+    fun playFromList(tracks: List<Track>, startId: Long) {
+        if (tracks.isEmpty()) return
+        player.playQueue(collapseSplitRuns(tracks, startId), startId, null)
+    }
+
     /** Play a track from a content URI (e.g. from a system VIEW intent). */
     fun playUri(uri: android.net.Uri) {
         val s = uri.toString()

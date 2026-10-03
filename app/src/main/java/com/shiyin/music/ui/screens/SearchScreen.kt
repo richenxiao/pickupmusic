@@ -278,7 +278,7 @@ fun SearchScreen(vm: MainViewModel) {
                         isCurrent = t.id == vm.player.currentId,
                         isPlaying = vm.player.isPlaying,
                         subtitle = t.artist,
-                        onClick = { vm.commitSearch(); vm.play(t.id) },
+                        onClick = { vm.commitSearch(); vm.playFromList(displayItems.map { it.first.track }, t.id) },
                         onLongClick = { vm.trackMenuFor = t.id },
                         coverSize = 42.dp,
                         coverRadius = 13.dp,

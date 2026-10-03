@@ -1785,7 +1785,7 @@ private fun FolderContentScreen(vm: MainViewModel) {
                     isCurrent = t.id == vm.player.currentId,
                     isPlaying = vm.player.isPlaying,
                     subtitle = com.shiyin.music.ui.components.trackSubtitle(t),
-                    onClick = { vm.play(t.id) },
+                    onClick = { vm.playFromList(tracks, t.id) },
                     onLongClick = { vm.trackMenuFor = t.id },
                     coverSize = 42.dp,
                     coverRadius = 13.dp,
