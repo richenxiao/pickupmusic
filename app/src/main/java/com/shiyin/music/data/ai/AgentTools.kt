@@ -286,7 +286,12 @@ object AgentTools {
      * clarify 的边界写进 prompt + 工具 description 双处(用户 D3 的硬性要求):
      * clarify 只解决"多个技能都成立、无从选择",不解决"你没看清工具说明"。
      */
-    internal fun dispatchSystemPrompt(contextBlock: String, memoryBlock: String = ""): String = buildString {
+    internal fun dispatchSystemPrompt(
+        contextBlock: String,
+        memoryBlock: String = "",
+        /** 用户开启「强制联网搜索」时为 true —— 追加一条"先搜再答"的硬规则。 */
+        forceSearch: Boolean = false,
+    ): String = buildString {
         // v1.3.10: 人设改用 AgentEngine.persona 单一真源(与 AgentEngine.route 同一份)。
         // 人格是长期资产,两处各写一份会漂移成两个人;行为准则/工具说明仍留在本函数。
         appendLine(AgentEngine.persona)
@@ -295,6 +300,15 @@ object AgentTools {
         appendLine(KaomojiPolicy.directive)
         appendLine()
         appendLine("行为准则:")
+        // v1.4.0:用户自选的「强制联网搜索」——放在规则最前面,让弱模型也能第一时间看到。
+        if (forceSearch) {
+            appendLine(
+                "0. 【强制联网】用户已开启「强制联网搜索」:" +
+                    "凡是**具体事实**(歌手 / 专辑 / 歌曲 / 发行年份 / 榜单 / 巡演 / 近况等)," +
+                    "或任何你**没有十足把握**的内容,一律**先调 web_search 再回答**,不要凭记忆作答。" +
+                    "宁可搜了没查到,也不要猜。",
+            )
+        }
         // v1.3.10 需求 A27(去 workflow 化):旧写法是"关键词 → 对应工具"的映射表
         // ("排曲序/改歌名/…→调用对应工具"),把模型降级成了规则分发器。改成**能力优先**:
         // 工具清单与参数在 tools 里,由模型自己判断用哪个、必要时连续调用多个。
@@ -497,6 +511,8 @@ object AgentTools {
         contextBlock: String = "",
         /** v1.3.11:记忆块(独立于 [contextBlock] 的领域上下文)——见 AgentEngine.contextSections。 */
         memoryBlock: String = "",
+        /** v1.4.0:用户开启的「强制联网搜索」——见 [dispatchSystemPrompt]。 */
+        forceSearch: Boolean = false,
         history: List<Pair<String, String>> = emptyList(),
         maxSearchRounds: Int = 2,
         onThinking: (String?) -> Unit = {},
@@ -508,7 +524,7 @@ object AgentTools {
         val messages = JsonArray().apply {
             add(JsonObject().apply {
                 addProperty("role", "system")
-                addProperty("content", dispatchSystemPrompt(contextBlock, memoryBlock))
+                addProperty("content", dispatchSystemPrompt(contextBlock, memoryBlock, forceSearch))
             })
             for ((role, text) in history) {
                 add(JsonObject().apply {

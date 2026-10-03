@@ -63,6 +63,14 @@ class SettingsStore(private val context: Context) {
     // ── v1.3.12:拾光 Agent 的两项行为偏好 ────────────────────────────────────
     /** 思考链**默认收起**(只在点开时才看推理过程)。默认 false = 保持"边思考边摊开看"。 */
     private val keyAgentThinkingCollapsed = booleanPreferencesKey("agent_thinking_collapsed")
+    /**
+     * **强制联网搜索**（用户自选）。默认关。
+     *
+     * 起因：模型知识面有限时爱"凭记忆猜"（尤其弱模型），猜出来的歌手/专辑/年份是错的，
+     * 而用户无从分辨。打开后，凡涉及具体事实或没把握的内容一律先 web_search 再答。
+     * 代价是多一次联网与等待，所以交给用户自己权衡，不做默认。
+     */
+    private val keyAgentForceSearch = booleanPreferencesKey("agent_force_search")
     /** 允许拾光从对话里**自动**记住你的信息(关掉后只有明说「记住…」才落库)。默认开。 */
     private val keyMemoryAutoExtract = booleanPreferencesKey("memory_auto_extract")
     /** 连"情绪与近况"这类一次性的也记(默认不记——见 MemoryRules 的一次性情绪拒表)。默认关。 */
@@ -126,6 +134,8 @@ class SettingsStore(private val context: Context) {
         val lyricsCalibAlwaysOn: Boolean,
         // v1.3.12:拾光 Agent 行为偏好(见 key 处的说明)
         val agentThinkingCollapsed: Boolean,
+        /** 强制联网搜索：没把握的具体事实一律先搜再答。默认关。 */
+        val agentForceSearch: Boolean,
         val memoryAutoExtract: Boolean,
         val memoryIncludeTransient: Boolean,
         /** v1.3.14:记录 Agent 诊断样本(含模型回复开头)。 */
@@ -175,6 +185,7 @@ class SettingsStore(private val context: Context) {
             lyricsCalibAlwaysOn = p[keyLyricsCalibAlwaysOn] ?: false,
             // 默认值即"保持现状":思考链照旧展开、自动记忆照旧开、情绪照旧不记
             agentThinkingCollapsed = p[keyAgentThinkingCollapsed] ?: false,
+            agentForceSearch = p[keyAgentForceSearch] ?: false,
             memoryAutoExtract = p[keyMemoryAutoExtract] ?: true,
             memoryIncludeTransient = p[keyMemoryIncludeTransient] ?: false,
             agentDiagEnabled = p[keyAgentDiagEnabled] ?: true,
@@ -245,6 +256,9 @@ class SettingsStore(private val context: Context) {
     // ── v1.3.12:拾光 Agent 行为偏好 ──────────────────────────────────────────
     suspend fun setAgentThinkingCollapsed(v: Boolean) =
         context.dataStore.edit { it[keyAgentThinkingCollapsed] = v }
+
+    suspend fun setAgentForceSearch(v: Boolean) =
+        context.dataStore.edit { it[keyAgentForceSearch] = v }
 
     suspend fun setMemoryAutoExtract(v: Boolean) =
         context.dataStore.edit { it[keyMemoryAutoExtract] = v }
@@ -347,6 +361,7 @@ class SettingsStore(private val context: Context) {
         "custom_image_sources" to SettingsValueCodec.STR,
         // v1.3.12:拾光 Agent 行为偏好(用户偏好,换机后应恢复)
         "agent_thinking_collapsed" to SettingsValueCodec.BOOL,
+        "agent_force_search" to SettingsValueCodec.BOOL,
         "memory_auto_extract" to SettingsValueCodec.BOOL,
         "memory_include_transient" to SettingsValueCodec.BOOL,
         "agent_diag_enabled" to SettingsValueCodec.BOOL,

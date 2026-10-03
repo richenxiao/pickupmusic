@@ -243,6 +243,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     // ── v1.3.12:拾光 Agent 行为偏好(设置页可改,见 SettingsStore 的 key 说明) ──
     /** 思考链默认收起(设置 → 拾光Agent)。 */
     var agentThinkingCollapsed by mutableStateOf(false); private set
+    /** 强制联网搜索：没把握的具体事实一律先搜再答（默认关，见 SettingsStore 的 key 说明）。 */
+    var agentForceSearch by mutableStateOf(false); private set
     /** 允许从对话里自动记住用户信息。 */
     var memoryAutoExtract by mutableStateOf(true); private set
     /** 连"情绪与近况"这类一次性的也记。 */
@@ -1070,6 +1072,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 lyricsColorMode = s.lyricsColorMode
                 lyricsCalibAlwaysOn = s.lyricsCalibAlwaysOn
                 agentThinkingCollapsed = s.agentThinkingCollapsed
+                agentForceSearch = s.agentForceSearch
                 memoryAutoExtract = s.memoryAutoExtract
                 memoryIncludeTransient = s.memoryIncludeTransient
                 agentDiagEnabled = s.agentDiagEnabled
@@ -3515,6 +3518,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                         userText = text,
                         contextBlock = agentContext,
                         memoryBlock = memoryBlock,
+                        forceSearch = agentForceSearch,
                         history = history,
                         onThinking = { th ->
                             mainHandler.post {
@@ -3639,6 +3643,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                                 "名字在库里同时是单曲和专辑时用 clarify 问用户放哪个。**不要罗列检索结果**。",
                         ).filter { it.isNotBlank() }.joinToString("\n"),
                         memoryBlock = memoryBlock,
+                        forceSearch = agentForceSearch,
                         history = history,
                         onThinking = { th ->
                             mainHandler.post {
@@ -3788,6 +3793,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                             contextBlock = listOf(agentContext, note)
                                 .filter { it.isNotBlank() }.joinToString("\n"),
                             memoryBlock = memoryBlock,
+                            forceSearch = agentForceSearch,
                             history = history,
                             onThinking = { th ->
                                 mainHandler.post {
@@ -5128,6 +5134,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     // ── v1.3.12:拾光 Agent 行为偏好 ─────────────────────────────────────────
     fun setAgentThinkingCollapsed(v: Boolean) = viewModelScope.launch { settingsStore.setAgentThinkingCollapsed(v) }
+
+    fun setAgentForceSearch(v: Boolean) = viewModelScope.launch { settingsStore.setAgentForceSearch(v) }
 
     fun setMemoryAutoExtract(v: Boolean) = viewModelScope.launch { settingsStore.setMemoryAutoExtract(v) }
 

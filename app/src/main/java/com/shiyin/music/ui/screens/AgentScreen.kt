@@ -715,6 +715,27 @@ private fun AgentSettingsDialog(vm: MainViewModel, onDismiss: () -> Unit) {
                             vm.setAgentThinkingCollapsed(!vm.agentThinkingCollapsed)
                         }
                     }
+                    // v1.4.0: 用户自选的「强制联网搜索」。模型知识面有限时会凭记忆猜出
+                    // 错的歌手/专辑/年份，而用户分辨不出来；打开后这类内容一律先搜再答。
+                    Row(
+                        Modifier.fillMaxWidth()
+                            .clickable { vm.setAgentForceSearch(!vm.agentForceSearch) }
+                            .padding(top = 10.dp, bottom = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text("强制联网搜索", style = body(14f, FontWeight.Medium, c.text))
+                            Text(
+                                "遇到没把握的事实先上网查再回答，不凭记忆猜；代价是多等一次联网。",
+                                style = body(11.5f, FontWeight.Normal, c.n600),
+                                modifier = Modifier.padding(top = 2.dp),
+                            )
+                        }
+                        OrganicSwitch(vm.agentForceSearch) {
+                            vm.setAgentForceSearch(!vm.agentForceSearch)
+                        }
+                    }
                 }
 
                 // ── Agent 诊断样本(v1.3.14)─────────────────────────────────────────
@@ -1455,14 +1476,14 @@ private val AGENT_GREETINGS: List<List<String>> = listOf(
     listOf("嗯，我在。 (｡・ω・｡)"),
     listOf("今晚想听哪一张？ ( ´ ▽ ` )"),
     // ── 两行(长) ──
-    listOf("要不要听点什么？", "你决定的，我都放。"),
-    listOf("要不要一起，", "把一张专辑从头听到尾？"),
-    listOf("库里的都整理好了。", "想听歌，还是随便聊聊？"),
-    listOf("架上的唱片都在等。", "想从哪一张开始？"),
+    listOf("要不要听点什么？", "你决定，我播放。"),
+    listOf("要不要一起，", "把这张专辑从头听到尾？"),
+    listOf("音乐都整理好了。", "想听歌，还是随便聊聊？"),
+    listOf("架上的唱片都整理好了。", "想从哪一张开始？"),
     listOf("你想找的那首，", "也许就躺在架上第三排。"),
-    listOf("有想听的就说。", "没有的话，我挑一张。"),
-    listOf("今天想听慢的，", "还是想听吵一点的？"),
-    listOf("说话的、听歌的，", "我都在这儿。"),
+    listOf("有想听的专辑吗？", "没有的话，我挑一张。"),
+    listOf("今天想听抒情一点的，", "还是想听燥一点的？"),
+    listOf("听歌，还是聊聊天？", "我都在这儿。"),
 )
 
 /** 欢迎语候选字号:从大到小试,取"每一行都能独占一行"的最大值。 */
