@@ -8,6 +8,8 @@ import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
@@ -385,7 +387,10 @@ fun PlayerScreen(vm: MainViewModel) {
                                         scrubFraction = (ch.position.x / size.width).coerceIn(0f, 1f)
                                         ch.consume()
                                     }
-                                    SeekGesturePhase.CANCELLED -> break // 全程未消费,事件冒泡给外层纵滑
+                                    // CANCELLED 后不消费、不更新,空转到手指抬起;
+                                    // 事件全程未消费,自然冒泡给外层纵滑(不提前 break,
+                                    // 以免漏掉 UP 影响后续手势)。
+                                    SeekGesturePhase.CANCELLED -> Unit
                                     SeekGesturePhase.PENDING -> Unit
                                 }
                                 if (!ch.pressed) break
@@ -393,7 +398,13 @@ fun PlayerScreen(vm: MainViewModel) {
                             // 松手结算:DRAGGING → 提交 seek;纯轻点(各向位移 < slop)→ 点按 seek;
                             // CANCELLED/纵向滑动 → 不处理(事件已冒泡)。
                             if (arbiter.phase == SeekGesturePhase.DRAGGING) {
-                                scrubFraction?.let { vm.player.seekToDisplayFraction(it) }
+                                scrubFraction?.let {
+                                    // 松手把条面对齐到 scrub 值再 null,消除"条面瞬跳回旧 smoothPct
+                                    // 再由指数逼近拉回"的可见跳变;seek 落地后真实位置≈scrub 值,
+                                    // smoothPct 从此接力,差距小→平滑收敛(即"阻尼感")。
+                                    smoothPct = it
+                                    vm.player.seekToDisplayFraction(it)
+                                }
                             } else if (maxDy < viewConfiguration.touchSlop) {
                                 vm.player.seekToDisplayFraction(
                                     (down.position.x / size.width).coerceIn(0f, 1f),
@@ -431,16 +442,44 @@ fun PlayerScreen(vm: MainViewModel) {
                     Modifier.fillMaxWidth(),
                     contentAlignment = Alignment.CenterStart,
                 ) {
+                    // v1.5.0 B1④:scrub 期间 thumb 放大 + 光晕,松手 spring 收回。
+                    // 跟手原则不变(scrub 位置直取手指值,无滤抖/延迟);动效只在状态切换上。
+                    val isScrubbing = scrubFraction != null
+                    val thumbSize by animateDpAsState(
+                        if (isScrubbing) 20.dp else 15.dp,
+                        spring(stiffness = Spring.StiffnessMediumLow),
+                        label = "thumbSize",
+                    )
+                    val glowAlpha by animateFloatAsState(
+                        if (isScrubbing) 0.18f else 0f,
+                        tween(180),
+                        label = "glow",
+                    )
+                    // 外层 wrapper 用 requiredSize(thumbSize) 保住原定位语义
+                    // (offset = (maxWidth - thumbSize) * shownPct,与 15dp 版本一致);
+                    // 光晕 requiredSize(thumbSize + 16.dp) 在 wrapper 内居中,溢出部分
+                    // 是绘制,不参与命中测试(触区仍由父级 6dp Box 的 pointerInput 决定)。
                     Box(
                         Modifier
-                            .offset(x = (maxWidth - 15.dp) * shownPct)
-                            // requiredSize: 绕过父级 6dp 高度约束,保住 15dp 圆形滑块
-                            // (size() 会被约束压成 15×6 扁椭圆)。命中测试沿祖先链,
-                            // 溢出部分仍可被上面的 pointerInput 命中,触区不受影响。
-                            .requiredSize(15.dp)
-                            .clip(CircleShape)
-                            .background(c.accent)
-                    )
+                            .offset(x = (maxWidth - thumbSize) * shownPct)
+                            .requiredSize(thumbSize),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        // 光晕(先画=底层)
+                        Box(
+                            Modifier
+                                .requiredSize(thumbSize + 16.dp)
+                                .clip(CircleShape)
+                                .background(c.accent.copy(alpha = glowAlpha))
+                        )
+                        // thumb
+                        Box(
+                            Modifier
+                                .requiredSize(thumbSize)
+                                .clip(CircleShape)
+                                .background(c.accent)
+                        )
+                    }
                 }
             }
             // v1.3.x 用户反馈(两次):时间行与进度条**挨得太近**——加 12dp 上间距
