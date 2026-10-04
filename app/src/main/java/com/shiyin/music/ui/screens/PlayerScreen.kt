@@ -361,25 +361,18 @@ fun PlayerScreen(vm: MainViewModel) {
                     // 不改约束),必须用 requiredSize 才能真溢出。
                     .height(6.dp)  // v1.3.3: 22dp→12dp;第6轮: 12dp→6dp(=条高)
                     .pointerInput(durMs) {
-                        // v1.3.x 修复(用户反馈⑭:进度条纵向滑动误触导致进度跳转):
-                        // 旧实现 awaitFirstDown 后**无条件 consume 每一帧**——全向判定,
-                        // 纵向滑过条区域就跳进度。改为**显式只响应水平分量**,与 Compose
-                        // 标准 API(awaitHorizontalTouchSlopOrCancellation)同语义:
-                        //   · 水平位移超过 touch slop 才算拖动开始;
-                        //   · 纵向位移无论多大都不触发,且纵向期间**不 consume**——
-                        //     事件保持未消费,自然冒泡给外层容器(播放页纵向手势等);
-                        //   · 斜向滑动要求 |dx| > |dy| 才算横向拖动(明显偏纵向不误触)。
-                        // 保留"轻点跳转":全程任何方向位移都 < slop 的点击按 down 的 x seek。
+                        // v1.5.0:方向仲裁改走 SeekGestureArbiter 状态机(纯逻辑,见同包)。
+                        // 历史:v1.3.x 修复⑭把"全向 consume"改成"显式只响应水平分量";
+                        // v1.3.x 反馈⑭第2轮再收紧斜向判据。但旧实现 dragging 一旦锁存
+                        // 就没有退场分支——某帧横向分量偶然满足即锁成 scrub,之后用户明显
+                        // 转纵滑也无法退出 → "上下滑动内容还是容易误触进度条"。
+                        // 现改为**非对称状态机**:纵向过 slop 且 |dy|>|dx| 即 CANCELLED(不可复活,
+                        // 事件冒泡给外层纵滑);横向过 slop 且 |dx|>|dy|×ratio 才 DRAGGING(锁定防抖)。
+                        // 保留"轻点跳转":全程各向位移 < slop 的点击按 down 的 x seek。
+                        val arbiter = SeekGestureArbiter(viewConfiguration.touchSlop)
                         awaitEachGesture {
                             val down = awaitFirstDown(requireUnconsumed = false)
-                            val slop = viewConfiguration.touchSlop
-                            // v1.3.x 反馈⑭第2轮:斜向(约45°)下滑仍被误判为横向拖动。
-                            // 原判据 |dx|>|dy| 在 45° 附近是模糊地带,横分量略大即算拖动。
-                            // 收紧为 |dx| > |dy| * RATIO——要求横向位移**明显**大于纵向。
-                            // 1.5 是起点:既能滤掉 45° 附近,又不至于让手指自然的斜向分量
-                            // (日常横向滑动通常自带 20~30° 偏角,|dx|/|dy| ≈ 1.7~2.7)被误杀。
-                            val ratio = 1.5f
-                            var dragging = false
+                            arbiter.onDown()
                             var maxDy = 0f
                             while (true) {
                                 val event = awaitPointerEvent()
@@ -387,23 +380,21 @@ fun PlayerScreen(vm: MainViewModel) {
                                 val dx = ch.position.x - down.position.x
                                 val dy = ch.position.y - down.position.y
                                 if (kotlin.math.abs(dy) > maxDy) maxDy = kotlin.math.abs(dy)
-                                if (!dragging && kotlin.math.abs(dx) > slop &&
-                                    kotlin.math.abs(dx) > kotlin.math.abs(dy) * ratio
-                                ) {
-                                    dragging = true
-                                }
-                                if (dragging) {
-                                    scrubFraction = (ch.position.x / size.width).coerceIn(0f, 1f)
-                                    ch.consume()
+                                when (arbiter.onMove(dx, dy)) {
+                                    SeekGesturePhase.DRAGGING -> {
+                                        scrubFraction = (ch.position.x / size.width).coerceIn(0f, 1f)
+                                        ch.consume()
+                                    }
+                                    SeekGesturePhase.CANCELLED -> break // 全程未消费,事件冒泡给外层纵滑
+                                    SeekGesturePhase.PENDING -> Unit
                                 }
                                 if (!ch.pressed) break
                             }
-                            // 松手结算:拖动 → 提交 seek;纯轻点(各方向位移均 < slop)
-                            // → 点按 seek;纵向滑动(位移大且未水平拖动)→ 不处理,
-                            // 事件全程未被消费,已冒泡给外层。
-                            if (dragging) {
+                            // 松手结算:DRAGGING → 提交 seek;纯轻点(各向位移 < slop)→ 点按 seek;
+                            // CANCELLED/纵向滑动 → 不处理(事件已冒泡)。
+                            if (arbiter.phase == SeekGesturePhase.DRAGGING) {
                                 scrubFraction?.let { vm.player.seekToDisplayFraction(it) }
-                            } else if (maxDy < slop) {
+                            } else if (maxDy < viewConfiguration.touchSlop) {
                                 vm.player.seekToDisplayFraction(
                                     (down.position.x / size.width).coerceIn(0f, 1f),
                                 )
