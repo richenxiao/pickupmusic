@@ -245,6 +245,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      * 消费方是 LibraryScreen 既有的「固定优先」排序（LibItem.pinned），不另造排序。
      */
     var pinnedLibItems by mutableStateOf<Set<String>>(emptySet()); private set
+    /**
+     * v1.5.0 伴唱按钮的视觉状态。对应用户 2026-10-07 口述的「无底色 → 动画过渡到底色 →
+     * 完成后变六边形」。**分离引擎尚未接入**，现在只会 Idle <-> Loading；Active 由引擎回写。
+     */
+    var karaokeState by mutableStateOf(com.shiyin.music.ui.components.KaraokeButtonState.Idle); private set
     /** v1.3.2: 自定义写真源(设置·写真源可增删,CustomSource 按模板拉图)。 */
     var customImageSources by mutableStateOf<List<com.shiyin.music.data.image.CustomImageSourceDef>>(emptyList()); private set
     // v1.1+: 自动保存识别结果（默认开）。关时识别结果临时展示不写入持久化。
@@ -5284,6 +5289,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun changeKeyShift(semitones: Int) {
         keyShift = com.shiyin.music.playback.KeyShift.clamp(semitones)
         player.setKeyShift(keyShift)
+    }
+
+    /**
+     * v1.5.0 伴唱按钮点击。分离引擎未接入前：点击 = 进入 Loading（底色动画 + 圆周弧），
+     * 再点 = 取消回 Idle —— 先让用户看到效果，且不假装已经分离完成。
+     */
+    fun toggleKaraoke() {
+        karaokeState = if (karaokeState == com.shiyin.music.ui.components.KaraokeButtonState.Idle) com.shiyin.music.ui.components.KaraokeButtonState.Loading else com.shiyin.music.ui.components.KaraokeButtonState.Idle
     }
 
     /** v1.5.0 右滑固定：该条目当前是否已固定。 */

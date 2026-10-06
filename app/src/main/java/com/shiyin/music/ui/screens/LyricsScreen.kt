@@ -77,6 +77,7 @@ import com.shiyin.music.MainViewModel
 import com.shiyin.music.data.formatDuration
 import com.shiyin.music.ui.components.DialogAction
 import com.shiyin.music.ui.components.DialogActionsRow
+import com.shiyin.music.ui.components.KaraokeMicButton
 import com.shiyin.music.ui.components.OIcon
 import com.shiyin.music.ui.components.RubySegment
 import com.shiyin.music.ui.components.RubyText
@@ -1032,6 +1033,13 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
                 horizontalArrangement = Arrangement.Center,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
+                // v1.5.0 伴唱麦克风：放「あ」左侧（规格 §3.1）。
+                // 右侧同步补了等宽 38dp 空位，否则播放键会被挤偏（规格明确提醒过）。
+                KaraokeMicButton(
+                    state = vm.karaokeState,
+                    lyricForeground = artFg,
+                    onClick = { vm.toggleKaraoke() },
+                )
                 if (hasKana) {
                     // v1.3.x 虚影终版:同上两个按钮——去掉圆形底色块。未激活态:
                     // 无背景,あ 字原色悬浮;激活态保留 artFg 实心盘(这个是功能
@@ -1082,6 +1090,8 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
                     )
                 }
                 Spacer(Modifier.weight(1f))
+                // v1.5.0 伴唱：与左侧麦克风等宽的空位，保持播放键居中
+                Spacer(Modifier.size(38.dp))
                 // v1.3.x 需求6:「譯」翻译按钮(繁体,用户已定)。与「あ」同 38dp、同一行平行。
                 // 三态:①初始=无底色悬浮「譯」;②进行中=**实心圆**(同「あ」激活态)+ 圆周
                 // 顺时针加载弧;③已译=**圆角方块** + 右上角**纯文字 AI**(无圆圈底,用户明确)。
