@@ -4304,7 +4304,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             // 不同 → 全量 scan + 落盘新缓存 + 更新签名。签名查询只取 2 列不构造 Track，远快于全量。
             val newSig = try { com.shiyin.music.data.MediaScanner.signature(getApplication()) } catch (_: Exception) { "0|0" }
             val cachedSig = trackCache.readSignature()
-            val result: List<Track> = if (cachedSig != null && cachedSig == newSig) {
+            // v1.5.0 B2①：签名命中＝库无增删 → 复用缓存，并跳过随后的后台 forceReindex。
+            val sigMissed = !(cachedSig != null && cachedSig == newSig)
+            val result: List<Track> = if (!sigMissed) {
                 // 签名一致 → 复用缓存（读盘失败再 fallback 全量）
                 val cached = trackCache.read()
                 if (cached != null) {
@@ -4334,7 +4336,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             // v4.3 perf: after the UI has its songs, kick a background re-index so new files
             // added since last run surface on the *next* cold start (cheap post-hoc, off the
             // critical path). Fire-and-forget — never blocks the list.
-            if (knownFolders.isNotEmpty()) {
+            // v1.5.0 B2①：仅签名 MISS（库确有可能变化）时才做——旧实现每次冷启动无条件
+            // walkTopDown 遍历全库文件并逐个 scanFile（等最多 60s），是冷启动的主要后台成本。
+            // 签名命中＝库无增删，无需重建 MediaStore 索引。手动兜底：设置→数据管理→
+            // 「重新扫描文件」走 startScan()，内含 forceReindexKnownFolders。
+            if (sigMissed && knownFolders.isNotEmpty()) {
+                android.util.Log.d("ScanTrace", "forceReindex scheduled (sig MISS) folders=${knownFolders.size}")
                 viewModelScope.launch(Dispatchers.IO) {
                     try { com.shiyin.music.data.MediaScanner.forceReindex(getApplication(), knownFolders) } catch (_: Exception) { }
                 }
@@ -5039,28 +5046,30 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     pairs.add(t.id to a)
                 }
             }
-            // Create/update artist entities and song_artist links
-            val seenNames = mutableSetOf<String>()
-            for ((trackId, artistName) in pairs) {
-                if (artistName.isBlank() || artistName == com.shiyin.music.data.UNKNOWN_ARTIST) continue
-                // v3.0: skip if artist name matches an album name (likely MediaStore metadata error)
-                val nameLower = artistName.lowercase().trim()
-                if (nameLower in albumNames) {
-                    continue // skip auto-creation, wait for manual confirmation
-                }
-                try {
-                    // Create artist entity if not exists
-                    if (artistName !in seenNames) {
-                        seenNames.add(artistName)
-                        val existing = dao.artistByName(artistName)
-                        if (existing == null) {
-                            dao.upsertArtist(ArtistEntity(name = artistName, updatedAt = now))
-                        }
+            // Create/update artist entities and song_artist links (v1.5.0 B2④: 事务批量)
+            val (kept, names) = com.shiyin.music.data.ArtistWritePlanner.filterPairs(pairs, albumNames)
+            if (kept.isEmpty()) return@launch
+            try {
+                db.withTransaction {
+                    val existing = dao.artistsByNames(names).map { it.name }.toHashSet()
+                    val missing = names.filter { it !in existing }
+                    if (missing.isNotEmpty()) {
+                        dao.insertArtistsIgnore(
+                            missing.map { com.shiyin.music.data.db.ArtistEntity(name = it, updatedAt = now) }
+                        )
                     }
-                    // Create song_artist link — find the artist id
-                    val artist = dao.artistByName(artistName) ?: continue
-                    dao.upsertSongArtist(com.shiyin.music.data.db.SongArtistEntity(trackId, artist.id))
-                } catch (_: Exception) { }
+                    val idByName = dao.artistsByNames(names).associate { it.name to it.id }
+                    val links = com.shiyin.music.data.ArtistWritePlanner.buildLinks(kept, idByName)
+                    if (links.isNotEmpty()) {
+                        dao.upsertSongArtists(
+                            links.map { (trackId, artistId) ->
+                                com.shiyin.music.data.db.SongArtistEntity(trackId, artistId)
+                            }
+                        )
+                    }
+                }
+            } catch (e: Exception) {
+                android.util.Log.w("ScanTrace", "ensureArtistEntities batch failed: ${e.message}")
             }
         }
     }

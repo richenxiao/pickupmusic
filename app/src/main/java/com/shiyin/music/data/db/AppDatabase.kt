@@ -618,6 +618,22 @@ interface ShiyinDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertSongArtist(e: SongArtistEntity)
 
+    // ── v1.5.0 扫描性能 B2④：ensureArtistEntities 批量化原语 ────────────────
+    // 旧实现逐 (曲目,歌手) 对调 artistByName + upsertSongArtist（3000 首 ≈ 3600 次
+    // 单行写 + 逐个查询）。改为：一次 IN 查询取已有歌手 → 批量插入缺失 → 再一次 IN
+    // 查询拿 id → 批量写 song_artist，整个过程包在一个事务里（见 MainViewModel）。
+    /** 一次 IN 查询取回已有歌手（替代逐个 artistByName）。 */
+    @Query("SELECT * FROM artist WHERE name IN (:names)")
+    suspend fun artistsByNames(names: List<String>): List<ArtistEntity>
+
+    /** 批量插入歌手；name 唯一索引冲突则忽略（已存在的不覆盖 aliases/avatar）。 */
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertArtistsIgnore(list: List<ArtistEntity>)
+
+    /** 批量写 song_artist 链接。 */
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertSongArtists(list: List<SongArtistEntity>)
+
     @Query("DELETE FROM song_artist WHERE mediaId = :mediaId")
     suspend fun clearSongArtist(mediaId: Long)
 
