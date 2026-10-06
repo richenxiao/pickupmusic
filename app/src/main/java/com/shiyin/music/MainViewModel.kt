@@ -4210,7 +4210,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** Force MediaStore to re-index audio files. On first scan (no known folders),
      *  walks common audio directories to ensure MediaStore has indexed them. */
     private suspend fun forceReindexKnownFolders() {
-        val folders = if (knownFolders.isNotEmpty()) knownFolders else {
+        val t0 = System.currentTimeMillis()
+        val fromMemory = knownFolders.isNotEmpty()
+        val folders = if (fromMemory) knownFolders else {
             // v3.0 A3: first scan — find all folders with audio files on the filesystem
             val storageBase = android.os.Environment.getExternalStorageDirectory().absolutePath
             val commonDirs = listOf("Music", "Download", "Podcasts", "Ringtones", "Alarms", "Notifications", "Recordings", "Android/media", "DCIM", "Movies", "Documents")
@@ -4221,6 +4223,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 } else null
             }.toSet()
         }
+        android.util.Log.d(
+            "ScanTrace",
+            "forceReindexKnownFolders: source=${if (fromMemory) "in-memory knownFolders" else "common-dirs probe"} " +
+                "folders=${folders.size} probe=${System.currentTimeMillis() - t0}ms"
+        )
         if (folders.isNotEmpty()) {
             com.shiyin.music.data.MediaScanner.forceReindex(getApplication(), folders)
         }
@@ -4262,13 +4269,18 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         scanCount = 0
         scanFolder = ""
         viewModelScope.launch {
+            val tStart = System.currentTimeMillis()
             forceReindexKnownFolders()
+            val tReindex = System.currentTimeMillis()
+            android.util.Log.d("ScanTrace", "startScan: forceReindex phase done, +${tReindex - tStart}ms (about to query MediaStore)")
             val result = MediaScanner.scan(getApplication()) { count, folder ->
+                if (count == 1) android.util.Log.d("ScanTrace", "startScan: first MediaStore row at +${System.currentTimeMillis() - tStart}ms")
                 withContext(Dispatchers.Main) {
                     scanCount = count
                     scanFolder = folder
                 }
             }
+            android.util.Log.d("ScanTrace", "startScan: MediaStore scan done +${System.currentTimeMillis() - tStart}ms tracks=${result.size}")
             tracksRaw = result
             knownFolders = result.map { it.folder }.toSet()
             // v1.2.0 阶段二：全量 scan 后落盘 tracksRaw + 签名，供下次冷启动增量复用
