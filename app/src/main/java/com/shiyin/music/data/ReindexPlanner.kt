@@ -17,4 +17,22 @@ object ReindexPlanner {
     /** MediaStore 尚未收录的文件（保持 [fsFiles] 的原有遍历顺序）。 */
     fun filesNeedingReindex(fsFiles: List<String>, indexedPaths: Set<String>): List<String> =
         fsFiles.filterNot { it in indexedPaths }
+
+    /**
+     * 去掉已被另一个已知文件夹覆盖的嵌套目录。
+     *
+     * walkTopDown 遍历父目录时本来就覆盖它所有子目录，重复列子目录会把同一批文件走多遍：
+     * 真机实测 17 个 knownFolders 走出 4090 条记录，而实际只有 2066 个文件。
+     *
+     * 边界："/Music2" 不是 "/Music" 的子目录，必须按 "/" 结尾判定，不能用裸 startsWith
+     * （否则会把同前缀的兄弟目录误删，导致那批文件再也不被核对）。
+     */
+    fun pruneNestedFolders(folders: Set<String>): Set<String> {
+        val sorted = folders.sorted() // 前缀总排在自身扩展之前 → 父目录必先出现
+        val kept = ArrayList<String>(sorted.size)
+        for (f in sorted) {
+            if (kept.none { f == it || f.startsWith("$it/") }) kept += f
+        }
+        return kept.toSet()
+    }
 }
