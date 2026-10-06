@@ -1804,6 +1804,45 @@ private fun PlayerMenuSheetContent(vm: MainViewModel) {
                         }
                         OIcon(Lucide.Settings, 16.dp, c.n400)
                     }
+                    // v1.5.0 伴唱 §8：升降 Key（-6..+6 半音）。与加速模式叠加：
+                    // 总音高 = 加速模式自带音高 x 2^(n/12)，速度不变；点中间数字复位。
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(c.n100)
+                            .padding(horizontal = 14.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text("升降 Key", style = body(14f, FontWeight.ExtraBold, c.text))
+                            Text("每步一个半音，点数字复位", style = body(11f, FontWeight.Normal, c.n500))
+                        }
+                        Text(
+                            "−",
+                            style = body(18f, FontWeight.ExtraBold, if (vm.keyShift > com.shiyin.music.playback.KeyShift.MIN) c.n600 else c.n400),
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable(enabled = vm.keyShift > com.shiyin.music.playback.KeyShift.MIN) { vm.changeKeyShift(vm.keyShift - 1) }
+                                .padding(horizontal = 12.dp, vertical = 4.dp),
+                        )
+                        Text(
+                            com.shiyin.music.playback.KeyShift.label(vm.keyShift),
+                            style = body(15f, FontWeight.ExtraBold, if (vm.keyShift == 0) c.text else c.accent),
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable { vm.changeKeyShift(0) }
+                                .padding(horizontal = 10.dp, vertical = 6.dp),
+                        )
+                        Text(
+                            "+",
+                            style = body(18f, FontWeight.ExtraBold, if (vm.keyShift < com.shiyin.music.playback.KeyShift.MAX) c.n600 else c.n400),
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable(enabled = vm.keyShift < com.shiyin.music.playback.KeyShift.MAX) { vm.changeKeyShift(vm.keyShift + 1) }
+                                .padding(horizontal = 12.dp, vertical = 4.dp),
+                        )
+                    }
                 }
             }
         }
