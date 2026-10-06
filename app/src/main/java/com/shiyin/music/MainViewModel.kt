@@ -4270,9 +4270,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         scanFolder = ""
         viewModelScope.launch {
             val tStart = System.currentTimeMillis()
-            forceReindexKnownFolders()
-            val tReindex = System.currentTimeMillis()
-            android.util.Log.d("ScanTrace", "startScan: forceReindex phase done, +${tReindex - tStart}ms (about to query MediaStore)")
+            // v1.5.0 B2①(2)：顺序反转 —— 旧实现先 walkTopDown 遍历全库文件 + 逐个 scanFile，
+            // 再查 MediaStore（2026-10-07 真机实测该前置阶段 29.6s：walk 17.2s + scanFile 等待
+            // 12.4s），进度环空转几十秒才出现第一首歌。现在先出结果，媒体库核对挪到后台，
+            // 核对后签名确实变了才刷新列表。
             val result = MediaScanner.scan(getApplication()) { count, folder ->
                 if (count == 1) android.util.Log.d("ScanTrace", "startScan: first MediaStore row at +${System.currentTimeMillis() - tStart}ms")
                 withContext(Dispatchers.Main) {
@@ -4281,24 +4282,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 }
             }
             android.util.Log.d("ScanTrace", "startScan: MediaStore scan done +${System.currentTimeMillis() - tStart}ms tracks=${result.size}")
-            tracksRaw = result
-            knownFolders = result.map { it.folder }.toSet()
-            // v1.2.0 阶段二：全量 scan 后落盘 tracksRaw + 签名，供下次冷启动增量复用
-            runCatching {
-                trackCache.write(result)
-                trackCache.writeSignature(com.shiyin.music.data.MediaScanner.signature(getApplication()))
-            }
-            ensureArtistEntities(result)
-            // v4: detect brand-new albums for 你的更新
-            detectNewAlbums(result)
-            // v5.2 Bug2: this scan just finished priming knownAlbumIds (or diffing
-            // against it). Mark firstScanDone=true so the NEXT scan will begin
-            // emitting new_album rows. On fresh install this stays false until
-            // the first scan exits, so the initial library never floods 你的更新.
-            if (!firstScanDone) {
-                viewModelScope.launch { settingsStore.setFirstScanDone(true) }
-            }
-            resyncQueue()
+            adoptScanResult(result)
             val l = lib()
             scanResultFolders = l.groupBy { it.folder }.map { (p, ts) -> p to ts.size }
             scanDupGroups = dupGroups().size
@@ -4306,7 +4290,48 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             scanFolder = "整理结果中…"
             kotlinx.coroutines.delay(600)
             obStage = ObStage.Done
+            // 后台核对媒体库（真机实测约 20-30s）。UI 此时已可用，只有确实收进了新文件才重查刷新。
+            launch(Dispatchers.IO) { reindexThenRefreshIfChanged() }
         }
+    }
+
+    /**
+     * v1.5.0 B2①：接管一次扫描结果（内存态 / 缓存 / 歌手实体 / 新专辑提醒）。
+     * 首扫与「后台核对发现变化后刷新」共用同一条路径，避免两套写法漂移。调用方须在主线程。
+     */
+    private suspend fun adoptScanResult(result: List<Track>) {
+        tracksRaw = result
+        knownFolders = result.map { it.folder }.toSet()
+        // v1.2.0 阶段二：全量 scan 后落盘 tracksRaw + 签名，供下次冷启动增量复用
+        runCatching {
+            trackCache.write(result)
+            trackCache.writeSignature(com.shiyin.music.data.MediaScanner.signature(getApplication()))
+        }
+        ensureArtistEntities(result)
+        // v4: detect brand-new albums for 你的更新
+        detectNewAlbums(result)
+        // v5.2 Bug2: this scan just finished priming knownAlbumIds (or diffing
+        // against it). Mark firstScanDone=true so the NEXT scan will begin
+        // emitting new_album rows. On fresh install this stays false until
+        // the first scan exits, so the initial library never floods 你的更新.
+        if (!firstScanDone) settingsStore.setFirstScanDone(true)
+        resyncQueue()
+    }
+
+    /**
+     * v1.5.0 B2①：先查后核。在后台强制媒体库重新索引（把 app 之外新增、MediaStore 漏收的
+     * 文件收进来），只有签名确实变了才重查一次并刷新列表 —— 没变化就不做多余的全量重查。
+     */
+    private suspend fun reindexThenRefreshIfChanged() {
+        val t0 = System.currentTimeMillis()
+        val before = runCatching { com.shiyin.music.data.MediaScanner.signature(getApplication()) }.getOrNull()
+        forceReindexKnownFolders()
+        val after = runCatching { com.shiyin.music.data.MediaScanner.signature(getApplication()) }.getOrNull()
+        android.util.Log.d("ScanTrace", "background reindex done +${System.currentTimeMillis() - t0}ms sig $before -> $after")
+        if (before == null || after == null || before == after) return
+        val refreshed = com.shiyin.music.data.MediaScanner.scan(getApplication(), paced = false)
+        android.util.Log.d("ScanTrace", "background reindex found changes → re-query tracks=${refreshed.size}")
+        withContext(Dispatchers.Main) { adoptScanResult(refreshed) }
     }
 
     fun rescanSilently() {

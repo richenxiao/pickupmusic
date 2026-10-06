@@ -134,10 +134,24 @@ object MediaScanner {
             android.util.Log.d("ScanTrace", "forceReindex: folders=${folders.size} files=0 walk=${tWalk - t0}ms → no-op")
             return@withContext
         }
-        val latch = CountDownLatch(files.size)
+        // v1.5.0 B2①：只对 MediaStore 尚未收录的文件调 scanFile。真机实测 4090 个文件里
+        // 2066 个早已收录，重扫它们只是让 MediaProvider 重新解析一遍标签 → 白等 12s。
+        val indexed = indexedAudioPaths(context)
+        val todo = ReindexPlanner.filesNeedingReindex(files, indexed)
+        val tFilter = System.currentTimeMillis()
+        android.util.Log.d(
+            "ScanTrace",
+            "forceReindex: folders=${folders.size} files=${files.size} indexed=${indexed.size} " +
+                "toScan=${todo.size} walk=${tWalk - t0}ms filter=${tFilter - tWalk}ms"
+        )
+        if (todo.isEmpty()) {
+            android.util.Log.d("ScanTrace", "forceReindex: nothing to re-index TOTAL=${System.currentTimeMillis() - t0}ms")
+            return@withContext
+        }
+        val latch = CountDownLatch(todo.size)
         val done = java.util.concurrent.atomic.AtomicInteger(0)
         val tDispatch0 = System.currentTimeMillis()
-        MediaScannerConnection.scanFile(context, files.toTypedArray(), arrayOf("audio/*")) { _, _ ->
+        MediaScannerConnection.scanFile(context, todo.toTypedArray(), arrayOf("audio/*")) { _, _ ->
             done.incrementAndGet()
             latch.countDown()
         }
@@ -148,10 +162,30 @@ object MediaScanner {
         val tEnd = System.currentTimeMillis()
         android.util.Log.d(
             "ScanTrace",
-            "forceReindex: folders=${folders.size} files=${files.size} " +
-                "walk=${tWalk - t0}ms dispatch=${tDispatch - tDispatch0}ms wait=${tEnd - tDispatch}ms " +
-                "completed=$completed callbacks=${done.get()}/${files.size} TOTAL=${tEnd - t0}ms"
+            "forceReindex: toScan=${todo.size} dispatch=${tDispatch - tDispatch0}ms wait=${tEnd - tDispatch}ms " +
+                "completed=$completed callbacks=${done.get()}/${todo.size} TOTAL=${tEnd - t0}ms"
         )
+    }
+
+    /**
+     * v1.5.0 B2①：MediaStore 已收录的音频绝对路径集合（DATA 列）。
+     * 单列全表查询本身很轻，远快于 walkTopDown + 对每个文件逐个 scanFile 等回调。
+     */
+    private fun indexedAudioPaths(context: Context): Set<String> {
+        val out = HashSet<String>()
+        runCatching {
+            context.contentResolver.query(
+                MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
+                arrayOf(MediaStore.Audio.Media.DATA),
+                null, null, null,
+            )?.use { c ->
+                val iData = c.getColumnIndexOrThrow(MediaStore.Audio.Media.DATA)
+                while (c.moveToNext()) {
+                    c.getString(iData)?.takeIf { it.isNotBlank() }?.let { out.add(it) }
+                }
+            }
+        }
+        return out
     }
 
     /**
