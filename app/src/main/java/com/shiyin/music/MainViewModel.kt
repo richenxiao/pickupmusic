@@ -239,6 +239,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     var fanartApiKey by mutableStateOf(""); private set
     var lastfmApiKey by mutableStateOf(""); private set
     var disabledImageSources by mutableStateOf<Set<String>>(emptySet()); private set
+    /**
+     * v1.5.0 右滑固定（规格 docs/internal/v1.4.1-backlog.md §1）：被用户固定的音乐库条目 key。
+     * key 形如 "pl:p3" / "album:<albumKey>" / "artist:<名字>" / "song:<trackId>"。
+     * 消费方是 LibraryScreen 既有的「固定优先」排序（LibItem.pinned），不另造排序。
+     */
+    var pinnedLibItems by mutableStateOf<Set<String>>(emptySet()); private set
     /** v1.3.2: 自定义写真源(设置·写真源可增删,CustomSource 按模板拉图)。 */
     var customImageSources by mutableStateOf<List<com.shiyin.music.data.image.CustomImageSourceDef>>(emptyList()); private set
     // v1.1+: 自动保存识别结果（默认开）。关时识别结果临时展示不写入持久化。
@@ -1134,6 +1140,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 fanartApiKey = s.fanartApiKey
                 lastfmApiKey = s.lastfmApiKey
                 disabledImageSources = s.disabledImageSources
+        pinnedLibItems = s.pinnedLibItems
                 customImageSources = s.customImageSources
                 com.shiyin.music.data.image.ImageSourceConfig.fanartApiKey = s.fanartApiKey
                 com.shiyin.music.data.image.ImageSourceConfig.lastfmApiKey = s.lastfmApiKey
@@ -5277,6 +5284,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun changeKeyShift(semitones: Int) {
         keyShift = com.shiyin.music.playback.KeyShift.clamp(semitones)
         player.setKeyShift(keyShift)
+    }
+
+    /** v1.5.0 右滑固定：该条目当前是否已固定。 */
+    fun isLibItemPinned(itemKey: String): Boolean = itemKey in pinnedLibItems
+
+    /** v1.5.0 右滑固定：提交固定 / 取消固定（内存态即时生效，落盘异步）。 */
+    fun setLibItemPinned(itemKey: String, pinned: Boolean) {
+        if (pinned == isLibItemPinned(itemKey)) return
+        pinnedLibItems = if (pinned) pinnedLibItems + itemKey else pinnedLibItems - itemKey
+        viewModelScope.launch { settingsStore.setPinnedLibItem(itemKey, pinned) }
     }
     fun setDeepSeekKey(v: String) = viewModelScope.launch { settingsStore.setDeepSeekKey(v) }
     // ── v1.3.x 歌词本设置 toggles ───────────────────────────────────────────

@@ -92,6 +92,7 @@ import com.shiyin.music.Tab
 import com.shiyin.music.data.Track
 import com.shiyin.music.data.formatDuration
 import com.shiyin.music.ui.components.CoverArt
+import com.shiyin.music.ui.components.SwipeToPin
 import com.shiyin.music.ui.components.clickableNoRipple
 import com.shiyin.music.ui.components.CoverArtMosaic
 import com.shiyin.music.ui.components.DialogAction
@@ -340,6 +341,8 @@ private data class LibItem(
     val shape: Shape,
     val isHeart: Boolean = false,
     val pinned: Boolean = false,
+    /** v1.5.0 右滑固定：持久化用的稳定 key（"pl:p3" / "album:<key>" / "artist:<名字>" / "song:<id>"）。 */
+    val key: String = "",
     val cover: Track? = null,
     // v3.0: when set, render this row's cover via [PlaylistCover] (mosaic or
     // chosen album) instead of the legacy generative block.
@@ -356,7 +359,9 @@ private fun LibraryRoot(
 ) {
     val c = LocalOrganic.current
     val chip = vm.libChip
-    val songs = if (chip == "songs") vm.sortedSongs() else emptyList()
+    val songsBase = if (chip == "songs") vm.sortedSongs() else emptyList()
+    // v1.5.0 右滑固定：固定先行——与 buildLibItems 末尾同一条规则，不另造排序
+    val songs = songsBase.sortedByDescending { vm.isLibItemPinned("song:${it.id}") }
     val items = if (chip == "songs") emptyList() else buildLibItems(vm)
 
     LazyColumn(
@@ -428,6 +433,11 @@ private fun LibraryRoot(
         }
         if (chip == "songs") {
             items(songs, key = { it.id }) { t ->
+              // v1.5.0 右滑固定：歌曲行也走同一份包装
+              SwipeToPin(
+                pinned = vm.isLibItemPinned("song:${t.id}"),
+                onPinnedChange = { p -> vm.setLibItemPinned("song:${t.id}", p) },
+              ) {
                 TrackRow(
                     track = t,
                     isCurrent = t.id == vm.player.currentId,
@@ -438,9 +448,16 @@ private fun LibraryRoot(
                     trailing = { TrackMenuButton(vm, t) },
                     isHiddenTrack = vm.isHidden(t.id),
                 )
+              }
             }
         } else if (!vm.libViewGrid) {
-            items(items) { MixedListRow(vm, it) }
+            items(items) { item ->
+                // v1.5.0 右滑固定：统一包装，手势/动画只有一份实现
+                SwipeToPin(
+                    pinned = item.pinned,
+                    onPinnedChange = { p -> vm.setLibItemPinned(item.key, p) },
+                ) { MixedListRow(vm, item) }
+            }
         } else {
             items(items.chunked(2)) { row ->
                 Row(horizontalArrangement = Arrangement.spacedBy(16.dp), modifier = Modifier.padding(bottom = 2.dp)) {
@@ -495,13 +512,16 @@ private fun buildLibItems(vm: MainViewModel): List<LibItem> {
                     add(
                         LibItem(
                             p.name, "${prefix("歌单")}$count 首", c.a400, Color.White, "♥",
-                            RoundedCornerShape(10.dp), isHeart = true, pinned = true,
+                            RoundedCornerShape(10.dp), isHeart = true, pinned = true, key = "pl:${p.id}",
                         ) { vm.openPlaylist(p.id) }
                     )
                 } else {
                     val (bg, fg) = coverPalette(i)
                     add(
-                        LibItem(p.name, "${prefix("歌单")}$count 首", bg, fg, "♪", RoundedCornerShape(10.dp), mosaicForPid = p.id) {
+                        LibItem(
+                            p.name, "${prefix("歌单")}$count 首", bg, fg, "♪", RoundedCornerShape(10.dp),
+                            pinned = vm.isLibItemPinned("pl:${p.id}"), key = "pl:${p.id}", mosaicForPid = p.id,
+                        ) {
                             vm.openPlaylist(p.id)
                         }
                     )
@@ -527,6 +547,7 @@ private fun buildLibItems(vm: MainViewModel): List<LibItem> {
                     LibItem(
                         first.album, prefix(typeLabel) + first.artist, bg, fg,
                         first.album.first().uppercase(), RoundedCornerShape(8.dp), cover = first,
+                        pinned = vm.isLibItemPinned("album:$key"), key = "album:$key",
                     ) { vm.openAlbum(key) }
                 )
             }
@@ -535,7 +556,10 @@ private fun buildLibItems(vm: MainViewModel): List<LibItem> {
             vm.artistsMap().entries.forEachIndexed { i, e ->
                 val (bg, fg) = coverPalette(i + 1)
                 add(
-                    LibItem(e.key, "${prefix("歌手")}${e.value.size} 首", bg, fg, e.key.first().uppercase(), CircleShape, photoName = e.key) {
+                    LibItem(
+                        e.key, "${prefix("歌手")}${e.value.size} 首", bg, fg, e.key.first().uppercase(), CircleShape,
+                        pinned = vm.isLibItemPinned("artist:${e.key}"), key = "artist:${e.key}", photoName = e.key,
+                    ) {
                         vm.openArtist(e.key)
                     }
                 )

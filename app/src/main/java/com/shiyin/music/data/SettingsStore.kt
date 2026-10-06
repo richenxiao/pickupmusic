@@ -50,6 +50,8 @@ class SettingsStore(private val context: Context) {
     private val keyFanartApiKey = stringPreferencesKey("fanart_api_key")
     private val keyLastfmApiKey = stringPreferencesKey("lastfm_api_key")
     private val keyDisabledImageSources = stringSetPreferencesKey("disabled_image_sources")
+/** v1.5.0 右滑固定：被用户固定的音乐库条目 key（"pl:p3" / "album:<key>" / "artist:<name>" / "song:<id>"）。 */
+private val keyPinnedLibItems = stringSetPreferencesKey("pinned_lib_items")
     /** v1.3.2: 自定义写真源(JSON,见 CustomImageSourceCodec)。 */
     private val keyCustomImageSources = stringPreferencesKey("custom_image_sources")
     /** v22: 「检查更新」状态(JSON,见 UpdateStateCodec)——最近一次检查结果 + 已忽略版本。 */
@@ -125,6 +127,8 @@ class SettingsStore(private val context: Context) {
         val fanartApiKey: String,
         val lastfmApiKey: String,
         val disabledImageSources: Set<String>,
+        /** v1.5.0 右滑固定：被固定的音乐库条目 key 集合。 */
+        val pinnedLibItems: Set<String>,
         val customImageSources: List<com.shiyin.music.data.image.CustomImageSourceDef>,
         /** v1.3.x 歌词本:日语歌默认开振假名(默认 true)。 */
         val furiganaDefaultOn: Boolean,
@@ -190,6 +194,7 @@ class SettingsStore(private val context: Context) {
             fanartApiKey = p[keyFanartApiKey] ?: "",
             lastfmApiKey = p[keyLastfmApiKey] ?: "",
             disabledImageSources = p[keyDisabledImageSources] ?: emptySet(),
+            pinnedLibItems = p[keyPinnedLibItems] ?: emptySet(),
             customImageSources = com.shiyin.music.data.image.CustomImageSourceCodec.decode(p[keyCustomImageSources] ?: ""),
             furiganaDefaultOn = p[keyFuriganaDefaultOn] ?: true,
             furiganaAutoVerify = p[keyFuriganaAutoVerify] ?: true,
@@ -254,6 +259,15 @@ class SettingsStore(private val context: Context) {
     suspend fun setImageSourceEnabled(sourceKey: String, enabled: Boolean) = context.dataStore.edit { p ->
         val cur = p[keyDisabledImageSources] ?: emptySet()
         p[keyDisabledImageSources] = if (enabled) cur - sourceKey else cur + sourceKey
+    }
+
+    /**
+     * v1.5.0 右滑固定（规格 docs/internal/v1.4.1-backlog.md §1）：切换某条目的固定状态。
+     * 固定状态本身由 LibraryScreen 的既有「固定优先」排序消费（LibItem.pinned）。
+     */
+    suspend fun setPinnedLibItem(itemKey: String, pinned: Boolean) = context.dataStore.edit { p ->
+        val cur = p[keyPinnedLibItems] ?: emptySet()
+        p[keyPinnedLibItems] = if (pinned) cur + itemKey else cur - itemKey
     }
 
     /** v1.3.2: 保存全部自定义写真源(JSON,见 CustomImageSourceCodec)。 */
