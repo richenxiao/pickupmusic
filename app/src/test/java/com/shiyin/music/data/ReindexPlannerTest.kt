@@ -68,4 +68,19 @@ class ReindexPlannerTest {
     fun `空集合返回空集合`() {
         assertEquals(emptySet<String>(), ReindexPlanner.pruneNestedFolders(emptySet()))
     }
+
+    @Test
+    fun `存储根目录吸收所有子目录`() {
+        // 真机取证：有 10 首歌直接躺在存储根下 → Track.folder == "/"。
+        // "/" 会 walkTopDown 整个内部存储，而其余目录都是它的子目录 → 同一批文件走两遍
+        // （实测 4112 条记录对应 2077 个文件）。首版用 startsWith("/" + "/") = "//" 判定，
+        // 对 "/" 永远不成立，所以没吸收掉。
+        val folders = setOf("/", "/Music", "/Download/netease/cloudmusic/Music", "/害")
+        assertEquals(setOf("/"), ReindexPlanner.pruneNestedFolders(folders))
+    }
+
+    @Test
+    fun `只有根目录时原样保留`() {
+        assertEquals(setOf("/"), ReindexPlanner.pruneNestedFolders(setOf("/")))
+    }
 }

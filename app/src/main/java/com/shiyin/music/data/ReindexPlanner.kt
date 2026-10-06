@@ -21,18 +21,28 @@ object ReindexPlanner {
     /**
      * 去掉已被另一个已知文件夹覆盖的嵌套目录。
      *
-     * walkTopDown 遍历父目录时本来就覆盖它所有子目录，重复列子目录会把同一批文件走多遍：
-     * 真机实测 17 个 knownFolders 走出 4090 条记录，而实际只有 2066 个文件。
+     * walkTopDown 遍历父目录时本来就覆盖它所有子目录，重复列子目录会把同一批文件走多遍。
+     * 真机取证（2026-10-07）：库里有 10 首歌直接躺在存储根下 → Track.folder == "/"，
+     * 于是 16 个 knownFolders 里 "/" 是其余全部目录的祖先，同一个文件系统被走了两遍
+     * （实测 4112 条记录对应 2077 个文件，后台核对平白翻倍）。
      *
-     * 边界："/Music2" 不是 "/Music" 的子目录，必须按 "/" 结尾判定，不能用裸 startsWith
-     * （否则会把同前缀的兄弟目录误删，导致那批文件再也不被核对）。
+     * 两个必须守住的边界：
+     * ① "/Music2" 不是 "/Music" 的子目录 → 按 "/" 结尾判定，不能用裸 startsWith；
+     * ② 根目录 "/" 本身的子路径前缀是 "/"（不是 "//"）→ 单独处理，否则它吸收不掉任何目录。
      */
     fun pruneNestedFolders(folders: Set<String>): Set<String> {
         val sorted = folders.sorted() // 前缀总排在自身扩展之前 → 父目录必先出现
         val kept = ArrayList<String>(sorted.size)
         for (f in sorted) {
-            if (kept.none { f == it || f.startsWith("$it/") }) kept += f
+            if (kept.none { covers(it, f) }) kept += f
         }
         return kept.toSet()
+    }
+
+    /** [parent] 是否覆盖 [child]（含相等）。根目录覆盖一切。 */
+    private fun covers(parent: String, child: String): Boolean = when {
+        child == parent -> true
+        parent == "/" -> child.startsWith("/")
+        else -> child.startsWith("$parent/")
     }
 }
