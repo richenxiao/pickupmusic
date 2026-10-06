@@ -4304,7 +4304,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             // 不同 → 全量 scan + 落盘新缓存 + 更新签名。签名查询只取 2 列不构造 Track，远快于全量。
             val newSig = try { com.shiyin.music.data.MediaScanner.signature(getApplication()) } catch (_: Exception) { "0|0" }
             val cachedSig = trackCache.readSignature()
-            val result: List<Track> = if (cachedSig != null && cachedSig == newSig) {
+            // v1.5.0 B2①：签名命中＝库无增删 → 复用缓存，并跳过随后的后台 forceReindex。
+            val sigMissed = !(cachedSig != null && cachedSig == newSig)
+            val result: List<Track> = if (!sigMissed) {
                 // 签名一致 → 复用缓存（读盘失败再 fallback 全量）
                 val cached = trackCache.read()
                 if (cached != null) {
@@ -4334,7 +4336,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             // v4.3 perf: after the UI has its songs, kick a background re-index so new files
             // added since last run surface on the *next* cold start (cheap post-hoc, off the
             // critical path). Fire-and-forget — never blocks the list.
-            if (knownFolders.isNotEmpty()) {
+            // v1.5.0 B2①：仅签名 MISS（库确有可能变化）时才做——旧实现每次冷启动无条件
+            // walkTopDown 遍历全库文件并逐个 scanFile（等最多 60s），是冷启动的主要后台成本。
+            // 签名命中＝库无增删，无需重建 MediaStore 索引。手动兜底：设置→数据管理→
+            // 「重新扫描文件」走 startScan()，内含 forceReindexKnownFolders。
+            if (sigMissed && knownFolders.isNotEmpty()) {
+                android.util.Log.d("ScanTrace", "forceReindex scheduled (sig MISS) folders=${knownFolders.size}")
                 viewModelScope.launch(Dispatchers.IO) {
                     try { com.shiyin.music.data.MediaScanner.forceReindex(getApplication(), knownFolders) } catch (_: Exception) { }
                 }
