@@ -115,7 +115,11 @@ object MediaScanner {
      *   e.g. "/Music", "/Download/KuwoMusic/music"
      */
     suspend fun forceReindex(context: Context, folders: Set<String>) = withContext(Dispatchers.IO) {
-        if (folders.isEmpty()) return@withContext
+        val t0 = System.currentTimeMillis()
+        if (folders.isEmpty()) {
+            android.util.Log.d("ScanTrace", "forceReindex: folders=0 → no-op (0ms)")
+            return@withContext
+        }
         val storageBase = Environment.getExternalStorageDirectory().absolutePath
         val files = folders.flatMap { folder ->
             val dir = File("$storageBase/${folder.trimStart('/')}")
@@ -125,14 +129,29 @@ object MediaScanner {
                 }.map { it.absolutePath }.toList()
             } else emptyList()
         }
-        if (files.isEmpty()) return@withContext
+        val tWalk = System.currentTimeMillis()
+        if (files.isEmpty()) {
+            android.util.Log.d("ScanTrace", "forceReindex: folders=${folders.size} files=0 walk=${tWalk - t0}ms → no-op")
+            return@withContext
+        }
         val latch = CountDownLatch(files.size)
+        val done = java.util.concurrent.atomic.AtomicInteger(0)
+        val tDispatch0 = System.currentTimeMillis()
         MediaScannerConnection.scanFile(context, files.toTypedArray(), arrayOf("audio/*")) { _, _ ->
+            done.incrementAndGet()
             latch.countDown()
         }
+        val tDispatch = System.currentTimeMillis()
         // Wait up to 60 s for all files to be indexed; if it times out the
         // subsequent MediaStore query will still pick up whatever was indexed.
-        latch.await(60, TimeUnit.SECONDS)
+        val completed = latch.await(60, TimeUnit.SECONDS)
+        val tEnd = System.currentTimeMillis()
+        android.util.Log.d(
+            "ScanTrace",
+            "forceReindex: folders=${folders.size} files=${files.size} " +
+                "walk=${tWalk - t0}ms dispatch=${tDispatch - tDispatch0}ms wait=${tEnd - tDispatch}ms " +
+                "completed=$completed callbacks=${done.get()}/${files.size} TOTAL=${tEnd - t0}ms"
+        )
     }
 
     /**
