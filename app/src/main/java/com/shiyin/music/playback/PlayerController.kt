@@ -1120,14 +1120,33 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
         controller?.repeatMode = mode
     }
 
+    /** v1.5.0 伴唱 §8：升降 Key（半音）。与加速模式叠加，见 [KeyShift.totalPitch]。 */
+    private var keyShiftSemitones: Int = 0
+    private var lastSpeed: Float = 1.0f
+    private var lastRetroMode: Boolean = true
+
     /**
      * v2: 播放速度调节。retroMode=true 时 pitch 随 speed 联动（复古磁带效果）；
      * retroMode=false 时 pitch 固定 1.0（现代变速不变调）。
      */
     fun setPlaybackSpeed(speed: Float, retroMode: Boolean) {
+        lastSpeed = speed
+        lastRetroMode = retroMode
+        applyPlaybackParameters()
+    }
+
+    /** v1.5.0 伴唱 §8：设置升降 Key（半音）。只改音高，速度与加速模式不动。 */
+    fun setKeyShift(semitones: Int) {
+        keyShiftSemitones = KeyShift.clamp(semitones)
+        applyPlaybackParameters()
+    }
+
+    private fun applyPlaybackParameters() {
         val c = controller ?: return
-        val pitch = if (retroMode) speed else 1.0f
-        c.playbackParameters = androidx.media3.common.PlaybackParameters(speed, pitch)
+        c.playbackParameters = androidx.media3.common.PlaybackParameters(
+            lastSpeed,
+            KeyShift.totalPitch(lastSpeed, lastRetroMode, keyShiftSemitones),
+        )
     }
 
     fun currentSpeed(): Float = controller?.playbackParameters?.speed ?: 1.0f

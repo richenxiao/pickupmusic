@@ -248,6 +248,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     // v2: 播放速度调节（全局持久化）
     var playbackSpeed by mutableStateOf(1.0f); private set
     var retroSpeedMode by mutableStateOf(true); private set
+    /**
+     * v1.5.0 伴唱 §8 升降 Key（半音，-6..+6）。**刻意不持久化** —— 规格要求 App 重启恢复原调；
+     * 切歌是否复位见 onTrackStarted。
+     */
+    var keyShift by mutableStateOf(0); private set
+    /** 上一次触发 onTrackStarted 的曲目 id，用来区分「真的换曲了」与「单曲循环重播」。 */
+    private var lastKeyShiftTrackId: Long? = null
     // ── v1.3.x 歌词本设置(设置·歌词本页)────────────────────────────────────
     /** 日语歌打开歌词本时默认开启振假名标注(默认 true)。 */
     var furiganaDefaultOn by mutableStateOf(true); private set
@@ -4397,8 +4404,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     // ── playback actions ───────────────────────────────────────────────────
     private fun onTrackStarted(id: Long, sessionId: Long) {
         lyState = LyState.Idle
+        // v1.5.0 伴唱 §8：切歌复位到原调。按 track id 判定「真的换曲了」，
+        // 单曲循环重播同一首不会把用户刚调好的 Key 清掉。
+        if (id != lastKeyShiftTrackId) {
+            lastKeyShiftTrackId = id
+            if (keyShift != 0) keyShift = 0
+        }
         // v2: 恢复全局播放速度设置
         player.setPlaybackSpeed(playbackSpeed, retroSpeedMode)
+        player.setKeyShift(keyShift)
         appScope.launch { settingsStore.pushRecent(id) }
         // v1.2.1: 计数口径"累计满 30s"。插一条 completed=0 的 play_event,拿回行 id 回填到
         // session,使后续 markCounted/finalize 按主键 id 精确定位(不靠"mediaId 最新行"子查询,
@@ -5254,6 +5268,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         retroSpeedMode = v
         player.setPlaybackSpeed(playbackSpeed, v)
         viewModelScope.launch { settingsStore.setRetroSpeedMode(v) }
+    }
+
+    /**
+     * v1.5.0 伴唱 §8：升降 Key。与分离完全解耦（伴奏未就绪也能改），不触发重新分离。
+     * 按规格不持久化：App 重启即回原调。
+     */
+    fun changeKeyShift(semitones: Int) {
+        keyShift = com.shiyin.music.playback.KeyShift.clamp(semitones)
+        player.setKeyShift(keyShift)
     }
     fun setDeepSeekKey(v: String) = viewModelScope.launch { settingsStore.setDeepSeekKey(v) }
     // ── v1.3.x 歌词本设置 toggles ───────────────────────────────────────────
