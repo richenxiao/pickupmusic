@@ -120,8 +120,10 @@ object MediaScanner {
             android.util.Log.d("ScanTrace", "forceReindex: folders=0 → no-op (0ms)")
             return@withContext
         }
+        // v1.5.0 B2①：先消掉嵌套目录 —— 否则父目录 walk 出来的文件会被子目录再走一遍。
+        val roots = ReindexPlanner.pruneNestedFolders(folders)
         val storageBase = Environment.getExternalStorageDirectory().absolutePath
-        val files = folders.flatMap { folder ->
+        val files = roots.flatMap { folder ->
             val dir = File("$storageBase/${folder.trimStart('/')}")
             if (dir.isDirectory) {
                 dir.walkTopDown().filter { f ->
@@ -141,7 +143,7 @@ object MediaScanner {
         val tFilter = System.currentTimeMillis()
         android.util.Log.d(
             "ScanTrace",
-            "forceReindex: folders=${folders.size} files=${files.size} indexed=${indexed.size} " +
+            "forceReindex: folders=${folders.size}→${roots.size} files=${files.size} indexed=${indexed.size} " +
                 "toScan=${todo.size} walk=${tWalk - t0}ms filter=${tFilter - tWalk}ms"
         )
         if (todo.isEmpty()) {
