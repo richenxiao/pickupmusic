@@ -105,17 +105,17 @@ class FuzzySearchTest {
         assertEquals("zhoujielun", FuzzySearch.normalize("Zhou Jie Lun"))
     }
 
-    // v1.2.0: 2 字 token 1 编辑模糊——共享单字（伤/心）DL=1 命中（低分）。
-    // 配合 SearchScreen #1 把这类标题命中放单曲行（露歌名）、#2 专辑名命中权重 5 排首。
+    // v1.5.0 搜索相关性（A43）——**本条断言被用户真机反馈推翻，故意反转**：
+    // v1.2.0 曾让「伤心」靠共享单字模糊命中「心雨 / 伤跡 / 悲伤」。用户实测搜【那天】
+    // 出来【晴天娃娃】【社会天使轮】，名字和关键词一个都对不上 —— 2 字中文查询不再容错。
+    // 3 字及以上的错字/繁简容错保留，见 chineseTypoTolerance。
     @Test
-    fun shortCjkTokenFuzzyMatchesSharedChar() {
-        assertNotNull(FuzzySearch.match("伤心", "心雨"))
-        assertNotNull(FuzzySearch.match("伤心", "伤跡"))
-        assertNotNull(FuzzySearch.match("伤心", "悲伤"))
-        // 子串命中分数高于模糊单字命中
-        val sub = FuzzySearch.match("伤心", "伤心早餐店")!!
-        val fuzzy = FuzzySearch.match("伤心", "心雨")!!
-        assertTrue(sub.score > fuzzy.score)
+    fun shortCjkTokenNoLongerFuzzyMatchesSharedChar() {
+        assertNull(FuzzySearch.match("伤心", "心雨"))
+        assertNull(FuzzySearch.match("伤心", "伤跡"))
+        assertNull(FuzzySearch.match("伤心", "悲伤"))
+        // 精确子串命中不受影响
+        assertNotNull(FuzzySearch.match("伤心", "伤心早餐店"))
     }
 
     @Test
