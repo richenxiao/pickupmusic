@@ -83,4 +83,36 @@ class ReindexPlannerTest {
     fun `只有根目录时原样保留`() {
         assertEquals(setOf("/"), ReindexPlanner.pruneNestedFolders(setOf("/")))
     }
+
+    // ── planWalk ──────────────────────────────────────────────────────────
+    // 真机实测（2026-10-07）：内部存储 102,669 个文件，全盘 walk 17.8s（App 里 33s）；
+    // 其中 Android 独占 91,178 个、Pictures 4,980 个 —— 与音乐无关。标准媒体目录
+    // 合计只有约 4,000 个文件、2s 以内。所以根目录只做浅层扫描，不再递归全盘。
+
+    @Test
+    fun `根目录只做浅层扫描_不参与递归吸收`() {
+        val plan = ReindexPlanner.planWalk(setOf("/", "/Music", "/Music/Album"), listOf("Download"))
+        assertEquals(listOf("/"), plan.shallow)
+        assertEquals(listOf("/Download", "/Music"), plan.recursive)
+    }
+
+    @Test
+    fun `标准媒体目录始终纳入递归遍历_保证散落各处的歌也能被核对`() {
+        val plan = ReindexPlanner.planWalk(setOf("/害"), listOf("Music", "Download"))
+        assertEquals(emptyList<String>(), plan.shallow)
+        assertEquals(listOf("/Download", "/Music", "/害"), plan.recursive)
+    }
+
+    @Test
+    fun `已知目录与标准目录重叠时不重复遍历`() {
+        val plan = ReindexPlanner.planWalk(setOf("/Music/Album"), listOf("Music"))
+        assertEquals(listOf("/Music"), plan.recursive)
+    }
+
+    @Test
+    fun `没有根目录时浅层列表为空`() {
+        val plan = ReindexPlanner.planWalk(setOf("/Music"), listOf())
+        assertEquals(emptyList<String>(), plan.shallow)
+        assertEquals(listOf("/Music"), plan.recursive)
+    }
 }

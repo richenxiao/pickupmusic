@@ -4207,30 +4207,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** Folders known from the most recent scan, used by [forceReindexKnownFolders]. */
     private var knownFolders: Set<String> = emptySet()
 
-    /** Force MediaStore to re-index audio files. On first scan (no known folders),
-     *  walks common audio directories to ensure MediaStore has indexed them. */
+    /**
+     * v1.5.0 B2①：触发媒体库核对。遍历范围（库里已知目录 + 
+     * [com.shiyin.music.data.ReindexPlanner.CURATED_DIRS]，存储根只扫一层）由 ReindexPlanner 统一规划，
+     * 这里不再自己探测「哪些标准目录存在」—— 目录不存在时遍历天然是 no-op。
+     */
     private suspend fun forceReindexKnownFolders() {
         val t0 = System.currentTimeMillis()
-        val fromMemory = knownFolders.isNotEmpty()
-        val folders = if (fromMemory) knownFolders else {
-            // v3.0 A3: first scan — find all folders with audio files on the filesystem
-            val storageBase = android.os.Environment.getExternalStorageDirectory().absolutePath
-            val commonDirs = listOf("Music", "Download", "Podcasts", "Ringtones", "Alarms", "Notifications", "Recordings", "Android/media", "DCIM", "Movies", "Documents")
-            commonDirs.mapNotNull { dir ->
-                val f = java.io.File("$storageBase/$dir")
-                if (f.isDirectory && f.walkTopDown().any { it.isFile && it.extension.lowercase() in com.shiyin.music.data.MediaScanner.AUDIO_EXTENSIONS }) {
-                    "/$dir"
-                } else null
-            }.toSet()
-        }
-        android.util.Log.d(
-            "ScanTrace",
-            "forceReindexKnownFolders: source=${if (fromMemory) "in-memory knownFolders" else "common-dirs probe"} " +
-                "folders=${folders.size} probe=${System.currentTimeMillis() - t0}ms"
-        )
-        if (folders.isNotEmpty()) {
-            com.shiyin.music.data.MediaScanner.forceReindex(getApplication(), folders)
-        }
+        android.util.Log.d("ScanTrace", "forceReindexKnownFolders: knownFolders=${knownFolders.size}")
+        com.shiyin.music.data.MediaScanner.forceReindex(getApplication(), knownFolders)
+        android.util.Log.d("ScanTrace", "forceReindexKnownFolders: returned ${System.currentTimeMillis() - t0}ms")
     }
 
     // v4: detect brand-new albumIds from a scan result and insert them into
