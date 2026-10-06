@@ -116,24 +116,26 @@ object MediaScanner {
      */
     suspend fun forceReindex(context: Context, folders: Set<String>) = withContext(Dispatchers.IO) {
         val t0 = System.currentTimeMillis()
-        if (folders.isEmpty()) {
-            android.util.Log.d("ScanTrace", "forceReindex: folders=0 → no-op (0ms)")
-            return@withContext
-        }
-        // v1.5.0 B2①：先消掉嵌套目录 —— 否则父目录 walk 出来的文件会被子目录再走一遍。
-        val roots = ReindexPlanner.pruneNestedFolders(folders)
+        // v1.5.0 B2①：只遍历「库里已知的目录 + 常见放歌位置」，存储根只扫它自己那一层。
+        // 旧实现里 knownFolders 含 "/"（有歌直接躺在存储根下），walkTopDown 于是把整个手机
+        // 存储走了一遍：真机实测 33s / 102,669 个文件，其中 96% 是相册与应用数据。
+        val plan = ReindexPlanner.planWalk(folders)
         val storageBase = Environment.getExternalStorageDirectory().absolutePath
-        val files = roots.flatMap { folder ->
-            val dir = File("$storageBase/${folder.trimStart('/')}")
+        fun dirOf(folder: String) = File("$storageBase/${folder.trimStart('/')}")
+        fun isAudio(f: File) = f.isFile && f.extension.lowercase() in AUDIO_EXTENSIONS
+
+        val files = plan.recursive.flatMap { folder ->
+            val dir = dirOf(folder)
             if (dir.isDirectory) {
-                dir.walkTopDown().filter { f ->
-                    f.isFile && f.extension.lowercase() in AUDIO_EXTENSIONS
-                }.map { it.absolutePath }.toList()
+                dir.walkTopDown().filter { isAudio(it) }.map { it.absolutePath }.toList()
             } else emptyList()
+        } + plan.shallow.flatMap { folder ->
+            // 存储根本身只扫这一层；它的子目录由 recursive 计划（含 CURATED_DIRS）覆盖。
+            dirOf(folder).listFiles()?.filter { isAudio(it) }?.map { it.absolutePath } ?: emptyList()
         }
         val tWalk = System.currentTimeMillis()
         if (files.isEmpty()) {
-            android.util.Log.d("ScanTrace", "forceReindex: folders=${folders.size} files=0 walk=${tWalk - t0}ms → no-op")
+            android.util.Log.d("ScanTrace", "forceReindex: files=0 walk=${tWalk - t0}ms → no-op")
             return@withContext
         }
         // v1.5.0 B2①：只对 MediaStore 尚未收录的文件调 scanFile。真机实测 4090 个文件里
@@ -143,7 +145,8 @@ object MediaScanner {
         val tFilter = System.currentTimeMillis()
         android.util.Log.d(
             "ScanTrace",
-            "forceReindex: folders=${folders.size}→${roots.size} files=${files.size} indexed=${indexed.size} " +
+            "forceReindex: known=${folders.size} roots=${plan.recursive.size} shallow=${plan.shallow.size} " +
+                "files=${files.size} indexed=${indexed.size} " +
                 "toScan=${todo.size} walk=${tWalk - t0}ms filter=${tFilter - tWalk}ms"
         )
         if (todo.isEmpty()) {

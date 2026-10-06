@@ -14,6 +14,38 @@ package com.shiyin.music.data
  */
 object ReindexPlanner {
 
+    /**
+     * 常见放歌位置（相对内部存储根）。这些目录无论库里有没有已知歌曲都会被核对一遍，
+     * 这样「歌散落在好几个地方」的情况依然覆盖得到。
+     *
+     * 为什么不是整个存储根：真机实测（2026-10-07）内部存储共 102,669 个文件，
+     * 全盘遍历 17.8s（App 里 33s），其中 Android 91,178 个、Pictures 4,980 个，
+     * 与音乐无关；而下列目录合计约 4,000 个文件、2s 以内。
+     */
+    val CURATED_DIRS = listOf(
+        "Music", "Download", "Podcasts", "Ringtones", "Alarms", "Notifications",
+        "Recordings", "Android/media", "DCIM", "Movies", "Documents",
+    )
+
+    /**
+     * 一次核对的遍历计划。
+     * [recursive] 递归遍历（子目录也要走）；[shallow] 只看这一层（存储根目录专用）。
+     */
+    data class WalkPlan(val recursive: List<String>, val shallow: List<String>)
+
+    /**
+     * 由「库里已知的文件夹」+ [CURATED_DIRS] 算出遍历计划。
+     *
+     * 存储根 "/" 只做浅层扫描：它一旦递归就等于把整个手机存储走一遍（相册、应用数据全都走），
+     * 而它出现在 knownFolders 里只是因为有几首歌直接躺在根目录下。
+     */
+    fun planWalk(knownFolders: Set<String>, curatedDirs: List<String> = CURATED_DIRS): WalkPlan {
+        val shallow = if (knownFolders.contains("/")) listOf("/") else emptyList()
+        val candidates = (knownFolders - "/") + curatedDirs.map { "/$it" }
+        // pruneNestedFolders 用 LinkedHashSet 保序（父目录在前），转 List 给调用方直接遍历
+        return WalkPlan(pruneNestedFolders(candidates).toList(), shallow)
+    }
+
     /** MediaStore 尚未收录的文件（保持 [fsFiles] 的原有遍历顺序）。 */
     fun filesNeedingReindex(fsFiles: List<String>, indexedPaths: Set<String>): List<String> =
         fsFiles.filterNot { it in indexedPaths }
