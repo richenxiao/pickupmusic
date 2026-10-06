@@ -47,9 +47,9 @@ object FuzzySearch {
     }
 
     /** 归一化结果：text 为归一化串，rawIndex[i] 为 text 第 i 个字符在原始串中的下标。 */
-    private class Norm(val text: String, val rawIndex: IntArray)
+    internal class Norm(val text: String, val rawIndex: IntArray)
 
-    private fun norm(raw: String): Norm {
+    internal fun norm(raw: String): Norm {
         val sb = StringBuilder(raw.length)
         val map = IntArray(raw.length)
         var k = 0
@@ -133,7 +133,7 @@ object FuzzySearch {
         query.split(Regex("[^\\p{L}\\p{N}]+")).map { norm(it).text }.filter { it.isNotEmpty() }
 
     /** 单 token 对单字段的命中（null = 不命中）。 */
-    private fun matchTokenInField(token: String, nf: Norm): Match? {
+    internal fun matchTokenInField(token: String, nf: Norm): Match? {
         if (token.isEmpty() || nf.text.isEmpty()) return null
         if (token == nf.text) return Match(1000, listOf(nf.rawIndex[0]..nf.rawIndex[nf.text.length - 1]))
         val at = nf.text.indexOf(token)
@@ -143,7 +143,11 @@ object FuzzySearch {
         }
         val win = bestWindow(nf.text, token, 0)
             ?: return null
-        return Match(600, listOf(nf.rawIndex[win.first]..nf.rawIndex[win.second - 1]))
+        // v1.5.0 搜索相关性（A43）：模糊窗口只计分、**不给高亮区间**。
+        // 窗口整体距离 <= cap 不代表窗口里每个字都对得上 —— 旧实现把整段涂色，
+        // 用户看到的是「晴天」两个字全被标亮，而真正对上的只有「天」。
+        // 与 v1.3.10 罗马字兜底同一条纪律：坐标回不到精确匹配的字，就不给高亮。
+        return Match(600, emptyList())
     }
 
     /**
@@ -243,12 +247,34 @@ object FuzzySearch {
 
     // ── 编辑距离 ─────────────────────────────────────────────────────────
 
-    /** 编辑距离阈值：仿 AUTO——短词从严（1 个编辑封顶），长词放宽（2 个封顶）。 */
-    private fun maxEdits(token: String): Int = when {
+    /**
+     * 编辑距离阈值：仿 AUTO——短词从严（1 个编辑封顶），长词放宽（2 个封顶）。
+     * v1.5.0 搜索相关性（A43）：**含 CJK 的 token 一律不容错**。
+     *
+     * 对中文而言「允许 1 个编辑」= 「允许换掉一个字」，而中文换一个字就是换了一个词：
+     * 查询「那天」会命中「晴天 / 会天 / 天天」（用户实测反馈的原话）。
+     *
+     * 但**只收紧 2 字及以下的全中文查询**，3 字以上保留 1~2 编辑的容错 —— 因为：
+     * ① 用户反馈的用例（那天 / 伤心 / 故乡）都是 2 字；
+     * ② 手写繁简表 [TRAD_TO_SIMPLE] 并不完备（如「倫」不在表里），3 字中文仍要靠
+     *    编辑距离兜住「周杰伦 ↔ 周杰倫」这类写法差异（见 chineseTypoTolerance、
+     *    RecommendationPlanTest）。彻底解决该依赖需要先换成完整的繁简归一（safe-review ②）。
+     * internal 以便单测直接验证（见 FuzzySearchMatchTest）。
+     */
+    internal fun maxEdits(token: String): Int = when {
         token.length <= 1 -> 0
+        token.length <= 2 && token.all { isCjkChar(it) } -> 0
         token.length <= 4 -> 1
         else -> 2
     }
+
+    /** 是否为中日韩文字（汉字各平面 + 平/片假名，含半角片假名）。 */
+    internal fun isCjkChar(c: Char): Boolean =
+        c.code in 0x3040..0x30FF ||   // 平假名 / 片假名
+            c.code in 0x3400..0x4DBF ||  // CJK 扩展 A
+            c.code in 0x4E00..0x9FFF ||  // CJK 基本区
+            c.code in 0xF900..0xFAFF ||  // CJK 兼容表意
+            c.code in 0xFF66..0xFF9D     // 半角片假名
 
     /** Damerau-Levenshtein 距离（含相邻换位），超过 [cap] 提前返回。 */
     private fun dlDistance(a: String, b: String, cap: Int): Int {
@@ -297,7 +323,7 @@ object FuzzySearch {
      * 在 [field] 中滑动窗口找与 [token] 最接近（编辑距离 ≤ maxEdits）的一段。
      * 返回窗口的 [start, end) 下标；找不到返回 null。[from] 为顺序匹配游标。
      */
-    private fun bestWindow(field: String, token: String, from: Int): Pair<Int, Int>? {
+    internal fun bestWindow(field: String, token: String, from: Int): Pair<Int, Int>? {
         val cap = maxEdits(token)
         if (quickReject(field, token, cap)) return null
         val n = field.length
