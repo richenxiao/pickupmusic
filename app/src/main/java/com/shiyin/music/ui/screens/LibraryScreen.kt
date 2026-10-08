@@ -451,11 +451,15 @@ private fun LibraryRoot(
               }
             }
         } else if (!vm.libViewGrid) {
-            items(items) { item ->
-                // v1.5.0 右滑固定：统一包装，手势/动画只有一份实现
+            // v1.5.0 右滑固定：统一包装，手势/动画只有一份实现。
+            // key = 稳定条目键 —— 固定后条目会被重排到顶部，有 key 才能让 Compose
+            // 正确搬运（否则 SwipeToPin 里的 Animatable 会被复用给另一个条目）。
+            items(items, key = { it.key.ifEmpty { it.title } }) { item ->
                 SwipeToPin(
                     pinned = item.pinned,
                     onPinnedChange = { p -> vm.setLibItemPinned(item.key, p) },
+                    // 「我的喜欢」是永久固定，不参与右滑（避免误"取消固定"）
+                    enabled = !item.isHeart && item.key.isNotEmpty(),
                 ) { MixedListRow(vm, item) }
             }
         } else {
