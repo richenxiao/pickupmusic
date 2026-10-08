@@ -143,11 +143,60 @@ object FuzzySearch {
         }
         val win = bestWindow(nf.text, token, 0)
             ?: return null
-        // v1.5.0 搜索相关性（A43）：模糊窗口只计分、**不给高亮区间**。
-        // 窗口整体距离 <= cap 不代表窗口里每个字都对得上 —— 旧实现把整段涂色，
-        // 用户看到的是「晴天」两个字全被标亮，而真正对上的只有「天」。
-        // 与 v1.3.10 罗马字兜底同一条纪律：坐标回不到精确匹配的字，就不给高亮。
-        return Match(600, emptyList())
+        // v1.5.0 搜索第二轮（A43）：模糊命中的高亮**收窄到与查询真正相等的那几个字**。
+        // 旧实现把整段模糊窗口涂色（「晴天」两个字全被标亮），用户看到"标注太散开"。
+        // 用 LCS 对齐找出窗口里逐字与 token 相等的位置，只标那些。
+        val hl = lcsHighlightRanges(nf.text.substring(win.first, win.second), token, win.first, nf.rawIndex)
+        return Match(600, hl)
+    }
+
+    /**
+     * 模糊窗口的高亮区间：LCS 对齐 [window] 与 [token]，标出窗口中逐字与 token
+     * 相等的位置（坐标映射回原始字符串）。
+     *
+     * 例：token=那天, window=天天 → 对齐后只有第 2 个「天」逐字相等 → [1..1]；
+     * token=那天, window=会天 → 只有「天」相等 → [2..2]（原始坐标）。
+     */
+    internal fun lcsHighlightRanges(
+        window: String,
+        token: String,
+        winStart: Int,
+        rawIndex: IntArray,
+    ): List<IntRange> {
+        val m = window.length
+        val n = token.length
+        // LCS 的 DP 表
+        val dp = Array(m + 1) { IntArray(n + 1) }
+        for (i in 1..m) {
+            for (j in 1..n) {
+                dp[i][j] = if (window[i - 1] == token[j - 1]) dp[i - 1][j - 1] + 1
+                else maxOf(dp[i - 1][j], dp[i][j - 1])
+            }
+        }
+        // 回溯:收集 window 中参与 LCS 的下标
+        val matched = ArrayList<Int>()
+        var i = m; var j = n
+        while (i > 0 && j > 0) {
+            when {
+                window[i - 1] == token[j - 1] -> { matched.add(i - 1); i--; j-- }
+                dp[i - 1][j] >= dp[i][j - 1] -> i--
+                else -> j--
+            }
+        }
+        matched.reverse()
+        if (matched.isEmpty()) return emptyList()
+        // 把连续下标合并成区间，映射回原始坐标
+        val ranges = ArrayList<IntRange>()
+        var start = matched[0]; var prev = start
+        for (k in 1 until matched.size) {
+            if (matched[k] == prev + 1) { prev = matched[k] }
+            else {
+                ranges.add(rawIndex[winStart + start]..rawIndex[winStart + prev])
+                start = matched[k]; prev = matched[k]
+            }
+        }
+        ranges.add(rawIndex[winStart + start]..rawIndex[winStart + prev])
+        return ranges
     }
 
     /**
@@ -172,6 +221,11 @@ object FuzzySearch {
 
     /** v1.2.0 #5: 完整查询子串命中的置顶奖励（远大于字段加权，形成明确分层）。 */
     private const val FULL_QUERY_BONUS = 1_000_000
+
+    /** v1.5.0 搜索第二轮：最佳单字段匹配的**分层加成**权重。
+     *  标题精确命中(1000)×BEST = 10M，必须压过"多字段弱命中累加"（最多 ~26k），
+     *  让搜「You」时标题恰为 You 的歌排在「SAVE YOUR Tears」（多字段子串累加）之上。 */
+    private const val BEST_FIELD_BONUS = 10_000
 
     /** v1.3.10: 罗马字兜底命中(假名↔罗马字)的单 token 计分——刻意低于常规字段命中
      *  (子串 800 / 模糊 600),保证库内的直接命中永远排在罗马字兜底命中之前。 */
@@ -201,6 +255,9 @@ object FuzzySearch {
             val albumRanges = ArrayList<IntRange>()
             val folderRanges = ArrayList<IntRange>()
             var ok = true
+            // v1.5.0 搜索第二轮：记录所有 token 里最高的单字段分，用于分层加成
+            // （精确命中必须压过"多字段弱命中累加"）。
+            var bestFieldScore = 0
             // v1.3.10: 罗马字兜底用,懒算——只有某个 token 常规字段全不中时才转一次。
             var romajiFields: List<String>? = null
             for (token in tokens) {
@@ -222,6 +279,8 @@ object FuzzySearch {
                     score += ROMAJI_TOKEN_SCORE
                     continue
                 }
+                val tokenBest = maxOf(mt?.score ?: 0, ma?.score ?: 0, mal?.score ?: 0, mf?.score ?: 0)
+                if (tokenBest > bestFieldScore) bestFieldScore = tokenBest
                 score += (mt?.score ?: 0) * 4 + (ma?.score ?: 0) * 3 + (mal?.score ?: 0) * 5 + (mf?.score ?: 0)
                 mt?.let { titleRanges += it.ranges }
                 ma?.let { artistRanges += it.ranges }
@@ -234,6 +293,9 @@ object FuzzySearch {
                 val fullHit = nfTitle.text.contains(qJoined) || nfArtist.text.contains(qJoined) ||
                     nfAlbum.text.contains(qJoined) || nfFolder.text.contains(qJoined)
                 if (fullHit) score += FULL_QUERY_BONUS
+                // v1.5.0 搜索第二轮：最佳单字段匹配的分层加成（精确>前缀>子串>模糊），
+                // 确保搜「You」时标题恰为 You 的歌排第一，不被多字段弱命中累加压过。
+                score += bestFieldScore * BEST_FIELD_BONUS
                 hits += SearchHit(
                     track = t, score = score,
                     titleRanges = titleRanges, artistRanges = artistRanges,
@@ -249,21 +311,14 @@ object FuzzySearch {
 
     /**
      * 编辑距离阈值：仿 AUTO——短词从严（1 个编辑封顶），长词放宽（2 个封顶）。
-     * v1.5.0 搜索相关性（A43）：**含 CJK 的 token 一律不容错**。
      *
-     * 对中文而言「允许 1 个编辑」= 「允许换掉一个字」，而中文换一个字就是换了一个词：
-     * 查询「那天」会命中「晴天 / 会天 / 天天」（用户实测反馈的原话）。
-     *
-     * 但**只收紧 2 字及以下的全中文查询**，3 字以上保留 1~2 编辑的容错 —— 因为：
-     * ① 用户反馈的用例（那天 / 伤心 / 故乡）都是 2 字；
-     * ② 手写繁简表 [TRAD_TO_SIMPLE] 并不完备（如「倫」不在表里），3 字中文仍要靠
-     *    编辑距离兜住「周杰伦 ↔ 周杰倫」这类写法差异（见 chineseTypoTolerance、
-     *    RecommendationPlanTest）。彻底解决该依赖需要先换成完整的繁简归一（safe-review ②）。
-     * internal 以便单测直接验证（见 FuzzySearchMatchTest）。
+     * v1.5.0 搜索第二轮（A43）：**撤销了第一轮"2 字中文不容错"的收紧**。用户明确纠偏
+     * 「搜索太严格了，我是允许模糊搜索的，只是反对模糊搜索后的结果标注太散开」。
+     * 所以 2 字中文（如「那天」）恢复 cap=1 的容错，靠"高亮收窄到真正相等的字"
+     * （见 matchTokenInField 模糊分支）来解决观感问题，而不是禁止命中。
      */
     internal fun maxEdits(token: String): Int = when {
         token.length <= 1 -> 0
-        token.length <= 2 && token.all { isCjkChar(it) } -> 0
         token.length <= 4 -> 1
         else -> 2
     }

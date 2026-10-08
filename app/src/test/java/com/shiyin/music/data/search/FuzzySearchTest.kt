@@ -105,15 +105,14 @@ class FuzzySearchTest {
         assertEquals("zhoujielun", FuzzySearch.normalize("Zhou Jie Lun"))
     }
 
-    // v1.5.0 搜索相关性（A43）——**本条断言被用户真机反馈推翻，故意反转**：
-    // v1.2.0 曾让「伤心」靠共享单字模糊命中「心雨 / 伤跡 / 悲伤」。用户实测搜【那天】
-    // 出来【晴天娃娃】【社会天使轮】，名字和关键词一个都对不上 —— 2 字中文查询不再容错。
-    // 3 字及以上的错字/繁简容错保留，见 chineseTypoTolerance。
+    // v1.5.0 搜索第二轮（A43）：用户纠偏——「允许模糊搜索，只是反对标注太散开」。
+    // 所以 2 字中文查询恢复容错（「伤心」能模糊命中「心雨」），靠高亮收窄解决观感问题。
+    // 第一轮的「不再容错」已被推翻。
     @Test
-    fun shortCjkTokenNoLongerFuzzyMatchesSharedChar() {
-        assertNull(FuzzySearch.match("伤心", "心雨"))
-        assertNull(FuzzySearch.match("伤心", "伤跡"))
-        assertNull(FuzzySearch.match("伤心", "悲伤"))
+    fun shortCjkTokenFuzzyMatchesSharedChar() {
+        assertNotNull(FuzzySearch.match("伤心", "心雨"))
+        assertNotNull(FuzzySearch.match("伤心", "伤跡"))
+        assertNotNull(FuzzySearch.match("伤心", "悲伤"))
         // 精确子串命中不受影响
         assertNotNull(FuzzySearch.match("伤心", "伤心早餐店"))
     }
