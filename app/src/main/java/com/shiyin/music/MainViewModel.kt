@@ -5296,7 +5296,23 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      * 再点 = 取消回 Idle —— 先让用户看到效果，且不假装已经分离完成。
      */
     fun toggleKaraoke() {
-        karaokeState = if (karaokeState == com.shiyin.music.ui.components.KaraokeButtonState.Idle) com.shiyin.music.ui.components.KaraokeButtonState.Loading else com.shiyin.music.ui.components.KaraokeButtonState.Idle
+        when (karaokeState) {
+            com.shiyin.music.ui.components.KaraokeButtonState.Idle -> {
+                karaokeState = com.shiyin.music.ui.components.KaraokeButtonState.Loading
+                // ⚠️ 临时演示（用户要求"先做效果"）：分离引擎（P0 Spike）尚未接入，
+                // 这里用延时模拟"首段可用"，好让用户现在就能看到 Loading→Active 的
+                // 圆形→六边形形变动画。引擎落地后**删除本段**，改由 SeparationJob
+                // 的回调把状态置为 Active（规格 D6/D8 的"首段可用"语义）。
+                viewModelScope.launch {
+                    kotlinx.coroutines.delay(2500)
+                    if (karaokeState == com.shiyin.music.ui.components.KaraokeButtonState.Loading) {
+                        karaokeState = com.shiyin.music.ui.components.KaraokeButtonState.Active
+                    }
+                }
+            }
+            // Loading 中点击 = 取消；Active 中点击 = 关闭伴唱（回到原曲）
+            else -> karaokeState = com.shiyin.music.ui.components.KaraokeButtonState.Idle
+        }
     }
 
     /** v1.5.0 右滑固定：该条目当前是否已固定。 */
