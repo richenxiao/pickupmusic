@@ -1033,13 +1033,11 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
                 horizontalArrangement = Arrangement.Center,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                // v1.5.0 伴唱麦克风：放「あ」左侧（规格 §3.1）。
-                // 右侧同步补了等宽 38dp 空位，否则播放键会被挤偏（规格明确提醒过）。
-                KaraokeMicButton(
-                    state = vm.karaokeState,
-                    lyricForeground = artFg,
-                    onClick = { vm.toggleKaraoke() },
-                )
+                // v1.5.0 伴唱麦克风的位置规则（用户 2026-10-07 修正）：
+                //   · 麦克风**恒在播放键左侧**；
+                //   · **有「あ」时必须在「あ」右侧**（即 あ → 麦克风 → 播放键）；
+                //   · 无「あ」时才放到最左（麦克风 → 播放键）；
+                //   · 两个都在左边时留出间距（gap），并让右侧补等宽空位保持播放键居中。
                 if (hasKana) {
                     // v1.3.x 虚影终版:同上两个按钮——去掉圆形底色块。未激活态:
                     // 无背景,あ 字原色悬浮;激活态保留 artFg 实心盘(这个是功能
@@ -1069,9 +1067,13 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
                             ),
                         )
                     }
-                } else {
-                    Spacer(Modifier.size(38.dp))
+                    Spacer(Modifier.size(6.dp))  // 两个按钮都在左边时的间距
                 }
+                KaraokeMicButton(
+                    state = vm.karaokeState,
+                    lyricForeground = artFg,
+                    onClick = { vm.toggleKaraoke() },
+                )
                 Spacer(Modifier.weight(1f))
                 // play/pause centered between the time row and the screen bottom.
                 Box(
@@ -1090,8 +1092,10 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
                     )
                 }
                 Spacer(Modifier.weight(1f))
-                // v1.5.0 伴唱：与左侧麦克风等宽的空位，保持播放键居中
-                Spacer(Modifier.size(38.dp))
+                // v1.5.0 伴唱：右侧补与左侧等宽的隐形空位，保持播放键居中。
+                // 左侧固定宽：有「あ」时 = あ38 + gap6 + mic38 = 82（右槽 38 → 差 44）；
+                // 无「あ」时 = mic38，与右槽 38 等宽 → 差额 0。
+                Spacer(Modifier.size(if (hasKana) 44.dp else 0.dp))
                 // v1.3.x 需求6:「譯」翻译按钮(繁体,用户已定)。与「あ」同 38dp、同一行平行。
                 // 三态:①初始=无底色悬浮「譯」;②进行中=**实心圆**(同「あ」激活态)+ 圆周
                 // 顺时针加载弧;③已译=**圆角方块** + 右上角**纯文字 AI**(无圆圈底,用户明确)。
