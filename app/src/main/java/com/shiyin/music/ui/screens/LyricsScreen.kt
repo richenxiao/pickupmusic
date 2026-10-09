@@ -431,10 +431,18 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
         // v1.3.x 滚动位置修正:同上,计算时减去当前行高度的一半。
         LaunchedEffect(interactive) {
             if (interactive && activeI >= 0) {
+                // v1.5.0 A50:重进歌词本,当前行滚到**视口中间**而不是停在最底。
+                // 前两个 LaunchedEffect 跑的时候 layoutInfo 可能还没测量完
+                // (viewport=0/itemHeight=0 → scrollOffset=0,当前行贴视口顶,
+                // 观感就是"在最下面/不居中")。这里等一帧拿到真实布局再滚一次;
+                // 与上两条同目标,第二次 scrollToItem 无位移 = 无开销。
+                androidx.compose.runtime.withFrameNanos { }
                 val viewport = listState.layoutInfo.viewportSize.height
                 val itemHeight = listState.layoutInfo.visibleItemsInfo
                     .find { it.index == activeI }?.size ?: 0
-                listState.scrollToItem(activeI, scrollOffset = -(viewport / 2 - 60) + itemHeight / 2)
+                if (viewport > 0) {
+                    listState.scrollToItem(activeI, scrollOffset = -(viewport / 2 - 60) + itemHeight / 2)
+                }
             }
         }
         // v1.3.x 滚动流畅度(用户反馈"逐行切换僵硬、帧率低,想要振假名切换那种
