@@ -1041,9 +1041,7 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
                 //   · 总开关（设置→歌词本「启用伴唱功能」）关闭时不显示麦克风。
                 // 左右固定宽必须相等，播放键才居中——下面按四种组合算出补偿空位。
                 val slot = 38.dp
-                // 两个按钮都在左边时的间隔。取 10dp：六边形激活时左右顶点会略超出
-                // 38dp 方框（边心距对齐圆所致），留够余量才不会看起来挨在一起。
-                val karaokeGap = 10.dp
+                val karaokeGap = 16.dp
                 val leftW = (if (hasKana) slot else 0.dp) +
                     (if (hasKana && vm.karaokeEnabled) karaokeGap else 0.dp) +
                     (if (vm.karaokeEnabled) slot else 0.dp)
@@ -1086,6 +1084,7 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
                     KaraokeMicButton(
                         state = vm.karaokeState,
                         lyricForeground = artFg,
+                        lyricBackground = safeBg,
                         onClick = { vm.toggleKaraoke() },
                     )
                 }
@@ -1108,9 +1107,7 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
                 }
                 Spacer(Modifier.weight(1f))
                 // v1.5.0 伴唱：右侧补与左侧等宽的隐形空位，保持播放键居中。
-                // 左侧固定宽：有「あ」时 = あ38 + gap6 + mic38 = 82（右槽 38 → 差 44）；
-                // 无「あ」时 = mic38，与右槽 38 等宽 → 差额 0。
-                Spacer(Modifier.size(if (hasKana) 44.dp else 0.dp))
+                Spacer(Modifier.width(padR))
                 // v1.3.x 需求6:「譯」翻译按钮(繁体,用户已定)。与「あ」同 38dp、同一行平行。
                 // 三态:①初始=无底色悬浮「譯」;②进行中=**实心圆**(同「あ」激活态)+ 圆周
                 // 顺时针加载弧;③已译=**圆角方块** + 右上角**纯文字 AI**(无圆圈底,用户明确)。

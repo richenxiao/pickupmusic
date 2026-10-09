@@ -437,6 +437,7 @@ private fun LibraryRoot(
               SwipeToPin(
                 pinned = vm.isLibItemPinned("song:${t.id}"),
                 onPinnedChange = { p -> vm.setLibItemPinned("song:${t.id}", p) },
+                modifier = Modifier.animateItem(placementSpec = androidx.compose.animation.core.tween(220)),
               ) {
                 TrackRow(
                     track = t,
@@ -460,6 +461,7 @@ private fun LibraryRoot(
                     onPinnedChange = { p -> vm.setLibItemPinned(item.key, p) },
                     // 「我的喜欢」是永久固定，不参与右滑（避免误"取消固定"）
                     enabled = !item.isHeart && item.key.isNotEmpty(),
+                    modifier = Modifier.animateItem(placementSpec = androidx.compose.animation.core.tween(220)),
                 ) { MixedListRow(vm, item) }
             }
         } else {
