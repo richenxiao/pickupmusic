@@ -95,6 +95,8 @@ private val keyPinnedLibItems = stringSetPreferencesKey("pinned_lib_items")
     private val keyTranslateDefaultShow = booleanPreferencesKey("translate_default_show")
     /** A36: 翻译失败时弹提示(默认关——用户嫌失败提示太频繁,想安静时就不弹)。 */
     private val keyTranslateErrorToast = booleanPreferencesKey("translate_error_toast")
+    /** v1.5.0 伴唱:总开关(默认开)。关闭后隐藏歌词页麦克风入口,设备慢的用户可彻底关掉。 */
+    private val keyKaraokeEnabled = booleanPreferencesKey("karaoke_enabled")
 
     // ── v1.3.x 播放设置(设置·播放页,用户 2026-09-22 指定分组)─────────────────
     /** 音量均衡:平衡所有曲目的播放音量(响度归一)。 */
@@ -142,6 +144,8 @@ private val keyPinnedLibItems = stringSetPreferencesKey("pinned_lib_items")
         val translateDefaultShow: Boolean,
         /** A36: 翻译失败时是否弹提示(默认 false)。 */
         val translateErrorToast: Boolean,
+        /** v1.5.0 伴唱总开关(默认 true)。关闭后隐藏歌词页麦克风入口。 */
+        val karaokeEnabled: Boolean,
         /** v1.3.10 「翻译按钮显示」三档:"never"/"majority"(默认,现状)/"any"。 */
         val translateButtonMode: String,
         /** v1.3.10: 已同步歌词是否也始终显示时间轴校对入口(默认 false)。 */
@@ -202,6 +206,7 @@ private val keyPinnedLibItems = stringSetPreferencesKey("pinned_lib_items")
             translateAutoForeign = p[keyTranslateAutoForeign] ?: false,
             translateDefaultShow = p[keyTranslateDefaultShow] ?: true,
             translateErrorToast = p[keyTranslateErrorToast] ?: false,
+            karaokeEnabled = p[keyKaraokeEnabled] ?: true,
             translateButtonMode = (p[keyTranslateButtonMode] ?: "majority")
                 .let { if (it in listOf("never", "majority", "any")) it else "majority" },
             lyricsCalibAlwaysOn = p[keyLyricsCalibAlwaysOn] ?: false,
@@ -280,6 +285,8 @@ private val keyPinnedLibItems = stringSetPreferencesKey("pinned_lib_items")
     suspend fun setTranslateAutoForeign(v: Boolean) = context.dataStore.edit { it[keyTranslateAutoForeign] = v }
     suspend fun setTranslateDefaultShow(v: Boolean) = context.dataStore.edit { it[keyTranslateDefaultShow] = v }
     suspend fun setTranslateErrorToast(v: Boolean) = context.dataStore.edit { it[keyTranslateErrorToast] = v }
+    /** v1.5.0 伴唱总开关写入。 */
+    suspend fun setKaraokeEnabled(v: Boolean) = context.dataStore.edit { it[keyKaraokeEnabled] = v }
     /** v1.3.10: 翻译按钮显隐档位写入(只收 never/majority/any,其余回 default=majority)。 */
     suspend fun setTranslateButtonMode(mode: String) =
         context.dataStore.edit { it[keyTranslateButtonMode] = if (mode in listOf("never", "any")) mode else "majority" }

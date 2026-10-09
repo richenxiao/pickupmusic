@@ -1036,8 +1036,21 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
                 // v1.5.0 伴唱麦克风的位置规则（用户 2026-10-07 修正）：
                 //   · 麦克风**恒在播放键左侧**；
                 //   · **有「あ」时必须在「あ」右侧**（即 あ → 麦克风 → 播放键）；
-                //   · 无「あ」时才放到最左（麦克风 → 播放键）；
-                //   · 两个都在左边时留出间距（gap），并让右侧补等宽空位保持播放键居中。
+                //   · 无「あ」时才放到最左；
+                //   · 两个都在左边时留 6dp 间距；
+                //   · 总开关（设置→歌词本「启用伴唱功能」）关闭时不显示麦克风。
+                // 左右固定宽必须相等，播放键才居中——下面按四种组合算出补偿空位。
+                val slot = 38.dp
+                // 两个按钮都在左边时的间隔。取 10dp：六边形激活时左右顶点会略超出
+                // 38dp 方框（边心距对齐圆所致），留够余量才不会看起来挨在一起。
+                val karaokeGap = 10.dp
+                val leftW = (if (hasKana) slot else 0.dp) +
+                    (if (hasKana && vm.karaokeEnabled) karaokeGap else 0.dp) +
+                    (if (vm.karaokeEnabled) slot else 0.dp)
+                val rightW = slot // 右槽恒为 38（「譯」或等宽占位）
+                val padL = (rightW - leftW).coerceAtLeast(0.dp)
+                val padR = (leftW - rightW).coerceAtLeast(0.dp)
+                Spacer(Modifier.width(padL))
                 if (hasKana) {
                     // v1.3.x 虚影终版:同上两个按钮——去掉圆形底色块。未激活态:
                     // 无背景,あ 字原色悬浮;激活态保留 artFg 实心盘(这个是功能
@@ -1067,13 +1080,15 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
                             ),
                         )
                     }
-                    Spacer(Modifier.size(6.dp))  // 两个按钮都在左边时的间距
+                    if (vm.karaokeEnabled) Spacer(Modifier.size(karaokeGap)) // 两个按钮都在左边时的间距
                 }
-                KaraokeMicButton(
-                    state = vm.karaokeState,
-                    lyricForeground = artFg,
-                    onClick = { vm.toggleKaraoke() },
-                )
+                if (vm.karaokeEnabled) {
+                    KaraokeMicButton(
+                        state = vm.karaokeState,
+                        lyricForeground = artFg,
+                        onClick = { vm.toggleKaraoke() },
+                    )
+                }
                 Spacer(Modifier.weight(1f))
                 // play/pause centered between the time row and the screen bottom.
                 Box(

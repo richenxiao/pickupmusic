@@ -331,6 +331,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     var translateButtonMode by mutableStateOf("majority"); private set
     /** A36: 翻译失败时是否弹提示(默认关——用户嫌失败提示太频繁,想安静时就不弹)。 */
     var translateErrorToast by mutableStateOf(false); private set
+    /** v1.5.0 伴唱总开关(默认开)。关闭后歌词页不显示麦克风入口。
+     *  用私有 MutableState 后备 + 只读 getter：避免"var + private set"与 setKaraokeEnabled()
+     *  撞 JVM 签名（platform declaration clash）。 */
+    private val _karaokeEnabled = mutableStateOf(true)
+    val karaokeEnabled: Boolean get() = _karaokeEnabled.value
 
     // ── v1.3.x 播放设置(设置·播放页,用户 2026-09-22 指定分组)──────────────────
     /** 音量均衡:平衡所有曲目的播放音量(响度归一,ExoPlayer setVolume 实现见 PlaybackService)。 */
@@ -1129,6 +1134,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 translateAutoForeign = s.translateAutoForeign
                 translateDefaultShow = s.translateDefaultShow
                 translateErrorToast = s.translateErrorToast
+                _karaokeEnabled.value = s.karaokeEnabled
                 translateButtonMode = s.translateButtonMode
                 // v1.3.x 播放设置同步
                 volumeNormalize = s.volumeNormalize
@@ -5332,6 +5338,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun setTranslateDefaultShow(v: Boolean) = viewModelScope.launch { settingsStore.setTranslateDefaultShow(v) }
     /** A36: 翻译失败提示开关(默认关)。 */
     fun setTranslateErrorToast(v: Boolean) = viewModelScope.launch { settingsStore.setTranslateErrorToast(v) }
+    /** v1.5.0 伴唱总开关。关闭时一并回到 Idle（规格 §10：关闭后停止当前分离、回到原曲）。 */
+    fun setKaraokeEnabled(v: Boolean) {
+        _karaokeEnabled.value = v
+        if (!v) karaokeState = com.shiyin.music.ui.components.KaraokeButtonState.Idle
+        viewModelScope.launch { settingsStore.setKaraokeEnabled(v) }
+    }
     /** v1.3.10: 「翻译按钮显示」档位。 */
     fun setTranslateButtonMode(mode: String) = viewModelScope.launch { settingsStore.setTranslateButtonMode(mode) }
     /** v1.3.10 需求 A26:时间轴校对入口常显开关。 */

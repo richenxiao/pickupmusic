@@ -1411,9 +1411,14 @@ private fun LyricsBookScreen(vm: MainViewModel, scrollStates: MutableMap<String,
             // 开了这个开关后,已同步的歌词也常显(校准未必一次到位,方便反复微调)。
             SettingRow(
                 Lucide.Crosshair, "始终显示时间轴校对",
-                "已同步的歌词也能随时进入校对", divider = false,
+                "已同步的歌词也能随时进入校对", divider = true,
             ) {
                 OrganicSwitch(vm.lyricsCalibAlwaysOn) { vm.setLyricsCalibAlwaysOn(!vm.lyricsCalibAlwaysOn) }
+            }
+            // v1.5.0 伴唱总开关（规格 §10）。默认开；关闭后歌词页不显示麦克风入口，
+            // 设备慢的用户可彻底关掉。
+            SettingRow(Lucide.Mic, "启用伴唱功能", null, divider = false) {
+                OrganicSwitch(vm.karaokeEnabled) { vm.setKaraokeEnabled(!vm.karaokeEnabled) }
             }
         }
         // 外语自动翻译:进入歌词本时外语歌自动触发 AI 翻译(默认关——AI 永远用户主动
