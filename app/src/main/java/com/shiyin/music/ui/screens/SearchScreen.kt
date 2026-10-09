@@ -77,7 +77,9 @@ fun SearchScreen(vm: MainViewModel) {
             val type = vm.albumTypeFor(t.albumId)
             // v1.2.0: 只有专辑名字段命中才折叠成专辑卡；标题/歌手命中按单曲行
             // 显示（露歌名，让人看出为何命中），不再「专辑名无查询词却排在前」。
-            val albumNameHit = hit.albumRanges.isNotEmpty()
+            // v1.5.0 第三轮（用户）：**强相关才给专辑推荐**——专辑字段需子串及以上
+            // 命中（albumBestScore ≥ 800）；模糊(600)/罗马字(0)命中的只按单曲行显示。
+            val albumNameHit = hit.albumRanges.isNotEmpty() && hit.albumBestScore >= 800
             if (albumNameHit && t.albumId > 0 && (type == "Album" || type == "EP" || type == "Compilation")) {
                 grouped.putIfAbsent("aid:${t.albumId}", hit)
             } else {
@@ -164,7 +166,20 @@ fun SearchScreen(vm: MainViewModel) {
                             ArtistAvatarContent(vm, artistMatch, artistMatch.first().uppercase(), fg, 22f)
                         }
                         Column(Modifier.weight(1f)) {
-                            Text(artistMatch, style = body(15f, FontWeight.Bold, c.text), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            // v1.5.0 第三轮（用户）：歌手行的歌手名也要标出匹配部分——
+                            // 搜 You 时，歌手「揽佬SKAIISYOURGOD」里的 you 要高亮。
+                            val artistAnnotated = remember(artistMatch, query, c.a600) {
+                                buildAnnotatedString {
+                                    append(artistMatch)
+                                    com.shiyin.music.data.search.FuzzySearch.match(query, artistMatch)
+                                        ?.ranges?.forEach { r ->
+                                            if (r.first >= 0 && r.last < artistMatch.length) {
+                                                addStyle(SpanStyle(color = c.a600, fontWeight = FontWeight.ExtraBold), r.first, r.last + 1)
+                                            }
+                                        }
+                                }
+                            }
+                            Text(artistAnnotated, style = body(15f, FontWeight.Bold, c.text), maxLines = 1, overflow = TextOverflow.Ellipsis)
                             Text("歌手", style = body(12.5f, FontWeight.Normal, c.n600), modifier = Modifier.padding(top = 2.dp))
                         }
                         OIcon(Lucide.ChevronRight, 17.dp, c.n400)

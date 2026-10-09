@@ -120,6 +120,9 @@ object FuzzySearch {
         val artistRanges: List<IntRange> = emptyList(),
         val albumRanges: List<IntRange> = emptyList(),
         val folderRanges: List<IntRange> = emptyList(),
+        /** v1.5.0 搜索第三轮：专辑字段的**最佳**单 token 分（1000 精确/900 前缀/800 子串/600 模糊/0 未命中）。
+         *  用来区分"强相关才给专辑推荐"——模糊(600)/罗马字(0)命中的条目**不**折叠成专辑卡。 */
+        val albumBestScore: Int = 0,
     )
 
     /**
@@ -258,6 +261,7 @@ object FuzzySearch {
             // v1.5.0 搜索第二轮：记录所有 token 里最高的单字段分，用于分层加成
             // （精确命中必须压过"多字段弱命中累加"）。
             var bestFieldScore = 0
+            var albumBestScore = 0  // v1.5.0 第三轮：专辑字段的最佳单 token 分（供"模糊不出专辑卡"判定）
             // v1.3.10: 罗马字兜底用,懒算——只有某个 token 常规字段全不中时才转一次。
             var romajiFields: List<String>? = null
             for (token in tokens) {
@@ -281,6 +285,7 @@ object FuzzySearch {
                 }
                 val tokenBest = maxOf(mt?.score ?: 0, ma?.score ?: 0, mal?.score ?: 0, mf?.score ?: 0)
                 if (tokenBest > bestFieldScore) bestFieldScore = tokenBest
+                if ((mal?.score ?: 0) > albumBestScore) albumBestScore = mal?.score ?: 0
                 score += (mt?.score ?: 0) * 4 + (ma?.score ?: 0) * 3 + (mal?.score ?: 0) * 5 + (mf?.score ?: 0)
                 mt?.let { titleRanges += it.ranges }
                 ma?.let { artistRanges += it.ranges }
@@ -300,6 +305,7 @@ object FuzzySearch {
                     track = t, score = score,
                     titleRanges = titleRanges, artistRanges = artistRanges,
                     albumRanges = albumRanges, folderRanges = folderRanges,
+                    albumBestScore = albumBestScore,
                 )
             }
         }

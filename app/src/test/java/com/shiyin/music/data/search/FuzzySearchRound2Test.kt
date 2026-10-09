@@ -143,4 +143,24 @@ class FuzzySearchRound2Test {
             }
         }
     }
+
+    // ── 第三轮：强相关才给专辑推荐（模糊命中不出专辑卡） ─────────────────────
+
+    @Test
+    fun `专辑字段强命中_albumBestScore为800以上`() {
+        val lib = listOf(track(1, "别的歌", "A", "You Belong Album"))
+        val hits = FuzzySearch.search(lib, "You")
+        assertEquals(1, hits.size)
+        // 专辑名含子串 "You" → albumBestScore 应为 800（子串档）
+        assertTrue("专辑字段子串命中应 ≥800", hits[0].albumBestScore >= 800)
+    }
+
+    @Test
+    fun `专辑字段仅模糊命中_albumBestScore为600`() {
+        // 专辑名「Tou Project」对查询「You」只有模糊命中(t→y 一个替换) → 600
+        val lib = listOf(track(1, "别的歌", "A", "Tou Project"))
+        val hits = FuzzySearch.search(lib, "You")
+        assertEquals(1, hits.size)
+        assertEquals(600, hits[0].albumBestScore)
+    }
 }
