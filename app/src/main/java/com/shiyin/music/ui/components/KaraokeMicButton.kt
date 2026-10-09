@@ -22,15 +22,20 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.geometry.RoundRect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Outline
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathFillType
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import com.shiyin.music.ui.icons.Lucide
@@ -63,7 +68,10 @@ private class MorphHexagonShape(private val progress: Float) : Shape {
         for (i in 0 until n) {
             val a = (i.toFloat() / n) * 2f * PI.toFloat()
             val circleR = 1f
-            val hexR = hexUnitRadius(a) * 0.985f
+            // 六边形按**边心距**对齐圆半径（×1/cos30°≈1.1547）：否则六边形的平边只到
+            // 0.866R，成形后**看起来比同行的圆形按钮小一圈**（用户 2026-10-09 指出）。
+            // 放大后平边与圆轮廓齐平，左右顶点略微出血（行内有间距，不会压到邻钮）。
+            val hexR = hexUnitRadius(a) * 1.1547f
             radii[i] = circleR + (hexR - circleR) * progress
         }
         // 圆角：对半径序列做小窗口移动平均（窗口随 progress 一起淡入，
@@ -101,6 +109,56 @@ private fun hexUnitRadius(a: Float): Float {
 }
 
 /**
+ * 设计图那支**手持动圈话筒**（docs/temp/pickupmusic-karaoke-button-design.png）：
+ * 胶囊话筒头 + 一道**环带**把头和柄分开 + 渐收的握柄 + 柄上一个椭圆按键 + 头内高光。
+ *
+ * **不用 Lucide 的立式话筒**（那是"圆头+U 形支架"，与设计图不是同一支）。
+ * 用一个 Path + **EvenOdd** 挖孔：环带/按键/高光都是真"洞"，露出按钮底色，
+ * 因此在"未激活=无底色"时也不会出现一块突兀的填充色。
+ * 画在 [size] 方框里、竖直朝上，斜置由调用方负责。
+ */
+@Composable
+private fun DesignMicIcon(color: Color, size: Dp, modifier: Modifier = Modifier) {
+    Canvas(modifier.size(size)) {
+        val w = this.size.width
+        val h = this.size.height
+        fun px(f: Float) = w * f
+        fun py(f: Float) = h * f
+        val headLeft = px(0.28f); val headRight = px(0.72f)
+        val path = Path().apply {
+            fillType = PathFillType.EvenOdd
+            // 话筒头（胶囊：上圆下圆）
+            addRoundRect(
+                RoundRect(
+                    Rect(headLeft, py(0.05f), headRight, py(0.52f)),
+                    CornerRadius(px(0.22f), py(0.23f)),
+                ),
+            )
+            // 握柄（比头窄，底部圆收）
+            addRoundRect(
+                RoundRect(
+                    Rect(px(0.37f), py(0.46f), px(0.63f), py(0.95f)),
+                    CornerRadius(px(0.13f), py(0.14f)),
+                ),
+            )
+            // ── 以下为"洞"（EvenOdd 挖空，露出底色）──
+            // 环带：只取头宽范围，避免在轮廓外画出实心横条
+            addRect(Rect(headLeft, py(0.38f), headRight, py(0.455f)))
+            // 柄上的椭圆按键
+            addRoundRect(
+                RoundRect(
+                    Rect(px(0.45f), py(0.60f), px(0.55f), py(0.71f)),
+                    CornerRadius(px(0.05f), py(0.055f)),
+                ),
+            )
+            // 头内高光弧（设计图头部左上那道浅色弧）
+            addOval(Rect(px(0.37f), py(0.14f), px(0.48f), py(0.30f)))
+        }
+        drawPath(path, color)
+    }
+}
+
+/**
  * v1.5.0 歌词页「伴唱」麦克风按钮（先做视觉效果，分离引擎随后接入）。
  *
  * 用户 2026-10-07 修正规格：
@@ -108,10 +166,9 @@ private fun hexUnitRadius(a: Float): Float {
  * · 点击后背景**动画**过渡到与歌词颜色对应的底色（白词→白底、黑词→黑底），节奏照「譯」；
  * · 转圈同「譯」按钮的**圆周加载弧**；
  * · **加载完成后形状演变成圆角六边形**（设计图），用 [MorphHexagonShape] 连续形变；
- * · 麦克风按设计图**斜置约 45°**（话筒头右上、握柄左下）。
+ * · 图标用 [DesignMicIcon]（设计图那支手持话筒），**恒斜置 45°**（头右上、柄左下）。
  *
- * 尺寸 38dp 与「あ」「譯」一致；**位置由调用方按规则摆放**（见 LyricsScreen：
- * 有「あ」时在「あ」右侧、无「あ」时可放最左），调用方负责在另一侧补等宽空位保持播放键居中。
+ * 尺寸 38dp 与「あ」「譯」一致；**位置由调用方按规则摆放**（见 LyricsScreen）。
  */
 @Composable
 fun KaraokeMicButton(
@@ -161,11 +218,11 @@ fun KaraokeMicButton(
             ),
         contentAlignment = Alignment.Center,
     ) {
-        OIcon(
-            Lucide.Mic, 18.dp,
-            if (state == KaraokeButtonState.Idle) lyricForeground else onSolid,
-            // 设计图：麦克风斜置约 45°（头右上、柄左下）。随形变一起转，避免"先斜后圆"的割裂。
-            modifier = Modifier.rotate(morph * 45f),
+        DesignMicIcon(
+            color = if (state == KaraokeButtonState.Idle) lyricForeground else onSolid,
+            size = 21.dp,
+            // 设计图：话筒斜置 45°（头右上、柄左下）。恒斜置——形变只发生在按钮形状上。
+            modifier = Modifier.rotate(45f),
         )
         if (state == KaraokeButtonState.Loading) {
             Canvas(Modifier.size(38.dp).rotate(rot)) {
