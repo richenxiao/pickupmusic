@@ -235,41 +235,40 @@ private fun DesignMicIcon(color: Color, size: Dp, modifier: Modifier = Modifier)
         val h = this.size.height
         fun px(f: Float) = w * f
         fun py(f: Float) = h * f
-        // 头部比例调自然（用户 2026-10-10）：头占高 ~45%、宽占 ~52%（旧版头太窄显得
-        // 头小身长）；柄从头部宽度渐收到 ~60%。
+        // 头部比例（用户 2026-10-10「调自然一点」）：头宽 52%、头高 43%，**半圆顶 + 平底**
+        // ——比"胶囊"更接近真话筒的胶囊体，底部够宽，环带孔才能安全落在轮廓内
+        //（Review 发现：旧版用宽度一半的圆角 → 头下半部迅速收窄，整头宽的环带孔会溢出轮廓，
+        //  在 EvenOdd 下画出一条多余的实心横杠）。
         val headL = px(0.24f); val headR = px(0.76f)
-        val headTop = py(0.02f); val headBot = py(0.46f)
-        val headW = headR - headL
+        val headTop = py(0.03f); val headBot = py(0.46f)
+        val capR = (headR - headL) / 2f
         val path = Path().apply {
             fillType = PathFillType.EvenOdd
-            // 话筒头（胶囊：圆角 = 宽的一半 → 上下端都是半圆，更圆润）
-            addRoundRect(
-                RoundRect(
-                    Rect(headL, headTop, headR, headBot),
-                    CornerRadius(headW / 2f, headW / 2f),
-                ),
-            )
-            // 握柄（从头宽 0.64 渐收到 0.42，底部圆角）—— 用 Path 直边 + quadratic 底部圆角
-            val gripTopL = px(0.34f); val gripTopR = px(0.66f)
-            val gripBotL = px(0.40f); val gripBotR = px(0.60f)
-            val gripTop = py(0.48f); val gripBot = py(0.97f)
-            val grip = Path().apply {
-                moveTo(gripTopL, gripTop)
-                lineTo(gripTopR, gripTop)
-                lineTo(gripBotR, gripBot - py(0.03f))
-                quadraticBezierTo(gripBotR, gripBot, px(0.50f), gripBot)
-                quadraticBezierTo(gripBotL, gripBot, gripBotL, gripBot - py(0.03f))
-                lineTo(gripTopL, gripTop)
-                close()
-            }
-            addPath(grip)
-            // ── 孔（EvenOdd 挖空，露出底色）──
-            // 环带：头柄交界处横条
-            addRect(Rect(headL - px(0.02f), py(0.36f), headR + px(0.02f), py(0.45f)))
+            // ── 话筒头：半圆顶 + 平底 ──
+            moveTo(headL, headBot)
+            lineTo(headL, headTop + capR)
+            quadraticBezierTo(headL, headTop, headL + capR, headTop)
+            lineTo(headR - capR, headTop)
+            quadraticBezierTo(headR, headTop, headR, headTop + capR)
+            lineTo(headR, headBot)
+            close()
+            // ── 握柄：从头宽渐收到窄 + 圆弧收口；顶边与头底**平接**（不留缝、也不重叠，
+            //    重叠会在 EvenOdd 下被挖成洞）──
+            val gl = px(0.34f); val gr = px(0.66f)
+            val glb = px(0.41f); val grb = px(0.59f)
+            moveTo(gl, headBot)
+            lineTo(gr, headBot)
+            lineTo(grb, py(0.92f))
+            quadraticBezierTo(grb, py(0.97f), px(0.50f), py(0.97f))
+            quadraticBezierTo(glb, py(0.97f), glb, py(0.92f))
+            close()
+            // ── 孔（EvenOdd 挖空，露出按钮底色）──
+            // 环带：头底部一道凹槽（落在头的"平底宽段"内，不溢出轮廓）
+            addRect(Rect(headL, py(0.365f), headR, py(0.435f)))
             // 柄上椭圆按键
-            addOval(Rect(px(0.435f), py(0.60f), px(0.565f), py(0.75f)))
-            // 头内高光（左上竖向浅色带，胶囊头上的反光）
-            addOval(Rect(px(0.33f), py(0.10f), px(0.43f), py(0.26f)))
+            addOval(Rect(px(0.435f), py(0.58f), px(0.565f), py(0.72f)))
+            // 头内高光（左上竖向反光带）
+            addOval(Rect(px(0.33f), py(0.11f), px(0.42f), py(0.25f)))
         }
         drawPath(path, color)
     }

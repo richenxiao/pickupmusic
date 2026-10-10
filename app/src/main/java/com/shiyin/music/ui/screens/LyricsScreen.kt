@@ -433,14 +433,18 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
             if (interactive && activeI >= 0) {
                 // v1.5.0 A50:重进歌词本,当前行滚到**视口中间**而不是停在最底。
                 // 前两个 LaunchedEffect 跑的时候 layoutInfo 可能还没测量完
-                // (viewport=0/itemHeight=0 → scrollOffset=0,当前行贴视口顶,
-                // 观感就是"在最下面/不居中")。这里等一帧拿到真实布局再滚一次;
-                // 与上两条同目标,第二次 scrollToItem 无位移 = 无开销。
-                androidx.compose.runtime.withFrameNanos { }
-                val viewport = listState.layoutInfo.viewportSize.height
-                val itemHeight = listState.layoutInfo.visibleItemsInfo
-                    .find { it.index == activeI }?.size ?: 0
+                // (viewport=0 → scrollOffset=0,当前行没被居中)。这里**有界重试**等
+                // 布局就绪(最多 10 帧)再滚一次;与上两条同目标,无位移时无开销。
+                var viewport = 0
+                var tries = 0
+                while (viewport == 0 && tries < 10) {
+                    androidx.compose.runtime.withFrameNanos { }
+                    viewport = listState.layoutInfo.viewportSize.height
+                    tries++
+                }
                 if (viewport > 0) {
+                    val itemHeight = listState.layoutInfo.visibleItemsInfo
+                        .find { it.index == activeI }?.size ?: 0
                     listState.scrollToItem(activeI, scrollOffset = -(viewport / 2 - 60) + itemHeight / 2)
                 }
             }
@@ -1045,7 +1049,7 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
                 //   · 麦克风**恒在播放键左侧**；
                 //   · **有「あ」时必须在「あ」右侧**（即 あ → 麦克风 → 播放键）；
                 //   · 无「あ」时才放到最左；
-                //   · 两个都在左边时留 6dp 间距；
+                //   · 两个都在左边时留 16dp 间距（六边形激活时顶点略外凸，要留余量）；
                 //   · 总开关（设置→歌词本「启用伴唱功能」）关闭时不显示麦克风。
                 // 左右固定宽必须相等，播放键才居中——下面按四种组合算出补偿空位。
                 val slot = 38.dp
