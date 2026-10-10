@@ -97,6 +97,8 @@ private val keyPinnedLibItems = stringSetPreferencesKey("pinned_lib_items")
     private val keyTranslateErrorToast = booleanPreferencesKey("translate_error_toast")
     /** v1.5.0 伴唱:总开关(默认开)。关闭后隐藏歌词页麦克风入口,设备慢的用户可彻底关掉。 */
     private val keyKaraokeEnabled = booleanPreferencesKey("karaoke_enabled")
+    /** v1.5.0 A56:歌词"制作人行"跳过翻译(默认开)。作词/作曲/编曲/XX演奏 等不译。 */
+    private val keySkipCreditsTranslation = booleanPreferencesKey("skip_credits_translation")
 
     // ── v1.3.x 播放设置(设置·播放页,用户 2026-09-22 指定分组)─────────────────
     /** 音量均衡:平衡所有曲目的播放音量(响度归一)。 */
@@ -146,6 +148,8 @@ private val keyPinnedLibItems = stringSetPreferencesKey("pinned_lib_items")
         val translateErrorToast: Boolean,
         /** v1.5.0 伴唱总开关(默认 true)。关闭后隐藏歌词页麦克风入口。 */
         val karaokeEnabled: Boolean,
+        /** v1.5.0 A56: 歌词制作人行跳过翻译(默认 true)。 */
+        val skipCreditsTranslation: Boolean,
         /** v1.3.10 「翻译按钮显示」三档:"never"/"majority"(默认,现状)/"any"。 */
         val translateButtonMode: String,
         /** v1.3.10: 已同步歌词是否也始终显示时间轴校对入口(默认 false)。 */
@@ -207,6 +211,7 @@ private val keyPinnedLibItems = stringSetPreferencesKey("pinned_lib_items")
             translateDefaultShow = p[keyTranslateDefaultShow] ?: true,
             translateErrorToast = p[keyTranslateErrorToast] ?: false,
             karaokeEnabled = p[keyKaraokeEnabled] ?: true,
+            skipCreditsTranslation = p[keySkipCreditsTranslation] ?: true,
             translateButtonMode = (p[keyTranslateButtonMode] ?: "majority")
                 .let { if (it in listOf("never", "majority", "any")) it else "majority" },
             lyricsCalibAlwaysOn = p[keyLyricsCalibAlwaysOn] ?: false,
@@ -287,6 +292,8 @@ private val keyPinnedLibItems = stringSetPreferencesKey("pinned_lib_items")
     suspend fun setTranslateErrorToast(v: Boolean) = context.dataStore.edit { it[keyTranslateErrorToast] = v }
     /** v1.5.0 伴唱总开关写入。 */
     suspend fun setKaraokeEnabled(v: Boolean) = context.dataStore.edit { it[keyKaraokeEnabled] = v }
+    /** v1.5.0 A56 制作人行跳过翻译写入。 */
+    suspend fun setSkipCreditsTranslation(v: Boolean) = context.dataStore.edit { it[keySkipCreditsTranslation] = v }
     /** v1.3.10: 翻译按钮显隐档位写入(只收 never/majority/any,其余回 default=majority)。 */
     suspend fun setTranslateButtonMode(mode: String) =
         context.dataStore.edit { it[keyTranslateButtonMode] = if (mode in listOf("never", "any")) mode else "majority" }

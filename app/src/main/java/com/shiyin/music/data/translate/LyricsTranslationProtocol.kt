@@ -193,11 +193,22 @@ object LyricsTranslationProtocol {
      * 语气词/标点行("啊""！")照常送译——模型会原样返回,漏译比错译更糟
      * (用户实测"正文有但译文没有"的割裂感)。
      */
-    fun contentEntries(lines: List<String>): List<LyricsTranslationEntry> {
+    /**
+     * 待译条目（0-based 行号 → 原文）。
+     *
+     * @param skipCredits A56：跳过"制作人行"（作词/作曲/编曲/`XX 演奏` 等与歌词内容无关的行，
+     *   默认开）。**跳过的行不进 map**——行号是显式的，所以剩余行的映射依然一一对应，
+     *   这也正是"切换歌词源后译文错位到作曲行"那个 bug 的解法。
+     */
+    fun contentEntries(
+        lines: List<String>,
+        skipCredits: Boolean = true,
+    ): List<LyricsTranslationEntry> {
         val skipUserLines = classifyLanguage(lines) == SongLanguage.Latin
         return lines.indices
             .filter { lines[it].isNotBlank() }
             .filter { !skipUserLines || !isUserLanguageLine(lines[it]) }
+            .filter { !skipCredits || !LyricsCredits.isCreditLine(lines[it]) }
             .map { it to lines[it] }
     }
 

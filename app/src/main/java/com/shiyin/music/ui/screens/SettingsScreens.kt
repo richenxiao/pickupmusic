@@ -1444,8 +1444,12 @@ private fun LyricsBookScreen(vm: MainViewModel, scrollStates: MutableMap<String,
                 OrganicSwitch(vm.translateDefaultShow) { vm.setTranslateDefaultShow(!vm.translateDefaultShow) }
             }
             // A36: 失败提示默认关——用户嫌"翻译失败"toast 太频繁,想安静时就不弹。
-            SettingRow(Lucide.Bell, "翻译失败时提示", null, divider = false) {
+            SettingRow(Lucide.Bell, "翻译失败时提示", null, divider = true) {
                 OrganicSwitch(vm.translateErrorToast) { vm.setTranslateErrorToast(!vm.translateErrorToast) }
+            }
+            // v1.5.0 A56: 制作人行（作词/作曲/编曲/XX 演奏 等）跳过翻译。默认开。
+            SettingRow(Lucide.User, "歌词制作人行略过翻译", null, divider = false) {
+                OrganicSwitch(vm.skipCreditsTranslation) { vm.setSkipCreditsTranslation(!vm.skipCreditsTranslation) }
             }
         }
         Box(Modifier.height(114.dp))

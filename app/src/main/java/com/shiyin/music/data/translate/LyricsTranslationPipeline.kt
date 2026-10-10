@@ -62,9 +62,11 @@ class LyricsTranslationPipeline(
         artist: String,
         lines: List<String>,
         maxRounds: Int = 3,
+        /** A56：跳过制作人行（作词/作曲/编曲/`XX 演奏` 等）。默认开，见设置·歌词本。 */
+        skipCredits: Boolean = true,
         onProgress: (done: Int, total: Int) -> Unit = { _, _ -> },
     ): Outcome {
-        val entries = LyricsTranslationProtocol.contentEntries(lines)
+        val entries = LyricsTranslationProtocol.contentEntries(lines, skipCredits)
         val requested = entries.map { it.first }
         // 语种用于提示词措辞("把日语/韩语/外语歌词翻译…");判定逻辑在 protocol。
         val language = LyricsTranslationProtocol.classifyLanguage(lines)

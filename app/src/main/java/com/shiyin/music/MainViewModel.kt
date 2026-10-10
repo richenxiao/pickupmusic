@@ -336,6 +336,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      *  撞 JVM 签名（platform declaration clash）。 */
     private val _karaokeEnabled = mutableStateOf(true)
     val karaokeEnabled: Boolean get() = _karaokeEnabled.value
+    /** v1.5.0 A56: 歌词"制作人行"跳过翻译(默认开)。 */
+    private val _skipCreditsTranslation = mutableStateOf(true)
+    val skipCreditsTranslation: Boolean get() = _skipCreditsTranslation.value
 
     // ── v1.3.x 播放设置(设置·播放页,用户 2026-09-22 指定分组)──────────────────
     /** 音量均衡:平衡所有曲目的播放音量(响度归一,ExoPlayer setVolume 实现见 PlaybackService)。 */
@@ -1135,6 +1138,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 translateDefaultShow = s.translateDefaultShow
                 translateErrorToast = s.translateErrorToast
                 _karaokeEnabled.value = s.karaokeEnabled
+                _skipCreditsTranslation.value = s.skipCreditsTranslation
                 translateButtonMode = s.translateButtonMode
                 // v1.3.x 播放设置同步
                 volumeNormalize = s.volumeNormalize
@@ -5346,6 +5350,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         if (!v) karaokeState = com.shiyin.music.ui.components.KaraokeButtonState.Idle
         viewModelScope.launch { settingsStore.setKaraokeEnabled(v) }
     }
+    /** v1.5.0 A56: 制作人行跳过翻译开关。 */
+    fun setSkipCreditsTranslation(v: Boolean) {
+        _skipCreditsTranslation.value = v
+        viewModelScope.launch { settingsStore.setSkipCreditsTranslation(v) }
+    }
     /** v1.3.10: 「翻译按钮显示」档位。 */
     fun setTranslateButtonMode(mode: String) = viewModelScope.launch { settingsStore.setTranslateButtonMode(mode) }
     /** v1.3.10 需求 A26:时间轴校对入口常显开关。 */
@@ -6700,7 +6709,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 resp?.content
             }
 
-            val out = pipeline.translate(track.title, track.artist, lines) { d, t ->
+            val out = pipeline.translate(
+                track.title, track.artist, lines,
+                // A56：制作人行跳过翻译（设置·歌词本，默认开）
+                skipCredits = skipCreditsTranslation,
+            ) { d, t ->
                 // pipeline 跑在 viewModelScope(Main) 上，LlmClient 内部自切 IO 后归位，
                 // 故此处回调已在主线程——无需 Handler 投递（对比 fetchArtistAlbumDates）。
                 // generation 守卫:旧任务(被 cancel 但还在跑)的回调不写入新任务状态。

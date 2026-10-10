@@ -5,7 +5,6 @@ import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
@@ -18,8 +17,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
@@ -27,17 +24,12 @@ import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.RoundRect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Outline
 import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.PathFillType
-import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.unit.Density
-import androidx.compose.ui.unit.Dp
-import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import kotlin.math.cos
+import kotlin.math.hypot
 import kotlin.math.sin
 
 /**
@@ -45,96 +37,70 @@ import kotlin.math.sin
  */
 enum class KaraokeButtonState { Idle, Loading, Active }
 
-/**
- * **圆角六边形**（设计图定稿：上下两边水平、左右为顶点、四角圆润）。
- *
- * 第四轮修正（用户 2026-10-10：「现在这个没那么圆润了，边边角角还需要修复」）：
- * 上一版用 quadratic 贝塞尔、控制点落在**顶点本身** → 曲线贴近尖角，看着还是尖的。
- * 现在改成**精确圆角**：六个顶点各用一个与两条邻边相切的**圆弧**（射线与圆求交解析求半径），
- * 并把整条边界表达成"极角 → 半径"的连续函数，再在**半径域**从圆形（常数半径 R）
- * 平滑插值到圆角六边形 —— 全程半径 ≤ R，既不会被 38dp 方框裁掉，也没有任何突变。
- */
-private class MorphHexagonShape(private val progress: Float) : Shape {
-    override fun createOutline(size: Size, layoutDirection: LayoutDirection, density: Density): Outline {
-        val w = size.width
-        val h = size.height
-        val cx = w / 2f
-        val cy = h / 2f
-        val r = minOf(w, h) / 2f
-        val path = Path()
-        if (progress <= 0.002f) {
-            // 纯圆（Loading 态与「譯」按钮的圆完全一致）
-            path.addOval(Rect(cx - r, cy - r, cx + r, cy + r))
-            return Outline.Generic(path)
-        }
-        val steps = 192
-        for (i in 0 until steps) {
-            val a = (i.toFloat() / steps) * 2f * Math.PI.toFloat()
-            val hexR = roundedHexRadius(a, r) * r
-            val rr = r + (hexR - r) * progress
-            val x = cx + rr * cos(a)
-            val y = cy + rr * sin(a)
-            if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
-        }
-        path.close()
-        return Outline.Generic(path)
-    }
-}
+/** 六边形外接半径 / 圆半径 的比值（1/cos30°）——让六边形的**平边**与圆边缘齐平。 */
+private const val HEX_RATIO = 1.1547f
 
-/** 单位圆角六边形（外接半径 1）在极角 [a] 处的半径。 */
-private fun roundedHexRadius(a: Float, r: Float): Float {
-    val sector = (Math.PI / 3).toFloat()          // 60°
-    val apothem = 0.8660254f                      // cos30°（单位外接半径的边心距）
-    val fillet = 0.22f                            // 顶点圆角半径（占外接半径比例；越大越圆润）
-    val k = Math.round(a / sector).toFloat()
-    val theta = k * sector
-    var dlt = a - theta
-    while (dlt > Math.PI.toFloat()) dlt -= 2f * Math.PI.toFloat()
-    while (dlt < -Math.PI.toFloat()) dlt += 2f * Math.PI.toFloat()
-    fun angleOf(x: Float, y: Float): Float = kotlin.math.atan2(y, x)
-    // 顶点及其两邻点（单位外接半径）
-    val vx = cos(theta); val vy = sin(theta)
-    val px = cos(theta - sector); val py = sin(theta - sector)
-    val nx = cos(theta + sector); val ny = sin(theta + sector)
-    fun unit(ax: Float, ay: Float, bx: Float, by: Float): Pair<Float, Float> {
-        val dx = bx - ax; val dy = by - ay
-        val l = kotlin.math.hypot(dx, dy)
-        return dx / l to dy / l
+/** 顶点圆角半径（占外接半径比例）。用户要「偏硬朗、贴近样图」→ 取 10%。
+ *  取到 0.866 时六边形退化成整圆（Loading 态用）。 */
+private const val CORNER_ROUND = 0.10f
+
+/**
+ * **圆角六边形**路径（精确圆弧，不是半径采样）。
+ *
+ * 第五轮重做（用户 2026-10-10：「形状还是不对」+ 我自查）：上一版用"极角→半径"采样，
+ * 在 60° 扇区**边界**上圆弧/直边两个分支判定不一致 → 边上出现波浪、顶部一个凹口。
+ * 现在改为**按段构造**：6 条直边 + 6 段三次贝塞尔圆弧，段与段**在两个切点处天然相切**
+ *（切点距离 d = 圆角/√3，贝塞尔控制点偏移 kb = 0.3573·圆角）→ 数学上不可能有接缝。
+ *
+ * 尺寸（回应用户"三个按钮一样大"）：外接半径 R = 圆半径 × 1.1547 保持**固定**，
+ * 只让顶点圆角从 0.866·R（此时六个圆角弧恰好拼成半径=R/1.1547 的**整圆**，
+ * 与「あ」的 38dp 圆完全一致）连续收敛到 0.10·R（硬朗六边形）。
+ * 结果：Loading = 正圆；Active = 平边与圆边缘齐平的圆角六边形（顶点向外多出约 1.9dp）。
+ */
+private fun hexagonPath(w: Float, h: Float, cornerFrac: Float): Path {
+    val cx = w / 2f
+    val cy = h / 2f
+    val circleR = minOf(w, h) / 2f
+    val r = circleR * HEX_RATIO                 // 六边形外接半径（固定）
+    val fillet = r * (0.866f + (CORNER_ROUND - 0.866f) * cornerFrac)
+    val n = 6
+    val vx = FloatArray(n)
+    val vy = FloatArray(n)
+    for (i in 0 until n) {
+        val a = Math.PI * i / 3.0
+        vx[i] = cx + r * cos(a).toFloat()
+        vy[i] = cy + r * sin(a).toFloat()
     }
-    val (upx, upy) = unit(px, py, vx, vy)         // 入边方向
-    val (unx, uny) = unit(vx, vy, nx, ny)         // 出边方向
-    val d = fillet / 1.7320508f                   // 切点沿边距顶点（tan60°）
-    // 切点极角（相对 theta 的偏移）
-    val p1x = vx - upx * d; val p1y = vy - upy * d
-    val p2x = vx + unx * d; val p2y = vy + uny * d
-    var dl1 = angleOf(p1x, p1y) - theta
-    var dl2 = angleOf(p2x, p2y) - theta
-    if (dl1 > 0) dl1 -= 2f * Math.PI.toFloat()
-    if (dl2 < 0) dl2 += 2f * Math.PI.toFloat()
-    return if (dlt in dl1..dl2) {
-        // 圆角段：射线（极角 a）与圆角圆求交，取外侧根
-        val cDist = 1f - fillet / 0.8660254f      // 圆角圆心到原点距离
-        val ccx = cDist * cos(theta); val ccy = cDist * sin(theta)
-        val ux = cos(a); val uy = sin(a)
-        val b = ux * ccx + uy * ccy
-        val disc = b * b - (ccx * ccx + ccy * ccy) + fillet * fillet
-        if (disc <= 0f) apothem / cos(dlt).coerceAtLeast(0.3f)
-        else b + kotlin.math.sqrt(disc)
-    } else {
-        // 直边段：最近边法线在 theta ± 30°
-        val phi = theta + (if (dlt > 0f) sector / 2f else -sector / 2f)
-        apothem / cos(a - phi).coerceAtLeast(0.3f)
+    val d = (fillet / 1.7320508f).coerceAtMost(r / 2f)   // 切点沿边距顶点
+    val kb = 0.3573f * fillet                             // 三次贝塞尔控制点偏移
+    fun ux(a: Int, b: Int): Float = (vx[b] - vx[a]) / hypot(vx[b] - vx[a], vy[b] - vy[a])
+    fun uy(a: Int, b: Int): Float = (vy[b] - vy[a]) / hypot(vx[b] - vx[a], vy[b] - vy[a])
+    val p = Path()
+    for (i in 0 until n) {
+        val prev = (i + 5) % n
+        val next = (i + 1) % n
+        val inX = vx[i] - ux(prev, i) * d
+        val inY = vy[i] - uy(prev, i) * d
+        val outX = vx[i] + ux(i, next) * d
+        val outY = vy[i] + uy(i, next) * d
+        if (i == 0) p.moveTo(inX, inY) else p.lineTo(inX, inY)
+        p.cubicTo(
+            inX + ux(prev, i) * kb, inY + uy(prev, i) * kb,
+            outX - ux(i, next) * kb, outY - uy(i, next) * kb,
+            outX, outY,
+        )
     }
+    p.close()
+    return p
 }
 
 /**
  * v1.5.0 歌词页「伴唱」麦克风按钮。
  *
- * 第三轮修正（用户 2026-10-09）：
  * · 颜色随歌词本封面取色（artFg/safeBg），同「あ」「譯」；
  * · 加载弧**照搬「譯」**（headDeg/tailDeg 单调前进 + drawBehind）；
- * · 图标回到设计图那支话筒（胶囊头/环带/握柄/按键/高光），45° 斜置；
- * · 六边形做**真圆角**（顶点贝塞尔），大小与翻译键展开态视觉等大。
+ * · 图标照样图手绘（大圆头 / 白环 / 锥形柄 / 椭圆按键 / 底部插头），45° 斜置；
+ * · Loading = 正圆（与「あ」一致）→ 加载完形变成圆角六边形。
  */
 @Composable
 fun KaraokeMicButton(
@@ -154,10 +120,8 @@ fun KaraokeMicButton(
         animationSpec = tween(340, easing = FastOutSlowInEasing),
         label = "karaokeMorph",
     )
-    val shape = remember(morph) { MorphHexagonShape(morph) }
 
-    // 加载弧：照搬「譯」按钮——headDeg 匀速 1568ms/圈，tailDeg 只前进不倒退，
-    // sweep 10°↔290° ease-in-out 半程往返；drawBehind 里读值（draw 期，不重组）。
+    // 加载弧：照搬「譯」按钮——headDeg 匀速 1568ms/圈，tailDeg 只前进不倒退。
     val headDeg = remember { mutableFloatStateOf(0f) }
     val tailDeg = remember { mutableFloatStateOf(0f) }
     LaunchedEffect(isLoading) {
@@ -187,30 +151,6 @@ fun KaraokeMicButton(
     Box(
         modifier
             .size(38.dp)
-            .clip(shape)
-            .background(bg)
-            .then(
-                if (isLoading) Modifier.drawBehind {
-                    val sw = 2.dp.toPx()
-                    val inset = sw / 2f
-                    val arcSize = Size(size.width - sw, size.height - sw)
-                    val topLeft = Offset(inset, inset)
-                    drawArc(
-                        color = lyricBackground.copy(alpha = 0.25f),
-                        startAngle = 0f, sweepAngle = 360f, useCenter = false,
-                        topLeft = topLeft, size = arcSize,
-                        style = Stroke(sw),
-                    )
-                    drawArc(
-                        color = lyricBackground,
-                        startAngle = tailDeg.floatValue,
-                        sweepAngle = (headDeg.floatValue - tailDeg.floatValue).coerceIn(0f, 360f),
-                        useCenter = false,
-                        topLeft = topLeft, size = arcSize,
-                        style = Stroke(width = sw, cap = StrokeCap.Round),
-                    )
-                } else Modifier
-            )
             .clickable(
                 interactionSource = remember { MutableInteractionSource() },
                 indication = null,
@@ -218,58 +158,100 @@ fun KaraokeMicButton(
             ),
         contentAlignment = Alignment.Center,
     ) {
-        DesignMicIcon(iconColor, 20.dp, Modifier.rotate(45f))
+        // 形状底层：用 Canvas 画（**不加 clip**）——六边形顶点会伸出 38dp 方框约 1.9dp，
+        // 加 clip(shape) 会把顶点裁掉（那正是上一轮"六条边不等长"的原因）。
+        Canvas(Modifier.matchParentSize()) {
+            drawPath(hexagonPath(size.width, size.height, morph), bg)
+        }
+        if (isLoading) {
+            // 圆周加载弧（38dp 正圆上，与「譯」同款；draw 期读值不重组）
+            Canvas(Modifier.matchParentSize()) {
+                val sw = 2.dp.toPx()
+                val inset = sw / 2f
+                val arcSize = Size(size.width - sw, size.height - sw)
+                val topLeft = Offset(inset, inset)
+                drawArc(
+                    color = lyricBackground.copy(alpha = 0.25f),
+                    startAngle = 0f, sweepAngle = 360f, useCenter = false,
+                    topLeft = topLeft, size = arcSize,
+                    style = Stroke(sw),
+                )
+                drawArc(
+                    color = lyricBackground,
+                    startAngle = tailDeg.floatValue,
+                    sweepAngle = (headDeg.floatValue - tailDeg.floatValue).coerceIn(0f, 360f),
+                    useCenter = false,
+                    topLeft = topLeft, size = arcSize,
+                    style = Stroke(width = sw, cap = StrokeCap.Round),
+                )
+            }
+        }
+        // 话筒图标：**从用户提供的样图矢量化得到**（边界跟踪 + Douglas-Peucker 简化），
+        // 形状与样图逐像素一致；斜置 45° 已经烘进坐标，不要再 rotate。
+        Canvas(Modifier.size(MIC_ICON_DP)) {
+            drawMic(size.width, size.height, iconColor, bg)
+        }
     }
 }
 
-/**
- * 设计图那支手持话筒（斜置 45°）：胶囊头 + 一道环带把头和柄分开 + 渐收握柄 +
- * 柄上椭圆按键 + 头内高光。单 Path + **EvenOdd** 挖孔——环带/按键/高光是真"洞"，
- * 露出按钮底色（未激活态=歌词本底，无突兀填充）。
- * 造型基准 = docs/temp/pickupmusic-karaoke-button-design.png（用户 2026-10-09 重发的样图）。
- */
-@Composable
-private fun DesignMicIcon(color: Color, size: Dp, modifier: Modifier = Modifier) {
-    Canvas(modifier.size(size)) {
-        val w = this.size.width
-        val h = this.size.height
-        fun px(f: Float) = w * f
-        fun py(f: Float) = h * f
-        // 头部比例（用户 2026-10-10「调自然一点」）：头宽 52%、头高 43%，**半圆顶 + 平底**
-        // ——比"胶囊"更接近真话筒的胶囊体，底部够宽，环带孔才能安全落在轮廓内
-        //（Review 发现：旧版用宽度一半的圆角 → 头下半部迅速收窄，整头宽的环带孔会溢出轮廓，
-        //  在 EvenOdd 下画出一条多余的实心横杠）。
-        val headL = px(0.24f); val headR = px(0.76f)
-        val headTop = py(0.03f); val headBot = py(0.46f)
-        val capR = (headR - headL) / 2f
-        val path = Path().apply {
-            fillType = PathFillType.EvenOdd
-            // ── 话筒头：半圆顶 + 平底 ──
-            moveTo(headL, headBot)
-            lineTo(headL, headTop + capR)
-            quadraticBezierTo(headL, headTop, headL + capR, headTop)
-            lineTo(headR - capR, headTop)
-            quadraticBezierTo(headR, headTop, headR, headTop + capR)
-            lineTo(headR, headBot)
-            close()
-            // ── 握柄：从头宽渐收到窄 + 圆弧收口；顶边与头底**平接**（不留缝、也不重叠，
-            //    重叠会在 EvenOdd 下被挖成洞）──
-            val gl = px(0.34f); val gr = px(0.66f)
-            val glb = px(0.41f); val grb = px(0.59f)
-            moveTo(gl, headBot)
-            lineTo(gr, headBot)
-            lineTo(grb, py(0.92f))
-            quadraticBezierTo(grb, py(0.97f), px(0.50f), py(0.97f))
-            quadraticBezierTo(glb, py(0.97f), glb, py(0.92f))
-            close()
-            // ── 孔（EvenOdd 挖空，露出按钮底色）──
-            // 环带：头底部一道凹槽（落在头的"平底宽段"内，不溢出轮廓）
-            addRect(Rect(headL, py(0.365f), headR, py(0.435f)))
-            // 柄上椭圆按键
-            addOval(Rect(px(0.435f), py(0.58f), px(0.565f), py(0.72f)))
-            // 头内高光（左上竖向反光带）
-            addOval(Rect(px(0.33f), py(0.11f), px(0.42f), py(0.25f)))
+private val MIC_ICON_DP = 23.dp
+
+// ── 以下四组坐标由样图矢量化得到（归一化到 0..1，已含 45° 斜置）──────────────
+// 来源：用户 2026-10-10 提供的话筒样图；工具：Moore 边界跟踪 + Douglas-Peucker(ε≈1.2px)。
+// 三个 outer = 头 / 柄 / 底部插头（样图里它们是**分离的三块**，之间的白环是开口的，
+// 不是洞）；一个 hole = 柄上的椭圆按键。
+
+/** 话筒头（大圆，23 点）。 */
+private val MIC_HEAD = listOf(
+    0.7185f to 0.0000f, 0.8111f to 0.0074f, 0.8741f to 0.0333f, 0.9111f to 0.0593f,
+    0.9407f to 0.0889f, 0.9778f to 0.1481f, 1.0000f to 0.2407f, 0.9889f to 0.3296f,
+    0.9593f to 0.3926f, 0.9333f to 0.4259f, 0.8593f to 0.4815f, 0.8111f to 0.5000f,
+    0.7667f to 0.5074f, 0.7407f to 0.5074f, 0.6444f to 0.4444f, 0.5630f to 0.3593f,
+    0.5222f to 0.2963f, 0.4926f to 0.2333f, 0.5074f to 0.1630f, 0.5481f to 0.0926f,
+    0.6111f to 0.0370f, 0.6556f to 0.0148f, 0.7185f to 0.0000f,
+)
+
+/** 握柄（锥形，16 点）。 */
+private val MIC_BODY = listOf(
+    0.4444f to 0.2926f, 0.4778f to 0.3556f, 0.5296f to 0.4259f, 0.5963f to 0.4926f,
+    0.6963f to 0.5630f, 0.5407f to 0.6963f, 0.3111f to 0.8741f, 0.2741f to 0.8963f,
+    0.2556f to 0.9000f, 0.2074f to 0.8926f, 0.1630f to 0.8593f, 0.1074f to 0.7926f,
+    0.1000f to 0.7704f, 0.1037f to 0.7222f, 0.2481f to 0.5259f, 0.4444f to 0.2926f,
+)
+
+/** 底部插头（10 点）。 */
+private val MIC_PLUG = listOf(
+    0.0630f to 0.8000f, 0.1111f to 0.8704f, 0.1556f to 0.9111f, 0.2000f to 0.9370f,
+    0.1111f to 1.0000f, 0.0519f to 1.0000f, 0.0074f to 0.9630f, 0.0000f to 0.9444f,
+    0.0000f to 0.8852f, 0.0630f to 0.8000f,
+)
+
+/** 柄上的椭圆按键（洞，挖出按钮底色，13 点）。 */
+private val MIC_BUTTON = listOf(
+    0.4333f to 0.5111f, 0.4630f to 0.5111f, 0.4852f to 0.5296f, 0.4889f to 0.5630f,
+    0.4815f to 0.5778f, 0.3926f to 0.6667f, 0.3741f to 0.6741f, 0.3481f to 0.6704f,
+    0.3259f to 0.6444f, 0.3259f to 0.6185f, 0.3333f to 0.6037f, 0.4185f to 0.5185f,
+    0.4333f to 0.5111f,
+)
+
+/** 话筒：三块实心 + 一个挖空。 */
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawMic(
+    w: Float,
+    h: Float,
+    icon: Color,
+    bg: Color,
+) {
+    val s = minOf(w, h)
+    fun poly(list: List<Pair<Float, Float>>): Path {
+        val p = Path()
+        list.forEachIndexed { i, (x, y) ->
+            if (i == 0) p.moveTo(x * s, y * s) else p.lineTo(x * s, y * s)
         }
-        drawPath(path, color)
+        p.close()
+        return p
     }
+    drawPath(poly(MIC_HEAD), icon)
+    drawPath(poly(MIC_BODY), icon)
+    drawPath(poly(MIC_PLUG), icon)
+    drawPath(poly(MIC_BUTTON), bg)
 }
