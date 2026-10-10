@@ -37,12 +37,14 @@ import kotlin.math.sin
  */
 enum class KaraokeButtonState { Idle, Loading, Active }
 
-/** 六边形外接半径 / 圆半径 的比值（1/cos30°）——让六边形的**平边**与圆边缘齐平。 */
-private const val HEX_RATIO = 1.1547f
+/** 六边形外接半径 / 圆半径 的比值。取 **1.10 = 与圆等面积**（2√3·a² = π·R²），
+ *  所以六边形与圆的"视觉体量"相当；不再用 1.1547（那是让平边齐平圆边缘，
+ *  结果整体比圆大一圈，用户 2026-10-11 反馈"跟每个右边圆圈按钮不协调、要缩小一点"）。 */
+private const val HEX_RATIO = 1.10f
 
-/** 顶点圆角半径（占外接半径比例）。用户要「偏硬朗、贴近样图」→ 取 10%。
+/** 顶点圆角半径（占外接半径比例）。用户 2026-10-11 实测「太尖锐」→ 从 0.10 加大到 0.26。
  *  取到 0.866 时六边形退化成整圆（Loading 态用）。 */
-private const val CORNER_ROUND = 0.10f
+private const val CORNER_ROUND = 0.26f
 
 /**
  * **圆角六边形**路径（精确圆弧，不是半径采样）。
@@ -194,7 +196,9 @@ fun KaraokeMicButton(
     }
 }
 
-private val MIC_ICON_DP = 23.dp
+// 图标尺寸：与「あ」「譯」的字形（18sp ≈ 18dp）同量级——用户 2026-10-11「比例太大，
+// 参考片假名和译文的字号，缩小一点」。话筒是斜置图形，其对角线跨度即此值。
+private val MIC_ICON_DP = 19.dp
 
 // ── 以下四组坐标由样图矢量化得到（归一化到 0..1，已含 45° 斜置）──────────────
 // 来源：用户 2026-10-10 提供的话筒样图；工具：Moore 边界跟踪 + Douglas-Peucker(ε≈1.2px)。
