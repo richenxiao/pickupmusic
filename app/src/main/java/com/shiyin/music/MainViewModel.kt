@@ -2092,10 +2092,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             if (t.album == NO_ALBUM) continue
             m.getOrPut(albumKeyOf(t.album, t.artist, t.albumId)) { mutableListOf() }.add(t)
         }
-        // Dedupe identical titles inside an album (duplicate files), like the prototype.
+        // v1.5.0 修复（用户 2026-10-10）：原来按**标题**折叠会把"同一首歌的多个版本"整批
+        // 吃掉——下载器常把 TITLE 都写成基名（YOU / YOU（feat.UMI） / YOU-Instrumental 三个
+        // 文件的 TITLE 都是 "YOU"），于是整张 EP 只剩一首（用户实测）。改为只折叠**确为
+        // 同一个文件**的条目（见 AlbumDedupe，有单测）。
         albumsCache = m.mapValues { (_, ts) ->
-            val seen = HashSet<String>()
-            ts.filter { seen.add(it.title) }
+            com.shiyin.music.data.normalize.AlbumDedupe.dedupeSameFile(ts)
         }
         albumsSig = sig
         return albumsCache

@@ -48,13 +48,11 @@ enum class KaraokeButtonState { Idle, Loading, Active }
 /**
  * **圆角六边形**（设计图定稿：上下两边水平、左右为顶点、四角圆润）。
  *
- * 第三轮修正（用户 2026-10-09：「六边形没做圆角」「大小比例以翻译按钮展开态为准」）：
- * · 圆角用**解析式**：六条直边 + 六个顶点处 quadratic 贝塞尔圆角（不是移动平均平滑——
- *   那会把整条边磨圆，观感是"胖水滴"）。
- * · 形变：顶点圆角半径 r 从 min(w,h)/2（=整圆）连续收敛到设计图的 ~18% 视觉——
- *   Loading 中的圆是 r=半宽 的极限形态，全程平滑。
- * · 大小**不放大**：六边形外接半径 = 圆半径（38dp 方框内切），与「あ」「譯」
- *   （38dp 圆 → 38dp 圆角方块 cornerR=11dp）同一基准，视觉等大。
+ * 第四轮修正（用户 2026-10-10：「现在这个没那么圆润了，边边角角还需要修复」）：
+ * 上一版用 quadratic 贝塞尔、控制点落在**顶点本身** → 曲线贴近尖角，看着还是尖的。
+ * 现在改成**精确圆角**：六个顶点各用一个与两条邻边相切的**圆弧**（射线与圆求交解析求半径），
+ * 并把整条边界表达成"极角 → 半径"的连续函数，再在**半径域**从圆形（常数半径 R）
+ * 平滑插值到圆角六边形 —— 全程半径 ≤ R，既不会被 38dp 方框裁掉，也没有任何突变。
  */
 private class MorphHexagonShape(private val progress: Float) : Shape {
     override fun createOutline(size: Size, layoutDirection: LayoutDirection, density: Density): Outline {
@@ -62,39 +60,70 @@ private class MorphHexagonShape(private val progress: Float) : Shape {
         val h = size.height
         val cx = w / 2f
         val cy = h / 2f
-        val rFull = minOf(w, h) / 2f          // 圆形半径 = 顶点圆角半径
-        val rCornerHex = minOf(w, h) * 0.17f  // 六边形顶点圆角（设计图 ≈ 6.5dp @ 38dp）
-        val rCorner = rFull + (rCornerHex - rFull) * progress
-        // 六个顶点（角度 0,60,…,300 → 左右顶点、上下平边，与设计图一致）
-        val vx = FloatArray(6) { cx + rFull * cos(Math.PI * it / 3.0).toFloat() }
-        val vy = FloatArray(6) { cy + rFull * sin(Math.PI * it / 3.0).toFloat() }
+        val r = minOf(w, h) / 2f
         val path = Path()
-        for (i in 0 until 6) {
-            val prev = (i + 5) % 6
-            val next = (i + 1) % 6
-            // 边 prev→i 的入切点 = 顶点 i 沿该边方向后退 rCorner
-            fun ux(a: Int, b: Int): Float {
-                val dx = vx[b] - vx[a]; val dy = vy[b] - vy[a]
-                val len = kotlin.math.hypot(dx, dy); return dx / len
-            }
-            fun uy(a: Int, b: Int): Float {
-                val dx = vx[b] - vx[a]; val dy = vy[b] - vy[a]
-                val len = kotlin.math.hypot(dx, dy); return dy / len
-            }
-            val inX = vx[i] - ux(prev, i) * rCorner
-            val inY = vy[i] - uy(prev, i) * rCorner
-            val outX = vx[i] + ux(i, next) * rCorner
-            val outY = vy[i] + uy(i, next) * rCorner
-            if (i == 0) path.moveTo(inX, inY) else path.lineTo(inX, inY)
-            // 顶点圆角（quadratic：控制点=顶点本身，两端=切点）
-            path.quadraticBezierTo(vx[i], vy[i], outX, outY)
-            // 直边到下一个顶点的入切点
-            val nextInX = vx[next] - ux(i, next) * rCorner
-            val nextInY = vy[next] - uy(i, next) * rCorner
-            path.lineTo(nextInX, nextInY)
+        if (progress <= 0.002f) {
+            // 纯圆（Loading 态与「譯」按钮的圆完全一致）
+            path.addOval(Rect(cx - r, cy - r, cx + r, cy + r))
+            return Outline.Generic(path)
+        }
+        val steps = 192
+        for (i in 0 until steps) {
+            val a = (i.toFloat() / steps) * 2f * Math.PI.toFloat()
+            val hexR = roundedHexRadius(a, r) * r
+            val rr = r + (hexR - r) * progress
+            val x = cx + rr * cos(a)
+            val y = cy + rr * sin(a)
+            if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
         }
         path.close()
         return Outline.Generic(path)
+    }
+}
+
+/** 单位圆角六边形（外接半径 1）在极角 [a] 处的半径。 */
+private fun roundedHexRadius(a: Float, r: Float): Float {
+    val sector = (Math.PI / 3).toFloat()          // 60°
+    val apothem = 0.8660254f                      // cos30°（单位外接半径的边心距）
+    val fillet = 0.22f                            // 顶点圆角半径（占外接半径比例；越大越圆润）
+    val k = Math.round(a / sector).toFloat()
+    val theta = k * sector
+    var dlt = a - theta
+    while (dlt > Math.PI.toFloat()) dlt -= 2f * Math.PI.toFloat()
+    while (dlt < -Math.PI.toFloat()) dlt += 2f * Math.PI.toFloat()
+    fun angleOf(x: Float, y: Float): Float = kotlin.math.atan2(y, x)
+    // 顶点及其两邻点（单位外接半径）
+    val vx = cos(theta); val vy = sin(theta)
+    val px = cos(theta - sector); val py = sin(theta - sector)
+    val nx = cos(theta + sector); val ny = sin(theta + sector)
+    fun unit(ax: Float, ay: Float, bx: Float, by: Float): Pair<Float, Float> {
+        val dx = bx - ax; val dy = by - ay
+        val l = kotlin.math.hypot(dx, dy)
+        return dx / l to dy / l
+    }
+    val (upx, upy) = unit(px, py, vx, vy)         // 入边方向
+    val (unx, uny) = unit(vx, vy, nx, ny)         // 出边方向
+    val d = fillet / 1.7320508f                   // 切点沿边距顶点（tan60°）
+    // 切点极角（相对 theta 的偏移）
+    val p1x = vx - upx * d; val p1y = vy - upy * d
+    val p2x = vx + unx * d; val p2y = vy + uny * d
+    var dl1 = angleOf(p1x, p1y) - theta
+    var dl2 = angleOf(p2x, p2y) - theta
+    if (dl1 > 0) dl1 -= 2f * Math.PI.toFloat()
+    if (dl2 < 0) dl2 += 2f * Math.PI.toFloat()
+    return if (dlt in dl1..dl2) {
+        // 圆角段：射线（极角 a）与圆角圆求交，取外侧根
+        val cDist = 1f - fillet / 0.8660254f      // 圆角圆心到原点距离
+        val ccx = cDist * cos(theta); val ccy = cDist * sin(theta)
+        val ux = cos(a); val uy = sin(a)
+        val b = ux * ccx + uy * ccy
+        val disc = b * b - (ccx * ccx + ccy * ccy) + fillet * fillet
+        if (disc <= 0f) apothem / cos(dlt).coerceAtLeast(0.3f)
+        else b + kotlin.math.sqrt(disc)
+    } else {
+        // 直边段：最近边法线在 theta ± 30°
+        val phi = theta + (if (dlt > 0f) sector / 2f else -sector / 2f)
+        apothem / cos(a - phi).coerceAtLeast(0.3f)
     }
 }
 
@@ -206,35 +235,41 @@ private fun DesignMicIcon(color: Color, size: Dp, modifier: Modifier = Modifier)
         val h = this.size.height
         fun px(f: Float) = w * f
         fun py(f: Float) = h * f
-        val headL = px(0.30f); val headR = px(0.70f)
+        // 头部比例调自然（用户 2026-10-10）：头占高 ~45%、宽占 ~52%（旧版头太窄显得
+        // 头小身长）；柄从头部宽度渐收到 ~60%。
+        val headL = px(0.24f); val headR = px(0.76f)
+        val headTop = py(0.02f); val headBot = py(0.46f)
+        val headW = headR - headL
         val path = Path().apply {
             fillType = PathFillType.EvenOdd
-            // 话筒头（胶囊）
+            // 话筒头（胶囊：圆角 = 宽的一半 → 上下端都是半圆，更圆润）
             addRoundRect(
                 RoundRect(
-                    Rect(headL, py(0.04f), headR, py(0.50f)),
-                    CornerRadius(px(0.20f), py(0.23f)),
+                    Rect(headL, headTop, headR, headBot),
+                    CornerRadius(headW / 2f, headW / 2f),
                 ),
             )
-            // 握柄（梯形渐收 + 底部圆角）
-            addRoundRect(
-                RoundRect(
-                    Rect(px(0.36f), py(0.50f), px(0.64f), py(0.96f)),
-                    CornerRadius(px(0.14f), py(0.10f)),
-                ),
-            )
+            // 握柄（从头宽 0.64 渐收到 0.42，底部圆角）—— 用 Path 直边 + quadratic 底部圆角
+            val gripTopL = px(0.34f); val gripTopR = px(0.66f)
+            val gripBotL = px(0.40f); val gripBotR = px(0.60f)
+            val gripTop = py(0.48f); val gripBot = py(0.97f)
+            val grip = Path().apply {
+                moveTo(gripTopL, gripTop)
+                lineTo(gripTopR, gripTop)
+                lineTo(gripBotR, gripBot - py(0.03f))
+                quadraticBezierTo(gripBotR, gripBot, px(0.50f), gripBot)
+                quadraticBezierTo(gripBotL, gripBot, gripBotL, gripBot - py(0.03f))
+                lineTo(gripTopL, gripTop)
+                close()
+            }
+            addPath(grip)
             // ── 孔（EvenOdd 挖空，露出底色）──
             // 环带：头柄交界处横条
-            addRect(Rect(headL, py(0.40f), headR, py(0.47f)))
+            addRect(Rect(headL - px(0.02f), py(0.36f), headR + px(0.02f), py(0.45f)))
             // 柄上椭圆按键
-            addRoundRect(
-                RoundRect(
-                    Rect(px(0.44f), py(0.62f), px(0.56f), py(0.74f)),
-                    CornerRadius(px(0.06f), py(0.06f)),
-                ),
-            )
-            // 头内高光（设计图头部左上那道浅色弧）
-            addOval(Rect(px(0.37f), py(0.12f), px(0.47f), py(0.28f)))
+            addOval(Rect(px(0.435f), py(0.60f), px(0.565f), py(0.75f)))
+            // 头内高光（左上竖向浅色带，胶囊头上的反光）
+            addOval(Rect(px(0.33f), py(0.10f), px(0.43f), py(0.26f)))
         }
         drawPath(path, color)
     }

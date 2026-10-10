@@ -1,13 +1,14 @@
 package com.shiyin.music.ui.components
 
 import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.exponentialDecay
 import androidx.compose.animation.core.spring
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.AnchoredDraggableState
 import androidx.compose.foundation.gestures.DraggableAnchors
 import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.anchoredDraggable
-import androidx.compose.foundation.gestures.animateTo
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.padding
@@ -15,12 +16,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
-import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -28,15 +26,15 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import com.shiyin.music.ui.icons.Lucide
 import com.shiyin.music.ui.theme.LocalOrganic
-import kotlinx.coroutines.launch
 
 // 规格（v1.4.1-backlog §1）点名要「绿色」与「灰色」两套插值，因此这里是固定色，不随主题取。
 private val PinGreenDim = Color(0xFF16301F)
@@ -50,18 +48,12 @@ private enum class PinAnchor { Rest, Trigger }
 /**
  * v1.5.0 右滑固定 / 取消固定 —— 可复用的列表条目包装。
  *
- * **第四轮（用户 2026-10-09 二次实测：拖动仍剧烈抖动 + 绿色不见）**：
- * 根因两个——
- * 1. 绿色不见：上一版 `.background(c.bg).graphicsLayer{...}` 顺序反了——background 画在
- *    **layer 外面**不跟着平移，永远盖住底下的绿条。background 必须在 graphicsLayer **之后**
- *    （= layer 内部），平移时左侧才露出绿条。
- * 2. 仍然抖动：手写 awaitEachGesture 仲裁与 LazyColumn 的 scrollable 抢事件。
- *    弃用自写手势，改用 **Compose 官方 [AnchoredDraggableState]**（Material3
- *    SwipeToDismissBox 同款基础设施）——与纵向列表的手势互斥是官方处理过的，
- *    松手 settle/threshold/动画全部内置。
- *
- * 行为：向右拖过半程松手 → settle 到 Trigger → 回调 toggle → 弹回 Rest；
- * 不足半程 → settle 回 Rest（绿条收回）。固定/取消后条目由列表 animateItem 平滑重排。
+ * **第五轮（用户 2026-10-09：拉长绿条有时卡住不回弹 / 图钉缺针刺）**：
+ * 1. **卡住不回弹**：上一版监听 `settledValue` 后手动 `animateTo(Rest)` 弹回——一旦
+ *    条目因固定而重排（animateItem）打断那次动画，绿条就永久停在 Trigger。现改用官方
+ *    的 `confirmValueChange`：**直接拒绝**停留在 Trigger（返回 false），由 AnchoredDraggable
+ *    自己弹回当前锚点，没有任何手动动画可供打断。
+ * 2. **图钉加针刺**：Lucide 的 PinFilled 没有针，改为自绘 [PinGlyph]（圆帽 + 收窄 + 尖端针刺）。
  */
 @Composable
 fun SwipeToPin(
@@ -77,15 +69,10 @@ fun SwipeToPin(
     val c = LocalOrganic.current
     val screenWidthPx = with(density) { LocalConfiguration.current.screenWidthDp.dp.toPx() }
     val maxRevealPx = remember(screenWidthPx) { SwipePin.maxRevealPx(screenWidthPx) }
-    val scope = rememberCoroutineScope()
     val pinSizePx = with(density) { 20.dp.toPx() }
     val curPinned by rememberUpdatedState(pinned)
     val curOnPinnedChange by rememberUpdatedState(onPinnedChange)
 
-    // 官方拖动状态：两锚点 0 ↔ 45%屏宽；过半程(positionalThreshold)松手 settle 到 Trigger。
-    // 本版 Compose 的 AnchoredDraggableState 构造：anchors 走构造参数（此签名），
-    // snap 用 spring，decay 用 exponentialDecay（anchoredDraggable 水平拖动不 decay 衰减，
-    // settle 全走 snapAnimationSpec）。
     val dragState = remember(maxRevealPx) {
         AnchoredDraggableState(
             initialValue = PinAnchor.Rest,
@@ -96,21 +83,20 @@ fun SwipeToPin(
             positionalThreshold = { total -> total * SwipePin.COMMIT_THRESHOLD },
             velocityThreshold = { with(density) { 125.dp.toPx() } },
             snapAnimationSpec = spring(stiffness = Spring.StiffnessMediumLow),
-            decayAnimationSpec = androidx.compose.animation.core.exponentialDecay(),
+            decayAnimationSpec = exponentialDecay(),
+            // 拖过阈值要"提交"但**不允许停在 Trigger**：提交后返回 false，
+            // 官方状态机自己把绿条弹回 Rest（不再手动 animateTo → 不会被重排打断而卡住）。
+            confirmValueChange = { target ->
+                if (target == PinAnchor.Trigger) {
+                    curOnPinnedChange(!curPinned)
+                    false
+                } else true
+            },
         )
-    }
-    // settle 到 Trigger（拖过阈值松手）→ 提交 toggle → 弹回 Rest
-    LaunchedEffect(dragState) {
-        snapshotFlow { dragState.settledValue }.collect {
-            if (it == PinAnchor.Trigger) {
-                curOnPinnedChange(!curPinned)
-                scope.launch { dragState.animateTo(PinAnchor.Rest) }
-            }
-        }
     }
 
     Box(modifier) {
-        // ── 底层：操作区（绿/灰条 + 图钉）。全部 draw/layer phase 读 offset，不重组 content。──
+        // ── 底层：操作区（绿/灰条 + 图钉）。draw/layer phase 读 offset，不重组 content。──
         Box(Modifier.matchParentSize().clip(shape)) {
             Box(
                 Modifier.matchParentSize().drawBehind {
@@ -135,7 +121,7 @@ fun SwipeToPin(
             ) { PinIcon(curPinned, dragState, maxRevealPx) }
         }
         // ── 前景：内容块。★ background 在 graphicsLayer **之后**（layer 内），平移后
-        //    左侧露出绿条；若放在前面，底色不跟平移、永远盖住绿条（上轮"绿色不见了"的根因）。
+        //    左侧露出绿条；若放在前面，底色不跟平移、永远盖住绿条。
         Box(
             Modifier
                 .then(if (enabled) Modifier.anchoredDraggable(dragState, Orientation.Horizontal) else Modifier)
@@ -153,7 +139,7 @@ fun SwipeToPin(
                 Box(
                     Modifier.size(15.dp).clip(CircleShape).background(PinGreenBright),
                     contentAlignment = Alignment.Center,
-                ) { OIcon(Lucide.PinFilled, 9.dp, Color.White) }
+                ) { PinGlyph(Color.White, 9.dp) }
             }
         }
     }
@@ -169,5 +155,36 @@ private fun PinIcon(
     val p = (dragState.requireOffset() / maxRevealPx).coerceIn(0f, 1f)
     val iconTint = if (!pinned) lerp(PinGreenBright.copy(alpha = 0.35f), Color.White, p)
     else lerp(UnpinGrayBright, Color.White, p)
-    OIcon(Lucide.PinFilled, 20.dp, iconTint)
+    PinGlyph(iconTint, 20.dp)
+}
+
+/**
+ * **带针刺的图钉**（用户 2026-10-09：「图钉按钮没有针刺」）。
+ * Lucide 的 PinFilled 只有圆头没有针，这里自绘：圆帽 + 收窄的颈部 + 尖端针刺。
+ */
+@Composable
+private fun PinGlyph(color: Color, size: Dp, modifier: Modifier = Modifier) {
+    Canvas(modifier.size(size)) {
+        val w = this.size.width
+        val h = this.size.height
+        // 圆帽
+        drawCircle(color = color, radius = w * 0.27f, center = Offset(w * 0.5f, h * 0.30f))
+        // 颈部（梯形收窄）
+        val neck = Path().apply {
+            moveTo(w * 0.36f, h * 0.42f)
+            lineTo(w * 0.64f, h * 0.42f)
+            lineTo(w * 0.57f, h * 0.70f)
+            lineTo(w * 0.43f, h * 0.70f)
+            close()
+        }
+        drawPath(neck, color)
+        // 针刺（尖三角）
+        val needle = Path().apply {
+            moveTo(w * 0.43f, h * 0.66f)
+            lineTo(w * 0.57f, h * 0.66f)
+            lineTo(w * 0.50f, h * 1.0f)
+            close()
+        }
+        drawPath(needle, color)
+    }
 }
