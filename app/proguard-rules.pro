@@ -101,3 +101,9 @@
 # **用户加的自定义写真源（含其中保存的 API Key）在 release 包里静默全部丢失**。
 # （同族的 data.db.** 与 data.update.** 已各自加过同类规则，这里补上 data.image。）
 -keep class com.shiyin.music.data.image.** { *; }
+
+# ── v1.5.0 伴唱 P0 Spike：JTransforms 依赖的 JLargeArrays 引用了 JDK 内部类 ──
+# sun.misc.Cleaner 只在「显式释放直接内存」的 JVM 专用路径被引用，Android 运行时
+# 不存在该类也不会走到该路径（DALVIK/ART 下 JLargeArrays 走 Unsafe 分支之外的兜底），
+# R8 报 missing class 是静态引用检查，非真实调用。
+-dontwarn sun.misc.Cleaner

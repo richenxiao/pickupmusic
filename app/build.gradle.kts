@@ -29,6 +29,24 @@ android {
         val props = Properties().apply { if (lp.exists()) load(lp.inputStream()) }
         buildConfigField("String", "LASTFM_API_KEY", "\"${props.getProperty("LASTFM_API_KEY", "")}\"")
         buildConfigField("String", "FANART_API_KEY", "\"${props.getProperty("FANART_API_KEY", "")}\"")
+
+        // v1.5.0 伴唱 P0 Spike：onnxruntime-android 的 .so 体积大，spike 期间限定 arm64-v8a
+        // （规格 §11 本就要求显式 abiFilters；正式取舍由 S4 体积实测后拍板）。
+        ndk { abiFilters += listOf("arm64-v8a") }
+    }
+
+    // v1.5.0 伴唱 P0 Spike：开发期把模型打进 APK（用户 2026-10-11 拍板，A57）。
+    // 打进 APK 的只有 .karaoke/bundled/ 里的模型（当前仅 9482，29.7MB——另外两个 66.7MB
+    // 的用户拍板线是 <40MB，先不内置）。.karaoke 在 .gitignore 里，不入库；其它机器构建时
+    // 该目录不存在则 APK 不含模型，探针会提示「模型未打包」。
+    sourceSets {
+        getByName("main") {
+            assets.srcDir("../.karaoke/bundled")
+        }
+    }
+    androidResources {
+        // ONNX 模型已是无压缩二进制，压缩只会拖慢读取（ORT 需要 mmap/文件路径）。
+        noCompress += "onnx"
     }
 
     signingConfigs {
@@ -164,6 +182,23 @@ dependencies {
 
     // v4.3: fuzzy-search unit tests
     testImplementation("junit:junit:4.13.2")
+
+    // v1.5.0 伴唱 P0 Spike：STFT/iSTFT 需要支持非 2 幂长度（n_fft=6144=2^11·3、
+    // 7680=2^9·3·5）的混合基 FFT。JTransforms 支持任意合数长度（2/3/5 混合基 + Bluestein），
+    // 三重许可 MPL-1.1/LGPL-2.1/GPL-3.0（本项目按 MPL-1.1 以二进制依赖使用，与 MIT 兼容）。
+    implementation("com.github.wendykierp:JTransforms:3.1")
+
+    // v1.5.0 伴唱 P0 Spike A4（手机侧）：onnxruntime-android AAR。
+    // 桌面 JDK 的 CRT 太旧导致 1.31.0 在 JVM 单测崩溃是桌面特有问题；Android 上 AAR 自带
+    // libc++_shared，直接用最新版。16KB 页对齐在 S4 实测（探针会报页大小）。
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.31.0")
+
+    // v1.5.0 伴唱 P0 Spike A4：桌面 JVM 侧单 chunk 对拍（SNR 基准来自
+    // tools/karaoke/make_chunk_fixture.py 的 onnxruntime-python 输出）。
+    // 仅 test 作用域；Android 侧运行时选型（onnxruntime-android vs mobile）见阶段 A 报告。
+    // 注：1.31.0 在本机 JDK17（自带 msvcp140 14.36）下原生初始化崩溃；
+    // 1.20.0 为可工作的桌面对拍版本。Android 侧版本选型与此无关（手机上是 ART + AAR 内 CRT）。
+    testImplementation("com.microsoft.onnxruntime:onnxruntime:1.20.0")
 
     // ── 需求6「歌词本翻译」离线路径：ML Kit 端侧翻译（**已实测、待拍板，暂未启用**）──
     // 拟加：implementation("com.google.mlkit:translate:17.0.3")

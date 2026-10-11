@@ -1452,6 +1452,10 @@ private fun LyricsBookScreen(vm: MainViewModel, scrollStates: MutableMap<String,
                 OrganicSwitch(vm.skipCreditsTranslation) { vm.setSkipCreditsTranslation(!vm.skipCreditsTranslation) }
             }
         }
+        // P0 Spike 调试入口（spike/karaoke-p0 分支临时常显；正式版移除或改回仅 debug 可见）。
+        // 放在歌词本页底部：伴唱相关设置都归这页。
+        SectionLabel("伴唱 P0 调试")
+        com.shiyin.music.spike.karaoke.KaraokeP0ProbeCard()
         Box(Modifier.height(114.dp))
     }
 }
