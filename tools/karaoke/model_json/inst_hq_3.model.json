@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "id": "inst_hq_3",
+  "displayName": "UVR-MDX-NET Inst_HQ_3",
+  "tag": "recommended",
+  "architecture": "MDX_NET",
+  "format": "onnx",
+  "fileName": "UVR-MDX-NET-Inst_HQ_3.onnx",
+  "sizeBytes": 66759214,
+  "sha256": "317554b07fe1ea5279a77f2b1520a41ea4b93432560c4ffd08792c30fddf9adc",
+  "sampleRate": 44100,
+  "n_fft": 6144,
+  "hop_length": 1024,
+  "dim_f": 3072,
+  "dim_t": 256,
+  "predictedStem": "instrumental",
+  "compensate": 1.022,
+  "version": "1",
+  "license": "MIT",
+  "credits": "UVR / Anjok07, KimberleyJSN; KUIELab-MDX-Net",
+  "sources": [
+    { "type": "github_release", "url": "https://github.com/TRvlvr/model_repo/releases/download/all_public_uvr_models/UVR-MDX-NET-Inst_HQ_3.onnx" },
+    { "type": "hf", "url": "https://huggingface.co/Tha456/uvr5-models/resolve/main/UVR-MDX-NET-Inst_HQ_3.onnx" }
+  ]
+}

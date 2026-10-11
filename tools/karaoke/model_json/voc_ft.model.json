@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "id": "voc_ft",
+  "displayName": "UVR-MDX-NET Voc_FT",
+  "tag": "vocals",
+  "architecture": "MDX_NET",
+  "format": "onnx",
+  "fileName": "UVR-MDX-NET-Voc_FT.onnx",
+  "sizeBytes": 66762490,
+  "sha256": "534b2070fcc7df514b13ef660dc8cbb328679c2374d04354a5c42bb14ecce111",
+  "sampleRate": 44100,
+  "n_fft": 7680,
+  "hop_length": 1024,
+  "dim_f": 3072,
+  "dim_t": 256,
+  "predictedStem": "vocals",
+  "compensate": 1.021,
+  "version": "1",
+  "license": "MIT",
+  "credits": "UVR / Anjok07, KimberleyJSN; KUIELab-MDX-Net",
+  "sources": [
+    { "type": "github_release", "url": "https://github.com/TRvlvr/model_repo/releases/download/all_public_uvr_models/UVR-MDX-NET-Voc_FT.onnx" }
+  ]
+}
