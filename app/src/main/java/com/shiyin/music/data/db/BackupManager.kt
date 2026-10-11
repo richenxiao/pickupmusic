@@ -63,6 +63,66 @@ internal class BackupManager(
 ) {
     private val dao: ShiyinDao = db.dao()
 
+    companion object {
+    /**
+     * v1.5.0 A60：按分类裁剪。**做成"生成全量再裁剪"而不是"按需查询"**——
+     * 单测可以直接比较两种配置的产物，且与 [categorySizes] 共用同一条路径，
+     * 保证"显示的大小"与"实际导出的大小"永远一致。
+     */
+        fun applyCategories(
+            d: BackupData,
+            cats: Set<String>,
+            /** 视为「凭据」的设置键（由 SettingsStore.BACKUP_SECRET_KEYS 提供）。 */
+            secretKeys: Set<String> = emptySet(),
+        ): BackupData {
+        fun on(id: String) = id in cats
+        val normalSettings = d.settings.filterKeys { it !in secretKeys }
+        val secretSettings = d.settings.filterKeys { it in secretKeys }
+        return d.copy(
+            // 曲库整理
+            albumOverride = if (on(BackupCategory.EDITS.id)) d.albumOverride else emptyList(),
+            albumInfoOverride = if (on(BackupCategory.EDITS.id)) d.albumInfoOverride else emptyList(),
+            trackInfoOverride = if (on(BackupCategory.EDITS.id)) d.trackInfoOverride else emptyList(),
+            trackAlbumMove = if (on(BackupCategory.EDITS.id)) d.trackAlbumMove else emptyList(),
+            artists = if (on(BackupCategory.EDITS.id)) d.artists else emptyList(),
+            songArtist = if (on(BackupCategory.EDITS.id)) d.songArtist else emptyList(),
+            albumOrders = if (on(BackupCategory.EDITS.id)) d.albumOrders else emptyList(),
+            artistAlbumOrders = if (on(BackupCategory.EDITS.id)) d.artistAlbumOrders else emptyList(),
+            ignoredFolders = if (on(BackupCategory.EDITS.id)) d.ignoredFolders else emptyList(),
+            playlists = if (on(BackupCategory.EDITS.id)) d.playlists else emptyList(),
+            playlistTracks = if (on(BackupCategory.EDITS.id)) d.playlistTracks else emptyList(),
+            albumSplit = if (on(BackupCategory.EDITS.id)) d.albumSplit else emptyList(),
+            splitTrack = if (on(BackupCategory.EDITS.id)) d.splitTrack else emptyList(),
+            trashedTracks = if (on(BackupCategory.EDITS.id)) d.trashedTracks else null,
+            artistAliases = if (on(BackupCategory.EDITS.id)) d.artistAliases else null,
+            // 统计
+            playEvents = if (on(BackupCategory.STATS.id)) d.playEvents else emptyList(),
+            playCounts = if (on(BackupCategory.STATS.id)) d.playCounts else null,
+            tokenUsage = if (on(BackupCategory.STATS.id)) d.tokenUsage else emptyList(),
+            newAlbums = if (on(BackupCategory.STATS.id)) d.newAlbums else null,
+            // 歌词与注音
+            manualLyrics = if (on(BackupCategory.LYRICS.id)) d.manualLyrics else emptyList(),
+            lyricsTranslation = if (on(BackupCategory.TRANSLATION.id)) d.lyricsTranslation else null,
+            readingOverride = if (on(BackupCategory.READING.id)) d.readingOverride else emptyList(),
+            externalReadingEvidence = if (on(BackupCategory.READING.id)) d.externalReadingEvidence else emptyList(),
+            // 拾光
+            agentConversations = if (on(BackupCategory.CHAT.id)) d.agentConversations else null,
+            agentMemory = if (on(BackupCategory.MEMORY.id)) d.agentMemory else null,
+            // 封面与写真（链接类）
+            albumArtCache = if (on(BackupCategory.SOURCES.id)) d.albumArtCache else null,
+            artistImageCache = if (on(BackupCategory.SOURCES.id)) d.artistImageCache else emptyList(),
+            artistImageOverride = if (on(BackupCategory.IMAGES.id)) d.artistImageOverride else emptyList(),
+            // 设置与凭据
+            settings = buildMap {
+                if (on(BackupCategory.SETTINGS.id)) putAll(normalSettings)
+                if (on(BackupCategory.SECRETS.id)) putAll(secretSettings)
+            },
+        )
+    }
+
+
+    }
+
     data class BackupData(
         val version: Int = 2,
         val app: String = "com.shiyin.music",
@@ -105,6 +165,22 @@ internal class BackupManager(
          * 刻意**不备** agent_conversation(聊天记录):本次范围只要记忆,对话留待后续版本。
          */
         val agentMemory: List<AME>? = null,
+        /**
+         * v1.5.0 A60：**聊天记录**（用户点名"像拾光 agent 的聊天记录也没备份"）。
+         * 原来代码注释写着"刻意不备，留待后续版本"。全量备（含 messagesJson）。
+         */
+        val agentConversations: List<AgentConversationEntity>? = null,
+        /** v1.5.0 A60：专辑封面缓存——**重点是其 url/source**（自动获取的来源链接，
+         *  恢复后按链接重取即可，不必重新找图）。 */
+        val albumArtCache: List<AlbumArtCacheEntity>? = null,
+        /** v1.5.0 A60：回收站——不备会让已删的歌在恢复后"复活"。 */
+        val trashedTracks: List<TrashedTrackEntity>? = null,
+        /** v1.5.0 A60：累计播放次数。 */
+        val playCounts: List<PlayCountEntity>? = null,
+        /** v1.5.0 A60：新专辑徽标（firstSeenAt）。 */
+        val newAlbums: List<NewAlbumEntity>? = null,
+        /** v1.5.0 A60：歌手别名合并（用户手工整理）。 */
+        val artistAliases: List<ArtistAliasEntity>? = null,
         /** DataStore 白名单设置，值带类型前缀（见 `SettingsValueCodec`）。 */
         val settings: Map<String, String> = emptyMap(),
 
@@ -126,6 +202,8 @@ internal class BackupManager(
     suspend fun export(
         mediaIdPaths: Map<String, String> = emptyMap(),
         albumIdKeys: Map<String, String> = emptyMap(),
+        /** v1.5.0 A60：只导出这些分类（null = 全部，保持旧行为）。 */
+        categories: Set<String>? = null,
     ): String {
         val data = BackupData(
             exportedAt = System.currentTimeMillis(),
@@ -151,11 +229,36 @@ internal class BackupManager(
             playEvents = dao.allPlayEvents(),
             tokenUsage = dao.allTokenUsage(),
             agentMemory = dao.agentMemories(),
+            agentConversations = dao.allAgentConversations(),
+            albumArtCache = dao.allArtCache(),
+            trashedTracks = dao.allTrashed(),
+            playCounts = dao.allPlayCounts(),
+            newAlbums = dao.allNewAlbums(),
+            artistAliases = dao.allArtistAliases(),
             settings = settings?.exportBackupSettings().orEmpty(),
             mediaIdPaths = mediaIdPaths,
             albumIdKeys = albumIdKeys,
         )
-        return Gson().toJson(data)
+        return Gson().toJson(if (categories == null) data else applyCategories(data, categories))
+    }
+
+    /** 实例入口：带上本机 SettingsStore 的密钥键集合（区分"设置"与"凭据"两类）。 */
+    internal fun applyCategories(d: BackupData, cats: Set<String>): BackupData =
+        applyCategories(d, cats, settings?.BACKUP_SECRET_KEYS ?: emptySet())
+
+    /**
+     * v1.5.0 A60：各分类的**实际体积（字节）**——导出界面显示"每项多大、合计多大"，
+     * 让用户按自己的取向选择承担哪些。走的是与导出完全相同的裁剪路径，
+     * 所以显示值与真实包体一致。
+     */
+    suspend fun categorySizes(): Map<String, Long> {
+        val (paths, albums) = emptyMap<String, String>() to emptyMap<String, String>()
+        val out = LinkedHashMap<String, Long>()
+        for (c in BackupCategory.entries) {
+            val json = export(paths, albums, setOf(c.id))
+            out[c.id] = json.toByteArray(Charsets.UTF_8).size.toLong()
+        }
+        return out
     }
 
     /**
@@ -305,7 +408,27 @@ internal class BackupManager(
             )
         }
 
+        // v1.5.0 A60：补上仍然漏掉的六类（全部"用户劳动成果"，非可重建数据）。
+        val conversations = data.agentConversations.orEmpty()
+        val artCache = data.albumArtCache.orEmpty()
+        val trashed = data.trashedTracks.orEmpty()
+        val playCounts = data.playCounts.orEmpty()
+        val newAlbums = data.newAlbums.orEmpty()
+        val aliases = data.artistAliases.orEmpty()
+        if (conversations.isNotEmpty()) dao.upsertAllAgentConversations(conversations)
+        if (artCache.isNotEmpty()) dao.upsertAllAlbumArtCache(artCache)
+        if (trashed.isNotEmpty()) dao.upsertAllTrashed(trashed)
+        if (playCounts.isNotEmpty()) dao.upsertAllPlayCounts(playCounts)
+        if (newAlbums.isNotEmpty()) dao.upsertAllNewAlbums(newAlbums)
+        if (aliases.isNotEmpty()) dao.upsertAllArtistAliases(aliases)
+
         return ImportStats(
+            agentConversations = conversations.size,
+            albumArtCache = artCache.size,
+            trashedTracks = trashed.size,
+            playCounts = playCounts.size,
+            newAlbums = newAlbums.size,
+            artistAliases = aliases.size,
             albumOverride = data.albumOverride.size,
             albumInfoOverride = data.albumInfoOverride.size,
             trackInfoOverride = data.trackInfoOverride.size,
@@ -369,6 +492,13 @@ internal class BackupManager(
         val tokenUsage: Int = 0,
         /** v1.3.11:恢复进来的长期记忆条数(含已被取代的历史条目)。 */
         val agentMemory: Int = 0,
+        // v1.5.0 A60:补上的六类
+        val agentConversations: Int = 0,
+        val albumArtCache: Int = 0,
+        val trashedTracks: Int = 0,
+        val playCounts: Int = 0,
+        val newAlbums: Int = 0,
+        val artistAliases: Int = 0,
         val settings: Int = 0,
         // v22: 重解析（跨设备）结果
         /** 备份里没有重解析表（v1 老备份）→ 未做重映射，行为与旧版一致。 */

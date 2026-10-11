@@ -954,6 +954,10 @@ private fun DataManageScreen(vm: MainViewModel, scrollStates: MutableMap<String,
     var pendingRestore by remember { mutableStateOf<ByteArray?>(null) }
     var pendingPreview by remember { mutableStateOf<com.shiyin.music.data.db.BackupPreviewer.Preview?>(null) }
     var restoreBusy by remember { mutableStateOf(false) }
+    // v1.5.0 A60：备份内容分类（二级：父类分组 + 子项开关），默认全选。
+    var backupCats by remember { mutableStateOf(com.shiyin.music.data.db.BackupCategory.ALL) }
+    var catSizes by remember { mutableStateOf<Map<String, Long>>(emptyMap()) }
+    LaunchedEffect(Unit) { catSizes = vm.backupCategorySizes() }
     // v22: 最近一次导出的文件，用于「分享」
     var lastExport by remember { mutableStateOf<java.io.File?>(null) }
 
@@ -979,7 +983,7 @@ private fun DataManageScreen(vm: MainViewModel, scrollStates: MutableMap<String,
         if (uri == null) return@rememberLauncherForActivityResult
         scope.launch {
             try {
-                val bytes = vm.exportBackupZip()
+                val bytes = vm.exportBackupZip(backupCats)
                 context.contentResolver.openOutputStream(uri)?.use { it.write(bytes) }
                 // v22: 备份里**含 API Key / 供应商配置**（用户定调：要进，否则换机最痛），
                 // 所以导出后必须明确提醒一句"含密钥"，让用户知道这个文件不能随便发。
@@ -1112,6 +1116,43 @@ private fun DataManageScreen(vm: MainViewModel, scrollStates: MutableMap<String,
                 }
                 },
             )
+            // ── v1.5.0 A60：备份内容分类（用户拍板：每项一个开关 + 实时大小，
+            //    体积由用户自己权衡；相关项归父类，如"拾光 Agent → 聊天记录/记忆"）──
+            Column(Modifier.fillMaxWidth().padding(bottom = 6.dp)) {
+                for (group in com.shiyin.music.data.db.BackupGroup.entries) {
+                    val items = com.shiyin.music.data.db.BackupCategory.entries.filter { it.group == group }
+                    if (items.isEmpty()) continue
+                    Text(
+                        group.title,
+                        style = body(11.5f, FontWeight.SemiBold, c.n600),
+                        modifier = Modifier.padding(top = 8.dp, bottom = 2.dp),
+                    )
+                    for (cat in items) {
+                        val on = cat.id in backupCats
+                        val size = catSizes[cat.id]
+                        Row(
+                            Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(cat.label, style = body(13.5f, FontWeight.Normal, c.text), modifier = Modifier.weight(1f))
+                            Text(
+                                size?.let { fmtBytes(it) } ?: "…",
+                                style = body(11.5f, FontWeight.Normal, c.n600),
+                                modifier = Modifier.padding(end = 10.dp),
+                            )
+                            OrganicSwitch(on) {
+                                backupCats = if (on) backupCats - cat.id else backupCats + cat.id
+                            }
+                        }
+                    }
+                }
+                val total = catSizes.filterKeys { it in backupCats }.values.sum()
+                Text(
+                    "合计 " + fmtBytes(total),
+                    style = body(12f, FontWeight.SemiBold, if (com.shiyin.music.data.db.BackupCategory.SECRETS.id in backupCats) c.a700 else c.n600),
+                    modifier = Modifier.padding(top = 6.dp),
+                )
+            }
             // 状态信息**单独占一行**：这一行右侧并排三个胶囊按钮，副标题位置只剩很窄
             // 一条，"已备份 12.3 MB · 含密钥，请妥善保管"这种必然被省略号截断——而
             // "含密钥"恰恰是最不能被截断的一句。放到整行宽度下就没有截断问题。
@@ -1253,6 +1294,13 @@ private fun DataManageScreen(vm: MainViewModel, scrollStates: MutableMap<String,
 }
 
 /** v1.1+: 格式化识别缓存占用。null=未统计 → "—"。 */
+/** v1.5.0 A60：备份各项体积显示（B/KB/MB，保留一位小数）。 */
+private fun fmtBytes(bytes: Long): String = when {
+    bytes < 1024 -> "$bytes B"
+    bytes < 1024 * 1024 -> "%.0f KB".format(bytes / 1024.0)
+    else -> "%.1f MB".format(bytes / 1024.0 / 1024.0)
+}
+
 private fun formatCacheSize(bytes: Long?): String {
     val b = bytes ?: return "—"
     if (b < 1024) return "${b}B"

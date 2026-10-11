@@ -388,7 +388,8 @@ private val keyPinnedLibItems = stringSetPreferencesKey("pinned_lib_items")
      *    新机**跳过首次扫描引导**，反而像坏了
      *  - `recent_ids` —— 最近播放的本地 mediaId，跨设备无意义
      *  - `update_state` —— 检查更新缓存，新机自己会查
-     *  - `webdav_*` / `last_auto_snapshot_at` —— 云盘凭据与本机运行态
+     *  - `last_auto_snapshot_at` —— 本机运行态（自动快照节流）
+     *    （`webdav_*` 云盘凭据**已纳入**：用户 2026-10-11 要求换机免重填）
      *
      * ⚠️ **为什么必须带期望类型**：DataStore 的 `Preferences.Key<T>` 的 equals
      * **只看名字**（`Key<String>("dark_theme") == Key<Boolean>("dark_theme")`）。
@@ -421,6 +422,42 @@ private val keyPinnedLibItems = stringSetPreferencesKey("pinned_lib_items")
         "memory_auto_extract" to SettingsValueCodec.BOOL,
         "memory_include_transient" to SettingsValueCodec.BOOL,
         "agent_diag_enabled" to SettingsValueCodec.BOOL,
+        // ── v1.5.0 A60：原来漏掉的用户配置（用户要求"除易重建项外全部要备"）──
+        // 都是**用户手动设置/整理**的东西，换机后不想重填：曲库固定项、自定义歌词源、
+        // 被停用的歌词源、播放相关开关、均衡器、翻译四项、伴唱开关、客串歌手开关。
+        "pinned_lib_items" to SettingsValueCodec.STR_SET,
+        "custom_lyrics_sources" to SettingsValueCodec.STR,
+        "lyrics_disabled_sources" to SettingsValueCodec.STR_SET,
+        "lyrics_calib_always_on" to SettingsValueCodec.BOOL,
+        "translate_auto_foreign" to SettingsValueCodec.BOOL,
+        "translate_button_mode" to SettingsValueCodec.STR,
+        "translate_default_show" to SettingsValueCodec.BOOL,
+        "translate_error_toast" to SettingsValueCodec.BOOL,
+        "karaoke_enabled" to SettingsValueCodec.BOOL,
+        "skip_credits_translation" to SettingsValueCodec.BOOL,
+        "hide_feature_artists" to SettingsValueCodec.BOOL,
+        "volume_normalize" to SettingsValueCodec.BOOL,
+        "mono_audio" to SettingsValueCodec.BOOL,
+        "allow_concurrent_playback" to SettingsValueCodec.BOOL,
+        "equalizer_on" to SettingsValueCodec.BOOL,
+        "equalizer_bands" to SettingsValueCodec.STR,
+        // 云备份凭据：用户 2026-10-11 明确要求进备份（换机免重填）。
+        // 沿用"本机为空才写"的既有保护（见 shouldWriteBackupValue），
+        // 且恢复页会提示"备份包含密钥"。
+        "webdav_url" to SettingsValueCodec.STR,
+        "webdav_user" to SettingsValueCodec.STR,
+        "webdav_password" to SettingsValueCodec.STR,
+    )
+
+    /**
+     * v1.5.0 A60：备份里属于「凭据」的设置键——单独成类，让用户能选择不导出密钥
+     * （导出含密钥的包时界面会提醒"勿放公开位置"）。
+     * `llm_providers` 是 JSON，**内部含各供应商的 API Key**，故一并算凭据。
+     */
+    val BACKUP_SECRET_KEYS: Set<String> = setOf(
+        "deepseek_api_key", "tavily_api_key", "fanart_api_key", "lastfm_api_key",
+        "llm_providers", "llm_active_provider",
+        "webdav_url", "webdav_user", "webdav_password",
     )
 
     /** 导出白名单设置（值已编码成"类型前缀 + 原文"，见 [SettingsValueCodec]）。 */

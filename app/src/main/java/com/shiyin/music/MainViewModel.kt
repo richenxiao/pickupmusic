@@ -6261,11 +6261,29 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         return n
     }
 
-    /** v22: 导出为 zip 备份包（`backup.json` + 本地图片）。 */
-    suspend fun exportBackupZip(): ByteArray = withContext(Dispatchers.IO) {
+    /**
+     * v22: 导出为 zip 备份包（`backup.json` + 本地图片）。
+     * v1.5.0 A60：[categories] 决定导出哪些分类（null = 全部）。
+     * 手动导入的图片只有在 IMAGES 分类被选中时才打进包。
+     */
+    suspend fun exportBackupZip(
+        categories: Set<String>? = null,
+    ): ByteArray = withContext(Dispatchers.IO) {
         val (paths, albums) = backupIdMaps()
-        val json = backupManager.export(paths, albums)
-        com.shiyin.music.data.db.BackupArchive.write(json, collectLocalImages())
+        val json = backupManager.export(paths, albums, categories)
+        val withImages = categories == null ||
+            com.shiyin.music.data.db.BackupCategory.IMAGES.id in categories
+        com.shiyin.music.data.db.BackupArchive.write(
+            json,
+            if (withImages) collectLocalImages() else emptyMap(),
+        )
+    }
+
+    /**
+     * v1.5.0 A60：各备份分类的**实际体积**（导出界面显示"每项多大、合计多大"）。
+     */
+    suspend fun backupCategorySizes(): Map<String, Long> = withContext(Dispatchers.IO) {
+        backupManager.categorySizes()
     }
 
     /** v22: 从备份包恢复。**自动识别** zip 与纯 JSON 旧格式。 */

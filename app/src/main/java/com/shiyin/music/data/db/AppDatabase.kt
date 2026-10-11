@@ -1104,6 +1104,45 @@ interface ShiyinDao {
     /** 导入去重用：本机已有的 timestamp。 */
     @Query("SELECT timestamp FROM token_usage_log")
     suspend fun allTokenUsageTimestamps(): List<Long>
+
+    // ── v1.5.0 A60：仍然漏掉的用户资产（用户要求"除易重建项外全部要备"）─────────
+    // 盘查（docs/internal/backup-coverage-audit.md）发现原来这六类都没进备份：
+
+    /** 歌手别名合并（用户手工整理的 from→to 映射）。 */
+    @Query("SELECT * FROM artist_alias")
+    suspend fun allArtistAliases(): List<ArtistAliasEntity>
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertAllArtistAliases(list: List<ArtistAliasEntity>)
+
+    /** 回收站：**不备会让已删的歌在恢复后"复活"**（重扫把它们当新文件收回来）。 */
+    @Query("SELECT * FROM trashed_track")
+    suspend fun allTrashed(): List<TrashedTrackEntity>
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertAllTrashed(list: List<TrashedTrackEntity>)
+
+    /** 累计播放次数（用户长期积累；play_event 会按时间裁剪，这张才是总量）。 */
+    @Query("SELECT * FROM play_count")
+    suspend fun allPlayCounts(): List<PlayCountEntity>
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertAllPlayCounts(list: List<PlayCountEntity>)
+
+    /** 新专辑徽标（firstSeenAt 决定"最新加入"排序）。 */
+    @Query("SELECT * FROM new_album")
+    suspend fun allNewAlbums(): List<NewAlbumEntity>
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertAllNewAlbums(list: List<NewAlbumEntity>)
+
+    /**
+     * 专辑封面缓存：**重点是 url/source**——自动获取的封面只需链接即可重抓，
+     * 恢复后不必重新"找图"（用户明确要求"自动获取的要记录来源链接"）。
+     * bgArgb/fgArgb（取色）一并带上，省一次取色计算。
+     */
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertAllAlbumArtCache(list: List<AlbumArtCacheEntity>)
+
+    /** 拾光**聊天记录**（用户点名要备；原来代码注释写着"刻意不备，留待后续版本"）。 */
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertAllAgentConversations(list: List<AgentConversationEntity>)
 }
 
 /** 导入去重用的投影（play_event 的天然唯一键）。 */
