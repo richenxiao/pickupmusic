@@ -114,7 +114,13 @@ object AudioDecoder {
         return PcmFileInfo(outFile, srcRate, framesWritten)
     }
 
-    /** 交错写 [L, R] 16bit，返回写入帧数。 */
+    /**
+     * 交错写 [L, R] 16bit（**小端**），返回写入帧数。
+     *
+     * ⚠️ 2026-10-11 真机事故：这里原来用 `DataOutputStream.writeShort`（**大端**），
+     * 而读取器按小端解析 → 字节错位 → 输出全是噪声（SNR −3.7dB）。
+     * 临时 PCM 文件是内部格式，两端必须显式约定字节序；此处为小端。
+     */
     private fun writeFrames(out: DataOutputStream, buf: ByteBuffer, channels: Int, isFloat: Boolean): Int {
         var n = 0
         if (isFloat) {
@@ -122,17 +128,23 @@ object AudioDecoder {
             while (fb.remaining() >= channels) {
                 val l = fb.get(); val r = if (channels >= 2) fb.get() else l
                 for (c in 2 until channels) fb.get()
-                out.writeShort(toPcm16(l)); out.writeShort(toPcm16(r)); n++
+                writeShortLE(out, toPcm16(l)); writeShortLE(out, toPcm16(r)); n++
             }
         } else {
             val sb = buf.asShortBuffer()
             while (sb.remaining() >= channels) {
                 val l = sb.get(); val r = if (channels >= 2) sb.get() else l
                 for (c in 2 until channels) sb.get()
-                out.writeShort(l.toInt()); out.writeShort(r.toInt()); n++
+                writeShortLE(out, l.toInt()); writeShortLE(out, r.toInt()); n++
             }
         }
         return n
+    }
+
+    /** 交错 PCM 临时文件的小端写入；测试与生产共用（internal 以免两边字节序再分叉）。 */
+    internal fun writeShortLE(out: DataOutputStream, v: Int) {
+        out.write(v and 0xFF)
+        out.write((v shr 8) and 0xFF)
     }
 
     private fun toPcm16(v: Float): Int = (v.coerceIn(-1f, 1f) * 32767f).toInt()
@@ -149,7 +161,9 @@ object AudioDecoder {
             val srcFrom = floor(startFrame * ratio).toInt() - 1
             val srcTo = ceil((startFrame + count) * ratio).toInt() + 1
             val need = srcTo - srcFrom
-            if (srcBuf.size < need) srcBuf = ShortArray(need)
+            // srcBuf 是**交错 L,R**，容量必须是帧数的 2 倍（2026-10-11 越界崩溃的根因：
+            // 原按帧数分配，却用 idx*2+1 索引）
+            if (srcBuf.size < need * 2) srcBuf = ShortArray(need * 2)
             readSource(srcFrom, need)
             srcBufStart = srcFrom
 
@@ -167,7 +181,8 @@ object AudioDecoder {
         /** srcFrame 越界返回 0（等价于两端补零）。 */
         private fun sample(srcFrame: Int, ch: Int): Float {
             val idx = srcFrame - srcBufStart
-            if (srcFrame < 0 || srcFrame >= info.frames || idx < 0 || idx >= srcBuf.size) return 0f
+            if (srcFrame < 0 || srcFrame >= info.frames) return 0f
+            if (idx < 0 || idx * 2 + 1 >= srcBuf.size) return 0f
             return srcBuf[idx * 2 + ch] / 32768f
         }
 
@@ -175,7 +190,7 @@ object AudioDecoder {
             val bytes = ByteArray(count * 4)
             val first = fromFrame.coerceAtLeast(0)
             val last = (fromFrame + count).coerceAtMost(info.frames)
-            java.util.Arrays.fill(srcBuf, 0, count, 0)
+            java.util.Arrays.fill(srcBuf, 0, count * 2, 0)
             if (last <= first) return
             raf.seek(first.toLong() * 4)
             var off = 0
@@ -187,9 +202,13 @@ object AudioDecoder {
                 got += r
             }
             var p = (first - fromFrame) * 2
+            // ⚠️ 必须 & 0xFF：Kotlin 的 Byte.toInt() 会符号扩展（0xFF → -1），
+            // 不掩码会把低位字节污染成 0xFFFFFFFF（真机实测 0.5 被读成 −1 LSB）。
             for (i in 0 until (last - first)) {
-                srcBuf[p++] = (bytes[off].toInt() or (bytes[off + 1].toInt() shl 8)).toShort()
-                srcBuf[p++] = (bytes[off + 2].toInt() or (bytes[off + 3].toInt() shl 8)).toShort()
+                val l = (bytes[off].toInt() and 0xFF) or ((bytes[off + 1].toInt() and 0xFF) shl 8)
+                val r = (bytes[off + 2].toInt() and 0xFF) or ((bytes[off + 3].toInt() and 0xFF) shl 8)
+                srcBuf[p++] = l.toShort()
+                srcBuf[p++] = r.toShort()
                 off += 4
             }
         }
