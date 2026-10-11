@@ -175,10 +175,17 @@ object KaraokeStemRunner {
         }
     }
 
-    private fun writeChunk(out: DataOutputStream, l: FloatArray, r: FloatArray, count: Int) {
+    /**
+     * 写一段交错 16bit 采样到 WAV。
+     *
+     * ⚠️ 2026-10-11 真机事故（第三次字节序问题）：这里原用 `DataOutputStream.writeShort`
+     * ——它是**大端**，而 WAV/PCM 规定**小端** → 导出的文件在播放器里全是噪声
+     * （用户描述"像电台搜不到信号"）。导出侧与解码侧必须都显式小端。
+     */
+    internal fun writeChunk(out: DataOutputStream, l: FloatArray, r: FloatArray, count: Int) {
         for (i in 0 until count) {
-            out.writeShort(toPcm16(l[i]))
-            out.writeShort(toPcm16(r[i]))
+            AudioDecoder.writeShortLE(out, toPcm16(l[i]))
+            AudioDecoder.writeShortLE(out, toPcm16(r[i]))
         }
     }
 
@@ -207,7 +214,7 @@ object KaraokeStemRunner {
         return uri to out
     }
 
-    private fun wavHeader(frames: Int): ByteArray {
+    internal fun wavHeader(frames: Int): ByteArray {
         val dataBytes = frames * 4 // 2ch × 16bit
         val buf = java.nio.ByteBuffer.allocate(44).order(java.nio.ByteOrder.LITTLE_ENDIAN)
         buf.put("RIFF".toByteArray(Charsets.US_ASCII))

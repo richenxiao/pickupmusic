@@ -48,6 +48,53 @@ class StreamingPipelineFileTest {
         return if (err == 0.0) Double.POSITIVE_INFINITY else 10 * log10(sig / err)
     }
 
+    /** 与参考扁平数组（前半 L、后半 R）逐声道比 SNR。 */
+    private fun snrPerChannel(refFlat: FloatArray, l: FloatArray, r: FloatArray, n: Int): Double {
+        var sig = 0.0
+        var err = 0.0
+        for (i in 0 until n) {
+            val eL = l[i] - refFlat[i]
+            val eR = r[i] - refFlat[n + i]
+            sig += refFlat[i].toDouble().pow(2) + refFlat[n + i].toDouble().pow(2)
+            err += eL.toDouble().pow(2) + eR.toDouble().pow(2)
+        }
+        return if (err == 0.0) Double.POSITIVE_INFINITY else 10 * log10(sig / err)
+    }
+
+    /** 用生产代码写 WAV（头 + 小端 16bit），返回字节。 */
+    private fun wavBytesOf(l: FloatArray, r: FloatArray, frames: Int): ByteArray {
+        val bos = java.io.ByteArrayOutputStream()
+        DataOutputStream(bos).use { out ->
+            out.write(KaraokeStemRunner.wavHeader(frames))
+            // 分块写，避免一次性大数组（与生产同路径）
+            val step = 1 shl 16
+            var i = 0
+            while (i < frames) {
+                val cnt = minOf(step, frames - i)
+                KaraokeStemRunner.writeChunk(out, l.copyOfRange(i, i + cnt), r.copyOfRange(i, i + cnt), cnt)
+                i += cnt
+            }
+        }
+        return bos.toByteArray()
+    }
+
+    /** 解析 44 字节头 + 小端 16bit 交错 PCM → float（-1..1）。 */
+    private fun parseWavToInterleaved(b: ByteArray): FloatArray {
+        require(String(b, 0, 4, Charsets.US_ASCII) == "RIFF") { "不是 WAV（头缺失）" }
+        require(String(b, 36, 4, Charsets.US_ASCII) == "data") { "不是 WAV（data 块缺失）" }
+        val n = (b.size - 44) / 2
+        val out = FloatArray(n)
+        var o = 44
+        for (i in 0 until n) {
+            val lo = b[o].toInt() and 0xFF
+            val hi = b[o + 1].toInt() and 0xFF
+            val v = (lo or (hi shl 8)).toShort().toInt()   // 小端
+            out[i] = v / 32768f
+            o += 2
+        }
+        return out
+    }
+
     @Test
     fun streamingFilePathMatchesReference() {
         val root = repoRoot()
@@ -97,10 +144,20 @@ class StreamingPipelineFileTest {
                         reader.close()
                     }
                 }
-                val got = accL + accR
-                val s = snr(refAcc, got)
+                // 参考是扁平数组：前半左声道、后半右声道。逐声道比对
+                // ⚠️ 注意 Kotlin 的 `FloatArray + FloatArray` 是**拼接**不是相加（本测试曾因此比错）
+                val s = snrPerChannel(refAcc, accL, accR, n)
                 println("[B-file] ${c.tag}: 伴奏 SNR=${"%.1f".format(s)}dB")
                 assert(s >= 40.0) { "${c.tag} 流式文件路径 SNR 过低: $s" }
+
+                // 端到端：按导出格式（WAV 头 + 小端 16bit）写出再读回，验证"耳朵听到的那份数据"
+                val wavBytes = wavBytesOf(accL, accR, n)
+                val back = parseWavToInterleaved(wavBytes)
+                val wavL = FloatArray(n) { back[2 * it] }
+                val wavR = FloatArray(n) { back[2 * it + 1] }
+                val sw = snrPerChannel(refAcc, wavL, wavR, n)
+                println("[B-wav] ${c.tag}: 导出 WAV 往返 SNR=${"%.1f".format(sw)}dB")
+                assert(sw >= 40.0) { "${c.tag} 导出 WAV SNR 过低（字节序/格式问题）: $sw" }
             }
         } finally {
             pcm.delete()
