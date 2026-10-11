@@ -1456,6 +1456,7 @@ private fun LyricsBookScreen(vm: MainViewModel, scrollStates: MutableMap<String,
         // 放在歌词本页底部：伴唱相关设置都归这页。
         SectionLabel("伴唱 P0 调试")
         com.shiyin.music.spike.karaoke.KaraokeP0ProbeCard()
+        com.shiyin.music.spike.karaoke.KaraokeDebugPanel(vm)
         Box(Modifier.height(114.dp))
     }
 }
