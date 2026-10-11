@@ -36,3 +36,14 @@ enum class MdxModel(
     /** 一个 chunk 覆盖的采样数（hop × (dim_t − 1)）；dim_t=256 时 = 261120 ≈ 5.92s */
     val chunkSamples: Int get() = hop * (dimT - 1)
 }
+
+/**
+ * P0 Spike 阶段 B：推理后端选项（规格 §12 要求对比 CPU/加速后端）。
+ * NNAPI 会走手机的 DSP/NPU；FP16 可能带来可闻劣化（规格 R2），故单独列出待听感确认。
+ */
+enum class OrtBackend(val label: String) {
+    CPU("CPU（多线程）"),
+    XNNPACK("XNNPACK"),
+    NNAPI("NNAPI"),
+    NNAPI_FP16("NNAPI FP16"),
+}

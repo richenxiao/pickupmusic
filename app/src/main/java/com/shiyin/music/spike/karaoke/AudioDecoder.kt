@@ -5,173 +5,197 @@ import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.net.Uri
+import java.io.DataOutputStream
+import java.io.File
+import java.io.RandomAccessFile
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import kotlin.math.ceil
+import kotlin.math.floor
 import kotlin.math.roundToInt
 
 /**
- * P0 Spike 阶段 B：把曲库里的歌解码成 44.1kHz 立体声 float PCM。
+ * P0 Spike 阶段 B：音频解码 + 逐块读取（流式）。
  *
- * 用 MediaExtractor + MediaCodec（与 ExoPlayer 不同的解码路径——规格 §5.3 提醒
- * 这可能带来 encoder delay/padding 偏移，S5 要专门测；本阶段只用于"跑通 + 导出听"）。
+ * 为什么落盘：整首歌 float 数组（4 分钟 ≈ 2×10.6M×4B ≈ 85MB）加上输出两条轨会撞破
+ * 256MB 的 Java 堆上限（2026-10-11 真机 OOM 实测）。故解码后写成 16bit PCM 临时文件，
+ * 处理时按块随机读——峰值内存只剩"一个块"的量级。
  *
- * 非 44.1k 源用线性插值重采样（spike 够用；正式实现要换高质量重采样）。
+ * 采样率非 44.1k 时在读取阶段按比例线性插值（spike 够用；正式实现换高质量重采样）。
  */
 object AudioDecoder {
 
-    class Pcm(val left: FloatArray, val right: FloatArray, val srcRate: Int)
-
-    class Stereo(val left: FloatArray, val right: FloatArray, val sampleRate: Int)
-
-    fun decodeToStereo44k(context: Context, uri: Uri, onProgress: (Float) -> Unit = {}): Stereo {
-        val pcm = decodePcm(context, uri, onProgress)
-        return if (pcm.srcRate == 44100) {
-            Stereo(pcm.left, pcm.right, 44100)
-        } else {
-            val ratio = 44100.0 / pcm.srcRate
-            Stereo(
-                resampleLinear(pcm.left, ratio),
-                resampleLinear(pcm.right, ratio),
-                44100,
-            )
-        }
+    class PcmFileInfo(val file: File, val srcRate: Int, val frames: Int) {
+        val durationSec: Float get() = frames / srcRate.toFloat()
     }
 
-    /** 解码为源采样率的立体声 float（-1..1）。 */
-    private fun decodePcm(context: Context, uri: Uri, onProgress: (Float) -> Unit): Pcm {
+    /** 整首驻留内存的立体声（仅 JVM 对拍测试用；手机端走文件流式）。 */
+    class Stereo(val left: FloatArray, val right: FloatArray, val sampleRate: Int)
+
+    /** 解码 → 交错 16bit PCM 临时文件。返回源采样率与帧数。 */
+    fun decodeToPcm16File(
+        context: Context,
+        uri: Uri,
+        outFile: File,
+        onProgress: (Float) -> Unit = {},
+    ): PcmFileInfo {
         val extractor = MediaExtractor()
-        val codec: MediaCodec
-        val trackIndex: Int
+        var codec: MediaCodec? = null
+        var srcRate = 44100
+        var channels = 2
+        var framesWritten = 0
+        var isFloat = false
+
         try {
             extractor.setDataSource(context, uri, null)
-            trackIndex = (0 until extractor.trackCount).firstOrNull {
-                extractor.getTrackFormat(it).getString(MediaFormat.KEY_MIME)
-                    ?.startsWith("audio/") == true
+            val trackIndex = (0 until extractor.trackCount).firstOrNull {
+                extractor.getTrackFormat(it).getString(MediaFormat.KEY_MIME)?.startsWith("audio/") == true
             } ?: error("文件里没有音频轨")
             val format = extractor.getTrackFormat(trackIndex)
             extractor.selectTrack(trackIndex)
-            val mime = format.getString(MediaFormat.KEY_MIME)!!
-            codec = MediaCodec.createDecoderByType(mime)
+            srcRate = format.getInteger(MediaFormat.KEY_SAMPLE_RATE)
+            channels = format.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
+            codec = MediaCodec.createDecoderByType(format.getString(MediaFormat.KEY_MIME)!!)
             codec.configure(format, null, null, 0)
             codec.start()
-        } catch (t: Throwable) {
-            extractor.release()
-            throw t
-        }
 
-        val outL = FloatArrayList()
-        val outR = FloatArrayList()
-        var srcRate = 44100
-        var channels = 2
-        val info = MediaCodec.BufferInfo()
+            val durationUs = runCatching { format.getLong(MediaFormat.KEY_DURATION) }.getOrDefault(0L)
+            val info = MediaCodec.BufferInfo()
 
-        // 估算总时长用于进度（format 的 KEY_DURATION 单位 µs）
-        val durationUs = runCatching {
-            extractor.getTrackFormat(trackIndex).getLong(MediaFormat.KEY_DURATION)
-        }.getOrDefault(0L)
-
-        try {
-            var inputDone = false
-            var outputDone = false
-            var isFloat = false
-            while (!outputDone) {
-                if (!inputDone) {
-                    val inIdx = codec.dequeueInputBuffer(10_000)
-                    if (inIdx >= 0) {
-                        val buf = codec.getInputBuffer(inIdx)!!
-                        val size = extractor.readSampleData(buf, 0)
-                        if (size < 0) {
-                            codec.queueInputBuffer(inIdx, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
-                            inputDone = true
-                        } else {
-                            codec.queueInputBuffer(inIdx, 0, size, extractor.sampleTime, 0)
-                            extractor.advance()
+            DataOutputStream(outFile.outputStream().buffered(1 shl 16)).use { out ->
+                var inputDone = false
+                var outputDone = false
+                while (!outputDone) {
+                    if (!inputDone) {
+                        val inIdx = codec.dequeueInputBuffer(10_000)
+                        if (inIdx >= 0) {
+                            val buf = codec.getInputBuffer(inIdx)!!
+                            val size = extractor.readSampleData(buf, 0)
+                            if (size < 0) {
+                                codec.queueInputBuffer(inIdx, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                                inputDone = true
+                            } else {
+                                codec.queueInputBuffer(inIdx, 0, size, extractor.sampleTime, 0)
+                                extractor.advance()
+                            }
                         }
                     }
-                }
-                when (val outIdx = codec.dequeueOutputBuffer(info, 10_000)) {
-                    MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
-                        val f = codec.outputFormat
-                        srcRate = f.getInteger(MediaFormat.KEY_SAMPLE_RATE)
-                        channels = f.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
-                        isFloat = f.containsKey(MediaFormat.KEY_PCM_ENCODING) &&
-                            f.getInteger(MediaFormat.KEY_PCM_ENCODING) == 4 // ENCODING_PCM_FLOAT
-                    }
-                    MediaCodec.INFO_TRY_AGAIN_LATER -> Unit
-                    else -> if (outIdx >= 0) {
-                        val buf = codec.getOutputBuffer(outIdx)!!
-                        buf.order(ByteOrder.LITTLE_ENDIAN)
-                        buf.position(info.offset)
-                        buf.limit(info.offset + info.size)
-                        if (info.size > 0) {
-                            appendFrames(buf, channels, isFloat, outL, outR)
+                    when (val outIdx = codec.dequeueOutputBuffer(info, 10_000)) {
+                        MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
+                            val f = codec.outputFormat
+                            srcRate = f.getInteger(MediaFormat.KEY_SAMPLE_RATE)
+                            channels = f.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
+                            isFloat = f.containsKey(MediaFormat.KEY_PCM_ENCODING) &&
+                                f.getInteger(MediaFormat.KEY_PCM_ENCODING) == 4
                         }
-                        codec.releaseOutputBuffer(outIdx, false)
-                        if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) outputDone = true
-                        if (durationUs > 0) onProgress((info.presentationTimeUs.toFloat() / durationUs).coerceIn(0f, 1f))
+                        MediaCodec.INFO_TRY_AGAIN_LATER -> Unit
+                        else -> if (outIdx >= 0) {
+                            val buf = codec.getOutputBuffer(outIdx)!!
+                            buf.order(ByteOrder.LITTLE_ENDIAN)
+                            buf.position(info.offset)
+                            buf.limit(info.offset + info.size)
+                            if (info.size > 0) {
+                                framesWritten += writeFrames(out, buf, channels, isFloat)
+                            }
+                            codec.releaseOutputBuffer(outIdx, false)
+                            if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) outputDone = true
+                            if (durationUs > 0) {
+                                onProgress((info.presentationTimeUs.toFloat() / durationUs).coerceIn(0f, 1f))
+                            }
+                        }
                     }
                 }
             }
         } finally {
-            runCatching { codec.stop() }
-            runCatching { codec.release() }
+            runCatching { codec?.stop() }
+            runCatching { codec?.release() }
             extractor.release()
         }
-
-        val l = outL.toArray()
-        val r = outR.toArray()
-        // 单声道 → 复制成立体声
-        return Pcm(l, r, srcRate)
+        return PcmFileInfo(outFile, srcRate, framesWritten)
     }
 
-    private fun appendFrames(
-        buf: ByteBuffer,
-        channels: Int,
-        isFloat: Boolean,
-        outL: FloatArrayList,
-        outR: FloatArrayList,
-    ) {
+    /** 交错写 [L, R] 16bit，返回写入帧数。 */
+    private fun writeFrames(out: DataOutputStream, buf: ByteBuffer, channels: Int, isFloat: Boolean): Int {
+        var n = 0
         if (isFloat) {
             val fb = buf.asFloatBuffer()
             while (fb.remaining() >= channels) {
-                val l = fb.get()
-                val r = if (channels >= 2) fb.get() else l
+                val l = fb.get(); val r = if (channels >= 2) fb.get() else l
                 for (c in 2 until channels) fb.get()
-                outL.add(l); outR.add(r)
+                out.writeShort(toPcm16(l)); out.writeShort(toPcm16(r)); n++
             }
         } else {
             val sb = buf.asShortBuffer()
             while (sb.remaining() >= channels) {
-                val l = sb.get() / 32768f
-                val r = if (channels >= 2) sb.get() / 32768f else l
+                val l = sb.get(); val r = if (channels >= 2) sb.get() else l
                 for (c in 2 until channels) sb.get()
-                outL.add(l); outR.add(r)
+                out.writeShort(l.toInt()); out.writeShort(r.toInt()); n++
             }
         }
+        return n
     }
 
-    private fun resampleLinear(x: FloatArray, ratio: Double): FloatArray {
-        val n = (x.size * ratio).roundToInt()
-        val out = FloatArray(n)
-        for (i in 0 until n) {
-            val pos = i / ratio
-            val i0 = pos.toInt()
-            val frac = (pos - i0).toFloat()
-            val a = x[i0.coerceIn(0, x.size - 1)]
-            val b = x[(i0 + 1).coerceIn(0, x.size - 1)]
-            out[i] = a + (b - a) * frac
-        }
-        return out
-    }
+    private fun toPcm16(v: Float): Int = (v.coerceIn(-1f, 1f) * 32767f).toInt()
 
-    /** 简易可增长 float 数组（避免装箱）。 */
-    private class FloatArrayList(initial: Int = 1 shl 20) {
-        private var a = FloatArray(initial)
-        private var n = 0
-        fun add(v: Float) {
-            if (n == a.size) a = a.copyOf(a.size * 2)
-            a[n++] = v
+    /** 从 PCM16 临时文件按 44.1k 帧号读块（越界补零；必要时线性重采样）。 */
+    class PcmFileReader(private val info: PcmFileInfo, targetRate: Int = 44100) : MdxSeparator.ChunkProvider {
+        private val ratio = info.srcRate.toDouble() / targetRate
+        private val raf = RandomAccessFile(info.file, "r")
+        private var srcBuf = ShortArray(0)
+        private var srcBufStart = 0
+
+        override fun readChunk(startFrame: Int, count: Int, left: FloatArray, right: FloatArray) {
+            // 需要的源帧范围（含插值所需的前后各 1 帧）
+            val srcFrom = floor(startFrame * ratio).toInt() - 1
+            val srcTo = ceil((startFrame + count) * ratio).toInt() + 1
+            val need = srcTo - srcFrom
+            if (srcBuf.size < need) srcBuf = ShortArray(need)
+            readSource(srcFrom, need)
+            srcBufStart = srcFrom
+
+            for (i in 0 until count) {
+                val pos = (startFrame + i) * ratio
+                val i0 = floor(pos).toInt()
+                val frac = (pos - i0).toFloat()
+                val aL = sample(i0, 0); val aR = sample(i0, 1)
+                val bL = sample(i0 + 1, 0); val bR = sample(i0 + 1, 1)
+                left[i] = aL + (bL - aL) * frac
+                right[i] = aR + (bR - aR) * frac
+            }
         }
-        fun toArray(): FloatArray = a.copyOf(n)
+
+        /** srcFrame 越界返回 0（等价于两端补零）。 */
+        private fun sample(srcFrame: Int, ch: Int): Float {
+            val idx = srcFrame - srcBufStart
+            if (srcFrame < 0 || srcFrame >= info.frames || idx < 0 || idx >= srcBuf.size) return 0f
+            return srcBuf[idx * 2 + ch] / 32768f
+        }
+
+        private fun readSource(fromFrame: Int, count: Int) {
+            val bytes = ByteArray(count * 4)
+            val first = fromFrame.coerceAtLeast(0)
+            val last = (fromFrame + count).coerceAtMost(info.frames)
+            java.util.Arrays.fill(srcBuf, 0, count, 0)
+            if (last <= first) return
+            raf.seek(first.toLong() * 4)
+            var off = 0
+            var got = 0
+            val want = (last - first) * 4
+            while (got < want) {
+                val r = raf.read(bytes, got, want - got)
+                if (r < 0) break
+                got += r
+            }
+            var p = (first - fromFrame) * 2
+            for (i in 0 until (last - first)) {
+                srcBuf[p++] = (bytes[off].toInt() or (bytes[off + 1].toInt() shl 8)).toShort()
+                srcBuf[p++] = (bytes[off + 2].toInt() or (bytes[off + 3].toInt() shl 8)).toShort()
+                off += 4
+            }
+        }
+
+        fun close() {
+            runCatching { raf.close() }
+        }
     }
 }

@@ -56,6 +56,7 @@ fun KaraokeDebugPanel(vm: MainViewModel) {
     var track by remember { mutableStateOf<Track?>(null) }
     var model by remember { mutableStateOf(MdxModel.INST_HQ_3) }
     var threads by remember { mutableStateOf(4) }
+    var backend by remember { mutableStateOf(OrtBackend.CPU) }
     var running by remember { mutableStateOf(false) }
     var status by remember { mutableStateOf<String?>(null) }
     var progress by remember { mutableStateOf(0f) }
@@ -97,6 +98,24 @@ fun KaraokeDebugPanel(vm: MainViewModel) {
             }
         }
 
+        // ── 推理后端 ──
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("后端", style = body(13f, color = c.n600))
+            Spacer(Modifier.width(10.dp))
+            OrtBackend.entries.forEach { b ->
+                Text(
+                    b.label,
+                    style = body(12f, color = if (backend == b) c.surface else c.text),
+                    modifier = Modifier
+                        .padding(end = 6.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(if (backend == b) c.text else c.n100)
+                        .clickableNoRipple(enabled = !running) { backend = b }
+                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                )
+            }
+        }
+
         // ── 线程数 ──
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("线程", style = body(13f, color = c.n600))
@@ -132,29 +151,41 @@ fun KaraokeDebugPanel(vm: MainViewModel) {
                             job = scope.launch {
                                 try {
                                     val r = KaraokeStemRunner.run(
-                                        context, t, model, threads,
+                                        context, t, model, threads, backend,
                                         onStatus = { status = it },
-                                        onProgress = { p, frac ->
+                                        onProgress = { text, frac ->
                                             progress = frac
-                                            status = if (p.chunkTotal > 0)
-                                                "块 ${p.chunkDone}/${p.chunkTotal}（首块 ${p.firstChunkMs}ms）"
-                                            else "解码 ${(frac * 100).toInt()}%"
+                                            status = text
                                         },
                                     )
                                     report = buildString {
-                                        appendLine("模型 ${r.model.displayName} · 线程 $threads")
-                                        appendLine("音频 ${"%.1f".format(r.durationSec)}s")
+                                        appendLine("模型 ${r.model.displayName} · 后端 ${r.backend.label} · 线程 $threads")
+                                        appendLine("音频 ${"%.1f".format(r.durationSec)}s · 共 ${r.chunkTimesMs.size} 块")
                                         appendLine("解码 ${r.decodeMs}ms · 模型加载 ${r.modelLoadMs}ms")
                                         appendLine("首块可用 ${r.firstChunkMs}ms · 分离总 ${r.totalMs}ms")
                                         appendLine("RTF ${"%.2f".format(r.rtf)}（推理累计 ${r.inferMsTotal}ms）")
-                                        appendLine("内存 PSS ${r.pssBeforeMb}→${r.pssAfterMb}MB")
+                                        appendLine()
+                                        // 能否赶上播放：每块音频 ${chunkAudioSec}s，单块处理超过它就是追不上
+                                        appendLine("每块耗时（ms）：" + r.chunkTimesMs.joinToString(" "))
+                                        appendLine(
+                                            "最小/平均/最大 = ${r.chunkTimesMs.minOrNull() ?: 0}/" +
+                                                "${r.avgChunkMs}/${r.maxChunkMs}ms（每块音频 " +
+                                                "${"%.1f".format(r.chunkAudioSec)}s = ${(r.chunkAudioSec * 1000).toInt()}ms）",
+                                        )
+                                        appendLine(
+                                            if (r.overBudgetChunks == 0)
+                                                "✅ 每块都低于预算——能一路赶上播放"
+                                            else
+                                                "⚠️ 有 ${r.overBudgetChunks} 块超过预算——这些位置伴奏会追不上播放",
+                                        )
+                                        appendLine()
+                                        appendLine("Java 堆 ${r.heapBeforeMb} → ${r.heapAfterMb}MB · native 峰值 ${r.nativeHeapPeakMb}MB")
                                         r.tempBeforeC?.let { b ->
-                                            appendLine("电池温度 ${b}℃→${r.tempAfterC ?: b}℃")
+                                            appendLine("电池温度 ${b}℃ → ${r.tempAfterC ?: b}℃")
                                         }
                                         appendLine("导出：Music/PickUpMusic/")
-                                        append(r.outUri?.lastPathSegment ?: "（伴奏写入失败）")
-                                        appendLine()
-                                        append(r.vocUri?.lastPathSegment ?: "（人声写入失败）")
+                                        appendLine(r.accName ?: "（伴奏写入失败）")
+                                        append(r.vocName ?: "（人声写入失败）")
                                     }
                                 } catch (t2: Throwable) {
                                     report = "❌ ${t2.javaClass.simpleName}: ${t2.message}"
