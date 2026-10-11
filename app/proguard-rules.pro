@@ -107,3 +107,12 @@
 # 不存在该类也不会走到该路径（DALVIK/ART 下 JLargeArrays 走 Unsafe 分支之外的兜底），
 # R8 报 missing class 是静态引用检查，非真实调用。
 -dontwarn sun.misc.Cleaner
+
+# ── v1.5.0 伴唱：ONNX Runtime 的 JNI 反射绑定必须整体保留 ──
+# 根因（2026-10-11 真机实测）：onnxruntime-android 的 AAR 只带 293 字节 consumer
+# 规则，仅 keep 了 telemetry 三个类；libonnxruntime4j_jni.so 在运行期用 FindClass /
+# GetMethodID **按类名与签名**查 Java 侧（如 TensorInfo/OnnxTensor），类被 R8 混淆后
+# 查不到 → JNI abort（SIGABRT，'java_class == null in call to GetMethodID from
+# ai.onnxruntime.OrtSession.run'）。整个包一起 keep，体积代价仅几百 KB。
+-keep class ai.onnxruntime.** { *; }
+-dontwarn ai.onnxruntime.**
