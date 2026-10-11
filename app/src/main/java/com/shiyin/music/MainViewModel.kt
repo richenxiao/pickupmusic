@@ -250,6 +250,28 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      * 完成后变六边形」。**分离引擎尚未接入**，现在只会 Idle <-> Loading；Active 由引擎回写。
      */
     var karaokeState by mutableStateOf(com.shiyin.music.ui.components.KaraokeButtonState.Idle); private set
+
+    /**
+     * v1.5.0 伴唱面板：三档混音选择（0=人声 / 1=原曲(默认) / 2=伴奏）。
+     *
+     * ⚠️ 目前**只驱动 UI**——P0 Spike 的分离引擎尚未接入播放链路（P2 才做），
+     * 所以这里改的是"面板上选中的档位"，不影响实际声音。接入时由 PlaybackMixer
+     * 读这个值做增益插值（规格 §7）。
+     * （规格 §3.3：由歌词页伴唱按钮或播放页菜单打开同一面板。）
+     */
+    var karaokeMixIndex by mutableStateOf(1); private set
+
+    // 注意：不能叫 setKaraokeMixIndex——`var ... private set` 生成的私有 setter
+    // 与同名函数 JVM 签名冲突（karaokeEnabled 当初踩过同一个坑）。
+    fun selectKaraokeMix(i: Int) {
+        karaokeMixIndex = i.coerceIn(0, 2)
+    }
+
+    /** 关闭伴唱：回到 Idle + 混音档位复位「原曲」（规格 §3.3 第 3 条）。 */
+    fun closeKaraoke() {
+        karaokeState = com.shiyin.music.ui.components.KaraokeButtonState.Idle
+        karaokeMixIndex = 1
+    }
     /** v1.3.2: 自定义写真源(设置·写真源可增删,CustomSource 按模板拉图)。 */
     var customImageSources by mutableStateOf<List<com.shiyin.music.data.image.CustomImageSourceDef>>(emptyList()); private set
     // v1.1+: 自动保存识别结果（默认开）。关时识别结果临时展示不写入持久化。

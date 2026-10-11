@@ -74,6 +74,14 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.animation.core.Animatable
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChanged
+import kotlin.math.roundToInt
+import androidx.compose.ui.text.style.TextAlign
 
 /** Generative-cover palette pairs [bg, fg], slot = trackId % 5, per handoff.
  *  Used as the fallback when a track has no real album art to extract from. */
@@ -1454,6 +1462,113 @@ fun DialogActionsRow(
                     style = if (a.emphasized) body(14f, FontWeight.Bold, color)
                             else body(14f, FontWeight.Normal, color),
                 )
+            }
+        }
+    }
+}
+
+
+// ── v1.5.0: 三档离散选择控件（设置页「翻译按钮显示」与播放页「分轨」共用同一实现）──
+// 原在 SettingsScreens.kt 内私有；伴唱分轨面板要复用，故上移到公共组件。
+/**
+ * 三段式**离散**选择控件——只能停在三档,不存在"停在两档之间"的中间态。
+ *
+ * 交互:点击某段 → 选中该档;横向拖动 → 指示器跟手,松手吸附到最近档位。
+ * 指示器(thumb)在档位间用动画平滑过渡(视觉像滑块在滑动),语义上是三选一。
+ *
+ * 为什么不用 Material3 Slider:它的轨道/刻度是连续数值模型,档位标签还得另画一层;
+ * 本控件直接以"段"为单位,和其它设置行里的自绘控件同一套语言。
+ */
+@Composable
+fun ThreeStopSegmentedControl(
+    labels: List<String>,
+    selectedIndex: Int,
+    onSelect: (Int) -> Unit,
+    /** v1.4.0: 传了图标就画图标（主题三档：手机/太阳/月亮），否则画文字。 */
+    icons: List<androidx.compose.ui.graphics.vector.ImageVector>? = null,
+) {
+    val c = LocalOrganic.current
+    val n = labels.size
+    BoxWithConstraints(
+        Modifier
+            .fillMaxWidth()
+            .height(38.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(c.n200),
+    ) {
+        val segWDp = maxWidth / n
+        val segPx = constraints.maxWidth.toFloat() / n
+        // 拖动中的指示器左缘(null = 未拖动,指示器由动画控制)。
+        var dragX by remember { mutableStateOf<Float?>(null) }
+        val thumb = remember { Animatable(0f) }
+        val scope = rememberCoroutineScope()
+        // 非拖动时:平滑滑到选中档——"看起来像滑块在滑动"就是这一段。
+        LaunchedEffect(selectedIndex, segPx) {
+            if (dragX == null) thumb.animateTo(selectedIndex * segPx, tween(190))
+        }
+        // 指示器:写在 graphicsLayer 里延迟读值,拖动逐帧只重画这一层、零重组。
+        Box(
+            Modifier
+                .graphicsLayer { translationX = dragX ?: thumb.value }
+                .width(segWDp)
+                .fillMaxHeight()
+                .padding(3.dp)
+                .clip(RoundedCornerShape(9.dp))
+                // v1.3.10 需求 A18:选中指示器用**实心 accent**——与各"开"状态控件
+                // (OrganicSwitch 开态、播放主键)同一套语言。旧版是 accent 0.20 淡橙,
+                // 用户反馈"和其他打开状态的按钮颜色不一致"。
+                .background(c.accent),
+        )
+        Row(
+            Modifier
+                .fillMaxSize()
+                .pointerInput(n) {
+                    val seg = size.width.toFloat() / n
+                    detectHorizontalDragGestures(
+                        onDragStart = { off ->
+                            dragX = (off.x - seg / 2f).coerceIn(0f, size.width - seg)
+                        },
+                        onDragEnd = {
+                            val i = (((dragX ?: 0f) + seg / 2f) / seg).roundToInt().coerceIn(0, n - 1)
+                            // 先把指示器钉在手指位置再交回动画,否则松手瞬间会先弹回旧档再滑。
+                            scope.launch {
+                                thumb.snapTo(dragX ?: thumb.value)
+                                dragX = null
+                                onSelect(i)
+                            }
+                        },
+                        onDragCancel = { dragX = null },
+                    ) { change, delta ->
+                        if (change.positionChanged()) {
+                            dragX = ((dragX ?: 0f) + delta).coerceIn(0f, size.width.toFloat() - seg)
+                            change.consume()
+                        }
+                    }
+                },
+        ) {
+            labels.forEachIndexed { i, label ->
+                val active = i == selectedIndex
+                Box(
+                    // v1.3.10 需求 A20:分段本身去涟漪——按下态由指示器/描边承担,不要灰块
+                    Modifier.weight(1f).fillMaxHeight().clickableNoRipple { onSelect(i) },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    if (icons != null && i < icons.size) {
+                        OIcon(icons[i], 17.dp, if (active) c.bg else c.n600)
+                    } else Text(
+                        label,
+                        style = body(
+                            10.5f,
+                            if (active) FontWeight.Bold else FontWeight.Normal,
+                            // 选中项文字用 c.bg(与"实心 accent 底上的文字"同惯例,见播放主键),
+                            // 保证在实心橙底上可读;未选中仍用次级灰。
+                            if (active) c.bg else c.n600,
+                        ),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        textAlign = TextAlign.Center,
+                    )
+                }
             }
         }
     }

@@ -150,6 +150,7 @@ import com.shiyin.music.ui.theme.LocalOrganic
 import kotlin.math.roundToInt
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.input.KeyboardType
+import com.shiyin.music.ui.components.ThreeStopSegmentedControl
 
 @OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
@@ -508,7 +509,7 @@ fun AppRoot(vm: MainViewModel) {
                     when {
                         vm.lyricsOn -> vm.requestLyricsExit()
                         vm.qSheetOpen -> { vm.qSheetOpen = false; vm.qEdit = false }
-                        vm.pMenuView != null -> vm.pMenuView = if (vm.pMenuView == "timer-custom") "timer" else if (vm.pMenuView == "timer" || vm.pMenuView == "speed") "root" else null
+                        vm.pMenuView != null -> vm.pMenuView = if (vm.pMenuView == "timer-custom") "timer" else if (vm.pMenuView == "timer" || vm.pMenuView == "speed" || vm.pMenuView == "karaoke") "root" else null
                         else -> { vm.playerOpen = false; vm.sleepMenu = false }
                     }
                 },
@@ -569,7 +570,7 @@ fun AppRoot(vm: MainViewModel) {
                 BackHandler {
                     when {
                         vm.lyricsOn -> vm.requestLyricsExit()
-                        vm.pMenuView != null -> vm.pMenuView = if (vm.pMenuView == "timer-custom") "timer" else if (vm.pMenuView == "timer" || vm.pMenuView == "speed") "root" else null
+                        vm.pMenuView != null -> vm.pMenuView = if (vm.pMenuView == "timer-custom") "timer" else if (vm.pMenuView == "timer" || vm.pMenuView == "speed" || vm.pMenuView == "karaoke") "root" else null
                         vm.sleepMenu -> vm.sleepMenu = false
                         else -> vm.requestPlayerExit()
                     }
@@ -1017,6 +1018,7 @@ private fun RootBackHandler(vm: MainViewModel) {
             vm.pMenuView == "timer-custom" -> vm.pMenuView = "timer"
             vm.pMenuView == "timer" -> vm.pMenuView = "root"
             vm.pMenuView == "speed" -> vm.pMenuView = "root"
+            vm.pMenuView == "karaoke" -> vm.pMenuView = "root"
             vm.pMenuView != null -> vm.pMenuView = null
             vm.qSheetOpen -> { vm.qSheetOpen = false; vm.qEdit = false }
             vm.lySheet -> vm.lySheet = false
@@ -1471,7 +1473,8 @@ private fun PlayerMenuSheetContent(vm: MainViewModel) {
     val track = vm.trackById(vm.player.currentId)
     if (track == null) return
     Column(Modifier.navigationBarsPadding().padding(start = 10.dp, end = 10.dp, top = 16.dp, bottom = 10.dp)) {
-            if (vm.pMenuView != "timer" && vm.pMenuView != "timer-custom" && vm.pMenuView != "speed") {
+            if (vm.pMenuView != "timer" && vm.pMenuView != "timer-custom" &&
+                vm.pMenuView != "speed" && vm.pMenuView != "karaoke") {
                 SheetSongHeader(track)
                 SheetActionRow(Lucide.ListPlus, "保存到歌单") {
                     vm.pMenuView = null
@@ -1499,6 +1502,22 @@ private fun PlayerMenuSheetContent(vm: MainViewModel) {
                         OIcon(Lucide.ChevronRight, 16.dp, c.n500)
                     },
                 ) { vm.pMenuView = "speed" }
+                // v1.5.0 伴唱（规格 §3.1 第二入口）：与歌词页麦克风按钮打开同一面板。
+                // 未开启伴唱功能时整行隐藏（与歌词页入口的隐藏条件一致）。
+                if (vm.karaokeEnabled) {
+                    SheetActionRow(
+                        Lucide.Mic, "伴唱",
+                        trailing = {
+                            if (vm.karaokeState != com.shiyin.music.ui.components.KaraokeButtonState.Idle) {
+                                Text(
+                                    listOf("人声", "原曲", "伴奏")[vm.karaokeMixIndex],
+                                    style = body(12.5f, FontWeight.SemiBold, c.n500),
+                                )
+                            }
+                            OIcon(Lucide.ChevronRight, 16.dp, c.n500)
+                        },
+                    ) { vm.pMenuView = "karaoke" }
+                }
                 // v1.3.x: 图标 Captions(歌词/字幕语义)——原 ListPlus 与"保存到歌单"撞图标。
                 SheetActionRow(Lucide.Captions, "歌词来源", trailing = {
                     Text(
@@ -1804,46 +1823,10 @@ private fun PlayerMenuSheetContent(vm: MainViewModel) {
                         }
                         OIcon(Lucide.Settings, 16.dp, c.n400)
                     }
-                    // v1.5.0 伴唱 §8：升降 Key（-6..+6 半音）。与加速模式叠加：
-                    // 总音高 = 加速模式自带音高 x 2^(n/12)，速度不变；点中间数字复位。
-                    Row(
-                        Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(c.n100)
-                            .padding(horizontal = 14.dp, vertical = 10.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Column(Modifier.weight(1f)) {
-                            Text("升降 Key", style = body(14f, FontWeight.ExtraBold, c.text))
-                            Text("每步一个半音，点数字复位", style = body(11f, FontWeight.Normal, c.n500))
-                        }
-                        Text(
-                            "−",
-                            style = body(18f, FontWeight.ExtraBold, if (vm.keyShift > com.shiyin.music.playback.KeyShift.MIN) c.n600 else c.n400),
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(8.dp))
-                                .clickable(enabled = vm.keyShift > com.shiyin.music.playback.KeyShift.MIN) { vm.changeKeyShift(vm.keyShift - 1) }
-                                .padding(horizontal = 12.dp, vertical = 4.dp),
-                        )
-                        Text(
-                            com.shiyin.music.playback.KeyShift.label(vm.keyShift),
-                            style = body(15f, FontWeight.ExtraBold, if (vm.keyShift == 0) c.text else c.accent),
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(8.dp))
-                                .clickable { vm.changeKeyShift(0) }
-                                .padding(horizontal = 10.dp, vertical = 6.dp),
-                        )
-                        Text(
-                            "+",
-                            style = body(18f, FontWeight.ExtraBold, if (vm.keyShift < com.shiyin.music.playback.KeyShift.MAX) c.n600 else c.n400),
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(8.dp))
-                                .clickable(enabled = vm.keyShift < com.shiyin.music.playback.KeyShift.MAX) { vm.changeKeyShift(vm.keyShift + 1) }
-                                .padding(horizontal = 12.dp, vertical = 4.dp),
-                        )
-                    }
+                    KeyShiftRow(vm, c)
                 }
+            } else if (vm.pMenuView == "karaoke") {
+                KaraokeMixPanel(vm)
             }
         }
 }
@@ -3091,5 +3074,117 @@ private fun CandidateCover(
         if (typeLabel.isNotBlank()) {
             Text(typeLabel, style = body(9f, FontWeight.Bold, c.n500))
         }
+    }
+}
+
+/**
+ * v1.5.0 伴唱 §8：升降 Key 行（-6..+6 半音，点中间数字复位）。
+ * 速度子页与分轨面板共用同一实现——从速度子页抽出来，避免两处各写一份。
+ * 总音高 = 加速模式自带音高 × 2^(n/12)，速度不变。
+ */
+@Composable
+private fun KeyShiftRow(vm: MainViewModel, c: com.shiyin.music.ui.theme.OrganicColors) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(c.n100)
+            .padding(horizontal = 14.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text("升降 Key", style = body(14f, FontWeight.ExtraBold, c.text))
+            Text("每步一个半音，点数字复位", style = body(11f, FontWeight.Normal, c.n500))
+        }
+        Text(
+            "−",
+            style = body(18f, FontWeight.ExtraBold, if (vm.keyShift > com.shiyin.music.playback.KeyShift.MIN) c.n600 else c.n400),
+            modifier = Modifier
+                .clip(RoundedCornerShape(8.dp))
+                .clickable(enabled = vm.keyShift > com.shiyin.music.playback.KeyShift.MIN) { vm.changeKeyShift(vm.keyShift - 1) }
+                .padding(horizontal = 12.dp, vertical = 4.dp),
+        )
+        Text(
+            com.shiyin.music.playback.KeyShift.label(vm.keyShift),
+            style = body(15f, FontWeight.ExtraBold, if (vm.keyShift == 0) c.text else c.accent),
+            modifier = Modifier
+                .clip(RoundedCornerShape(8.dp))
+                .clickable { vm.changeKeyShift(0) }
+                .padding(horizontal = 10.dp, vertical = 6.dp),
+        )
+        Text(
+            "+",
+            style = body(18f, FontWeight.ExtraBold, if (vm.keyShift < com.shiyin.music.playback.KeyShift.MAX) c.n600 else c.n400),
+            modifier = Modifier
+                .clip(RoundedCornerShape(8.dp))
+                .clickable(enabled = vm.keyShift < com.shiyin.music.playback.KeyShift.MAX) { vm.changeKeyShift(vm.keyShift + 1) }
+                .padding(horizontal = 12.dp, vertical = 4.dp),
+        )
+    }
+}
+
+/**
+ * v1.5.0 伴唱「分轨」面板（规格 §3.3）。
+ *
+ * 入口两处，打开的是同一个面板：歌词页的伴唱麦克风按钮、播放页 ⋮ 菜单的「伴唱」项。
+ * 内容：三档混音滑块（人声 — 原曲 — 伴奏）+ 升降 Key + 关闭伴唱。
+ *
+ * ⚠️ 当前为 **UI 先行**：档位只驱动按钮状态，不改变实际声音——分离引擎与播放链路
+ * 的混音属 P2（规格 §7），待 P0 Spike 结论出来后再接。
+ */
+@Composable
+private fun KaraokeMixPanel(vm: MainViewModel) {
+    val c = LocalOrganic.current
+    val started = vm.karaokeState != com.shiyin.music.ui.components.KaraokeButtonState.Idle
+
+    Column(Modifier.fillMaxWidth()) {
+        // 返回行（与睡眠/速度子页同款：只用图标，不用文字）
+        Row(
+            Modifier.fillMaxWidth().padding(start = 4.dp, bottom = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(
+                Modifier.size(34.dp).clip(CircleShape).clickable { vm.pMenuView = "root" },
+                contentAlignment = Alignment.Center,
+            ) { OIcon(Lucide.ChevronLeft, 20.dp, c.n500) }
+            Text("伴唱", style = body(15f, FontWeight.ExtraBold, c.text))
+            Spacer(Modifier.weight(1f))
+        }
+
+        if (!started) {
+            // 规格 O9：从菜单进入且尚未开启伴唱时，先给一个开启按钮（等同点歌词页麦克风）
+            Text(
+                "开启伴唱",
+                style = body(14f, FontWeight.ExtraBold, c.surface),
+                modifier = Modifier
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(c.accent)
+                    .clickable { vm.toggleKaraoke() }
+                    .padding(horizontal = 18.dp, vertical = 10.dp)
+                    .align(Alignment.CenterHorizontally),
+            )
+            return@Column
+        }
+
+        // 三档混音：人声 — 原曲（默认）— 伴奏
+        ThreeStopSegmentedControl(
+            labels = listOf("人声", "原曲", "伴奏"),
+            selectedIndex = vm.karaokeMixIndex,
+            onSelect = { vm.selectKaraokeMix(it) },
+        )
+        Spacer(Modifier.height(12.dp))
+
+        KeyShiftRow(vm, c)
+        Spacer(Modifier.height(12.dp))
+
+        Text(
+            "关闭伴唱",
+            style = body(13.5f, FontWeight.SemiBold, c.n600),
+            modifier = Modifier
+                .clip(RoundedCornerShape(12.dp))
+                .background(c.n100)
+                .clickable { vm.closeKaraoke() }
+                .padding(horizontal = 16.dp, vertical = 9.dp),
+        )
     }
 }
