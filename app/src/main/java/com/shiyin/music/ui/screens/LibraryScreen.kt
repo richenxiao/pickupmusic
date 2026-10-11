@@ -559,7 +559,8 @@ private fun buildLibItems(vm: MainViewModel): List<LibItem> {
             }
         }
         if (chip == null || chip == "artists") {
-            vm.artistsMap().entries.forEachIndexed { i, e ->
+            // v1.5.0 A62：歌手栏用专用列表（隐藏客串歌手）；搜索/歌手页仍走 artistsMap
+            vm.libraryArtistEntries().forEachIndexed { i, e ->
                 val (bg, fg) = coverPalette(i + 1)
                 add(
                     LibItem(

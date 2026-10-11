@@ -18,6 +18,11 @@ data class Track(
     val dateAdded: Long,
     val albumId: Long,
     val dataPath: String,
+    /**
+     * v1.5.0 A62：专辑作者（MediaStore ALBUM_ARTIST）。用于判断"客串歌手"——
+     * 只在某首歌里 feat、专辑作者里没有他，就不占歌手栏位。空串=该文件没写这个标签。
+     */
+    val albumArtist: String = "",
 ) {
     val durationSec: Long get() = durationMs / 1000
     val initial: String get() = title.firstOrNull()?.uppercase() ?: "♪"

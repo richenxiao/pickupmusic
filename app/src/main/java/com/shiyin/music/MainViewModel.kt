@@ -50,7 +50,7 @@ import java.util.Locale
 
 enum class Tab { Home, Search, Library }
 enum class ObStage { Perm, Scan, Done }
-enum class FilesView { Root, Clean, Trash, Folders, FolderContent, Ignored, Devices, About, Merges, ImageSources, LyricsBook, LyricsSources, CloudBackup, PlaySettings, Equalizer, Logs, DataManage, FilesManage }
+enum class FilesView { Root, Clean, Trash, Folders, FolderContent, Ignored, Devices, About, Merges, ImageSources, LyricsBook, LyricsSources, CloudBackup, PlaySettings, Equalizer, Logs, DataManage, FilesManage, Artists }
 enum class LyState { Idle, Searching, Failed }
 enum class LyricsKind { Embedded, Sidecar, Online, Imported }
 
@@ -361,6 +361,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** v1.5.0 A56: 歌词"制作人行"跳过翻译(默认开)。 */
     private val _skipCreditsTranslation = mutableStateOf(true)
     val skipCreditsTranslation: Boolean get() = _skipCreditsTranslation.value
+
+    /** v1.5.0 A62：歌手栏是否隐藏客串歌手（只参与合作、无个人作品）。默认开。 */
+    private val _hideFeatureArtists = mutableStateOf(true)
+    val hideFeatureArtists: Boolean get() = _hideFeatureArtists.value
 
     // ── v1.3.x 播放设置(设置·播放页,用户 2026-09-22 指定分组)──────────────────
     /** 音量均衡:平衡所有曲目的播放音量(响度归一,ExoPlayer setVolume 实现见 PlaybackService)。 */
@@ -1161,6 +1165,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 translateErrorToast = s.translateErrorToast
                 _karaokeEnabled.value = s.karaokeEnabled
                 _skipCreditsTranslation.value = s.skipCreditsTranslation
+                _hideFeatureArtists.value = s.hideFeatureArtists
                 translateButtonMode = s.translateButtonMode
                 // v1.3.x 播放设置同步
                 volumeNormalize = s.volumeNormalize
@@ -2147,6 +2152,21 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         artistsCache = m
         artistsSig = sig
         return artistsCache
+    }
+
+    /**
+     * v1.5.0 A62：**歌手栏**专用的歌手列表——开启「隐藏客串歌手」时滤掉只参与合作的歌手。
+     *
+     * 为什么单开一个访问器而不是在 [artistsMap] 里过滤：`artistsMap()` 还被
+     * **搜索**（SearchScreen）和**歌手页内容**（LibraryScreen 的歌手详情、artistQueue）用，
+     * 在那里过滤会把搜索结果一起藏掉、并让被隐藏歌手的页面变空——用户明确要求
+     * 「搜索不动、点进去照常能看」。所以过滤只作用在歌手栏这一处。
+     */
+    fun libraryArtistEntries(): List<Map.Entry<String, List<Track>>> {
+        val all = artistsMap().entries.toList()
+        if (!_hideFeatureArtists.value) return all
+        val hidden = com.shiyin.music.data.artist.ArtistRole.featureOnlyArtists(lib())
+        return if (hidden.isEmpty()) all else all.filter { it.key !in hidden }
     }
 
     fun foldersMap(): Map<String, List<Track>> {
@@ -5373,6 +5393,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch { settingsStore.setKaraokeEnabled(v) }
     }
     /** v1.5.0 A56: 制作人行跳过翻译开关。 */
+    /** v1.5.0 A62：当前被判为「客串歌手」的人数（设置页显示用，与歌手栏过滤同一来源）。 */
+    fun featureArtistCount(): Int =
+        com.shiyin.music.data.artist.ArtistRole.featureOnlyArtists(lib()).size
+
+    /** v1.5.0 A62：切换后需要让歌手栏缓存失效，故清 artistsSig。 */
+    fun setHideFeatureArtists(v: Boolean) {
+        _hideFeatureArtists.value = v
+        artistsSig = ""
+        viewModelScope.launch { settingsStore.setHideFeatureArtists(v) }
+    }
+
     fun setSkipCreditsTranslation(v: Boolean) {
         _skipCreditsTranslation.value = v
         viewModelScope.launch { settingsStore.setSkipCreditsTranslation(v) }

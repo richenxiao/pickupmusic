@@ -51,6 +51,8 @@ internal class TrackCache(context: Context) {
         val dateAdded: Long,
         val albumId: Long,
         val dataPath: String,
+        // v1.5.0 A62: 可空——旧缓存文件里没有这个键，Gson 反序列化会给 null
+        val albumArtist: String? = null,
     ) {
         fun toTrack() = Track(
             id = id,
@@ -60,11 +62,13 @@ internal class TrackCache(context: Context) {
             title = title, artist = artist, album = album, trackNo = trackNo,
             durationMs = durationMs, sizeBytes = sizeBytes, folder = folder,
             dateAdded = dateAdded, albumId = albumId, dataPath = dataPath,
+            albumArtist = albumArtist ?: "",
         )
         companion object {
             fun fromTrack(t: Track) = TrackSer(
                 t.id, t.title, t.artist, t.album, t.trackNo,
                 t.durationMs, t.sizeBytes, t.folder, t.dateAdded, t.albumId, t.dataPath,
+                t.albumArtist,
             )
         }
     }

@@ -158,6 +158,7 @@ fun KaraokeDebugPanel(vm: MainViewModel) {
                                         onProgress = { text, frac ->
                                             progress = frac
                                             status = text
+                                            android.util.Log.i("KaraokeP0", "进度 $text")
                                         },
                                     )
                                     report = buildString {
@@ -189,6 +190,16 @@ fun KaraokeDebugPanel(vm: MainViewModel) {
                                         appendLine(r.accName ?: "（伴奏写入失败）")
                                         append(r.vocName ?: "（人声写入失败）")
                                     }
+                                    android.util.Log.i("KaraokeP0", "报告 " + report)
+                                    android.util.Log.i(
+                                        "KaraokeP0",
+                                        "RESULT model=${r.model.name} backend=${r.backend.name} "
+                                            + "threads=$threads dur=${"%.1f".format(r.durationSec)}s "
+                                            + "decode=${r.decodeMs}ms load=${r.modelLoadMs}ms firstChunk=${r.firstChunkMs}ms "
+                                            + "total=${r.totalMs}ms rtf=${"%.2f".format(r.rtf)} avgChunk=${r.avgChunkMs}ms "
+                                            + "maxChunk=${r.maxChunkMs}ms overBudget=${r.overBudgetChunks} "
+                                            + "chunks=${r.chunkTimesMs.size}",
+                                    )
                                 } catch (t2: Throwable) {
                                     report = "❌ ${t2.javaClass.simpleName}: ${t2.message}"
                                 } finally {

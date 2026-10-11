@@ -233,12 +233,16 @@ object MediaScanner {
             MediaStore.Audio.Media.DATA,
             MediaStore.Audio.Media.DATE_ADDED,
             MediaStore.Audio.Media.ALBUM_ID,
+            // v1.5.0 A62: 专辑作者——判断客串歌手的依据（"只 feat 一首单曲的歌手，
+            // 专辑作者字段里不会有他的名字"）。
+            MediaStore.Audio.Media.ALBUM_ARTIST,
         )
         val out = ArrayList<Track>()
         resolver.query(uri, projection, null, null, "${MediaStore.Audio.Media.DATE_ADDED} DESC")?.use { c ->
             val iId = c.getColumnIndexOrThrow(MediaStore.Audio.Media._ID)
             val iTitle = c.getColumnIndexOrThrow(MediaStore.Audio.Media.TITLE)
             val iArtist = c.getColumnIndexOrThrow(MediaStore.Audio.Media.ARTIST)
+            val iAlbumArtist = c.getColumnIndex(MediaStore.Audio.Media.ALBUM_ARTIST)
             val iAlbum = c.getColumnIndexOrThrow(MediaStore.Audio.Media.ALBUM)
             val iTrack = c.getColumnIndexOrThrow(MediaStore.Audio.Media.TRACK)
             val iDur = c.getColumnIndexOrThrow(MediaStore.Audio.Media.DURATION)
@@ -275,6 +279,11 @@ object MediaScanner {
                     dateAdded = c.getLong(iDate),
                     albumId = c.getLong(iAlbId),
                     dataPath = data,
+                    albumArtist = if (iAlbumArtist >= 0) {
+                        c.getString(iAlbumArtist)?.takeIf {
+                            it.isNotBlank() && it != MediaStore.UNKNOWN_STRING
+                        } ?: ""
+                    } else "",
                 )
                 onProgress(out.size, folder)
                 if (perItemDelay > 0) delay(perItemDelay)

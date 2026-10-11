@@ -116,6 +116,7 @@ fun SettingsHost(
         FilesView.Logs -> LogsScreen(vm, scrollStates)
         FilesView.DataManage -> DataManageScreen(vm, scrollStates)
         FilesView.FilesManage -> FilesManageScreen(vm, scrollStates)
+        FilesView.Artists -> ArtistsScreen(vm, scrollStates)
     }
 }
 
@@ -754,6 +755,12 @@ private fun SettingsRoot(vm: MainViewModel, scrollStates: MutableMap<String, Scr
             // v1.3.x: 睡眠定时可编辑——整行点击弹窗(时长档位/本曲结束/关闭),
             // 复用播放菜单同套 PlayerController 接口;不再只读展示。
             var sleepEditOpen by remember { mutableStateOf(false) }
+            // v1.5.0 A62：歌手栏显示选项（客串歌手不占位）
+            CardEntryRow(
+                Lucide.User, c.n700, "歌手栏目",
+                sub = null, divider = true,
+                trailingText = if (vm.hideFeatureArtists) "隐藏客串 ${vm.featureArtistCount()}" else "全部显示",
+            ) { vm.navFilesTo(FilesView.Artists) }
             CardEntryRow(
                 Lucide.Clock, c.n700, "睡眠定时",
                 null, divider = false, trailingText = vm.player.sleepStatusText(),
@@ -3511,5 +3518,43 @@ private fun AgentDiagRow(s: com.shiyin.music.data.log.AgentDiag.Sample) {
                 modifier = Modifier.padding(top = 3.dp),
             )
         }
+    }
+}
+
+// ── v1.5.0 A62：歌手栏目（客串歌手不占歌手栏位）──────────────────────────────
+// 只影响「歌手栏要不要给他一个位置」；他仍可从歌曲页点进去、搜索也照常能搜到。
+// 判定依据见 data/artist/ArtistRole：没当过主歌手、也不在专辑作者里 → 客串。
+@Composable
+private fun ArtistsScreen(vm: MainViewModel, scrollStates: MutableMap<String, ScrollState>) {
+    val c = LocalOrganic.current
+    Column(
+        Modifier
+            .fillMaxSize()
+            .verticalScroll(scrollStateOf(scrollStates, "artists"))
+            .padding(horizontal = 20.dp)
+            .padding(top = 22.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        SubPageHeader("歌手栏目") { vm.navFilesBack() }
+
+        SectionLabel("歌手列表")
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .shadowSm(RoundedCornerShape(28.dp))
+                .clip(RoundedCornerShape(28.dp))
+                .background(c.surface)
+                .padding(horizontal = 16.dp, vertical = 6.dp),
+        ) {
+            SettingRow(
+                Lucide.User, "隐藏客串歌手", null, divider = false,
+            ) {
+                OrganicSwitch(vm.hideFeatureArtists) { vm.setHideFeatureArtists(!vm.hideFeatureArtists) }
+            }
+        }
+
+        // 实时数字（同"已忽略 · N 个"的既有写法：信息，不是说明文字）
+        SectionLabel("客串歌手 · ${vm.featureArtistCount()} 位")
+        Box(Modifier.height(114.dp))
     }
 }
