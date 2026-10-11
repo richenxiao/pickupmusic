@@ -136,14 +136,16 @@ fun KaraokeDebugPanel(vm: MainViewModel) {
 
         // ── 运行 ──
         Row(verticalAlignment = Alignment.CenterVertically) {
+            // 未选歌时按钮**看起来**就该是不可点的（旧版灰都不灰，点了没反应像坏了）
             Text(
                 if (running) "运行中…（可取消）" else "开始分离并导出 WAV",
-                style = body(14f, color = c.surface),
+                style = body(14f, color = if (track == null && !running) c.n600 else c.surface),
                 modifier = Modifier
                     .clip(RoundedCornerShape(12.dp))
-                    .background(c.text)
-                    .clickableNoRipple(enabled = track != null) {
-                        val t = track ?: return@clickableNoRipple
+                    .background(if (track == null && !running) c.n100 else c.text)
+                    .clickableNoRipple {
+                        if (track == null) { status = "先选上面那行挑一首歌"; return@clickableNoRipple }
+                        val t = track!!
                         if (running) {
                             job?.cancel(); running = false; status = "已取消"
                         } else {
