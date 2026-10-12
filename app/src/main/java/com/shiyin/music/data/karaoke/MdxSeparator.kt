@@ -1,9 +1,9 @@
-package com.shiyin.music.spike.karaoke
+package com.shiyin.music.data.karaoke
 
 import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
-import com.shiyin.music.spike.karaoke.dsp.MdxStft
+import com.shiyin.music.data.karaoke.dsp.MdxStft
 import java.nio.FloatBuffer
 
 /**

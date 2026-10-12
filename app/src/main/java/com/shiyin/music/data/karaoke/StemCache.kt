@@ -1,0 +1,255 @@
+package com.shiyin.music.data.karaoke
+
+import com.google.gson.JsonObject
+import com.google.gson.JsonParser
+import java.io.File
+import java.io.RandomAccessFile
+
+/**
+ * v1.5.0 P1：**伴奏块缓存**（规格 P1 修正 一）。
+ *
+ * 位置（用户指定）：`filesDir/pickup/accompaniment-cache/`
+ *   `<songId>/<modelId>/<modelVersion>-e<engineVersion>-<指纹>/`
+ *     ├── c00000.pcm …（**原始 int16 交错立体声**，一块一文件）
+ *     └── manifest.json（genSize / 总块数 / 采样率 / complete / lastAccess）
+ *
+ * 为什么**不用 .wav/.mp3 等音频扩展名**：避免被系统或别的 app 当成音乐收录（用户要求）。
+ *
+ * 三条硬约束（用户要求）：
+ *  1. **原子写入**：先写 `cXXXXX.tmp` 再 rename —— rename 是原子的，所以
+ *     "块文件存在"就等于"该块完整"，崩溃/强杀后**不可能读到半写块**（.tmp 一律不读）。
+ *     **块的完成状态就由文件存在性承载**，不再单独维护位图（少一处可不同步的状态）。
+ *  2. **按帧随机读取**：固定 genSize，帧号 → 块号 + 块内偏移直接 seek。
+ *  3. **可重试**：缺块时 [readFrames] 返回 null，调用方重算缺的部分即可。
+ *
+ * manifest 用 Gson 的 JsonObject + **字面键名**读写（不用反射绑定），与项目既有约定一致
+ * （R8 下 toJson 反射绑定会丢泛型/字段名）。
+ */
+class StemCache(private val root: File) {
+
+    companion object {
+        /** 引擎版本：算法/参数变化时 +1，让旧缓存自然失效。 */
+        const val ENGINE_VERSION = 1
+
+        fun defaultRoot(filesDir: File): StemCache =
+            StemCache(File(filesDir, "pickup/accompaniment-cache"))
+    }
+
+    data class Manifest(
+        val modelId: String,
+        val modelVersion: String,
+        val fingerprint: String,
+        val genSize: Int,
+        val sampleRate: Int,
+        val channels: Int,
+        val totalChunks: Int,
+        val complete: Boolean,
+        val lastAccess: Long,
+    )
+
+    /** 一首歌在缓存里的一份产出（用于保留策略 / 占用统计）。 */
+    data class CachedSong(val songId: Long, val bytes: Long, val lastAccess: Long, val complete: Boolean)
+
+    fun songDir(songId: Long): File = File(root, songId.toString())
+
+    fun modelDir(songId: Long, modelId: String): File = File(songDir(songId), modelId)
+
+    fun variantDir(
+        songId: Long, modelId: String, modelVersion: String, fingerprint: String,
+        engineVersion: Int = ENGINE_VERSION,
+    ): File = File(modelDir(songId, modelId), "$modelVersion-e$engineVersion-$fingerprint")
+
+    private fun chunkFile(dir: File, index: Int) = File(dir, "c%05d.pcm".format(index))
+
+    private fun chunkTemp(dir: File, index: Int) = File(dir, "c%05d.tmp".format(index))
+
+    // ── 读 ────────────────────────────────────────────────────────────────
+
+    fun readManifest(dir: File): Manifest? {
+        val f = File(dir, "manifest.json")
+        if (!f.isFile) return null
+        return runCatching {
+            val o = JsonParser.parseString(f.readText()).asJsonObject
+            Manifest(
+                modelId = o.get("modelId").asString,
+                modelVersion = o.get("modelVersion").asString,
+                fingerprint = o.get("fingerprint").asString,
+                genSize = o.get("genSize").asInt,
+                sampleRate = o.get("sampleRate").asInt,
+                channels = o.get("channels").asInt,
+                totalChunks = o.get("totalChunks").asInt,
+                complete = o.get("complete").asBoolean,
+                lastAccess = o.get("lastAccess").asLong,
+            )
+        }.getOrNull()
+    }
+
+    /** 可直接使用的缓存目录（manifest 完整且标记 complete）——命中判定。 */
+    fun findComplete(songId: Long, modelId: String, modelVersion: String, fingerprint: String): File? {
+        val dir = variantDir(songId, modelId, modelVersion, fingerprint)
+        val m = readManifest(dir) ?: return null
+        return if (m.complete && m.totalChunks > 0) dir else null
+    }
+
+    fun hasChunk(dir: File, index: Int): Boolean = chunkFile(dir, index).isFile
+
+    /** 已完成块数（按文件存在性统计，无需位图）。 */
+    fun doneChunks(dir: File): Int {
+        val files = dir.listFiles() ?: return 0
+        return files.count { it.isFile && it.name.startsWith("c") && it.name.endsWith(".pcm") }
+    }
+
+    /** 首个未完成的块号；全部完成返回 -1。 */
+    fun firstMissingChunk(dir: File, totalChunks: Int): Int {
+        for (i in 0 until totalChunks) if (!hasChunk(dir, i)) return i
+        return -1
+    }
+
+    /**
+     * 按帧随机读取交错 PCM。任何一块缺失即返回 null（调用方按"未就绪"处理，
+     * 或退化成"只算缺失块"的重试）。
+     */
+    fun readFrames(dir: File, startFrame: Long, frames: Int): ShortArray? {
+        val m = readManifest(dir) ?: return null
+        if (m.genSize <= 0 || m.channels != 2) return null
+        val out = ShortArray(frames * 2)
+        var frame = startFrame
+        var written = 0
+        while (written < frames) {
+            val chunkIdx = (frame / m.genSize).toInt()
+            if (!hasChunk(dir, chunkIdx)) return null
+            val inChunk = (frame % m.genSize).toInt()
+            val take = minOf(frames - written, m.genSize - inChunk)
+            RandomAccessFile(chunkFile(dir, chunkIdx), "r").use { raf ->
+                raf.seek(inChunk.toLong() * 4)
+                val bytes = ByteArray(take * 4)
+                raf.readFully(bytes)
+                var b = 0
+                for (i in 0 until take) {
+                    val l = (bytes[b].toInt() and 0xFF) or ((bytes[b + 1].toInt() and 0xFF) shl 8)
+                    val r = (bytes[b + 2].toInt() and 0xFF) or ((bytes[b + 3].toInt() and 0xFF) shl 8)
+                    out[(written + i) * 2] = l.toShort()
+                    out[(written + i) * 2 + 1] = r.toShort()
+                    b += 4
+                }
+            }
+            frame += take
+            written += take
+        }
+        return out
+    }
+
+    // ── 写 ────────────────────────────────────────────────────────────────
+
+    /** 原子写一块（先 .tmp 再 rename）。 */
+    fun writeChunk(dir: File, index: Int, samples: ShortArray) {
+        dir.mkdirs()
+        val tmp = chunkTemp(dir, index)
+        val dst = chunkFile(dir, index)
+        tmp.outputStream().buffered(1 shl 16).use { out ->
+            val buf = ByteArray(samples.size * 2)
+            var b = 0
+            for (s in samples) {
+                val v = s.toInt()
+                buf[b++] = (v and 0xFF).toByte()
+                buf[b++] = ((v shr 8) and 0xFF).toByte()
+            }
+            out.write(buf)
+        }
+        if (dst.exists()) dst.delete()
+        check(tmp.renameTo(dst)) { "缓存块重命名失败：${dst.path}" }
+    }
+
+    /** 全部块写完后标记 complete（manifest 本身也走 tmp+rename）。 */
+    fun writeManifest(
+        dir: File,
+        modelId: String,
+        modelVersion: String,
+        fingerprint: String,
+        genSize: Int,
+        totalChunks: Int,
+        complete: Boolean,
+        sampleRate: Int = 44100,
+        channels: Int = 2,
+        lastAccess: Long,
+    ) {
+        dir.mkdirs()
+        val o = JsonObject().apply {
+            addProperty("schema", 1)
+            addProperty("modelId", modelId)
+            addProperty("modelVersion", modelVersion)
+            addProperty("fingerprint", fingerprint)
+            addProperty("engineVersion", ENGINE_VERSION)
+            addProperty("genSize", genSize)
+            addProperty("sampleRate", sampleRate)
+            addProperty("channels", channels)
+            addProperty("totalChunks", totalChunks)
+            addProperty("complete", complete)
+            addProperty("lastAccess", lastAccess)
+        }
+        val tmp = File(dir, "manifest.json.tmp")
+        val dst = File(dir, "manifest.json")
+        tmp.writeText(o.toString())
+        if (dst.exists()) dst.delete()
+        check(tmp.renameTo(dst)) { "manifest 重命名失败：${dst.path}" }
+    }
+
+    /** 访问时间（LRU 依据）。用目录 mtime，避免每次读都重写 manifest。 */
+    fun touch(dir: File) {
+        runCatching { dir.setLastModified(System.currentTimeMillis()) }
+    }
+
+    // ── 删 / 统计 ─────────────────────────────────────────────────────────
+
+    fun deleteSong(songId: Long): Boolean = songDir(songId).deleteRecursively()
+
+    fun deleteModel(songId: Long, modelId: String): Boolean = modelDir(songId, modelId).deleteRecursively()
+
+    fun usageBytes(): Long {
+        var total = 0L
+        root.walkTopDown().forEach { if (it.isFile) total += it.length() }
+        return total
+    }
+
+    /** 全部缓存（按"歌 + 模型变体"聚合），供保留策略与设置页显示。 */
+    fun cachedSongs(): List<CachedSong> {
+        val songs = root.listFiles() ?: return emptyList()
+        return songs.filter { it.isDirectory }.mapNotNull { sd ->
+            val songId = sd.name.toLongOrNull() ?: return@mapNotNull null
+            var bytes = 0L
+            var last = 0L
+            var anyComplete = false
+            var hasVariant = false
+            sd.walkTopDown().forEach { f ->
+                if (f.isFile) bytes += f.length()
+            }
+            sd.listFiles()?.forEach { modelDir ->
+                modelDir.listFiles()?.forEach { variant ->
+                    if (variant.isDirectory) {
+                        last = maxOf(last, variant.lastModified())
+                        if (readManifest(variant) != null) {
+                            hasVariant = true
+                            if (readManifest(variant)?.complete == true) anyComplete = true
+                        }
+                    }
+                }
+            }
+            // 空壳目录（删完模型后残留的歌目录）不算缓存 —— 否则设置页会显示"0MB 的一首"
+            if (!hasVariant || bytes == 0L) return@mapNotNull null
+            CachedSong(songId, bytes, last, anyComplete)
+        }
+    }
+
+    /** 清理残留的 .tmp（半写块）——启动对账用；变体级的处置见 StemRetention.planReconcile。 */
+    fun purgeTempFiles(): Int {
+        var n = 0
+        root.walkTopDown().forEach { f ->
+            if (f.isFile && f.name.endsWith(".tmp")) {
+                if (f.delete()) n++
+            }
+        }
+        return n
+    }
+
+    fun rootDir(): File = root
+}

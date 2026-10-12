@@ -1,0 +1,86 @@
+package com.shiyin.music.data.karaoke
+
+/**
+ * v1.5.0 P1：**缓存保留策略与启动对账**（规格 P1 修正 二）——纯逻辑，可单测。
+ *
+ * 保留模式（用户拍板，设置页可调）：
+ *  - [RetentionMode.COUNT]（默认 10 首）：保持最近访问的 N 首，其余按 **LRU** 淘汰；
+ *  - [RetentionMode.SIZE_MB]：总占用超上限时按 LRU 淘汰到不超；
+ *  - [RetentionMode.NONE]：不保留——**用完即删**（由调用方在播放结束后删除，这里不参与淘汰）。
+ *
+ * **受保护集合**（当前播放的歌 + 下一首）永不淘汰（用户要求 二.2）。
+ */
+enum class RetentionMode { COUNT, SIZE_MB, NONE }
+
+object StemRetention {
+
+    data class Entry(val songId: Long, val bytes: Long, val lastAccess: Long)
+
+    /**
+     * 算出该淘汰哪些歌（返回 songId）。
+     * 均按 LRU（lastAccess 升序，最久未访问的先走）；受保护的一律保留。
+     */
+    fun planEviction(
+        entries: List<Entry>,
+        mode: RetentionMode,
+        maxCount: Int = 10,
+        maxMb: Int = 0,
+        protectedSongIds: Set<Long> = emptySet(),
+    ): List<Long> {
+        if (mode == RetentionMode.NONE) return emptyList()   // 由调用方"用完即删"
+        val evictable = entries.filter { it.songId !in protectedSongIds }.sortedBy { it.lastAccess }
+        val protectedBytes = entries.filter { it.songId in protectedSongIds }.sumOf { it.bytes }
+        return when (mode) {
+            RetentionMode.COUNT -> {
+                // 保留数 = 受保护的 + 最近的 (maxCount - 受保护数)，下限 0
+                val keepOthers = (maxCount - protectedSongIds.size).coerceAtLeast(0)
+                evictable.dropLast(keepOthers).map { it.songId }
+            }
+            RetentionMode.SIZE_MB -> {
+                val limit = maxMb.toLong() * 1024 * 1024
+                var total = entries.sumOf { it.bytes }   // 含受保护占用
+                val out = mutableListOf<Long>()
+                for (e in evictable) {                    // 最旧的先淘汰
+                    if (total <= limit) break
+                    out += e.songId
+                    total -= e.bytes
+                }
+                out
+            }
+            RetentionMode.NONE -> emptyList()
+        }
+    }
+
+    // ── 启动对账 ──────────────────────────────────────────────────────────
+
+    /**
+     * 一个"变体目录"（歌 × 模型 × 指纹）的健康状态。
+     * 缓存**没有独立索引**——文件系统就是索引，所以不存在"索引里有、磁盘上没有"这类
+     * 双向孤儿；真正要收拾的只有**半成品**：
+     *  - 没有 manifest 或块数为 0 → 整个目录删掉（重跑时会重建）
+     *  - manifest 说 complete 但块数不足 → 标记为未完成（保留已写好的块，下次接着算）
+     */
+    data class VariantState(
+        val path: String,
+        val hasManifest: Boolean,
+        val declaredComplete: Boolean,
+        val declaredChunks: Int,
+        val presentChunks: Int,
+    )
+
+    sealed interface Action {
+        /** 整个变体删掉（空壳 / 无 manifest）。 */
+        data class Delete(val path: String) : Action
+        /** 降级为未完成（保留已写好的块，下次续算）。 */
+        data class MarkIncomplete(val path: String) : Action
+    }
+
+    fun planReconcile(variants: List<VariantState>): List<Action> = variants.mapNotNull { v ->
+        when {
+            !v.hasManifest -> Action.Delete(v.path)
+            v.presentChunks == 0 -> Action.Delete(v.path)
+            v.declaredComplete && v.presentChunks < v.declaredChunks -> Action.MarkIncomplete(v.path)
+            else -> null
+        }
+    }
+}

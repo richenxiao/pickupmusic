@@ -1,4 +1,4 @@
-package com.shiyin.music.spike.karaoke
+package com.shiyin.music.data.karaoke
 
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals

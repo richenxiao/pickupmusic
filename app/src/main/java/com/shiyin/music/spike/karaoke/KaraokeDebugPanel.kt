@@ -42,6 +42,10 @@ import com.shiyin.music.ui.components.shadowSm
 import com.shiyin.music.ui.theme.LocalOrganic
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import com.shiyin.music.data.karaoke.AudioDecoder
+import com.shiyin.music.data.karaoke.MdxModel
+import com.shiyin.music.data.karaoke.MdxSeparator
+import com.shiyin.music.data.karaoke.OrtBackend
 
 /**
  * P0 Spike 阶段 B 调试面板（规格 §12 要求：选歌 → 选模型/线程 → 跑 → 看耗时 → 导出 WAV）。
@@ -203,6 +207,16 @@ fun KaraokeDebugPanel(vm: MainViewModel) {
                                     // v1.5.0 A60：**写进应用自己的文件**（外部 files 目录），
                                     // 不再只打系统日志——logcat 会滚掉、还得 adb 在线才能读。
                                     // 路径：Android/data/com.shiyin.music/files/karaoke_runs.log
+                                    // 同时写进**应用使用日志**（设置→日志 可见、可导出分享）——
+                                    // 用户在手机上就能自查跑了几轮、各自多快，不必等 adb。
+                                    com.shiyin.music.data.log.UsageLog.event(
+                                        context, "伴唱分离",
+                                        "${r.model.name}/${r.backend.name}/t$threads " +
+                                            "音频${"%.1f".format(r.durationSec)}s " +
+                                            "首块${r.firstChunkMs}ms 总${r.totalMs}ms " +
+                                            "RTF${"%.2f".format(r.rtf)} 平均块${r.avgChunkMs}ms " +
+                                            "超预算${r.overBudgetChunks}/${r.chunkTimesMs.size}",
+                                    )
                                     runCatching {
                                         val dir = context.getExternalFilesDir(null)
                                         java.io.File(dir, "karaoke_runs.log").appendText(

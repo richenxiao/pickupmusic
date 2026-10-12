@@ -1,7 +1,8 @@
-package com.shiyin.music.spike.karaoke.dsp
+package com.shiyin.music.data.karaoke.dsp
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import com.shiyin.music.data.karaoke.dsp.MdxStft
 import org.junit.Test
 import java.io.DataOutputStream
 import java.io.File

@@ -1,8 +1,9 @@
-package com.shiyin.music.spike.karaoke
+package com.shiyin.music.data.karaoke
 
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
 import org.junit.Assume.assumeTrue
+import com.shiyin.music.spike.karaoke.KaraokeStemRunner
 import org.junit.Test
 import java.io.DataInputStream
 import java.io.DataOutputStream

@@ -6,7 +6,7 @@ import android.content.Context
 import android.os.Build
 import android.system.Os
 import android.system.OsConstants
-import com.shiyin.music.spike.karaoke.dsp.MdxStft
+import com.shiyin.music.data.karaoke.dsp.MdxStft
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -14,6 +14,10 @@ import java.nio.FloatBuffer
 import kotlin.math.abs
 import kotlin.math.sqrt
 import kotlin.random.Random
+import com.shiyin.music.data.karaoke.AudioDecoder
+import com.shiyin.music.data.karaoke.MdxModel
+import com.shiyin.music.data.karaoke.MdxSeparator
+import com.shiyin.music.data.karaoke.OrtBackend
 
 /**
  * P0 Spike A4 手机侧探针：验证「模型能在本机 ORT 上加载并跑通一个 chunk」。

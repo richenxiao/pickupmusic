@@ -1,4 +1,4 @@
-package com.shiyin.music.spike.karaoke
+package com.shiyin.music.data.karaoke
 
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession

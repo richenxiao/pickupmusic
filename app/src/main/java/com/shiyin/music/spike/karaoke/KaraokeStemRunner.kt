@@ -17,6 +17,10 @@ import java.io.DataOutputStream
 import java.io.File
 import java.io.OutputStream
 import kotlin.math.roundToInt
+import com.shiyin.music.data.karaoke.AudioDecoder
+import com.shiyin.music.data.karaoke.MdxModel
+import com.shiyin.music.data.karaoke.MdxSeparator
+import com.shiyin.music.data.karaoke.OrtBackend
 
 /**
  * P0 Spike 阶段 B：一次完整跑批（解码落盘 → 流式分离 → 边算边写 WAV + 指标）。

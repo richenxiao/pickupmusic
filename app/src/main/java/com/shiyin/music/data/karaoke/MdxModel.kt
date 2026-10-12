@@ -1,4 +1,4 @@
-package com.shiyin.music.spike.karaoke
+package com.shiyin.music.data.karaoke
 
 /**
  * P0 Spike 阶段 B：三个内置模型的参数（全部来自 UVR 官方 model_data.json 核实值，

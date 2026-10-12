@@ -1,6 +1,7 @@
-package com.shiyin.music.spike.karaoke
+package com.shiyin.music.data.karaoke
 
 import org.junit.Assert.assertEquals
+import com.shiyin.music.spike.karaoke.KaraokeStemRunner
 import org.junit.Test
 import java.io.ByteArrayOutputStream
 import java.io.DataOutputStream

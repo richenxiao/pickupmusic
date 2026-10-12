@@ -1,4 +1,4 @@
-package com.shiyin.music.spike.karaoke.dsp
+package com.shiyin.music.data.karaoke.dsp
 
 import org.jtransforms.fft.FloatFFT_1D
 import kotlin.math.PI

@@ -52,11 +52,20 @@
              为什么必须排：DataStore 已不上云（见上），镜像若被云端还原成陈旧值，
              首帧会用错主题 —— 那就把方案①刚修好的闪烁又请回来了。 -->
         <exclude domain="sharedpref" path="theme_mirror.xml" />
+        <!-- v1.5.0 P1：伴唱缓存（filesDir/pickup/accompaniment-cache）与模型
+             （filesDir/models）不上云 —— 都是可重建的大文件（一首歌伴奏 ~40MB），
+             上云只会顶爆 25MB 配额并把别的数据一起挤掉。 -->
+        <exclude domain="file" path="pickup" />
+        <exclude domain="file" path="models" />
     </cloud-backup>
     <!-- 换机迁移：排除"含对话内容"的两处，其余（图片/快照/设置）保持全量迁移 -->
     <device-transfer>
         <exclude domain="file" path="agent_diag" />
         <exclude domain="external" path="agent_dump" />
         <exclude domain="file" path="agent_dump" />
+        <!-- v1.5.0 P1：伴唱缓存与模型也不随换机迁移 —— 换机后按需重新生成即可，
+             没必要把几十 MB×N 首的伴奏搬过去（且模型可由用户重新下载/导入）。 -->
+        <exclude domain="file" path="pickup" />
+        <exclude domain="file" path="models" />
     </device-transfer>
 </data-extraction-rules>
