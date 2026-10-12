@@ -18,27 +18,29 @@ import java.util.Locale
  * 真实音乐目录里丢调试产物，会被系统媒体库和 App 自己的曲库扫进去。改成：
  *
  *  - 目录固定 [DIR]（`Download/PickUpMusic-debug/`），**不再往 `Music/` 写任何东西**；
- *  - **用非音频 MIME 落盘**，让它根本不进 `MediaStore.Audio`（见 [WAV_MIME]——这是
- *    「不进曲库」的**唯一可靠杠杆**，为什么不能用 `.nomedia` 见下）；
  *  - 文件名随机（`dbg-<8位随机>-acc.wav` / `-voc.wav`），一眼看不出是歌，也不会重名覆盖；
  *  - 同目录一份 `_map.tsv` 对照表：哪个文件 ↔ 哪个模型/后端/线程/哪首歌；
  *  - 调试页可一键清空（[clear]）。
  *
- * ⚠️ **为什么不是 `.nomedia`（2026-10-12 真机实测否掉了它）**：
- *  P1 规范要求"在该目录建一个空 `.nomedia`"。实测做不到 —— MediaProvider**不接受**以
- *  点开头的文件名，insert 时把 `.nomedia` 改名成了 `_.nomedia`（files 表 media_type=0），
- *  而这个名字**不被媒体扫描认**为 no-media 标记：随后写进去的两个 WAV 照样出现在
- *  `content://media/external/audio/media`（`is_music=1`），即已经进了媒体库。
- *  两条路都被堵死后的结论：
- *   · 直接写文件（绕过 MediaStore）需要 `MANAGE_EXTERNAL_STORAGE` —— App 没有，也不该加；
- *   · `IS_MUSIC=0` 也拦不住 —— App 自己的扫描是 `MediaStore.Audio.Media` 上的**裸查询**
- *     （`MediaScanner.scan()` 无 selection），任何落在该表里的行都会进曲库；
- *   · **所以真正的杠杆是 MIME**：不声明成音频类型（`audio` 斜杠开头的那一族），
- *     MediaProvider 就不会把它归入 `MediaStore.Audio`，任何按媒体库取歌的播放器
- *     （含本 App）都看不到它。
+ * ⚠️ **这些 WAV 一定会进系统媒体库 —— 2026-10-12 真机实测确认，且是用户拍板接受的取舍**：
+ *  1. **`.nomedia` 建不出来**：MediaProvider 不接受点开头的文件名，insert 时把 `.nomedia`
+ *     改名成 `_.nomedia`（files 表 media_type=0），而这个名字**不被媒体扫描认作** no-media
+ *     标记 —— 随后写入的两个 WAV 照样出现在 `content://media/external/audio/media`。
+ *  2. **改 MIME 也没用**：实测 MediaProvider **无视** ContentValues 里的
+ *     `application/octet-stream`，按**文件扩展名**重新推导 → `mime_type=audio/x-wav`、
+ *     `media_type=2`、`is_music=1`。对照 `_map.tsv` → `text/tab-separated-values`。
+ *     **真正的杠杆是扩展名，不是 MIME**：名字带 `.wav` 就必然归入 `MediaStore.Audio`。
+ *  3. `IS_MUSIC=0` 拦不住**本 App**：`MediaScanner.scan()` 是 `MediaStore.Audio` 上的
+ *     **裸查询**（无 selection），落在该表里的行都会进曲库。
+ *  4. 绕过 MediaStore 直接写文件需要 `MANAGE_EXTERNAL_STORAGE` —— App 没有，也不该加。
  *
- *  代价（已与用户确认取舍）：文件仍是**合法的 WAV 字节**，从文件管理器「打开方式」照样能播，
- *  但它不会出现在任何音乐 App 的曲库里 —— 这正是本需求要的。
+ *  **用户拍板（2026-10-12）**：位置与文件名**都不动**，**只挡拾音自己** —— 靠
+ *  [com.shiyin.music.data.MediaScanner] 里按路径的过滤把本 App 曲库挡干净；
+ *  **接受系统音乐 App / 别的播放器仍会列出它们**。（判据：调试导出只是开发期产物，
+ *  用户明确说过"不能播不是需求"，不值得为它改目录结构。）
+ *
+ *  产品侧的伴奏/人声（P2 及以后）**不走这里** —— 那是 `filesDir/pickup/accompaniment-cache/`，
+ *  永远只待在拾音自己的地盘内，从不进共享存储。
  *
  * 本对象只管**存哪儿、叫什么、怎么记账**，不碰音频字节——WAV 头与采样由
  * [KaraokeStemRunner] 写进 [Sink.out]。
@@ -124,7 +126,13 @@ object DebugExport {
         }
     }
 
-    /** 目录里的文件数（[delete] 为 false 只数）。 */
+    /**
+     * 目录里的文件数（[delete] 为 false 只数）；[delete] 为 true 则逐个删掉。
+     *
+     * [delete] 走 `ContentResolver.delete(uri)` —— MediaProvider 会**连同磁盘文件一起删**，
+     * 媒体库记录也随之消失。用户 2026-10-12 明确要求清空必须两者都删：只删文件不删记录的话，
+     * 系统音乐 App 里仍会留着指向已删文件的条目。
+     */
     fun clear(context: Context, delete: Boolean): Int {
         val resolver = context.contentResolver
         val collection = collection()

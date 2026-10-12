@@ -203,6 +203,8 @@ fun KaraokeDebugPanel(vm: MainViewModel) {
                                         appendLine("导出：${DebugExport.DIR}/（已隔离，不进曲库；对照表 _map.tsv）")
                                         appendLine(r.accName ?: "（伴奏写入失败）")
                                         append(r.vocName ?: "（人声写入失败）")
+                                        appendLine()
+                                        appendLine("⚠️ 用完请按上面的「清空」删掉导出文件——会同时删掉媒体库里的记录，否则系统音乐 App 仍会看到它们。")
                                     }
                                     android.util.Log.i("KaraokeP0", "报告 " + report)
                                     android.util.Log.i(
