@@ -59,11 +59,20 @@ class MdxSeparator(
         val leadSec: Float,
     )
 
-    /** 流式跑完一首。返回 (首块耗时, 分离总耗时, 推理累计, 每块耗时数组)。 */
+    /**
+     * 流式跑完一首。
+     *
+     * @param shouldProcess 返回 false 的块直接跳过（**续算**：缓存里已有的块不重算），进度照常推进。
+     * @param isCancelled 块间检查；返回 true 立即停止（已交给 sink 的块由调用方保留）。
+     */
     fun run(
         totalFrames: Int,
         provider: ChunkProvider,
         sink: ChunkSink,
+        shouldProcess: ((chunkIndex: Int) -> Boolean)? = null,
+        isCancelled: (() -> Boolean)? = null,
+        // ⚠️ onProgress 必须留在**最后**：既有调用点都把回调写成尾随 lambda，
+        // 一旦它后面还有参数，尾随 lambda 会绑到后面的参数上（编译期就炸）。
         onProgress: (Progress) -> Unit = {},
     ): RunSummary {
         val trim = model.nFft / 2
@@ -95,9 +104,35 @@ class MdxSeparator(
         val chunkTimes = LongArray(total)
         val chunkAudioSec = (chunkSize - 2 * trim) / 44100f
 
+        var lastProcessed = -1
         for (chunkIdx in 0 until total) {
+            if (isCancelled?.invoke() == true) {
+                return RunSummary(
+                    firstChunkMs = firstChunkMs,
+                    totalMs = (System.nanoTime() - t0) / 1_000_000,
+                    inferMsTotal = inferTotal,
+                    chunkTimesMs = chunkTimes.copyOfRange(0, lastProcessed + 1),
+                    chunkAudioSec = chunkAudioSec,
+                    cancelled = true,
+                )
+            }
             val tChunk = System.nanoTime()
             val start = chunkIdx * genSize
+            if (shouldProcess?.invoke(chunkIdx) == false) {
+                // 续算：缓存里已有这块 → 跳过计算，进度照常推进
+                val cov = (chunkIdx + 1) * chunkAudioSec
+                val el = (System.nanoTime() - t0) / 1_000_000
+                onProgress(
+                    Progress(
+                        chunkDone = chunkIdx + 1, chunkTotal = total,
+                        firstChunkMs = firstChunkMs, elapsedMs = el,
+                        inferMsTotal = inferTotal, lastChunkMs = 0,
+                        avgChunkMs = el / (chunkIdx + 1),
+                        audioCoveredSec = cov, leadSec = cov - el / 1000f,
+                    ),
+                )
+                continue
+            }
             // 输入块 = 歌曲 [start − trim, start + genSize + trim)，越界补零
             provider.readChunk(start - trim, chunkSize, chunkL, chunkR)
 
@@ -136,6 +171,7 @@ class MdxSeparator(
             val elapsed = (System.nanoTime() - t0) / 1_000_000
             val chunkMs = (System.nanoTime() - tChunk) / 1_000_000
             chunkTimes[chunkIdx] = chunkMs
+            lastProcessed = chunkIdx
             if (chunkIdx == 0) firstChunkMs = elapsed
             val coveredSec = (chunkIdx + 1) * chunkAudioSec
             onProgress(
@@ -166,6 +202,8 @@ class MdxSeparator(
         val inferMsTotal: Long,
         val chunkTimesMs: LongArray,
         val chunkAudioSec: Float,
+        /** 是否因取消提前结束（此时只处理了前 chunkTimesMs.size 块）。 */
+        val cancelled: Boolean = false,
     ) {
         val chunkCount: Int get() = chunkTimesMs.size
         val avgChunkMs: Long get() = if (chunkCount == 0) 0 else chunkTimesMs.average().toLong()

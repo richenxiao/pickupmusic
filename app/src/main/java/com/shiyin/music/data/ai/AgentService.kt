@@ -84,7 +84,39 @@ object AgentService {
     ): SortResult? = withContext(Dispatchers.IO) {
         if (!config.isConfigured || currentTracks.isEmpty()) return@withContext null
 
-        // ── 0. 先试**豆瓣路线**:直接拿页面上的官方曲目表 ────────────────────────────
+        // ── 0. 先试**MusicBrainz 结构化曲序**（2026-10-12 新增，置于豆瓣之前）──
+        // 为什么放最前：它是**曲目数据库**（有序曲目表直接给），不用抓页面、不用模型猜；
+        // 日文/拉丁名专辑同样覆盖 —— 《LSC》(ラブリーサマーちゃん) 实测拿到 12 首通常盘，
+        // 与用户本地完全一致，而"优先豆瓣（写死中文查询）"对这张专辑是搜不到的。
+        // 多版本（通常盘 12 / 初回盘 21）由 expectTracks 挑最接近本地的那个，避免初回盘
+        // 的附赠曲把整条顺序带偏。
+        runCatching { MusicBrainzTracklist.fetch(album, artist, currentTracks.size) }.getOrNull()?.let { hit ->
+            val ordered = officialToLocalIndices(hit.titles, currentTracks)
+            val need = maxOf(3, kotlin.math.ceil(currentTracks.size * 0.8).toInt())
+            if (ordered.size >= need) {
+                android.util.Log.i(
+                    "Agent",
+                    "album_sort: MusicBrainz 命中 ${ordered.size}/${currentTracks.size} 首" +
+                        "（《${hit.release.title}》${hit.release.date}，trackCount=${hit.release.trackCount}）",
+                )
+                onStep("search", AgentEngine.StepStatus.DONE)
+                onStep("analyze", AgentEngine.StepStatus.DONE)
+                return@withContext SortResult(
+                    orderedIndices = ordered,
+                    confidence = Confidence.HIGH,
+                    webSearched = true,
+                    webSnippet = hit.titles.joinToString("\n"),
+                    webHits = ordered.size,
+                    orderedSource = "musicbrainz:${hit.release.id}",
+                )
+            }
+            android.util.Log.i(
+                "Agent",
+                "album_sort: MusicBrainz 表覆盖不足(${ordered.size}/${currentTracks.size})，转豆瓣/模型链路",
+            )
+        }
+
+        // ── 0b. 再试**豆瓣路线**:直接拿页面上的官方曲目表 ────────────────────────────
         // 为什么放最前:通用搜索给的是"一段可能不对题的资料",模型还得照着猜;而豆瓣专辑页的
         // "曲目"段**本身就是官方顺序**(实测《龙年》:抽出来的 14 首与用户手贴的官方序一字不差)。
         // 这一步不需要模型参与 —— 名字能对上就直接排完,对不上才落到下面的模型链路。
@@ -484,7 +516,22 @@ object AgentService {
      * ——只做 FuzzySearch.normalize **不剥括号**,「晴天 (Live)」就永远对不上《晴天》。
      */
     private fun normTitle(s: String): String =
-        com.shiyin.music.data.search.FuzzySearch.normalize(BRACKET_SUFFIX.replace(s, ""))
+        com.shiyin.music.data.search.FuzzySearch.normalize(canonTitle(BRACKET_SUFFIX.replace(s, "")))
+
+    /**
+     * v1.5.0：《LSC》实测暴露的归一化缺口——官方站的写法与本地标签常有**不可见字符差异**：
+     *  - `PART‐TIME ROBOT`（U+2010 连字符） vs 本地 `PART-TIME ROBOT`（ASCII `-`）
+     *  - `あなたは煙草　私はシャボン`（全角空格 U+3000） vs 官方页的半角空格
+     * 这些差异会让"全等/包含"两档同时失效，白丢一首（进而拖低覆盖率、误触"待确认"闸门）。
+     * 统一：各种连字符/减号 → `-`，全角空格 → 半角，连续空白折叠成一个。
+     */
+    internal fun canonTitle(s: String): String = s.map { ch ->
+        when (ch.code) {
+            0x2010, 0x2011, 0x2012, 0x2013, 0x2014, 0x2015, 0x2212, 0xFF0D -> '-'
+            0x3000 -> ' '
+            else -> ch
+        }
+    }.joinToString("").replace(Regex("\\s+"), " ").trim()
 
     /**
      * v1.3.3: 检测文本主要语言(粗略启发式)——日语/中文/英文,用于 Tavily 查询关键词选择。

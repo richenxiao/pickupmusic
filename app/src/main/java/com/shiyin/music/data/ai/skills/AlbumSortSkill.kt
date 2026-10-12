@@ -198,9 +198,18 @@ object AlbumSortSkill : AgentEngine.AgentSkill {
         // 因为编号格式是弱模型的老坑)→ 照它的顺序写下标即可,零文本匹配。
         ctx.applyAlbumOrderIndices(key, result.orderedIndices)
         onStep("writeback", AgentEngine.StepStatus.DONE)
-        val msg = if (result.confidence == AgentService.Confidence.LOW)
-            "已按可查到的信息排序(置信度低,建议核对)。"
-        else "已按官方顺序排列《$albumName》。"
+        // v1.5.0（2026-10-12 用户实测《LSC》）：**不许再报假成功**。
+        // applyAlbumOrderIndices 在"只认出部分曲目"时走的是**待确认闸门**——
+        // 此时 **什么都不会落库**，而旧文案照样回"已按官方顺序排列"，用户看到的正是
+        // "说排好了、结果没动/还是错的"。有闸门就如实说。
+        val pending = ctx.hasPendingOrder()
+        val msg = when {
+            pending ->
+                "已排出《$albumName》的顺序，但**有曲目没认出**（识别 ${result.orderedIndices.size}/${currentTitles.size} 首），" +
+                    "需要你在确认窗里过一眼再落库——直接确认即可。"
+            result.confidence == AgentService.Confidence.LOW -> "已按可查到的信息排序（置信度低，建议核对）。"
+            else -> "已按官方顺序排列《$albumName》。"
+        }
         ctx.recordDiag(
             skill = "album_sort", stage = "parse", ok = true,
             counts = mapOf(
@@ -214,6 +223,6 @@ object AlbumSortSkill : AgentEngine.AgentSkill {
             webRaw = result.webSnippet,
             errorDetail = result.orderedSource,
         )
-        return AgentEngine.SkillResult(msg, needsConfirm = ctx.hasPendingOrder(), thinking = result.thinking)
+        return AgentEngine.SkillResult(msg, needsConfirm = pending, thinking = result.thinking)
     }
 }
