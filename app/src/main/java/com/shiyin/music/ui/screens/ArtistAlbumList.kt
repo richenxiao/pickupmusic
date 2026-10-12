@@ -163,23 +163,41 @@ fun ArtistAlbumList(
                                 if (aiBusy) return@DropdownMenuItem
                                 aiBusy = true; aiStatus = null
                                 scope.launch {
-                                    val triples = grouped.values.flatten().map {
-                                        Triple(it.key, it.firstTrack.albumId, it.firstTrack.album)
+                                    // v1.5.0（2026-10-12 用户实测"点了没反应"）：原来没有 try/finally——
+                                    // 只要这一趟抛异常（网络超时/解析失败/DB 异常），`aiBusy = false` 就永远
+                                    // 执行不到 → **标志永久卡 true → 这个菜单项从此点不动，且连报错都没有**。
+                                    // 现在无论成败都复位，并把失败原因显示出来。
+                                    var n = 0
+                                    var lastProgress = ""
+                                    try {
+                                        val triples = grouped.values.flatten().map {
+                                            Triple(it.key, it.firstTrack.albumId, it.firstTrack.album)
+                                        }
+                                        n = vm.fetchArtistAlbumDates(artistName, triples) {
+                                            lastProgress = it
+                                            aiStatus = it
+                                        }
+                                    } catch (e: Throwable) {
+                                        aiStatus = "获取失败：${e.javaClass.simpleName}${e.message?.let { " · ${it.take(60)}" } ?: ""}"
+                                        android.util.Log.w("Agent", "albumDates[$artistName]: 异常 ${e.message}", e)
+                                    } finally {
+                                        aiBusy = false
                                     }
-                                    val n = vm.fetchArtistAlbumDates(artistName, triples) { aiStatus = it }
-                                    aiBusy = false
                                     dragOrder = null
                                     // v1.5.0 A59:用户反馈"点了经常没反应"——根因是**成功路径零反馈**:
                                     // 原来 n>0 就把状态行清空,而"全部专辑都已有日期、直接重排"这条
                                     // 最常走的分支里,顺序往往本来就对 → 界面毫无变化,读起来就是"没反应"。
                                     // 现在成功也给一句明确结果,3 秒后自动收起(失败时保留,让用户看清原因)。
-                                    aiStatus = if (n > 0) "已按发布日期重排 · $n 张"
-                                    else (aiStatus.takeIf { !it.isNullOrBlank() } ?: "未能获取发布时间")
-                                    android.util.Log.i("Agent", "albumDates[$artistName]: 结束 n=$n status=$aiStatus")
-                                    if (n > 0) {
-                                        kotlinx.coroutines.delay(3000)
-                                        if (aiStatus?.startsWith("已按发布日期重排") == true) aiStatus = null
+                                    // v1.5.0（2026-10-12 用户实测"点了下方是空的"）：原来成功提示**3 秒后自动收起**，
+                                    // 用户看到时已经消失 → 读成"毫无反应"。改为**保留到下次操作**，并区分两种情形：
+                                    // 有专辑本来就有日期时，它是"直接重排、没联网"，说清楚免得像没做事。
+                                    aiStatus = when {
+                                        n > 0 && lastProgress.contains("已有日期") ->
+                                            "$n 张都已有日期，未联网查询 · 已按日期重排"
+                                        n > 0 -> "已联网获取 $n 张的发布日期 · 已按时间重排"
+                                        else -> (aiStatus.takeIf { !it.isNullOrBlank() } ?: "未能获取发布时间")
                                     }
+                                    android.util.Log.i("Agent", "albumDates[$artistName]: 结束 n=$n status=$aiStatus")
                                 }
                             },
                         )
