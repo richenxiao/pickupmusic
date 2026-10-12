@@ -23,6 +23,7 @@ import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -40,8 +41,10 @@ import com.shiyin.music.ui.components.body
 import com.shiyin.music.ui.components.clickableNoRipple
 import com.shiyin.music.ui.components.shadowSm
 import com.shiyin.music.ui.theme.LocalOrganic
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import com.shiyin.music.data.karaoke.AudioDecoder
 import com.shiyin.music.data.karaoke.MdxModel
 import com.shiyin.music.data.karaoke.MdxSeparator
@@ -67,6 +70,13 @@ fun KaraokeDebugPanel(vm: MainViewModel) {
     var report by remember { mutableStateOf<String?>(null) }
     var pickerOpen by remember { mutableStateOf(false) }
     var job by remember { mutableStateOf<Job?>(null) }
+    var exportCount by remember { mutableStateOf<Int?>(null) }
+    var exportRefresh by remember { mutableStateOf(0) }
+
+    // 导出目录的文件数（走 MediaStore 查询，别在主线程上做）
+    LaunchedEffect(exportRefresh) {
+        exportCount = withContext(Dispatchers.IO) { DebugExport.clear(context, delete = false) }
+    }
 
     Column(
         Modifier
@@ -190,7 +200,7 @@ fun KaraokeDebugPanel(vm: MainViewModel) {
                                         r.tempBeforeC?.let { b ->
                                             appendLine("电池温度 ${b}℃ → ${r.tempAfterC ?: b}℃")
                                         }
-                                        appendLine("导出：Music/PickUpMusic/")
+                                        appendLine("导出：${DebugExport.DIR}/（已隔离，不进曲库；对照表 _map.tsv）")
                                         appendLine(r.accName ?: "（伴奏写入失败）")
                                         append(r.vocName ?: "（人声写入失败）")
                                     }
@@ -236,6 +246,7 @@ fun KaraokeDebugPanel(vm: MainViewModel) {
                                     report = "❌ ${t2.javaClass.simpleName}: ${t2.message}"
                                 } finally {
                                     running = false; status = null
+                                    exportRefresh++
                                 }
                             }
                         }
@@ -253,6 +264,34 @@ fun KaraokeDebugPanel(vm: MainViewModel) {
                 progress = { progress },
                 modifier = Modifier.fillMaxWidth(),
             )
+        }
+
+        // ── 导出目录（隔离在 Download/PickUpMusic-debug/，不碰 Music/）──
+        if (DebugExport.ENABLED) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "导出 ${DebugExport.DIR}/ · " +
+                        (exportCount?.let { "$it 个文件" } ?: "统计中…"),
+                    style = body(11f, color = c.n600),
+                    modifier = Modifier.weight(1f),
+                )
+                Spacer(Modifier.width(10.dp))
+                Text(
+                    "清空",
+                    style = body(12f, color = if (exportCount == 0) c.n600 else c.text),
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(c.n100)
+                        .clickableNoRipple(enabled = !running && (exportCount ?: 0) > 0) {
+                            scope.launch {
+                                val n = withContext(Dispatchers.IO) { DebugExport.clear(context, delete = true) }
+                                status = "已清空 $n 个导出文件"
+                                exportRefresh++
+                            }
+                        }
+                        .padding(horizontal = 12.dp, vertical = 6.dp),
+                )
+            }
         }
 
         report?.let {

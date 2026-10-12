@@ -2,14 +2,11 @@ package com.shiyin.music.spike.karaoke
 
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
-import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
-import android.net.Uri
 import android.os.BatteryManager
 import android.os.Debug
-import android.provider.MediaStore
 import com.shiyin.music.data.Track
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -87,6 +84,9 @@ object KaraokeStemRunner {
         var vocName: String? = null
         var session: OrtSession? = null
         var reader: AudioDecoder.PcmFileReader? = null
+        // 导出对照表要记「这次跑成没成」——提前设成失败态，成功路径末尾改成 ok
+        var status = "failed"
+        val token = DebugExport.newToken()
 
         try {
             onStatus("加载模型…")
@@ -105,21 +105,27 @@ object KaraokeStemRunner {
             session = env.createSession(modelFile.absolutePath, opts)
             val modelLoadMs = (System.nanoTime() - tLoad) / 1_000_000
 
-            onStatus("导出准备…")
-            val safeTitle = track.title.replace(Regex("[\\\\/:*?\"<>|]"), "_").take(40)
-            val tag = "${model.name.lowercase()}-${backend.name.lowercase()}-t$threads"
-            val (accUri, accOut0) = openWav(context, "$safeTitle-$tag-伴奏.wav", targetFrames)
-            val (vocUri, vocOut0) = openWav(context, "$safeTitle-$tag-人声.wav", targetFrames)
-            val accOut = accOut0 ?: error("无法写入伴奏文件（MediaStore 拒绝）")
-            val vocOut = vocOut0 ?: error("无法写入人声文件（MediaStore 拒绝）")
-            accStream = accOut; vocStream = vocOut
-            accName = accUri?.lastPathSegment
-            vocName = vocUri?.lastPathSegment
+            // 调试导出（隔离在 Download/PickUpMusic-debug/，见 DebugExport）。
+            // 关掉导出时照样跑分离（指标仍要测），只是不落 WAV。
+            val accW: DataOutputStream?
+            val vocW: DataOutputStream?
+            if (DebugExport.ENABLED) {
+                onStatus("导出准备…")
+                val (a, v) = DebugExport.open(context, token)
+                val accSink = a ?: error("创建伴奏导出文件失败（${DebugExport.DIR}）")
+                val vocSink = v ?: error("创建人声导出文件失败（${DebugExport.DIR}）")
+                accStream = accSink.out; vocStream = vocSink.out
+                accName = accSink.name; vocName = vocSink.name
+                accSink.out.write(wavHeader(targetFrames))
+                vocSink.out.write(wavHeader(targetFrames))
+                accW = DataOutputStream(accSink.out.buffered(1 shl 16))
+                vocW = DataOutputStream(vocSink.out.buffered(1 shl 16))
+            } else {
+                accW = null; vocW = null
+            }
 
             onStatus("分离中…")
             reader = AudioDecoder.PcmFileReader(info)
-            val accW = DataOutputStream(accOut.buffered(1 shl 16))
-            val vocW = DataOutputStream(vocOut.buffered(1 shl 16))
 
             val sep = MdxSeparator(model, env, session)
             val sink = object : MdxSeparator.ChunkSink {
@@ -128,8 +134,8 @@ object KaraokeStemRunner {
                     vocL: FloatArray, vocR: FloatArray,
                     offsetInSong: Int, count: Int,
                 ) {
-                    writeChunk(accW, accL, accR, count)
-                    writeChunk(vocW, vocL, vocR, count)
+                    accW?.let { writeChunk(it, accL, accR, count) }
+                    vocW?.let { writeChunk(it, vocL, vocR, count) }
                 }
             }
 
@@ -146,7 +152,8 @@ object KaraokeStemRunner {
                     p.chunkDone.toFloat() / p.chunkTotal,
                 )
             }
-            accW.flush(); vocW.flush()
+            accW?.flush(); vocW?.flush()
+            status = "ok"
 
             Result(
                 model = model,
@@ -170,12 +177,25 @@ object KaraokeStemRunner {
                 maxChunkMs = t.maxChunkMs,
                 overBudgetChunks = t.overBudgetChunks,
             )
+        } catch (t: Throwable) {
+            // 取消与真失败要分开记：取消是用户按的（半截文件保留，标 cancelled），
+            // 失败是代码/环境问题（标 failed(类型)）——对照表里一眼能分辨。
+            status = if (t is java.util.concurrent.CancellationException) "cancelled"
+            else "failed(${t.javaClass.simpleName})"
+            throw t
         } finally {
             reader?.close()
             runCatching { accStream?.close() }
             runCatching { vocStream?.close() }
             runCatching { session?.close() }
             tmp.delete()
+            // 每次运行都留一行账（含取消/失败），失败不抛——账不该把主流程带崩
+            if (accName != null || vocName != null) {
+                DebugExport.appendRun(
+                    context, accName, vocName, model.name, backend.name, threads,
+                    "${track.title} — ${track.artist}", durationSec, status,
+                )
+            }
         }
     }
 
@@ -201,21 +221,6 @@ object KaraokeStemRunner {
             }
         }
         return f
-    }
-
-    /** 建 MediaStore 条目并写好 WAV 头（总长已知），返回 (uri, 输出流)。 */
-    private fun openWav(context: Context, name: String, totalFrames: Int): Pair<Uri?, OutputStream?> {
-        val values = ContentValues().apply {
-            put(MediaStore.MediaColumns.DISPLAY_NAME, name)
-            put(MediaStore.MediaColumns.MIME_TYPE, "audio/wav")
-            put(MediaStore.MediaColumns.RELATIVE_PATH, "Music/PickUpMusic")
-            put(MediaStore.Audio.Media.IS_MUSIC, 1)
-        }
-        val uri = context.contentResolver.insert(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, values)
-            ?: return null to null
-        val out = context.contentResolver.openOutputStream(uri) ?: return uri to null
-        out.write(wavHeader(totalFrames))
-        return uri to out
     }
 
     internal fun wavHeader(frames: Int): ByteArray {

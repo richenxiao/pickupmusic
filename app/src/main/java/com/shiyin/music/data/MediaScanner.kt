@@ -24,6 +24,15 @@ object MediaScanner {
 
     val AUDIO_EXTENSIONS = setOf("mp3", "flac", "wav", "aac", "ogg", "m4a", "wma", "opus", "wv", "ape", "dsf", "dff")
 
+    /**
+     * v1.5.0 P1：调试导出目录（`Download/PickUpMusic-debug/`）——里面的 WAV 永远不当歌。
+     *
+     * 与 `spike.karaoke.DebugExport.DIR` 是同一个目录，但**刻意不复用那个常量**：
+     * `spike` 层会随正式版一起删掉，`data` 层不该反向依赖它。两边不一致时以本常量为准
+     * （它是拦在曲库入口的那一道）。
+     */
+    private const val DEBUG_EXPORT_MARK = "Download/PickUpMusic-debug/"
+
     /** v3.0: Split a raw artist string into individual artist names.
      *  Handles: "/", "、", ",", "&", " feat.", " ft.", " x ", " × ", " vs ", " with ", "+",
      *  " duet with ", " presents ", " prod. ", " produced by " */
@@ -260,6 +269,13 @@ object MediaScanner {
                 val id = c.getLong(iId)
                 val data = c.getString(iData) ?: ""
                 val rel = c.getString(iRel) ?: ""
+                // v1.5.0 P1：调试导出的伴奏/人声 WAV **不是"歌"**，不进曲库（用户 2026-10-12 定调：
+                // 伴奏/人声要一直圈在拾音自己的地盘内，只在开发期例外）。
+                // 这里按路径拦一道，是**双保险**——正常情况根本走不到：DebugExport 落盘时用的是
+                // 非音频 MIME，MediaProvider 不会把它归入 MediaStore.Audio，本查询也就查不到它。
+                // ⚠️ 刻意写成 Kotlin 侧过滤而不是加进 selection：一条写错的 selection 会让
+                //    MediaProvider 直接抛错 → **整个曲库变空**。为一个调试用的排除项冒这个风险不值得。
+                if (data.contains(DEBUG_EXPORT_MARK) || rel.startsWith(DEBUG_EXPORT_MARK)) continue
                 val folder = folderDisplay(rel, data)
                 val rawArtist = c.getString(iArtist)
                 val rawAlbum = c.getString(iAlbum)
