@@ -37,6 +37,8 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import com.shiyin.music.MainViewModel
 import com.shiyin.music.data.Track
+import com.shiyin.music.playback.KaraokeAudioSpike
+import com.shiyin.music.ui.components.ThreeStopSegmentedControl
 import com.shiyin.music.ui.components.body
 import com.shiyin.music.ui.components.clickableNoRipple
 import com.shiyin.music.ui.components.shadowSm
@@ -72,6 +74,7 @@ fun KaraokeDebugPanel(vm: MainViewModel) {
     var job by remember { mutableStateOf<Job?>(null) }
     var exportCount by remember { mutableStateOf<Int?>(null) }
     var exportRefresh by remember { mutableStateOf(0) }
+    var mixMode by remember { mutableStateOf(KaraokeAudioSpike.mode(context)) }
 
     // 导出目录的文件数（走 MediaStore 查询，别在主线程上做）
     LaunchedEffect(exportRefresh) {
@@ -266,6 +269,20 @@ fun KaraokeDebugPanel(vm: MainViewModel) {
                 progress = { progress },
                 modifier = Modifier.fillMaxWidth(),
             )
+        }
+
+        // ── P2 spike：音频管线档位（把"管线能不能插处理器"和"覆写本身有问题"分开归因）──
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("音频管线档位（改档后需杀掉 App 重进才生效）", style = body(12f, color = c.n600))
+            ThreeStopSegmentedControl(
+                labels = listOf("基线", "只换factory", "＋透传"),
+                selectedIndex = mixMode,
+                onSelect = { i ->
+                    mixMode = i
+                    if (!KaraokeAudioSpike.setMode(context, i)) status = "档位写入失败"
+                },
+            )
+            Text(KaraokeAudioSpike.describe(mixMode), style = body(11f, color = c.n600))
         }
 
         // ── 导出目录（隔离在 Download/PickUpMusic-debug/，不碰 Music/）──

@@ -78,7 +78,22 @@ class PlaybackService : MediaSessionService() {
         super.onCreate()
         // 播放管线保持**原样**——两次实测(2026-09-22 自建 sink / 2026-09-23 官方
         // 处理器 + 逐行一致覆写)都让音频渲染失效。见上方 mono 撤回注释。
-        val player = ExoPlayer.Builder(this)
+        //
+        // v1.5.0 P2 spike（分支 spike/karaoke-p2-processor）：那条结论**从未在 Media3 1.7.1
+        // 上复现过** —— 1.7.1 的 ExoPlayer.Builder 已经没有 buildAudioSink，插入点挪到了
+        // DefaultRenderersFactory。所以这里加一个**三档开关**分开归因（详见 KaraokeAudioSpike）：
+        //   0 = 完全不碰渲染链（默认，与改动前逐字一致）/ 1 = 只换 factory / 2 = 换 factory + 1:1 透传
+        val mixMode = KaraokeAudioSpike.mode(this)
+        android.util.Log.i(
+            "KaraokeMix",
+            "onCreate 音频管线档位=$mixMode（${KaraokeAudioSpike.describe(mixMode)}）",
+        )
+        val playerBuilder = if (mixMode == KaraokeAudioSpike.MODE_STOCK) {
+            ExoPlayer.Builder(this)
+        } else {
+            ExoPlayer.Builder(this, KaraokeRenderersFactory(this))
+        }
+        val player = playerBuilder
             .setAudioAttributes(
                 AudioAttributes.Builder()
                     .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
