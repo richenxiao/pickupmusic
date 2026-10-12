@@ -2587,38 +2587,77 @@ private fun BoxScope.AlbumMenuSheet(vm: MainViewModel) {
  * 打开自动定位到当前值;0 显示「未设置」。
  */
 @Composable
-private fun DateDropdown(
+private fun DateField(
     label: String,
     value: Int,
     options: List<Int>,
+    /** v1.5.0 A58：值为"未设置"(0) 时，下拉打开定位到哪个值——用户要求年份停在 2000，
+     *  而不是停在第 0 项（那等于要从公元 1 年一路滚两千年）。 */
+    unsetScrollTo: Int = 2000,
     modifier: Modifier = Modifier,
     onSelect: (Int) -> Unit,
 ) {
     val c = LocalOrganic.current
     var open by remember { mutableStateOf(false) }
+    // v1.5.0 A58：值区改成**可直接键盘输入**的窄输入框（用户："未填入的位置应该去掉变成
+    // 空白，点击即键盘输入"）；下拉改成右侧的 ^ 键。
+    var text by remember(value) { mutableStateOf(if (value == 0) "" else "$value") }
+    val maxV = options.maxOrNull() ?: 0
     Box(modifier) {
         Row(
             Modifier
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(10.dp))
-                // 主题适配:输入态控件 surface + divider 描边(与 OutlinedTextField 同语言)。
                 .background(c.surface)
                 .border(1.dp, c.divider, RoundedCornerShape(10.dp))
-                .clickable { open = true }
-                .padding(horizontal = 12.dp, vertical = 9.dp),
+                .padding(start = 12.dp, end = 6.dp, top = 4.dp, bottom = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(label, style = body(11f, FontWeight.Normal, c.n500))
             Spacer(Modifier.weight(1f))
-            Text(
-                if (value == 0) "未设置" else "$value",
-                style = body(12f, FontWeight.SemiBold, if (value == 0) c.n400 else c.text),
+            androidx.compose.foundation.text.BasicTextField(
+                value = text,
+                onValueChange = { raw ->
+                    val digits = raw.filter { it.isDigit() }.take(4)
+                    text = digits
+                    val v = digits.toIntOrNull()
+                    when {
+                        v != null -> onSelect(v.coerceIn(0, maxV))
+                        digits.isEmpty() -> onSelect(0)
+                    }
+                },
+                singleLine = true,
+                textStyle = body(12f, FontWeight.SemiBold, c.text),
+                cursorBrush = androidx.compose.ui.graphics.SolidColor(c.accent),
+                keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                    keyboardType = androidx.compose.ui.text.input.KeyboardType.Number,
+                ),
+                modifier = Modifier.width(44.dp),
+                decorationBox = { inner ->
+                    Box(contentAlignment = Alignment.CenterEnd) {
+                        if (text.isEmpty()) {
+                            Text("", style = body(12f, FontWeight.SemiBold, c.n400))
+                        }
+                        inner()
+                    }
+                },
             )
-            OIcon(Lucide.ChevronDown, 13.dp, c.n400)
+            Box(
+                Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .clickable { open = true }
+                    .padding(horizontal = 6.dp, vertical = 6.dp),
+            ) { OIcon(Lucide.ChevronUp, 13.dp, c.n400) }
         }
         if (open) {
+            // v1.5.0 A58：未设置(0) 时定位到 unsetScrollTo（年=2000），别再从头滚。
+            val anchor = if (value == 0) {
+                options.indexOf(unsetScrollTo).takeIf { it >= 0 } ?: 0
+            } else {
+                options.indexOf(value).coerceAtLeast(0)
+            }
             val listState = androidx.compose.foundation.lazy.rememberLazyListState(
-                initialFirstVisibleItemIndex = (options.indexOf(value).coerceAtLeast(0) - 6).coerceAtLeast(0),
+                initialFirstVisibleItemIndex = (anchor - 6).coerceAtLeast(0),
             )
             androidx.compose.material3.AlertDialog(
                 onDismissRequest = { open = false },
@@ -2765,16 +2804,13 @@ private fun AlbumEditDialogs(vm: MainViewModel, trackEditFor: Long?, onTrackEdit
                                 Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                             ) {
-                                DateDropdown("年", dateY, (0..(curYear + 1)).toList(), Modifier.weight(1.15f)) { dateY = it }
-                                DateDropdown("月", dateM, (0..12).toList(), Modifier.weight(1f)) { dateM = it }
-                                DateDropdown("日", dateD, (0..dim).toList(), Modifier.weight(1f)) { dateD = it }
+                                DateField("年", dateY, (0..(curYear + 1)).toList(), modifier = Modifier.weight(1.15f)) { dateY = it }
+                                DateField("月", dateM, (0..12).toList(), unsetScrollTo = 1, modifier = Modifier.weight(1f)) { dateM = it }
+                                DateField("日", dateD, (0..dim).toList(), unsetScrollTo = 1, modifier = Modifier.weight(1f)) { dateD = it }
                             }
-                            val dateSet = dateY > 0 && dateM > 0 && dateD > 0
-                            Text(
-                                if (dateSet) "%04d-%02d-%02d".format(dateY, dateM, dateD)
-                                else "未设置(任一下拉选「未设置」即清除日期)",
-                                style = body(11f, FontWeight.Normal, if (dateSet) c.n600 else c.n400),
-                            )
+                            // v1.5.0 A58：原来这里有一行"未设置(任一下拉选「未设置」即清除日期)"
+                            // 的小字——用户："正常来说是新的覆盖旧的设置日期，说这个没意义"。
+                            // 已删除（符合本项目"非必要不加小字"的纪律）。
                         }
                     },
                     confirmButton = {

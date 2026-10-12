@@ -142,6 +142,16 @@ private fun CloudBackupScreen(vm: MainViewModel, scrollStates: MutableMap<String
     val c = LocalOrganic.current
     // 进页时载入已保存的凭据（一次性）
     androidx.compose.runtime.LaunchedEffect(Unit) { vm.loadWebDavConfig() }
+    // v1.5.0 A61：**进页面就自动拉一次云端备份列表**。
+    // 原来只有点"测试连接"/"备份到云端"之后列表才有内容，而列表为空时整块（含每行的
+    // 「恢复」）不渲染 —— 用户根本看不到"从云端恢复"的入口，只能自己去翻文件夹。
+    androidx.compose.runtime.LaunchedEffect(vm.webDavUrl, vm.webDavUser, vm.webDavPassword) {
+        if (vm.webDavUrl.isNotBlank() && vm.webDavUser.isNotBlank() &&
+            vm.cloudFiles.isEmpty() && !vm.cloudBusy
+        ) {
+            vm.cloudRefresh()
+        }
+    }
 
     var url by remember { mutableStateOf("") }
     var user by remember { mutableStateOf("") }

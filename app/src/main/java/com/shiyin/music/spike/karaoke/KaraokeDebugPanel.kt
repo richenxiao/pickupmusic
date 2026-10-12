@@ -200,6 +200,24 @@ fun KaraokeDebugPanel(vm: MainViewModel) {
                                             + "maxChunk=${r.maxChunkMs}ms overBudget=${r.overBudgetChunks} "
                                             + "chunks=${r.chunkTimesMs.size}",
                                     )
+                                    // v1.5.0 A60：**写进应用自己的文件**（外部 files 目录），
+                                    // 不再只打系统日志——logcat 会滚掉、还得 adb 在线才能读。
+                                    // 路径：Android/data/com.shiyin.music/files/karaoke_runs.log
+                                    runCatching {
+                                        val dir = context.getExternalFilesDir(null)
+                                        java.io.File(dir, "karaoke_runs.log").appendText(
+                                            java.text.SimpleDateFormat(
+                                                "MM-dd HH:mm:ss", java.util.Locale.CHINA,
+                                            ).format(java.util.Date()) +
+                                                " model=${r.model.name} backend=${r.backend.name} threads=$threads" +
+                                                " dur=${"%.1f".format(r.durationSec)}s" +
+                                                " decode=${r.decodeMs}ms load=${r.modelLoadMs}ms" +
+                                                " firstChunk=${r.firstChunkMs}ms total=${r.totalMs}ms" +
+                                                " rtf=${"%.2f".format(r.rtf)} avgChunk=${r.avgChunkMs}ms" +
+                                                " maxChunk=${r.maxChunkMs}ms overBudget=${r.overBudgetChunks}" +
+                                                " chunks=${r.chunkTimesMs.size}" + "\n",
+                                        )
+                                    }
                                 } catch (t2: Throwable) {
                                     report = "❌ ${t2.javaClass.simpleName}: ${t2.message}"
                                 } finally {

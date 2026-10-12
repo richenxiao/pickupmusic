@@ -169,11 +169,17 @@ fun ArtistAlbumList(
                                     val n = vm.fetchArtistAlbumDates(artistName, triples) { aiStatus = it }
                                     aiBusy = false
                                     dragOrder = null
-                                    // v1.3.6 修补:aiStatus 在 progress 回调里被设为空串(完成信号)
-                                    // 时,这里直接保留最后一次非空状态——原实现 `aiStatus ?: "未能获取
-                                    // 发布时间"` 把空串当"无状态"处理,用户看到的只有"AI 正在联网
-                                    // 获取…"一直挂着,完成后也没任何反馈(连报错都没有)。
-                                    aiStatus = if (n > 0) null else (aiStatus.takeIf { !it.isNullOrBlank() } ?: "未能获取发布时间")
+                                    // v1.5.0 A59:用户反馈"点了经常没反应"——根因是**成功路径零反馈**:
+                                    // 原来 n>0 就把状态行清空,而"全部专辑都已有日期、直接重排"这条
+                                    // 最常走的分支里,顺序往往本来就对 → 界面毫无变化,读起来就是"没反应"。
+                                    // 现在成功也给一句明确结果,3 秒后自动收起(失败时保留,让用户看清原因)。
+                                    aiStatus = if (n > 0) "已按发布日期重排 · $n 张"
+                                    else (aiStatus.takeIf { !it.isNullOrBlank() } ?: "未能获取发布时间")
+                                    android.util.Log.i("Agent", "albumDates[$artistName]: 结束 n=$n status=$aiStatus")
+                                    if (n > 0) {
+                                        kotlinx.coroutines.delay(3000)
+                                        if (aiStatus?.startsWith("已按发布日期重排") == true) aiStatus = null
+                                    }
                                 }
                             },
                         )
