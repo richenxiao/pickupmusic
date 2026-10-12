@@ -1,6 +1,7 @@
 package com.shiyin.music.data.normalize
 
 import com.shiyin.music.data.Track
+import com.shiyin.music.data.split.SplitIds
 
 /**
  * v1.5.0: 专辑内"同一文件"折叠（原逻辑内联在 MainViewModel.albumsMap）。
@@ -20,6 +21,11 @@ object AlbumDedupe {
     fun dedupeSameFile(tracks: List<Track>): List<Track> {
         val seen = HashSet<String>(tracks.size)
         return tracks.filter { t ->
+            // ⚠️ 拆分单曲（以及「完整专辑」容器）共享同一个物理文件，`dataPath` 必然相同 ——
+            // 它们是**用户显式拆出来的不同曲目**，不是 MediaStore 重复收录，绝不能折叠。
+            // 2026-10-12 用户真机反馈：少这一条时，整轨拆完后**歌曲列表有 N 首、专辑页只剩 1 条**
+            // （专辑页走 albumsMap() → 这里；歌曲列表直接走 lib()，不经过折叠）。
+            if (SplitIds.isSynthetic(t.id)) return@filter true
             val key = t.dataPath.ifBlank { "${t.title}|${t.durationMs}|${t.sizeBytes}" }
             seen.add(key)
         }
