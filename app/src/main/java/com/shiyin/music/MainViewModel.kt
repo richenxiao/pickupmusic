@@ -5512,7 +5512,34 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         // 第7轮:已有日期的专辑**不再送 AI**(用户:"GEN/POP VIRUS 明明已有时间
         // 还被重复搜,核对也该排在未标注专辑之后")——只把未标注的专辑交给模型,
         // 已有日期的直接进最终排序。全部都有日期 → 零 LLM 调用直接重排。
-        val existingDates = releaseDates()
+        var existingDates = releaseDates()
+        // ── v1.5.0（2026-10-12）：先试 MusicBrainz 的**原版首次发行年** ──────────────
+        // 用户实测：福居良《SCENERY》《Mellow Dream》被填成了**重制版**的日期，
+        // 而它们是 1976/1977 的原版（"经典爵士，都是上个世纪的了"）。
+        // MusicBrainz 的 release-group 代表"专辑本身"，first-release-date = 各版本里最早那次发行，
+        // 与买的是哪一版无关 —— 实测 SCENERY=1976 / Mellow Dream=1977 ✓。
+        // 命中者直接落库（**不烧 token、不联网搜索**，AI 只负责剩下对不上的那些）。
+        val mbFilled = runCatching {
+            // 传本地专辑名（原样）：版本判定要看标签里有没有 (Remaster) 这类标记
+            val mb = com.shiyin.music.data.ai.MusicBrainzTracklist.artistAlbumDates(
+                artistName, albums.map { it.third },
+            )
+            if (mb.isEmpty()) return@runCatching 0
+            var n = 0
+            for ((_, albumId, name) in albums) {
+                if (albumId <= 0) continue
+                if (!existingDates[albumId].isNullOrBlank()) continue
+                val hit = mb[com.shiyin.music.data.ai.MusicBrainzTracklist.canon(name)] ?: continue
+                val iso = if (hit.length >= 10) hit else hit + "-01-01"   // 只到年/月时补足
+                saveAlbumReleaseDate(albumId, iso, invalidateArtistOrder = false)
+                n++
+            }
+            n
+        }.getOrDefault(0)
+        if (mbFilled > 0) {
+            progress("MusicBrainz 补全 $mbFilled 张的原版发行年")
+            existingDates = releaseDates()
+        }
         val alreadyDated = albums.mapNotNull { a ->
             val d = if (a.second > 0) existingDates[a.second] else null
             if (!d.isNullOrBlank()) a to d else null

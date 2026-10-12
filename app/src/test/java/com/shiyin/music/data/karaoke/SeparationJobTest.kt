@@ -99,8 +99,18 @@ class SeparationJobTest {
             assertEquals(job.totalChunksFor(n), cache.doneChunks(dir))
 
             val pcm = cache.readFrames(dir, 0, n)!!
-            val got = FloatArray(n) { pcm[it * 2] / 32768f + pcm[it * 2 + 1] / 32768f }
-            val s = snr(ref, got)
+            // 参考是扁平数组（前半左声道、后半右声道）→ 逐声道比对
+            // （`FloatArray + FloatArray` 在 Kotlin 里是**拼接**不是相加，别再踩）
+            val gotL = FloatArray(n) { pcm[it * 2] / 32768f }
+            val gotR = FloatArray(n) { pcm[it * 2 + 1] / 32768f }
+            val refL = ref.copyOfRange(0, n)
+            val refR = ref.copyOfRange(n, 2 * n)
+            var sig = 0.0; var err = 0.0
+            for (i in 0 until n) {
+                sig += refL[i].toDouble().pow(2) + refR[i].toDouble().pow(2)
+                err += (gotL[i] - refL[i]).toDouble().pow(2) + (gotR[i] - refR[i]).toDouble().pow(2)
+            }
+            val s = if (err == 0.0) Double.POSITIVE_INFINITY else 10 * log10(sig / err)
             println("[P1] 缓存内容 vs 参考：SNR=${"%.1f".format(s)}dB（16bit 量化上限约 96dB）")
             assertTrue("缓存内容与参考差太多：$s", s >= 40.0)
         }

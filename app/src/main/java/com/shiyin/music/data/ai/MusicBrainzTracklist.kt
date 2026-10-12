@@ -132,8 +132,107 @@ object MusicBrainzTracklist {
         }.getOrDefault(emptyList())
     }
 
+    // ── 专辑「首次发行年」（release-group.first-release-date）────────────────────────
+    //
+    // 2026-10-12 用户实测：福居良《SCENERY》《Mellow Dream》被填成了**重制版**的日期，
+    // 而这两张是 1976/1977 的原版（"这两张经典的爵士乐专辑都是上个世纪的了"）。
+    // 原因：模型+通用搜索拿到的是某一个再版的日期。MusicBrainz 的 release-group 代表
+    // **专辑本身**（各版本共享），其 `first-release-date` 就是原版首次发行 —— 与买哪一版无关。
+    // 实测：SCENERY=1976、Mellow Dream=1977 ✓
+
+    /**
+     * 歌手名下专辑 → 日期。**规则按用户 2026-10-12 的更正**：
+     * **看本地专辑标签里的版本标记**——
+     *  - 标签**没写**版本（如 `Scenery`）＝用户手里是原版 → 用**专辑级首版年**
+     *    （release-group.first-release-date，各版本共享）
+     *  - 标签**写了**版本（如 `Scenery (Remaster)`）＝就是那个版本 → 用**该版本的日期**
+     *    （release.date，具体那一版）
+     * 即"用户手里是哪一版，就填哪一版的日期"。版本标记的识别见 [EDITION_MARKERS]。
+     *
+     * @param localTitles 本地专辑名（**原样**，含括注），用于判定版本与匹配
+     */
+    suspend fun artistAlbumDates(artist: String, localTitles: List<String>): Map<String, String> = runCatching {
+        if (artist.isBlank() || localTitles.isEmpty()) return emptyMap()
+        val artistSearch = "https://musicbrainz.org/ws/2/artist?query=" +
+            java.net.URLEncoder.encode(artist, "UTF-8") + "&fmt=json&limit=1"
+        val artistId = parseArtistId(get(artistSearch)) ?: return emptyMap()
+        val groups = parseReleaseGroups(
+            get("https://musicbrainz.org/ws/2/release-group?artist=$artistId&fmt=json&limit=100"),
+        )
+        // 版本级：一次多带 100 条 release（含各自日期与标题）
+        val releases = parseReleases(
+            get("https://musicbrainz.org/ws/2/release?artist=$artistId&fmt=json&limit=100"),
+        )
+        localTitles.mapNotNull { local ->
+            val d = pickDate(local, groups, releases) ?: return@mapNotNull null
+            canon(local) to d
+        }.toMap()
+    }.getOrDefault(emptyMap())
+
+    /** 版本标记（本地标签里出现即视为"某个特定版本"，用版本级日期）。 */
+    private val EDITION_MARKERS = listOf(
+        "remaster", "remastered", "リマスター", "重制", "再版", "复刻",
+        "deluxe", "anniversary", "expanded", "special edition", "complete edition",
+    )
+
+    /**
+     * 纯函数：挑日期。先看本地标签有没有版本标记——
+     *  有 → 优先匹配**版本级**（标题含同样括注的那条 release）；
+     *  没有 → 优先用**专辑级首版年**。
+     * 两侧都退一步兜底（匹配不到就试另一侧），仍无则返回 null（交给 AI 兜底）。
+     */
+    internal fun pickDate(
+        localTitle: String,
+        groups: List<Pair<String, String>>,
+        releases: List<Pair<String, String>>,
+    ): String? {
+        val t = canon(localTitle)
+        val marked = EDITION_MARKERS.any { t.contains(it) }
+        fun groupHit() = groups.firstOrNull { it.first == t }?.second
+        fun releaseHit() = releases.firstOrNull { it.first == t }?.second
+        return if (marked) releaseHit() ?: groupHit() else groupHit() ?: releaseHit()
+    }
+
+    /** 纯函数：解析 release 列表 → [(归一化标题, 日期)]，无日期的丢弃。 */
+    internal fun parseReleases(json: String?): List<Pair<String, String>> {
+        if (json.isNullOrBlank()) return emptyList()
+        return runCatching {
+            val arr = JsonParser.parseString(json).asJsonObject.getAsJsonArray("releases") ?: return emptyList()
+            arr.mapNotNull { el ->
+                val o = el.asJsonObject
+                val title = o.get("title")?.asString ?: return@mapNotNull null
+                val date = o.get("date")?.asString ?: ""
+                if (date.isBlank()) null else canon(title) to date
+            }
+        }.getOrDefault(emptyList())
+    }
+
+    /** 纯函数：取搜索到的第一个歌手 id。 */
+    internal fun parseArtistId(json: String?): String? {
+        if (json.isNullOrBlank()) return null
+        return runCatching {
+            JsonParser.parseString(json).asJsonObject.getAsJsonArray("artists")
+                ?.firstOrNull()?.asJsonObject?.get("id")?.asString
+        }.getOrNull()
+    }
+
+    /** 纯函数：解析 release-group 列表 → [(标题, 首次发行日期)]，无日期的丢弃。 */
+    internal fun parseReleaseGroups(json: String?): List<Pair<String, String>> {
+        if (json.isNullOrBlank()) return emptyList()
+        return runCatching {
+            val arr = JsonParser.parseString(json).asJsonObject.getAsJsonArray("release-groups")
+                ?: return emptyList()
+            arr.mapNotNull { el ->
+                val o = el.asJsonObject
+                val title = o.get("title")?.asString ?: return@mapNotNull null
+                val date = o.get("first-release-date")?.asString ?: ""
+                if (date.isBlank()) null else canon(title) to date
+            }
+        }.getOrDefault(emptyList())
+    }
+
     /** 归一化：与曲名匹配同一套注意事项（连字符变体/全角空格/大小写）。 */
-    private fun canon(s: String): String = s.lowercase()
+    internal fun canon(s: String): String = s.lowercase()
         .map { ch ->
             when (ch.code) {
                 0x2010, 0x2011, 0x2012, 0x2013, 0x2014, 0x2015, 0x2212, 0xFF0D -> '-'  // 各种连字符/减号
