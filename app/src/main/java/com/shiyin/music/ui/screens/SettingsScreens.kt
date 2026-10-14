@@ -1483,8 +1483,43 @@ private fun LyricsBookScreen(vm: MainViewModel, scrollStates: MutableMap<String,
             }
             // v1.5.0 伴唱总开关（规格 §10）。默认开；关闭后歌词页不显示麦克风入口，
             // 设备慢的用户可彻底关掉。
-            SettingRow(Lucide.Mic, "启用伴唱功能", null, divider = false) {
+            SettingRow(Lucide.Mic, "启用伴唱功能", null, divider = true) {
                 OrganicSwitch(vm.karaokeEnabled) { vm.setKaraokeEnabled(!vm.karaokeEnabled) }
+            }
+            // A73（用户 2026-10-15）：分轨默认模型。**只有 9482 内置**（A57），其余两项
+            // 置灰并写明原因 —— 不做假选择（"点了没反应"正是这次要消灭的东西）。
+            SectionLabel("分轨模型")
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(start = 16.dp, end = 16.dp, bottom = 10.dp)
+            ) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    com.shiyin.music.data.karaoke.MdxModel.values().forEach { m ->
+                        val selected = vm.karaokeModelId == m.id
+                        val enabled = m.bundled
+                        Text(
+                            m.displayName,
+                            style = body(
+                                12.5f, FontWeight.SemiBold,
+                                if (!enabled) c.n500 else if (selected) c.surface else c.n600,
+                            ),
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(if (selected && enabled) c.accent else c.n100)
+                                .then(
+                                    if (enabled) Modifier.clickable { vm.setKaraokeModelId(m.id) }
+                                    else Modifier
+                                )
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                        )
+                    }
+                }
+                Text(
+                    "只内置了 9482（29.7MB，轻量、人声模型）。另两个各约 67MB，本版本未随包发布，置灰不可选。",
+                    style = body(11.5f, FontWeight.Normal, c.n500),
+                    modifier = Modifier.padding(top = 6.dp),
+                )
             }
         }
         // 外语自动翻译:进入歌词本时外语歌自动触发 AI 翻译(默认关——AI 永远用户主动

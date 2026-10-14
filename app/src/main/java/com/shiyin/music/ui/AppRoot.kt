@@ -1523,7 +1523,7 @@ private fun PlayerMenuSheetContent(vm: MainViewModel) {
                         trailing = {
                             if (vm.karaokeState != com.shiyin.music.ui.components.KaraokeButtonState.Idle) {
                                 Text(
-                                    listOf("人声", "原曲", "伴奏")[vm.karaokeMixIndex],
+                                    listOf("原曲", "人声", "伴奏")[vm.karaokeMixIndex],
                                     style = body(12.5f, FontWeight.SemiBold, c.n500),
                                 )
                             }
@@ -3217,15 +3217,18 @@ private fun KeyShiftRow(vm: MainViewModel, c: com.shiyin.music.ui.theme.OrganicC
  * v1.5.0 伴唱「分轨」面板（规格 §3.3）。
  *
  * 入口两处，打开的是同一个面板：歌词页的伴唱麦克风按钮、播放页 ⋮ 菜单的「伴唱」项。
- * 内容：三档混音滑块（人声 — 原曲 — 伴奏）+ 升降 Key + 关闭伴唱。
  *
- * ⚠️ 当前为 **UI 先行**：档位只驱动按钮状态，不改变实际声音——分离引擎与播放链路
- * 的混音属 P2（规格 §7），待 P0 Spike 结论出来后再接。
+ * A70（用户 2026-10-15 口述）改口径：
+ *  - **进面板默认「原曲」**，三档滑块**常显**；原来的「开启伴唱」门槛已删除
+ *    （旧版未开启时滑块根本不出现，用户判定为"完全没有用的步骤"）。
+ *  - 选「人声/伴奏」本身就会起分离 ⇒ 这里显示加载状态、**原曲继续唱着**，
+ *    就绪后处理器 300ms 淡入所选档位。
+ *  - 因此「关闭伴唱」按钮一并去掉：**选回「原曲」就是关闭**，两个入口做同一件事只会让人困惑。
  */
 @Composable
 private fun KaraokeMixPanel(vm: MainViewModel) {
     val c = LocalOrganic.current
-    val started = vm.karaokeState != com.shiyin.music.ui.components.KaraokeButtonState.Idle
+    val loading = vm.karaokeState == com.shiyin.music.ui.components.KaraokeButtonState.Loading
 
     Column(Modifier.fillMaxWidth()) {
         // 返回行（与睡眠/速度子页同款：只用图标，不用文字）
@@ -3241,39 +3244,19 @@ private fun KaraokeMixPanel(vm: MainViewModel) {
             Spacer(Modifier.weight(1f))
         }
 
-        if (!started) {
-            // 规格 O9：从菜单进入且尚未开启伴唱时，先给一个开启按钮（等同点歌词页麦克风）
-            Text(
-                "开启伴唱",
-                style = body(14f, FontWeight.ExtraBold, c.surface),
-                modifier = Modifier
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(c.accent)
-                    .clickable { vm.toggleKaraoke() }
-                    .padding(horizontal = 18.dp, vertical = 10.dp)
-                    .align(Alignment.CenterHorizontally),
-            )
-            return@Column
-        }
-
-        // 三档混音：人声 — 原曲（默认）— 伴奏
+        // 三档混音：原曲（默认）— 人声 — 伴奏。**常显**。
         ThreeStopSegmentedControl(
-            labels = listOf("人声", "原曲", "伴奏"),
+            labels = listOf("原曲", "人声", "伴奏"),
             selectedIndex = vm.karaokeMixIndex,
             onSelect = { vm.selectKaraokeMix(it) },
         )
-        Spacer(Modifier.height(12.dp))
-
-        // v1.5.0: 升降 Key **不再**在这里出现 —— 它是**全局播放控制**（和播放速度同级），
-        // 只保留在「播放倍速」子页一处。两处各放一份会让用户以为它们互不相干（用户 2026-10-14 指出）。
-        Text(
-            "关闭伴唱",
-            style = body(13.5f, FontWeight.SemiBold, c.n600),
-            modifier = Modifier
-                .clip(RoundedCornerShape(12.dp))
-                .background(c.n100)
-                .clickable { vm.closeKaraoke() }
-                .padding(horizontal = 16.dp, vertical = 9.dp),
-        )
+        // 加载中：原曲继续唱着，这里只给状态（就绪后 300ms 淡入所选档位）
+        if (loading) {
+            Spacer(Modifier.height(10.dp))
+            Text(
+                vm.karaokeStatus.ifBlank { "准备中…" },
+                style = body(13f, FontWeight.Medium, c.n600),
+            )
+        }
     }
 }

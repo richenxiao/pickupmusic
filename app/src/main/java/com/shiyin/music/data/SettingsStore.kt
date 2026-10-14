@@ -97,6 +97,8 @@ private val keyPinnedLibItems = stringSetPreferencesKey("pinned_lib_items")
     private val keyTranslateErrorToast = booleanPreferencesKey("translate_error_toast")
     /** v1.5.0 伴唱:总开关(默认开)。关闭后隐藏歌词页麦克风入口,设备慢的用户可彻底关掉。 */
     private val keyKaraokeEnabled = booleanPreferencesKey("karaoke_enabled")
+    /** 分轨模型 id（A73，用户 2026-10-15）：默认 = 内置的那个（9482）。见 [MdxModel.default]。 */
+    private val keyKaraokeModelId = stringPreferencesKey("karaoke_model_id")
     /** v1.5.0 A56:歌词"制作人行"跳过翻译(默认开)。作词/作曲/编曲/XX演奏 等不译。 */
     private val keySkipCreditsTranslation = booleanPreferencesKey("skip_credits_translation")
     // v1.5.0 A62：歌手栏是否隐藏"客串歌手"（只参与合作、无个人作品）。默认开。
@@ -150,6 +152,8 @@ private val keyPinnedLibItems = stringSetPreferencesKey("pinned_lib_items")
         val translateErrorToast: Boolean,
         /** v1.5.0 伴唱总开关(默认 true)。关闭后隐藏歌词页麦克风入口。 */
         val karaokeEnabled: Boolean,
+        /** 分轨默认模型 id（默认 = 内置的 9482）。 */
+        val karaokeModelId: String,
         /** v1.5.0 A56: 歌词制作人行跳过翻译(默认 true)。 */
         val skipCreditsTranslation: Boolean,
         val hideFeatureArtists: Boolean,
@@ -214,6 +218,7 @@ private val keyPinnedLibItems = stringSetPreferencesKey("pinned_lib_items")
             translateDefaultShow = p[keyTranslateDefaultShow] ?: true,
             translateErrorToast = p[keyTranslateErrorToast] ?: false,
             karaokeEnabled = p[keyKaraokeEnabled] ?: true,
+            karaokeModelId = com.shiyin.music.data.karaoke.MdxModel.byId(p[keyKaraokeModelId]).id,
             skipCreditsTranslation = p[keySkipCreditsTranslation] ?: true,
             hideFeatureArtists = p[keyHideFeatureArtists] ?: true,
             translateButtonMode = (p[keyTranslateButtonMode] ?: "majority")
@@ -296,6 +301,13 @@ private val keyPinnedLibItems = stringSetPreferencesKey("pinned_lib_items")
     suspend fun setTranslateErrorToast(v: Boolean) = context.dataStore.edit { it[keyTranslateErrorToast] = v }
     /** v1.5.0 伴唱总开关写入。 */
     suspend fun setKaraokeEnabled(v: Boolean) = context.dataStore.edit { it[keyKaraokeEnabled] = v }
+
+    /**
+     * 分轨默认模型写入（A73）。**未内置的模型直接退回默认**（A57：只有 9482 进包）——
+     * 免得持久化一个"永远跑不起来"的值，下次点伴唱只得到一句"未内置"。
+     */
+    suspend fun setKaraokeModelId(id: String) =
+        context.dataStore.edit { it[keyKaraokeModelId] = com.shiyin.music.data.karaoke.MdxModel.byId(id).id }
     /** v1.5.0 A56 制作人行跳过翻译写入。 */
     suspend fun setSkipCreditsTranslation(v: Boolean) = context.dataStore.edit { it[keySkipCreditsTranslation] = v }
 

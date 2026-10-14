@@ -252,31 +252,113 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     var karaokeState by mutableStateOf(com.shiyin.music.ui.components.KaraokeButtonState.Idle); private set
 
     /**
-     * v1.5.0 伴唱面板：三档混音选择（0=人声 / 1=原曲(默认) / 2=伴奏）。
+     * v1.5.0 伴唱面板：三档混音选择（**0 = 原曲（默认）/ 1 = 人声 / 2 = 伴奏**）。
      *
-     * ⚠️ 目前**只驱动 UI**——P0 Spike 的分离引擎尚未接入播放链路（P2 才做），
-     * 所以这里改的是"面板上选中的档位"，不影响实际声音。接入时由 PlaybackMixer
-     * 读这个值做增益插值（规格 §7）。
-     * （规格 §3.3：由歌词页伴唱按钮或播放页菜单打开同一面板。）
+     * A70（用户 2026-10-15 口述）改口径：**进面板默认就是「原曲」**；选「人声/伴奏」
+     * **本身**就会起分离并把按钮变 Loading（**原曲继续唱着**），就绪后 300ms 淡入。
+     * 旧版要先按一次「开启伴唱」、且未开启时档位滑块**根本不显示**——用户判定为
+     * "完全没有用的步骤"，已删掉那一步。
      */
-    var karaokeMixIndex by mutableStateOf(1); private set
+    var karaokeMixIndex by mutableStateOf(0); private set
+
+    /** 已就绪的伴奏缓存目录（null = 还没算好）。换曲 / 回原曲时清空。 */
+    private var karaokeReadyDir: java.io.File? = null
+
+    /** 加载期间用户改选的档位 —— 就绪后切到**最后一次**选的那个，而不是最初点的那个。 */
+    private var karaokePendingMode = com.shiyin.music.playback.KaraokeMixControl.MODE_ACCOMP
+
+    /** A73（用户 2026-10-15）：分轨默认模型 id，设置页可改；默认 = 内置的 9482。
+     *  同样用私有 MutableState 后备 + 只读 getter —— 避免与 setKaraokeModelId() 撞 JVM 签名。 */
+    private val _karaokeModelId = mutableStateOf(com.shiyin.music.data.karaoke.MdxModel.default().id)
+    val karaokeModelId: String get() = _karaokeModelId.value
+
+    /** 设置页写分轨默认模型。未内置的模型会被 [SettingsStore.setKaraokeModelId] 退回默认。 */
+    fun setKaraokeModelId(id: String) {
+        _karaokeModelId.value = com.shiyin.music.data.karaoke.MdxModel.byId(id).id
+        viewModelScope.launch { settingsStore.setKaraokeModelId(_karaokeModelId.value) }
+    }
+
+    /** 档位序号 → 处理器档位。顺序是 UI 顺序（原曲/人声/伴奏），**与 MODE_* 的数值不同**，必须显式映射。 */
+    private fun modeOfMixIndex(i: Int): Int = when (i) {
+        1 -> com.shiyin.music.playback.KaraokeMixControl.MODE_VOCAL
+        2 -> com.shiyin.music.playback.KaraokeMixControl.MODE_ACCOMP
+        else -> com.shiyin.music.playback.KaraokeMixControl.MODE_ORIGINAL
+    }
 
     // 注意：不能叫 setKaraokeMixIndex——`var ... private set` 生成的私有 setter
     // 与同名函数 JVM 签名冲突（karaokeEnabled 当初踩过同一个坑）。
     fun selectKaraokeMix(i: Int) {
-        karaokeMixIndex = i.coerceIn(0, 2)
-        // UI 顺序是（人声 / 原曲 / 伴奏）—— 映射到处理器的档位，运行期即时生效
-        com.shiyin.music.playback.KaraokeMixControl.mode = when (karaokeMixIndex) {
-            0 -> com.shiyin.music.playback.KaraokeMixControl.MODE_VOCAL
-            2 -> com.shiyin.music.playback.KaraokeMixControl.MODE_ACCOMP
-            else -> com.shiyin.music.playback.KaraokeMixControl.MODE_ORIGINAL
+        val idx = i.coerceIn(0, 2)
+        karaokeMixIndex = idx
+        val target = modeOfMixIndex(idx)
+        if (target == com.shiyin.music.playback.KaraokeMixControl.MODE_ORIGINAL) {
+            // 回原曲：淡回原曲 + 停分离。**已算好的块留在缓存里**，下次点回来是秒切。
+            stopKaraoke()
+            return
+        }
+        val t = currentTrackForKaraoke()
+        val why = karaokeGate(t)
+        if (why != null) {
+            showToast(why, null)
+            karaokeMixIndex = 0
+            return
+        }
+        karaokePendingMode = target
+        val readyDir = karaokeReadyDir
+        if (readyDir != null) {
+            // 缓存已就绪：直接切档（处理器在系数空间 300ms 淡入），不再起分离
+            com.shiyin.music.playback.KaraokeMixControl.realSource =
+                com.shiyin.music.playback.StemCacheAccompaniment(stemCache, readyDir)
+            com.shiyin.music.playback.KaraokeMixControl.mode = target
+            karaokeState = com.shiyin.music.ui.components.KaraokeButtonState.Active
+            karaokeStatus = ""
+            return
+        }
+        startKaraokeSeparation(t!!)
+    }
+
+    /** 起一次分离，并把"首段可用"接到淡入。**原曲不停**，只把按钮变 Loading。 */
+    private fun startKaraokeSeparation(t: Track) {
+        if (karaokeJob != null) return        // 已经在算：改选只改 karaokePendingMode
+        karaokeState = com.shiyin.music.ui.components.KaraokeButtonState.Loading
+        karaokeStatus = "准备中…"
+        viewModelScope.launch {
+            try {
+                val h = com.shiyin.music.spike.karaoke.KaraokeCacheJob.start(
+                    context = getApplication(),
+                    track = t,
+                    cache = stemCache,
+                    model = com.shiyin.music.data.karaoke.MdxModel.byId(karaokeModelId),
+                    // 播放头 = 源文件帧号（进度是文件绝对坐标，见 PlayerController.positionMs）
+                    playFrame = { player.positionMs * 44100L / 1000L },
+                    onStatus = { karaokeStatus = it },
+                    onReady = { dir ->
+                        // ⚠️ 就绪回调可能**晚于用户取消**（分离是异步的）：用状态机保证
+                        // "只在仍处于 Loading 时才进 Active"，否则会把用户已取消的伴唱又打开
+                        val next = com.shiyin.music.ui.components.KaraokeButtonMachine
+                            .onReady(karaokeState)
+                        if (next == com.shiyin.music.ui.components.KaraokeButtonState.Active) {
+                            karaokeReadyDir = dir
+                            com.shiyin.music.playback.KaraokeMixControl.realSource =
+                                com.shiyin.music.playback.StemCacheAccompaniment(stemCache, dir)
+                            com.shiyin.music.playback.KaraokeMixControl.mode = karaokePendingMode
+                            karaokeStatus = ""
+                        }
+                        karaokeState = next
+                    },
+                )
+                karaokeJob = h
+            } catch (e: Throwable) {
+                karaokeStatus = "分离失败：${e.javaClass.simpleName}"
+                karaokeState = com.shiyin.music.ui.components.KaraokeButtonState.Idle
+                karaokeMixIndex = 0
+            }
         }
     }
 
     /** 关闭伴唱：淡回原曲 + 停掉分离（规格 §3.3 第 3 条）。 */
     fun closeKaraoke() {
         stopKaraoke()
-        karaokeMixIndex = 1
     }
     /** v1.3.2: 自定义写真源(设置·写真源可增删,CustomSource 按模板拉图)。 */
     var customImageSources by mutableStateOf<List<com.shiyin.music.data.image.CustomImageSourceDef>>(emptyList()); private set
@@ -294,6 +376,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     var keyShift by mutableStateOf(0); private set
     /** 上一次触发 onTrackStarted 的曲目 id，用来区分「真的换曲了」与「单曲循环重播」。 */
     private var lastKeyShiftTrackId: Long? = null
+    /** 同上口径，但用于伴唱（A71）。真换曲必须把伴唱复位，否则会听到上一首的伴奏。 */
+    private var lastKaraokeTrackId: Long? = null
     // ── v1.3.x 歌词本设置(设置·歌词本页)────────────────────────────────────
     /** 日语歌打开歌词本时默认开启振假名标注(默认 true)。 */
     var furiganaDefaultOn by mutableStateOf(true); private set
@@ -1289,6 +1373,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 translateDefaultShow = s.translateDefaultShow
                 translateErrorToast = s.translateErrorToast
                 _karaokeEnabled.value = s.karaokeEnabled
+                _karaokeModelId.value = s.karaokeModelId
                 _skipCreditsTranslation.value = s.skipCreditsTranslation
                 _hideFeatureArtists.value = s.hideFeatureArtists
                 translateButtonMode = s.translateButtonMode
@@ -4601,6 +4686,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             lastKeyShiftTrackId = id
             if (keyShift != 0) keyShift = 0
         }
+        // A71（用户 2026-10-15）：**真换曲**时把伴唱复位。不复位的话处理器仍按绝对帧号
+        // 读**上一首**的缓存目录 ⇒ 自动续播时听到上一首的伴奏，界面也停在 Active。
+        // 判定同上去重口径：同一个 id（单曲循环重播）不复位——缓存目录与 epoch 偏移都还有效。
+        if (id != lastKaraokeTrackId) {
+            lastKaraokeTrackId = id
+            if (karaokeState != com.shiyin.music.ui.components.KaraokeButtonState.Idle ||
+                com.shiyin.music.playback.KaraokeMixControl.realSource != null
+            ) {
+                stopKaraoke()
+            }
+        }
         // v2: 恢复全局播放速度设置
         player.setPlaybackSpeed(playbackSpeed, retroSpeedMode)
         player.setKeyShift(keyShift)
@@ -5509,51 +5605,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      * 全程**不重建播放器**：只切处理器内部模式（块 1 已把处理器做成常驻）。
      */
     fun toggleKaraoke() {
-        when (karaokeState) {
-            com.shiyin.music.ui.components.KaraokeButtonState.Idle -> {
-                val t = currentTrackForKaraoke()
-                val why = karaokeGate(t)
-                if (why != null) {
-                    showToast(why, null)
-                    return
-                }
-                karaokeState = com.shiyin.music.ui.components.KaraokeButtonState.Loading
-                karaokeStatus = "准备中…"
-                viewModelScope.launch {
-                    try {
-                        val h = com.shiyin.music.spike.karaoke.KaraokeCacheJob.start(
-                            context = getApplication(),
-                            track = t!!,
-                            cache = stemCache,
-                            // 播放头 = 源文件帧号（进度是文件绝对坐标，见 PlayerController.positionMs）
-                            playFrame = { player.positionMs * 44100L / 1000L },
-                            onStatus = { karaokeStatus = it },
-                            onReady = { dir ->
-                                // ⚠️ 就绪回调可能**晚于用户取消**（分离是异步的）：
-                                // 用状态机保证"只在仍处于 Loading 时才进 Active"，否则会
-                                // 把用户已经取消掉的伴唱又打开（见 KaraokeButtonMachine 的单测）。
-                                val next = com.shiyin.music.ui.components.KaraokeButtonMachine
-                                    .onReady(karaokeState)
-                                if (next == com.shiyin.music.ui.components.KaraokeButtonState.Active) {
-                                    // 首段可用 ⇒ 接上真伴奏、切到"伴奏"档 ⇒ 处理器 300ms 淡入
-                                    com.shiyin.music.playback.KaraokeMixControl.realSource =
-                                        com.shiyin.music.playback.StemCacheAccompaniment(stemCache, dir)
-                                    com.shiyin.music.playback.KaraokeMixControl.mode =
-                                        com.shiyin.music.playback.KaraokeMixControl.MODE_ACCOMP
-                                    karaokeMixIndex = 2
-                                    karaokeStatus = "伴奏已就绪"
-                                }
-                                karaokeState = next
-                            },
-                        )
-                        karaokeJob = h
-                    } catch (e: Throwable) {
-                        karaokeStatus = "分离失败：${e.javaClass.simpleName}"
-                        karaokeState = com.shiyin.music.ui.components.KaraokeButtonState.Idle
-                    }
-                }
-            }
-            else -> stopKaraoke()
+        // A70：点麦克风 = 要伴奏；再点 = 回原曲。与面板里的档位选择是同一条路径，
+        // 不再有独立的"开启伴唱"状态（那一步被用户判定为多余）。
+        if (karaokeState == com.shiyin.music.ui.components.KaraokeButtonState.Idle) {
+            selectKaraokeMix(2)
+        } else {
+            selectKaraokeMix(0)
         }
     }
 
@@ -5561,11 +5618,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun stopKaraoke() {
         karaokeJob?.job?.cancel()
         karaokeJob = null
+        karaokeReadyDir = null
         com.shiyin.music.playback.KaraokeMixControl.realSource = null
         com.shiyin.music.playback.KaraokeMixControl.mode =
             com.shiyin.music.playback.KaraokeMixControl.MODE_ORIGINAL
         karaokeState = com.shiyin.music.ui.components.KaraokeButtonState.Idle
         karaokeStatus = ""
+        karaokeMixIndex = 0
     }
 
     /** v1.5.0 右滑固定：该条目当前是否已固定。 */
