@@ -509,7 +509,7 @@ fun AppRoot(vm: MainViewModel) {
                     when {
                         vm.lyricsOn -> vm.requestLyricsExit()
                         vm.qSheetOpen -> { vm.qSheetOpen = false; vm.qEdit = false }
-                        vm.pMenuView != null -> vm.pMenuView = if (vm.pMenuView == "timer-custom") "timer" else if (vm.pMenuView == "timer" || vm.pMenuView == "speed" || vm.pMenuView == "karaoke") "root" else null
+                        vm.pMenuView != null -> vm.pMenuView = if (vm.pMenuView == "timer-custom") "timer" else if (vm.pMenuView == "timer" || vm.pMenuView == "speed" || vm.pMenuView == "key" || vm.pMenuView == "karaoke") "root" else null
                         else -> { vm.playerOpen = false; vm.sleepMenu = false }
                     }
                 },
@@ -570,7 +570,7 @@ fun AppRoot(vm: MainViewModel) {
                 BackHandler {
                     when {
                         vm.lyricsOn -> vm.requestLyricsExit()
-                        vm.pMenuView != null -> vm.pMenuView = if (vm.pMenuView == "timer-custom") "timer" else if (vm.pMenuView == "timer" || vm.pMenuView == "speed" || vm.pMenuView == "karaoke") "root" else null
+                        vm.pMenuView != null -> vm.pMenuView = if (vm.pMenuView == "timer-custom") "timer" else if (vm.pMenuView == "timer" || vm.pMenuView == "speed" || vm.pMenuView == "key" || vm.pMenuView == "karaoke") "root" else null
                         vm.sleepMenu -> vm.sleepMenu = false
                         else -> vm.requestPlayerExit()
                     }
@@ -1018,6 +1018,7 @@ private fun RootBackHandler(vm: MainViewModel) {
             vm.pMenuView == "timer-custom" -> vm.pMenuView = "timer"
             vm.pMenuView == "timer" -> vm.pMenuView = "root"
             vm.pMenuView == "speed" -> vm.pMenuView = "root"
+            vm.pMenuView == "key" -> vm.pMenuView = "root"
             vm.pMenuView == "karaoke" -> vm.pMenuView = "root"
             vm.pMenuView != null -> vm.pMenuView = null
             vm.qSheetOpen -> { vm.qSheetOpen = false; vm.qEdit = false }
@@ -1474,7 +1475,7 @@ private fun PlayerMenuSheetContent(vm: MainViewModel) {
     if (track == null) return
     Column(Modifier.navigationBarsPadding().padding(start = 10.dp, end = 10.dp, top = 16.dp, bottom = 10.dp)) {
             if (vm.pMenuView != "timer" && vm.pMenuView != "timer-custom" &&
-                vm.pMenuView != "speed" && vm.pMenuView != "karaoke") {
+                vm.pMenuView != "speed" && vm.pMenuView != "key" && vm.pMenuView != "karaoke") {
                 SheetSongHeader(track)
                 SheetActionRow(Lucide.ListPlus, "保存到歌单") {
                     vm.pMenuView = null
@@ -1502,6 +1503,18 @@ private fun PlayerMenuSheetContent(vm: MainViewModel) {
                         OIcon(Lucide.ChevronRight, 16.dp, c.n500)
                     },
                 ) { vm.pMenuView = "speed" }
+                // v1.5.0 用户 2026-10-14：**升降 Key 独立成一项**（原先挤在"播放速度"子页里，
+                // 用户明确指出它该有自己的入口 —— 它是独立的播放控制，不是速度的一个附属）。
+                SheetActionRow(
+                    Lucide.SlidersBold, "升降 Key",
+                    trailing = {
+                        Text(
+                            com.shiyin.music.playback.KeyShift.label(vm.keyShift),
+                            style = body(12.5f, FontWeight.SemiBold, c.n500),
+                        )
+                        OIcon(Lucide.ChevronRight, 16.dp, c.n500)
+                    },
+                ) { vm.pMenuView = "key" }
                 // v1.5.0 伴唱（规格 §3.1 第二入口）：与歌词页麦克风按钮打开同一面板。
                 // 未开启伴唱功能时整行隐藏（与歌词页入口的隐藏条件一致）。
                 if (vm.karaokeEnabled) {
@@ -1823,6 +1836,31 @@ private fun PlayerMenuSheetContent(vm: MainViewModel) {
                         }
                         OIcon(Lucide.Settings, 16.dp, c.n400)
                     }
+                    // v1.5.0：升降 Key **已移到它自己的子页**（用户 2026-10-14 要求独立），
+                    // 这里不再重复放一份。
+                }
+            } else if (vm.pMenuView == "key") {
+                // v1.5.0 升降 Key —— **独立子页**（用户 2026-10-14 要求与"播放速度"分开）
+                Column {
+                    Row(Modifier.fillMaxWidth().padding(bottom = 14.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            Modifier.size(34.dp).clip(CircleShape).clickable { vm.pMenuView = "root" },
+                            contentAlignment = Alignment.Center,
+                        ) { OIcon(Lucide.ChevronLeft, 20.dp, c.n500) }
+                        Spacer(Modifier.weight(1f))
+                    }
+                    Text(
+                        com.shiyin.music.playback.KeyShift.label(vm.keyShift),
+                        style = heading(36, c.text),
+                        modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp),
+                        textAlign = TextAlign.Center,
+                    )
+                    Text(
+                        "只改音高，速度不变（与播放速度互不影响）",
+                        style = body(12f, FontWeight.Normal, c.n500),
+                        modifier = Modifier.fillMaxWidth().padding(bottom = 18.dp),
+                        textAlign = TextAlign.Center,
+                    )
                     KeyShiftRow(vm, c)
                 }
             } else if (vm.pMenuView == "karaoke") {
