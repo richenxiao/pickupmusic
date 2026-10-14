@@ -1079,6 +1079,8 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
                         lyricForeground = artFg,
                         lyricBackground = safeBg,
                         onClick = { vm.toggleKaraoke() },
+                        // 块 4 格式闸门：不是 FLAC/MP3 就置灰（仍可点，点了给原因）
+                        dimmed = !vm.karaokeAvailable,
                     )
                     if (hasKana) Spacer(Modifier.size(karaokeGap)) // 两个按钮都在左边时的间距
                 }

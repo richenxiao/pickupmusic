@@ -265,11 +265,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     // 与同名函数 JVM 签名冲突（karaokeEnabled 当初踩过同一个坑）。
     fun selectKaraokeMix(i: Int) {
         karaokeMixIndex = i.coerceIn(0, 2)
+        // UI 顺序是（人声 / 原曲 / 伴奏）—— 映射到处理器的档位，运行期即时生效
+        com.shiyin.music.playback.KaraokeMixControl.mode = when (karaokeMixIndex) {
+            0 -> com.shiyin.music.playback.KaraokeMixControl.MODE_VOCAL
+            2 -> com.shiyin.music.playback.KaraokeMixControl.MODE_ACCOMP
+            else -> com.shiyin.music.playback.KaraokeMixControl.MODE_ORIGINAL
+        }
     }
 
-    /** 关闭伴唱：回到 Idle + 混音档位复位「原曲」（规格 §3.3 第 3 条）。 */
+    /** 关闭伴唱：淡回原曲 + 停掉分离（规格 §3.3 第 3 条）。 */
     fun closeKaraoke() {
-        karaokeState = com.shiyin.music.ui.components.KaraokeButtonState.Idle
+        stopKaraoke()
         karaokeMixIndex = 1
     }
     /** v1.3.2: 自定义写真源(设置·写真源可增删,CustomSource 按模板拉图)。 */
@@ -1124,7 +1130,18 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                         val text = cmdFile.readText()
                         cmdFile.delete()
                         text.lineSequence().map { it.trim() }.filter { it.isNotEmpty() }
-                            .forEach { runSpikeCommand(it) }
+                            .forEach { line ->
+                                // ⚠️ 逐条兜底并**把异常写进探针日志** ——
+                                // 整个循环外面套 runCatching 会把失败静默吞掉（踩过：sep 失败后
+                                // 日志里只剩"[指令] sep …"，完全看不出为什么）。
+                                try {
+                                    runSpikeCommand(line)
+                                } catch (t: Throwable) {
+                                    appendProbeLog(
+                                        "[指令失败] $line → ${t.javaClass.simpleName}: ${t.message}",
+                                    )
+                                }
+                            }
                     }
                 }
                 kotlinx.coroutines.delay(700L)
@@ -1146,9 +1163,74 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             "source" -> com.shiyin.music.playback.KaraokeMixControl.sourceKind = p[1].toInt()
             "probe" -> com.shiyin.music.playback.KaraokeAudioSpike.setProbeMode(getApplication(), p[1].toInt())
             "capture" -> player.spikeCaptureFromStart()
+            /** 从**非零位置**起采集（块 3 闸门：随机拖动后仍要零拍）。 */
+            "captureat" -> player.spikeCaptureFrom(p[1].toLong())
             "wait" -> kotlinx.coroutines.delay(p[1].toLong())
             "sweep" -> runSweep(p[1].toInt(), p.getOrNull(2)?.toLong() ?: 300L, "cmd")
+            // 跑一次分离，把 RTF 打进探针日志（块 2 的闸门：稳态 RTF 必须 ≤ 0.8，否则停下汇报）
+            "sep" -> {
+                val q = p.drop(1).joinToString(" ")
+                val t = tracksRaw.firstOrNull {
+                    it.title.contains(q, ignoreCase = true) || it.artist.contains(q, ignoreCase = true)
+                }
+                if (t == null) {
+                    appendProbeLog("[RTF] 找不到曲目：$q（库内 ${tracksRaw.size} 首）")
+                } else {
+                    appendProbeLog("[RTF] 开始 title=${t.title} dur=${t.durationSec}s model=9482 threads=4")
+                    val r = com.shiyin.music.spike.karaoke.KaraokeStemRunner.run(
+                        getApplication(), t, com.shiyin.music.data.karaoke.MdxModel.M9482, 4,
+                        com.shiyin.music.data.karaoke.OrtBackend.CPU, {}, { _, _ -> },
+                    )
+                    appendProbeLog(
+                        "[RTF] title=${t.title} dur=${"%.1f".format(r.durationSec)}s " +
+                            "total=${r.totalMs}ms rtf=${"%.3f".format(r.rtf)} " +
+                            "avgChunk=${r.avgChunkMs}ms chunkAudio=${"%.1f".format(r.chunkAudioSec)}s " +
+                            "overBudget=${r.overBudgetChunks}/${r.chunkTimesMs.size} " +
+                            "firstChunk=${r.firstChunkMs}ms",
+                    )
+                }
+            }
             "say" -> appendProbeLog("[标记] " + p.drop(1).joinToString(" "))
+            // 块 3 闸门：把**原曲本身**当"伴奏"写进缓存（独立路径：解码 → 分块落盘 → 按帧号读），
+            // 于是 人声 = 原曲 − 缓存(原曲) 必须**恒为 0**。差一个采样就会漏出梳状声。
+            "seed" -> {
+                val name = p[1]
+                val model = com.shiyin.music.data.karaoke.MdxModel.M9482
+                val src = java.io.File(java.io.File(dir, "fixtures"), name)
+                val tmp = java.io.File(getApplication<Application>().cacheDir, "seed_src.pcm")
+                val info = com.shiyin.music.data.karaoke.AudioDecoder.decodeToPcm16File(
+                    getApplication(), android.net.Uri.fromFile(src), tmp,
+                )
+                val gen = model.chunkSamples - model.nFft
+                val key = com.shiyin.music.data.karaoke.StemCache.SourceKey(
+                    "seed-${name}-${info.srcRate}-${info.frames}", info.srcRate, 2, info.frames,
+                )
+                val vdir = stemCache.variantDir(key, model.id, com.shiyin.music.spike.karaoke.KaraokeCacheJob.MODEL_VERSION)
+                val bytes = ByteArray(info.frames * 4)
+                java.io.RandomAccessFile(tmp, "r").use { raf ->
+                    var r = 0
+                    while (r < bytes.size) {
+                        val n = raf.read(bytes, r, bytes.size - r); if (n <= 0) break; r += n
+                    }
+                }
+                val buf = java.nio.ByteBuffer.wrap(bytes).order(java.nio.ByteOrder.LITTLE_ENDIAN).asShortBuffer()
+                val all = ShortArray(bytes.size / 2); buf.get(all)
+                val total = (info.frames + gen - 1) / gen
+                for (i in 0 until total) {
+                    val from = i * gen
+                    val cnt = minOf(gen, info.frames - from)
+                    stemCache.writeChunk(vdir, i, all.copyOfRange(from * 2, (from + cnt) * 2))
+                }
+                stemCache.writeManifest(
+                    vdir, model.id, com.shiyin.music.spike.karaoke.KaraokeCacheJob.MODEL_VERSION,
+                    key.fingerprint, gen, total, complete = true, lastAccess = System.currentTimeMillis(),
+                )
+                com.shiyin.music.playback.KaraokeMixControl.realSource =
+                    com.shiyin.music.playback.StemCacheAccompaniment(stemCache, vdir)
+                com.shiyin.music.playback.KaraokeMixControl.mode =
+                    com.shiyin.music.playback.KaraokeMixControl.MODE_VOCAL   // 人声 = 原曲 − 缓存
+                appendProbeLog("[seed] $name 帧=${info.frames} 块=$total gen=$gen → ${vdir.name}")
+            }
         }
     }
 
@@ -5394,24 +5476,96 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      * v1.5.0 伴唱按钮点击。分离引擎未接入前：点击 = 进入 Loading（底色动画 + 圆周弧），
      * 再点 = 取消回 Idle —— 先让用户看到效果，且不假装已经分离完成。
      */
+    // ── v1.5.0 块 3：伴唱接到**真伴奏缓存** ─────────────────────────────────────
+    /** 伴奏块缓存（物理文件维度，见块 2）。 */
+    private val stemCache by lazy {
+        com.shiyin.music.data.karaoke.StemCache.defaultRoot(getApplication<Application>().filesDir)
+    }
+    private var karaokeJob: com.shiyin.music.spike.karaoke.KaraokeCacheJob.Handle? = null
+
+    /** 伴唱当前进度文案（Loading 时显示）。 */
+    var karaokeStatus by mutableStateOf(""); private set
+
+    private fun currentTrackForKaraoke(): Track? = player.currentId?.let { trackById(it) }
+
+    /**
+     * **格式闸门（块 4｜用户 2026-10-14 定的可用版范围）**：只支持 **FLAC / MP3**。
+     * 返回 null = 可用；否则是**给用户看的原因**（按钮据此置灰并显示原因）。
+     */
+    fun karaokeGate(t: Track? = currentTrackForKaraoke()): String? {
+        if (t == null) return "先播放一首歌"
+        // 判定逻辑在 KaraokeFormatGate（纯逻辑、有单测）—— 这里只负责"没有曲目"这一层
+        return com.shiyin.music.data.karaoke.KaraokeFormatGate.reasonFor(t.dataPath)
+    }
+
+    /** UI 用：当前曲目能不能点伴唱。 */
+    val karaokeAvailable: Boolean get() = karaokeGate() == null
+
+    /**
+     * v1.5.0 伴唱按钮（块 3）：
+     * 点 → 闸门检查 → **转圈**（同时解码 + 分离，灌缓存）→ 首段可用 → **300ms 淡入伴奏**；
+     * 再点 → **淡回原曲**并停掉分离。
+     *
+     * 全程**不重建播放器**：只切处理器内部模式（块 1 已把处理器做成常驻）。
+     */
     fun toggleKaraoke() {
         when (karaokeState) {
             com.shiyin.music.ui.components.KaraokeButtonState.Idle -> {
+                val t = currentTrackForKaraoke()
+                val why = karaokeGate(t)
+                if (why != null) {
+                    showToast(why, null)
+                    return
+                }
                 karaokeState = com.shiyin.music.ui.components.KaraokeButtonState.Loading
-                // ⚠️ 临时演示（用户要求"先做效果"）：分离引擎（P0 Spike）尚未接入，
-                // 这里用延时模拟"首段可用"，好让用户现在就能看到 Loading→Active 的
-                // 圆形→六边形形变动画。引擎落地后**删除本段**，改由 SeparationJob
-                // 的回调把状态置为 Active（规格 D6/D8 的"首段可用"语义）。
+                karaokeStatus = "准备中…"
                 viewModelScope.launch {
-                    kotlinx.coroutines.delay(2500)
-                    if (karaokeState == com.shiyin.music.ui.components.KaraokeButtonState.Loading) {
-                        karaokeState = com.shiyin.music.ui.components.KaraokeButtonState.Active
+                    try {
+                        val h = com.shiyin.music.spike.karaoke.KaraokeCacheJob.start(
+                            context = getApplication(),
+                            track = t!!,
+                            cache = stemCache,
+                            // 播放头 = 源文件帧号（进度是文件绝对坐标，见 PlayerController.positionMs）
+                            playFrame = { player.positionMs * 44100L / 1000L },
+                            onStatus = { karaokeStatus = it },
+                            onReady = { dir ->
+                                // ⚠️ 就绪回调可能**晚于用户取消**（分离是异步的）：
+                                // 用状态机保证"只在仍处于 Loading 时才进 Active"，否则会
+                                // 把用户已经取消掉的伴唱又打开（见 KaraokeButtonMachine 的单测）。
+                                val next = com.shiyin.music.ui.components.KaraokeButtonMachine
+                                    .onReady(karaokeState)
+                                if (next == com.shiyin.music.ui.components.KaraokeButtonState.Active) {
+                                    // 首段可用 ⇒ 接上真伴奏、切到"伴奏"档 ⇒ 处理器 300ms 淡入
+                                    com.shiyin.music.playback.KaraokeMixControl.realSource =
+                                        com.shiyin.music.playback.StemCacheAccompaniment(stemCache, dir)
+                                    com.shiyin.music.playback.KaraokeMixControl.mode =
+                                        com.shiyin.music.playback.KaraokeMixControl.MODE_ACCOMP
+                                    karaokeMixIndex = 2
+                                    karaokeStatus = "伴奏已就绪"
+                                }
+                                karaokeState = next
+                            },
+                        )
+                        karaokeJob = h
+                    } catch (e: Throwable) {
+                        karaokeStatus = "分离失败：${e.javaClass.simpleName}"
+                        karaokeState = com.shiyin.music.ui.components.KaraokeButtonState.Idle
                     }
                 }
             }
-            // Loading 中点击 = 取消；Active 中点击 = 关闭伴唱（回到原曲）
-            else -> karaokeState = com.shiyin.music.ui.components.KaraokeButtonState.Idle
+            else -> stopKaraoke()
         }
+    }
+
+    /** 关伴唱：**淡回原曲**（系数插值保证不断音）并停掉分离（已算好的块保留，下次接着用）。 */
+    fun stopKaraoke() {
+        karaokeJob?.job?.cancel()
+        karaokeJob = null
+        com.shiyin.music.playback.KaraokeMixControl.realSource = null
+        com.shiyin.music.playback.KaraokeMixControl.mode =
+            com.shiyin.music.playback.KaraokeMixControl.MODE_ORIGINAL
+        karaokeState = com.shiyin.music.ui.components.KaraokeButtonState.Idle
+        karaokeStatus = ""
     }
 
     /** v1.5.0 右滑固定：该条目当前是否已固定。 */
@@ -5434,7 +5588,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** v1.5.0 伴唱总开关。关闭时一并回到 Idle（规格 §10：关闭后停止当前分离、回到原曲）。 */
     fun setKaraokeEnabled(v: Boolean) {
         _karaokeEnabled.value = v
-        if (!v) karaokeState = com.shiyin.music.ui.components.KaraokeButtonState.Idle
+        if (!v) stopKaraoke()   // 关闭总开关 ⇒ 淡回原曲 + 停分离（规格 §10）
         viewModelScope.launch { settingsStore.setKaraokeEnabled(v) }
     }
 

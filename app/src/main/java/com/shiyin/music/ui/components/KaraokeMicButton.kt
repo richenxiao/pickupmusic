@@ -26,6 +26,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.unit.dp
 import kotlin.math.cos
@@ -89,6 +90,12 @@ fun KaraokeMicButton(
     lyricBackground: Color,   // = safeBg
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    /**
+     * 当前曲目的格式不被支持时置灰（块 4 的格式闸门）。
+     * ⚠️ **仍然可点** —— 点了会给出原因（"暂只支持 FLAC 与 MP3"），
+     * 而不是变成一个"按了没反应"的坏按钮。
+     */
+    dimmed: Boolean = false,
 ) {
     val isActive = state == KaraokeButtonState.Active
     val isLoading = state == KaraokeButtonState.Loading
@@ -128,11 +135,14 @@ fun KaraokeMicButton(
 
     val iconColor = if (state == KaraokeButtonState.Idle) lyricForeground else lyricBackground
 
+    val micSrc = remember { MutableInteractionSource() }
     Box(
         modifier
             .size(38.dp)
+            .graphicsLayer { alpha = if (dimmed) 0.35f else 1f }
+            .pressFeedback(micSrc)
             .clickable(
-                interactionSource = remember { MutableInteractionSource() },
+                interactionSource = micSrc,
                 indication = null,
                 onClick = onClick,
             ),

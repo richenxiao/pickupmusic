@@ -213,11 +213,21 @@ object KaraokeStemRunner {
         }
     }
 
-    private fun ensureModelFile(context: Context, model: MdxModel): File {
+    internal fun ensureModelFile(context: Context, model: MdxModel): File {
         val f = File(context.cacheDir, model.assetName)
         if (!f.exists()) {
-            context.assets.open(model.assetName).use { input ->
-                f.outputStream().buffered().use { input.copyTo(it) }
+            // v1.5.0 块 4：**包内只内置 9482**（用户 A57 拍板：<40MB 才自带；另外两个各 66MB，
+            // 正式版自带会超线）。所以缺 asset 是**预期情况**，必须给一句人话，
+            // 而不是抛一个 FileNotFoundException 让人以为坏了。
+            try {
+                context.assets.open(model.assetName).use { input ->
+                    f.outputStream().buffered().use { input.copyTo(it) }
+                }
+            } catch (e: java.io.IOException) {
+                throw IllegalStateException(
+                    "这个模型没有内置在安装包里（${model.displayName}）—— 当前版本只内置 9482",
+                    e,
+                )
             }
         }
         return f

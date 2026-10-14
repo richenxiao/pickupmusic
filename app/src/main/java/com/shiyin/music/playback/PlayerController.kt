@@ -1089,11 +1089,12 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
     }
 
     /** 起「从头采集」：置待命旗标 → 回到 0 → 播放（处理器在落到开头时开始采 PCM）。 */
-    fun spikeCaptureFromStart() {
-        val c = controller ?: return
+    fun spikeCaptureFromStart() = spikeCaptureFrom(0L)
+
+    /** 起「从指定位置采集」（块 3 闸门：随机拖动**之后**仍要零拍，所以要从非零位置采）。 */
+    fun spikeCaptureFrom(ms: Long) {
         KaraokeAudioSpike.captureArmed = true
-        c.seekTo(0L)
-        c.play()
+        seekToMs(ms)
     }
 
     /** 扫描中的"暂停恢复"覆盖用（暂停本身不产生 flush，但恢复后每个 buffer 仍会被时间戳锚定）。 */

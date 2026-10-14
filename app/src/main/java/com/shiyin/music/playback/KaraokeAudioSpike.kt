@@ -9,6 +9,7 @@ import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.audio.AudioSink
 import androidx.media3.exoplayer.audio.DefaultAudioSink
 import androidx.media3.exoplayer.audio.ForwardingAudioSink
+import com.shiyin.music.data.karaoke.StemCache
 import java.io.BufferedOutputStream
 import java.io.File
 import java.io.FileOutputStream
@@ -354,6 +355,14 @@ object KaraokeMixControl {
     /** 交叉淡化时长（毫秒）。用户定 300。 */
     @Volatile var rampMs: Int = 300
 
+    /**
+     * **真伴奏源**（块 3）。非 null 时**优先于** [sourceKind] 的占位源。
+     * 由 app 在"点伴唱、且缓存已就绪"时设为 [StemCacheAccompaniment]；取消伴唱时置回 null。
+     * 音频线程每个块读一次；读不到（欠载）由处理器退回原曲。
+     */
+    @Volatile
+    var realSource: AccompanimentSource? = null
+
     fun coeffOf(m: Int): FloatArray = when (m) {
         MODE_ORIGINAL -> floatArrayOf(1f, 0f)
         MODE_ACCOMP -> floatArrayOf(0f, 1f)
@@ -421,21 +430,25 @@ class CoefficientRamp(go: Float, ga: Float) {
 }
 
 /**
- * 占位伴奏源：把 [frames] 帧伴奏（交错 L,R）写进 [dst]。真实实现将来换成"按物理文件帧号
- * 读缓存伴奏"的 reader；接口按**绝对源帧号**取，就是为了那天直接接上。
+ * 伴奏源：把 [frames] 帧伴奏（交错 L,R）写进 [dst]。
+ *
+ * **返回 false = 这段还没算好**（欠载）——调用方会退回原曲并记录，而不是拿半截数据出声。
+ * 占位源一律返回 true。
  */
 fun interface AccompanimentSource {
-    fun readAbs(absFrame: Long, sampleRate: Int, srcOrig: ShortArray, dst: ShortArray, frames: Int)
+    fun readAbs(absFrame: Long, sampleRate: Int, srcOrig: ShortArray, dst: ShortArray, frames: Int): Boolean
 }
 
-/** 伴奏 = 原曲本身 ⇒ 人声档 `原曲 − 伴奏` = **完全静音**（零拍检测）。 */
+/** 伴奏 = 原曲本身 ⇒ 人声档 `原曲 − 伴奏` = **完全静音**（算术检查）。 */
 val IdentityAccompaniment = AccompanimentSource { _, _, srcOrig, dst, frames ->
     System.arraycopy(srcOrig, 0, dst, 0, frames * 2)
+    true
 }
 
 /** 伴奏 = 静音 ⇒ 伴奏档静音、人声档 = 原曲。 */
 val SilenceAccompaniment = AccompanimentSource { _, _, _, dst, frames ->
     java.util.Arrays.fill(dst, 0, frames * 2, 0.toShort())
+    true
 }
 
 /** 伴奏 = 220Hz 正弦（幅度 0.4）——能直接听出"混进来的东西"与系数比例。 */
@@ -446,6 +459,49 @@ val ToneAccompaniment = AccompanimentSource { absFrame, sampleRate, _, dst, fram
             .coerceIn(-32768, 32767).toShort()
         dst[2 * i] = v
         dst[2 * i + 1] = v
+    }
+    true
+}
+
+/**
+ * **真伴奏源（块 3）**：按**绝对源帧号**去 [StemCache] 取已经算好的块。
+ *
+ * 关键点：
+ * - 坐标是**源文件帧号**（不是"第几首歌"）—— 见块 2 把缓存键改成物理文件维度；
+ * - **只读已完成的块**：`readFrames` 对缺块返回 null（绝不返回半截）⇒ 这里直接报欠载；
+ * - 一次读要的东西可能跨块边界，`readFrames` 已经处理了。
+ *
+ * 线程：只在音频线程调用（`readFrames` 是 RandomAccessFile 随机读，块是 6 秒 PCM ≈ 1MB，
+ * 小读一次 ~几十微秒，不会拖垮音频线程）。
+ */
+class StemCacheAccompaniment(
+    private val cache: StemCache,
+    private val dir: java.io.File,
+) : AccompanimentSource {
+
+    /** 欠载次数（报告用）。 */
+    @Volatile var underruns: Long = 0L; private set
+    /** 成功读数（报告用）。 */
+    @Volatile var hits: Long = 0L; private set
+
+    private var scratch = ShortArray(0)
+
+    override fun readAbs(
+        absFrame: Long, sampleRate: Int, srcOrig: ShortArray, dst: ShortArray, frames: Int,
+    ): Boolean {
+        val got = cache.readFrames(dir, absFrame, frames)
+        if (got == null) {
+            underruns++
+            return false
+        }
+        // 先把缓存内容搬进 dst（长度可能是 frames*2 也可能是拼接的 —— 只取需要的部分）
+        val n = minOf(got.size, frames * 2)
+        if (scratch.size < n) scratch = ShortArray(n)
+        System.arraycopy(got, 0, scratch, 0, n)
+        java.util.Arrays.fill(dst, 0, frames * 2, 0.toShort())
+        System.arraycopy(scratch, 0, dst, 0, n)
+        hits++
+        return true
     }
 }
 
@@ -697,6 +753,10 @@ class KaraokeMixProcessor(
     var nonStereoPassCount: Long = 0L; private set
     /** 混音抛异常而退回透传的块数（>0 = 混音有 bug，但播放没断）。 */
     var mixFailCount: Long = 0L; private set
+    /** 欠载（这段伴奏还没算好）退回原曲的次数 —— 块 3 的验收要看它。 */
+    var underrunCount: Long = 0L; private set
+    /** 欠载是否已锁存（避免每个块都 +1）。 */
+    private var underrunLatched = false
     /** 临时诊断用：每个流前几块打日志的计数。 */
     private var mixBlockLogged = 0
 
@@ -721,21 +781,37 @@ class KaraokeMixProcessor(
         inputBuffer.duplicate().order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(mixSrc, 0, n)
 
         val mode = KaraokeMixControl.mode
+        val rf = (KaraokeMixControl.rampMs.toLong() * inputSampleRate / 1000L).toInt()
         if (mode != lastMixMode) {
             val c = KaraokeMixControl.coeffOf(mode)
-            val rampFrames = (KaraokeMixControl.rampMs.toLong() * inputSampleRate / 1000L).toInt()
-            ramp.moveTo(c[0], c[1], rampFrames)
-            fadeFrames += rampFrames
+            ramp.moveTo(c[0], c[1], rf)
+            fadeFrames += rf
+            underrunLatched = false
             Log.i(
                 TAG,
                 "混音切换 → ${KaraokeMixControl.label(mode)} 系数=(${c[0]},${c[1]}) " +
-                    "在 $rampFrames 帧（${KaraokeMixControl.rampMs}ms）内线性插值" +
-                    " 伴奏源=${KaraokeMixControl.sourceLabel(KaraokeMixControl.sourceKind)}",
+                    "在 $rf 帧（${KaraokeMixControl.rampMs}ms）内线性插值" +
+                    " 伴奏源=${if (KaraokeMixControl.realSource != null) "真缓存" else KaraokeMixControl.sourceLabel(KaraokeMixControl.sourceKind)}",
             )
             lastMixMode = mode
         }
-        sourceOf(KaraokeMixControl.sourceKind)
-            .readAbs(startFrame, inputSampleRate, mixSrc, mixAcc, frames)
+
+        // 真伴奏（块 3）优先；没有就退回占位源（调试用）。
+        val src = KaraokeMixControl.realSource ?: sourceOf(KaraokeMixControl.sourceKind)
+        val ready = src.readAbs(startFrame, inputSampleRate, mixSrc, mixAcc, frames)
+
+        if (!ready) {
+            // **欠载**（这段还没算好）：退回**原曲**，而不是拿半截数据出声。
+            // 做法：把系数目标拉回 (1,0)，并把"伴奏"当成原曲 ⇒ 输出 = 原曲，且**无跳变**
+            // （从伴奏档 (0,1) 出发时 go+ga 恒为 1）。算好之后会自动淡回目标档。
+            if (!underrunLatched) { underrunLatched = true; underrunCount++ }
+            ramp.moveTo(1f, 0f, rf)
+            System.arraycopy(mixSrc, 0, mixAcc, 0, frames * 2)
+        } else if (underrunLatched) {
+            underrunLatched = false
+            val c = KaraokeMixControl.coeffOf(mode)
+            ramp.moveTo(c[0], c[1], rf)   // 恢复：淡回目标档
+        }
 
         // 临时诊断（2026-10-14 排查"混音档卡住"）：每个流的前 3 块把**输入/伴奏/系数**打出来。
         // 真机上"卡住"看不出是哪一步错，这三行能直接判断是系数、还是伴奏源、还是缓冲的问题。
