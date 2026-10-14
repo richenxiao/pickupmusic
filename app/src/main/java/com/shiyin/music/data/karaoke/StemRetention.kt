@@ -14,10 +14,11 @@ enum class RetentionMode { COUNT, SIZE_MB, NONE }
 
 object StemRetention {
 
-    data class Entry(val songId: Long, val bytes: Long, val lastAccess: Long)
+    /** 一条缓存记录。身份是 [StemCache.SourceKey.dirName]（**物理文件维度**，v1.5.0 块 2 起不再是 songId）。 */
+    data class Entry(val keyDirName: String, val bytes: Long, val lastAccess: Long)
 
     /**
-     * 算出该淘汰哪些歌（返回 songId）。
+     * 算出该淘汰哪些（返回 `keyDirName`）。
      * 均按 LRU（lastAccess 升序，最久未访问的先走）；受保护的一律保留。
      */
     fun planEviction(
@@ -25,24 +26,24 @@ object StemRetention {
         mode: RetentionMode,
         maxCount: Int = 10,
         maxMb: Int = 0,
-        protectedSongIds: Set<Long> = emptySet(),
-    ): List<Long> {
+        protectedKeys: Set<String> = emptySet(),
+    ): List<String> {
         if (mode == RetentionMode.NONE) return emptyList()   // 由调用方"用完即删"
-        val evictable = entries.filter { it.songId !in protectedSongIds }.sortedBy { it.lastAccess }
-        val protectedBytes = entries.filter { it.songId in protectedSongIds }.sumOf { it.bytes }
+        val evictable = entries.filter { it.keyDirName !in protectedKeys }.sortedBy { it.lastAccess }
+        val protectedBytes = entries.filter { it.keyDirName in protectedKeys }.sumOf { it.bytes }
         return when (mode) {
             RetentionMode.COUNT -> {
                 // 保留数 = 受保护的 + 最近的 (maxCount - 受保护数)，下限 0
-                val keepOthers = (maxCount - protectedSongIds.size).coerceAtLeast(0)
-                evictable.dropLast(keepOthers).map { it.songId }
+                val keepOthers = (maxCount - protectedKeys.size).coerceAtLeast(0)
+                evictable.dropLast(keepOthers).map { it.keyDirName }
             }
             RetentionMode.SIZE_MB -> {
                 val limit = maxMb.toLong() * 1024 * 1024
                 var total = entries.sumOf { it.bytes }   // 含受保护占用
-                val out = mutableListOf<Long>()
+                val out = mutableListOf<String>()
                 for (e in evictable) {                    // 最旧的先淘汰
                     if (total <= limit) break
-                    out += e.songId
+                    out += e.keyDirName
                     total -= e.bytes
                 }
                 out

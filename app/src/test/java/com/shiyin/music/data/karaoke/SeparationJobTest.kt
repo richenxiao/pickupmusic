@@ -77,11 +77,13 @@ class SeparationJobTest {
         val opts = OrtSession.SessionOptions().apply { setIntraOpNumThreads(4) }
         env.createSession(File(models, model.assetName).absolutePath, opts).use { session ->
             val job = SeparationJob(model, env, session, cache)
+            // 块 2 起缓存身份是**物理文件维度**（指纹 + 采样率 + 声道 + 总帧数）
+            val srcKey = StemCache.SourceKey("fp", 44100, 2, n)
 
             // ① 先取消：算几块就停 —— 已写块保留、manifest 不得谎报 complete
             var seen = 0
             val cancelled = job.run(
-                1L, "1", "fp", n, reader,
+                srcKey, "1", reader,
                 onProgress = { seen = it.chunkDone },
                 isCancelled = { seen >= 3 },
             )
@@ -92,7 +94,7 @@ class SeparationJobTest {
             assertTrue("取消时按帧读整段必须失败（块不全）", cache.readFrames(dir, 0, n) == null)
 
             // ② 续算：只补缺的块，最终 complete 且内容与参考一致
-            val resumed = job.run(1L, "1", "fp", n, reader)
+            val resumed = job.run(srcKey, "1", reader)
             assertTrue("续算应复用已有块", resumed.resumedChunks >= 1)
             assertTrue("重跑后应完成", !resumed.cancelled)
             assertTrue("manifest 应标 complete", cache.readManifest(dir)!!.complete)

@@ -47,17 +47,41 @@ class StemCache(private val root: File) {
         val lastAccess: Long,
     )
 
-    /** 一首歌在缓存里的一份产出（用于保留策略 / 占用统计）。 */
-    data class CachedSong(val songId: Long, val bytes: Long, val lastAccess: Long, val complete: Boolean)
+    /**
+     * 一份产出（用于保留策略 / 占用统计）。
+     * `keyDirName` = [SourceKey.dirName]（物理文件维度；不再是 songId）。
+     */
+    data class CachedSong(val keyDirName: String, val bytes: Long, val lastAccess: Long, val complete: Boolean)
 
-    fun songDir(songId: Long): File = File(root, songId.toString())
+    /**
+     * **缓存身份：以物理文件为准**（v1.5.0 块 2，去掉 songId 那一层）。
+     *
+     * 为什么必须去掉：拆分单曲是**同一个整轨文件**被切成多段、每段一个 songId，
+     * 但它们要的是**同一份**分离产出 —— 按 songId 会重复算 N 遍，而且拖动跨段时
+     * 也认不出"这是同一个文件的同一块"。
+     *
+     * 目录名 = 文件指纹 + 采样率 + 声道数 + 总帧数：**四项任一变化都必须重算**
+     * （换文件、重采样、立体声↔单声道、文件被裁剪/替换）。
+     */
+    data class SourceKey(
+        val fingerprint: String,
+        val sampleRate: Int,
+        val channels: Int,
+        val totalFrames: Int,
+    ) {
+        /** 目录名（文件系统安全、可读；保留策略与统计都按它认一份产出）。 */
+        val dirName: String get() = "$fingerprint-r$sampleRate-c$channels-n$totalFrames"
+    }
 
-    fun modelDir(songId: Long, modelId: String): File = File(songDir(songId), modelId)
+    fun sourceDir(key: SourceKey): File = File(root, key.dirName)
 
+    fun modelDir(key: SourceKey, modelId: String): File = File(sourceDir(key), modelId)
+
+    /** 变体目录只带模型版本 + 引擎版本 —— **指纹已在 [SourceKey.dirName] 里**，不再重复。 */
     fun variantDir(
-        songId: Long, modelId: String, modelVersion: String, fingerprint: String,
+        key: SourceKey, modelId: String, modelVersion: String,
         engineVersion: Int = ENGINE_VERSION,
-    ): File = File(modelDir(songId, modelId), "$modelVersion-e$engineVersion-$fingerprint")
+    ): File = File(modelDir(key, modelId), "$modelVersion-e$engineVersion")
 
     private fun chunkFile(dir: File, index: Int) = File(dir, "c%05d.pcm".format(index))
 
@@ -85,8 +109,8 @@ class StemCache(private val root: File) {
     }
 
     /** 可直接使用的缓存目录（manifest 完整且标记 complete）——命中判定。 */
-    fun findComplete(songId: Long, modelId: String, modelVersion: String, fingerprint: String): File? {
-        val dir = variantDir(songId, modelId, modelVersion, fingerprint)
+    fun findComplete(key: SourceKey, modelId: String, modelVersion: String): File? {
+        val dir = variantDir(key, modelId, modelVersion)
         val m = readManifest(dir) ?: return null
         return if (m.complete && m.totalChunks > 0) dir else null
     }
@@ -201,9 +225,13 @@ class StemCache(private val root: File) {
 
     // ── 删 / 统计 ─────────────────────────────────────────────────────────
 
-    fun deleteSong(songId: Long): Boolean = songDir(songId).deleteRecursively()
+    /** 删一份产出（物理文件维度）。 */
+    fun deleteSource(key: SourceKey): Boolean = sourceDir(key).deleteRecursively()
 
-    fun deleteModel(songId: Long, modelId: String): Boolean = modelDir(songId, modelId).deleteRecursively()
+    fun deleteModel(key: SourceKey, modelId: String): Boolean = modelDir(key, modelId).deleteRecursively()
+
+    /** 按**目录名**删（保留策略只拿到名字，不重建整条 key）。 */
+    fun deleteByDirName(dirName: String): Boolean = File(root, dirName).deleteRecursively()
 
     fun usageBytes(): Long {
         var total = 0L
@@ -215,7 +243,10 @@ class StemCache(private val root: File) {
     fun cachedSongs(): List<CachedSong> {
         val songs = root.listFiles() ?: return emptyList()
         return songs.filter { it.isDirectory }.mapNotNull { sd ->
-            val songId = sd.name.toLongOrNull() ?: return@mapNotNull null
+            // 身份就是**目录名**（物理文件维度）。不再按 Long 解析：块 2 起目录名是
+            // `<指纹>-r<采样率>-c<声道>-n<帧数>`，旧的 songId 数字目录会被当作孤儿条目，
+            // 由保留策略按 lastAccess 自然淘汰。
+            val keyDirName = sd.name
             var bytes = 0L
             var last = 0L
             var anyComplete = false
@@ -236,7 +267,7 @@ class StemCache(private val root: File) {
             }
             // 空壳目录（删完模型后残留的歌目录）不算缓存 —— 否则设置页会显示"0MB 的一首"
             if (!hasVariant || bytes == 0L) return@mapNotNull null
-            CachedSong(songId, bytes, last, anyComplete)
+            CachedSong(keyDirName, bytes, last, anyComplete)
         }
     }
 

@@ -56,21 +56,19 @@ class SeparationJob(
      * 跑完（或续算完）一首歌的伴奏。**取消时返回 Result(cancelled = true)**，已写的块保留。
      */
     fun run(
-        songId: Long,
+        key: StemCache.SourceKey,
         modelVersion: String,
-        fingerprint: String,
-        totalFrames: Int,
         provider: MdxSeparator.ChunkProvider,
         onProgress: (Progress) -> Unit = {},
         isCancelled: () -> Boolean = { false },
     ): Result {
         val gen = genSize
-        val total = totalChunksFor(totalFrames)
-        val dir = cache.variantDir(songId, model.id, modelVersion, fingerprint)
+        val total = totalChunksFor(key.totalFrames)
+        val dir = cache.variantDir(key, model.id, modelVersion)
         // 开跑先落一份"未完成"的 manifest：中途被杀时状态是诚实的（不会谎报可用）。
         val already = cache.doneChunks(dir)
         cache.writeManifest(
-            dir, model.id, modelVersion, fingerprint, gen, total,
+            dir, model.id, modelVersion, key.fingerprint, gen, total,
             complete = false, lastAccess = System.currentTimeMillis(),
         )
 
@@ -95,7 +93,7 @@ class SeparationJob(
         }
 
         val summary = MdxSeparator(model, env, session).run(
-            totalFrames = totalFrames,
+            totalFrames = key.totalFrames,
             provider = provider,
             sink = sink,
             onProgress = { p ->
@@ -115,7 +113,7 @@ class SeparationJob(
         val done = cache.doneChunks(dir)
         val complete = !summary.cancelled && done >= total
         cache.writeManifest(
-            dir, model.id, modelVersion, fingerprint, gen, total,
+            dir, model.id, modelVersion, key.fingerprint, gen, total,
             complete = complete, lastAccess = System.currentTimeMillis(),
         )
         return Result(
