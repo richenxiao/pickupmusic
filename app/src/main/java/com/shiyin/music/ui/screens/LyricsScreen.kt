@@ -83,6 +83,7 @@ import com.shiyin.music.ui.components.RubySegment
 import com.shiyin.music.ui.components.RubyText
 import com.shiyin.music.ui.components.body
 import com.shiyin.music.ui.components.coverPalette
+import com.shiyin.music.ui.components.pressFeedback
 import com.shiyin.music.ui.components.rememberCoverPalette
 import com.shiyin.music.ui.components.shadowMd
 import com.shiyin.music.ui.icons.Lucide
@@ -299,13 +300,17 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
             // 用 Lucide 里的加粗变体)。④返回改调 requestLyricsExit()——与物理
             // 返回键同一下拉退出动画,不再瞬间消失(动画状态机在 AppRoot 的
             // Dialog 层,按钮原来直接置 lyricsOn=false 跳过了它)。
+            // v1.5.0 用户 2026-10-14:「点击效果要做好」——涟漪已被否，改用**缩放+压暗**
+            // （无底色按钮的通用做法，见 ui/components/PressFeedback.kt）。
+            val exitSrc = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
             Box(
                 Modifier
                     .align(Alignment.CenterStart)
                     .size(38.dp)
                     .clip(CircleShape)
+                    .pressFeedback(exitSrc)
                     .then(if (interactive) Modifier.clickable(
-                        interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                        interactionSource = exitSrc,
                         indication = null,
                     ) { vm.requestLyricsExit() } else Modifier),
                 contentAlignment = Alignment.CenterStart,
@@ -344,6 +349,7 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
             // (中途曾一刀切改成"永远显示",用户实测反馈后收敛回这个规则。)
             if (vm.tapSyncMode == MainViewModel.TapSyncMode.NotStarted) {
                 if (showCalibKey) {
+                    val calibSrc = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
                     Box(
                         Modifier
                             // 右端锚定;若编辑键也在,则左移一个键宽与它并排(offset 不占布局,
@@ -352,8 +358,9 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
                             .offset(x = if (ly.canAdjust) (-38).dp else 0.dp)
                             .size(38.dp)
                             .clip(CircleShape)
+                            .pressFeedback(calibSrc)
                             .then(if (interactive) Modifier.clickable(
-                                interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                                interactionSource = calibSrc,
                                 indication = null,
                             ) { vm.tapSyncStart() } else Modifier),
                         contentAlignment = Alignment.Center,
@@ -361,13 +368,15 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
                 }
                 if (ly.canAdjust) {
                     // v1.3.x 虚影终版:同关闭按钮——无背景,图标悬浮,clickable 触区。
+                    val slidersSrc = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
                     Box(
                         Modifier
                             .align(Alignment.CenterEnd)
                             .size(38.dp)
                             .clip(CircleShape)
+                            .pressFeedback(slidersSrc)
                             .then(if (interactive) Modifier.clickable(
-                                interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                                interactionSource = slidersSrc,
                                 indication = null,
                             ) { vm.lySheet = !vm.lySheet } else Modifier),
                         contentAlignment = Alignment.CenterEnd,
@@ -386,12 +395,14 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
                         style = body(13f, FontWeight.Bold, artFg),
                     )
                     Spacer(Modifier.size(10.dp))
+                    val exitTapSrc = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
                     Box(
                         Modifier
                             .size(38.dp)
                             .clip(CircleShape)
+                            .pressFeedback(exitTapSrc)
                             .then(if (interactive) Modifier.clickable(
-                                interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                                interactionSource = exitTapSrc,
                                 indication = null,
                             ) { vm.tapSyncExit() } else Modifier),
                         contentAlignment = Alignment.Center,
@@ -1074,15 +1085,17 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
                 if (hasKana) {
                     // v1.3.x 虚影终版:同上两个按钮——去掉圆形底色块。未激活态:
                     // 无背景,あ 字原色悬浮;激活态保留 artFg 实心盘(这个是功能
-                    // 状态指示,用户验证过满意,保留)。四项体验:涟漪一并去掉
-                    // (激活/未激活都不需要触碰反馈块)。
+                    // 状态指示,用户验证过满意,保留)。
+                    // v1.5.0:涟漪仍否，但**补上缩放压暗反馈**（用户 2026-10-14 要求）。
+                    val kanaSrc = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
                     Box(
                         Modifier
                             .size(38.dp)
                             .clip(CircleShape)
                             .background(if (furiganaOn) artFg else androidx.compose.ui.graphics.Color.Transparent)
+                            .pressFeedback(kanaSrc)
                             .then(if (interactive) Modifier.clickable(
-                                interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                                interactionSource = kanaSrc,
                                 indication = null,
                             ) { furiganaOn = !furiganaOn } else Modifier),
                         contentAlignment = Alignment.Center,
