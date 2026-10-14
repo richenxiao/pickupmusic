@@ -3114,12 +3114,20 @@ private fun CandidateCover(
 }
 
 /**
- * v1.5.0 伴唱 §8：升降 Key 行（-6..+6 半音，点中间数字复位）。
- * 速度子页与分轨面板共用同一实现——从速度子页抽出来，避免两处各写一份。
- * 总音高 = 加速模式自带音高 × 2^(n/12)，速度不变。
+ * v1.5.0 伴唱 §8：升降 Key 行（−6…+6 半音，含 0.5 步进；点中间数字复位）。
+ *
+ * **只放在「播放倍速」子页一处** —— 它是全局播放控制，和播放速度同级。
+ * （2026-10-14 用户指出：原先速度子页与伴唱面板各放了一份，会被误读成两个独立功能。）
+ *
+ * 步进（用户要求增大精度后定的）：
+ *  - **点 ±** → 走 **1 个半音**（快速找调，最常用）；
+ *  - **长按 ±** → 走 **0.5 个半音**（微调，跟唱对不上原调那半格时用）。
+ * 内部单位是**半音步数**（+1 步 = +0.5 半音），见 [com.shiyin.music.playback.KeyShift]。
+ * 总音高 = 加速模式自带音高 × 2^(半音/12)，速度不变。
  */
 @Composable
 private fun KeyShiftRow(vm: MainViewModel, c: com.shiyin.music.ui.theme.OrganicColors) {
+    val k = com.shiyin.music.playback.KeyShift
     Row(
         Modifier
             .fillMaxWidth()
@@ -3130,18 +3138,22 @@ private fun KeyShiftRow(vm: MainViewModel, c: com.shiyin.music.ui.theme.OrganicC
     ) {
         Column(Modifier.weight(1f)) {
             Text("升降 Key", style = body(14f, FontWeight.ExtraBold, c.text))
-            Text("每步一个半音，点数字复位", style = body(11f, FontWeight.Normal, c.n500))
+            Text("点一下走 1 个半音 · 长按走 0.5", style = body(11f, FontWeight.Normal, c.n500))
         }
         Text(
             "−",
-            style = body(18f, FontWeight.ExtraBold, if (vm.keyShift > com.shiyin.music.playback.KeyShift.MIN) c.n600 else c.n400),
+            style = body(18f, FontWeight.ExtraBold, if (vm.keyShift > k.MIN) c.n600 else c.n400),
             modifier = Modifier
                 .clip(RoundedCornerShape(8.dp))
-                .clickable(enabled = vm.keyShift > com.shiyin.music.playback.KeyShift.MIN) { vm.changeKeyShift(vm.keyShift - 1) }
+                .combinedClickable(
+                    enabled = vm.keyShift > k.MIN,
+                    onClick = { vm.changeKeyShift(vm.keyShift - k.STEPS_PER_SEMITONE) },
+                    onLongClick = { vm.changeKeyShift(vm.keyShift - 1) },
+                )
                 .padding(horizontal = 12.dp, vertical = 4.dp),
         )
         Text(
-            com.shiyin.music.playback.KeyShift.label(vm.keyShift),
+            k.label(vm.keyShift),
             style = body(15f, FontWeight.ExtraBold, if (vm.keyShift == 0) c.text else c.accent),
             modifier = Modifier
                 .clip(RoundedCornerShape(8.dp))
@@ -3150,10 +3162,14 @@ private fun KeyShiftRow(vm: MainViewModel, c: com.shiyin.music.ui.theme.OrganicC
         )
         Text(
             "+",
-            style = body(18f, FontWeight.ExtraBold, if (vm.keyShift < com.shiyin.music.playback.KeyShift.MAX) c.n600 else c.n400),
+            style = body(18f, FontWeight.ExtraBold, if (vm.keyShift < k.MAX) c.n600 else c.n400),
             modifier = Modifier
                 .clip(RoundedCornerShape(8.dp))
-                .clickable(enabled = vm.keyShift < com.shiyin.music.playback.KeyShift.MAX) { vm.changeKeyShift(vm.keyShift + 1) }
+                .combinedClickable(
+                    enabled = vm.keyShift < k.MAX,
+                    onClick = { vm.changeKeyShift(vm.keyShift + k.STEPS_PER_SEMITONE) },
+                    onLongClick = { vm.changeKeyShift(vm.keyShift + 1) },
+                )
                 .padding(horizontal = 12.dp, vertical = 4.dp),
         )
     }
@@ -3210,9 +3226,8 @@ private fun KaraokeMixPanel(vm: MainViewModel) {
         )
         Spacer(Modifier.height(12.dp))
 
-        KeyShiftRow(vm, c)
-        Spacer(Modifier.height(12.dp))
-
+        // v1.5.0: 升降 Key **不再**在这里出现 —— 它是**全局播放控制**（和播放速度同级），
+        // 只保留在「播放倍速」子页一处。两处各放一份会让用户以为它们互不相干（用户 2026-10-14 指出）。
         Text(
             "关闭伴唱",
             style = body(13.5f, FontWeight.SemiBold, c.n600),
