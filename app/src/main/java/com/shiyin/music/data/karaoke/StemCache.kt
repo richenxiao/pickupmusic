@@ -135,7 +135,7 @@ class StemCache(private val root: File) {
      */
     fun readFrames(dir: File, startFrame: Long, frames: Int): ShortArray? {
         val m = readManifest(dir) ?: return null
-        if (m.genSize <= 0 || m.channels != 2) return null
+        if (m.genSize <= 0 || m.channels != 2 || frames <= 0 || startFrame < 0) return null
         val out = ShortArray(frames * 2)
         var frame = startFrame
         var written = 0
@@ -143,8 +143,14 @@ class StemCache(private val root: File) {
             val chunkIdx = (frame / m.genSize).toInt()
             if (!hasChunk(dir, chunkIdx)) return null
             val inChunk = (frame % m.genSize).toInt()
-            val take = minOf(frames - written, m.genSize - inChunk)
-            RandomAccessFile(chunkFile(dir, chunkIdx), "r").use { raf ->
+            val file = chunkFile(dir, chunkIdx)
+            // ⚠️ **最后一块是短块**（总帧数不整除 genSize）——"块文件存在"不等于"块里有 genSize 帧"。
+            // 按实际文件长度算这块还剩几帧，否则 readFully 会读过头抛 EOFException
+            // （混音路径会把它 catch 成"退回透传"，于是**歌曲末尾几秒伴奏静默消失**）。
+            val haveInChunk = (file.length() / 4).toInt()
+            if (inChunk >= haveInChunk) return null      // 这一读服务不了 ⇒ 交由调用方当欠载处理
+            val take = minOf(frames - written, haveInChunk - inChunk)
+            RandomAccessFile(file, "r").use { raf ->
                 raf.seek(inChunk.toLong() * 4)
                 val bytes = ByteArray(take * 4)
                 raf.readFully(bytes)
