@@ -5339,9 +5339,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /**
      * v1.5.0 伴唱 §8：升降 Key。与分离完全解耦（伴奏未就绪也能改），不触发重新分离。
      * 按规格不持久化：App 重启即回原调。
+     *
+     * 参数是**半音步数**（+1 步 = +0.5 半音，2026-10-14 加精度后引入）——见 [KeyShift]。
      */
-    fun changeKeyShift(semitones: Int) {
-        keyShift = com.shiyin.music.playback.KeyShift.clamp(semitones)
+    fun changeKeyShift(halfSteps: Int) {
+        keyShift = com.shiyin.music.playback.KeyShift.clamp(halfSteps)
         player.setKeyShift(keyShift)
     }
 
@@ -5392,6 +5394,143 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         if (!v) karaokeState = com.shiyin.music.ui.components.KaraokeButtonState.Idle
         viewModelScope.launch { settingsStore.setKaraokeEnabled(v) }
     }
+
+    // ── v1.5.0 P2 spike 步骤 2b：**自动随机 seek 扫描**（spike 专用，随 spike 一起删）──────
+    //
+    // 为什么要它：2b 要对 FLAC/MP3/WAV 各做 ≥20 次"随机位置拖动"，手拖就是 80 次，折磨人。
+    // 这个按钮替你扫：位置取**非整百毫秒**（如 12345ms，用户点名要的），间隔 1.2s。
+    //
+    // 为什么用 `player.seekToMs()` 而**不是** `seekToDisplayMs()`：
+    //  - `seekToDisplayMs` 对**普通单曲**是直接 `controller.seekTo()`，**不经过 `seekToAbsolute`**
+    //    ⇒ 锚点（`KaraokeSeekAnchor`）记不到请求位置；
+    //  - `seekToMs` 走 `seekToAbsolute` ⇒ 锚点一定被写；
+    //  - 且它的坐标 = **文件绝对毫秒**，与探针读出的"真值帧号"**同一坐标系**，对拍最干净。
+    var probeSweepRunning by mutableStateOf(false); private set
+    var probeSweepDone by mutableIntStateOf(0); private set
+    var probeSweepTotal by mutableIntStateOf(0); private set
+
+    fun probeSweep(count: Int = 75, gapMs: Long = 800L, label: String = "") {
+        if (probeSweepRunning || autoSweepRunning) return
+        probeSweepRunning = true
+        viewModelScope.launch {
+            try {
+                runSweep(count, gapMs, label.ifBlank {
+                    player.currentId?.let { id -> tracksRaw.firstOrNull { it.id == id }?.title } ?: "?"
+                })
+            } finally {
+                probeSweepRunning = false
+            }
+        }
+    }
+
+    // ── v1.5.0 P2 spike 步骤 2c：**全自动扫描套件**（一个按钮跑完所有测试文件）──────
+    //
+    // 为什么要它：用户时间有限，手工"换文件 → 点扫 → 等 → 再换"太慢。
+    // 这个按钮自己挨个载入 fixtures/ 下的测试文件、自动切换探针模式（fn / click）、
+    // 每个文件扫 N 个随机位置，全程不需要人操作。
+    var autoSweepRunning by mutableStateOf(false); private set
+    var autoSweepStatus by mutableStateOf(""); private set
+
+    fun autoSweepAll(perFile: Int = 75, gapMs: Long = 300L) {
+        if (autoSweepRunning || probeSweepRunning) return
+        val ctx = getApplication<Application>()
+        val dir = java.io.File(ctx.getExternalFilesDir(null), "fixtures")
+        val files = dir.listFiles()
+            ?.filter { it.isFile && it.name.startsWith("fixture_") && it.name.substringAfterLast('.', "") in setOf("wav", "flac", "mp3") }
+            ?.sortedBy { it.name }
+            ?: emptyList()
+        if (files.isEmpty()) {
+            showToast("测试文件目录为空：${dir.absolutePath}", null)
+            return
+        }
+        autoSweepRunning = true
+        viewModelScope.launch {
+            try {
+                appendProbeLog("############ 全自动扫描开始 共 ${files.size} 个文件 ############")
+                for ((k, f) in files.withIndex()) {
+                    val mode = when {
+                        f.name.contains("click") -> com.shiyin.music.playback.KaraokeAudioSpike.PROBE_CLICK
+                        f.name.contains("_fn_") -> com.shiyin.music.playback.KaraokeAudioSpike.PROBE_FN
+                        else -> continue
+                    }
+                    com.shiyin.music.playback.KaraokeAudioSpike.setProbeMode(ctx, mode)
+                    autoSweepStatus = "(${k + 1}/${files.size}) ${f.name}"
+                    appendProbeLog("############ 载入 ${f.name} 探针=${com.shiyin.music.playback.KaraokeAudioSpike.describeProbe(mode)} ############")
+                    player.playSpikeFile(android.net.Uri.fromFile(f), f.name)
+                    kotlinx.coroutines.delay(2000L)   // 等解码器就绪
+                    probeSweepDone = 0
+                    probeSweepTotal = perFile
+                    runSweep(perFile, gapMs, f.name)
+                }
+                autoSweepStatus = "全部完成（${files.size} 个文件）"
+                appendProbeLog("############ 全自动扫描结束 ############")
+            } finally {
+                autoSweepRunning = false
+            }
+        }
+    }
+
+    /** 扫描的执行体（供单文件按钮与全自动套件共用）。 */
+    private suspend fun runSweep(count: Int, gapMs: Long, label: String) {
+        // ⚠️ 必须在**当前曲目**坐标系里取范围与发 seek：
+        //  - 拆分单曲的条目被裁剪过（时间轴从裁剪点起算），拿"整轨文件毫秒"去 seek 会算出负数
+        //    → 夹到段首 → 越界检查判"越界" → **跳到别的曲目**（用户 2026-10-13 实测踩到）。
+        //  - displayDurationMs 对拆分单曲 = 段长，对普通曲目 = 文件时长。
+        val dur = player.displayDurationMs()
+        if (dur <= 5000L) {
+            appendProbeLog("=== 扫描跳过 file=$label 时长=${dur}ms（太短）===")
+            return
+        }
+        val lo = 2000L
+        val hi = (dur - 2000L).coerceAtLeast(lo + 1000L)
+        val positions = LongArray(count) {
+            var v = lo + kotlin.random.Random.nextLong(hi - lo)
+            if (v % 100L == 0L) v += 37L   // 保证"非整百毫秒"
+            v
+        }
+        probeSweepTotal = count
+        probeSweepDone = 0
+        appendProbeLog(
+            "=== 扫描计划 file=$label count=$count fileDur=${dur}ms 位置ms=${positions.joinToString(",")} ===",
+        )
+        for ((i, ms) in positions.withIndex()) {
+            // stopSweep() 会把这两个旗标一起清掉 → 立刻收工（协程不能强杀，靠旗标退出）。
+            if (!autoSweepRunning && !probeSweepRunning) {
+                appendProbeLog("--- 扫描中断 file=$label @ 第 ${i + 1} 次 ---")
+                return
+            }
+            player.spikeSeekWithinTrack(ms)
+            kotlinx.coroutines.delay(gapMs)
+            // 用户要求"暂停恢复"也要覆盖：每 1/3 处停一次再续。
+            if (i > 0 && i % (count / 3).coerceAtLeast(1) == 0 && i < count - 1) {
+                appendProbeLog("--- 暂停/恢复 @ 第 ${i + 1} 次请求后 ---")
+                player.spikePause()
+                kotlinx.coroutines.delay(250L)
+                player.spikeResume()
+                kotlinx.coroutines.delay(200L)
+            }
+            probeSweepDone = i + 1
+        }
+        appendProbeLog("--- 扫描结束 file=$label ---")
+    }
+
+    /** 立刻停掉正在进行的扫描（全自动/单文件都停）。 */
+    fun stopSweep() {
+        autoSweepRunning = false
+        probeSweepRunning = false
+        player.spikePause()
+        autoSweepStatus = "已停止"
+        appendProbeLog("############ 用户手动停止 ############")
+    }
+
+    /** 往探针文件追加一行（与处理器写的是**同一个文件**）——扫描计划与探测行据此配对。 */
+    private fun appendProbeLog(line: String) {
+        runCatching {
+            val dir = getApplication<Application>().getExternalFilesDir(null) ?: return
+            java.io.File(dir, "karaoke_probe.log").appendText(line + "\n")
+        }
+    }
+
     /** v1.5.0 A56: 制作人行跳过翻译开关。 */
     /** v1.5.0 A62：当前被判为「客串歌手」的人数（设置页显示用，与歌手栏过滤同一来源）。 */
     fun featureArtistCount(): Int =

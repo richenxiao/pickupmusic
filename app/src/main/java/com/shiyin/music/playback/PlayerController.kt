@@ -466,7 +466,12 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
     /** 用**文件绝对坐标**发起 seek（内部换算成裁剪后的相对坐标）。 */
     private fun seekToAbsolute(abs: Long): Boolean {
         val c = controller ?: return false
-        c.seekTo(relOf(abs))
+        val rel = relOf(abs)
+        // v1.5.0 P2 spike 步骤 2b：把**本次请求的目标位置**告诉播放链路里的探针
+        // （服务与本类同进程 → 进程内 @Volatile 就够）。**只写两个 volatile 字段，
+        // 不改变任何播放行为**；档位 0 时处理器根本不在链上，这两句等于空转。
+        KaraokeSeekAnchor.set(abs, rel)
+        c.seekTo(rel)
         return true
     }
 
@@ -1065,6 +1070,53 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
         if (seekToAbsolute(ms)) controller?.play()
     }
 
+    // ── v1.5.0 P2 spike 专用（随 spike 一起删）──────────────────────────────
+    // 真值测试文件不在曲库里，需要一个直接播本地文件的入口，免得每换一个测试文件都要
+    // 推曲库 + 重扫 + 在列表里翻。仅 spike 分支存在，正式功能不依赖。
+
+    /** 直接播放一个本地测试文件（`file://` URI）。 */
+    fun playSpikeFile(uri: android.net.Uri, title: String) {
+        val c = controller ?: return
+        c.setMediaItem(
+            androidx.media3.common.MediaItem.Builder()
+                .setUri(uri)
+                .setMediaId("spike-file")
+                .setTag(title)
+                .build(),
+        )
+        c.prepare()
+        c.play()
+    }
+
+    /** 起「从头采集」：置待命旗标 → 回到 0 → 播放（处理器在落到开头时开始采 PCM）。 */
+    fun spikeCaptureFromStart() {
+        val c = controller ?: return
+        KaraokeAudioSpike.captureArmed = true
+        c.seekTo(0L)
+        c.play()
+    }
+
+    /** 扫描中的"暂停恢复"覆盖用（暂停本身不产生 flush，但恢复后每个 buffer 仍会被时间戳锚定）。 */
+    fun spikePause() {
+        controller?.pause()
+    }
+
+    /**
+     * **spike 专用**：按"**当前曲目内**的毫秒"定位，内部换算成整轨文件绝对坐标后走
+     * [seekToAbsolute]（唯一 seek 漏斗 ⇒ 锚点一定会被写）。
+     *
+     * 为什么必须有它：[seekToMs] 收的是**整轨文件**坐标。拆分单曲的条目被裁剪过、播放器时间轴
+     * 从裁剪点起算，拿文件坐标去 seek 会算出负数 → 被夹到段首 → 越界检查判"越界" → **跳到别的曲目**。
+     * 普通曲目 [virtualStartMs] = 0，行为与 [seekToMs] 完全相同。
+     */
+    fun spikeSeekWithinTrack(ms: Long): Boolean = seekToAbsolute(virtualStartMs + ms)
+
+    fun spikeResume() {
+        val c = controller ?: return
+        if (c.playbackState == Player.STATE_IDLE) c.prepare()
+        c.play()
+    }
+
     /**
      * v23: 按**当前曲目内的时间**定位（拆分单曲会自动映射回整轨文件坐标）。
      *
@@ -1120,8 +1172,8 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
         controller?.repeatMode = mode
     }
 
-    /** v1.5.0 伴唱 §8：升降 Key（半音）。与加速模式叠加，见 [KeyShift.totalPitch]。 */
-    private var keyShiftSemitones: Int = 0
+    /** v1.5.0 伴唱 §8：升降 Key，单位是**半音步数**（+1 步 = +0.5 半音），见 [KeyShift]。 */
+    private var keyShiftHalfSteps: Int = 0
     private var lastSpeed: Float = 1.0f
     private var lastRetroMode: Boolean = true
 
@@ -1135,9 +1187,9 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
         applyPlaybackParameters()
     }
 
-    /** v1.5.0 伴唱 §8：设置升降 Key（半音）。只改音高，速度与加速模式不动。 */
-    fun setKeyShift(semitones: Int) {
-        keyShiftSemitones = KeyShift.clamp(semitones)
+    /** v1.5.0 伴唱 §8：设置升降 Key（**半音步数**，+1 步 = +0.5 半音）。只改音高，速度不动。 */
+    fun setKeyShift(halfSteps: Int) {
+        keyShiftHalfSteps = KeyShift.clamp(halfSteps)
         applyPlaybackParameters()
     }
 
@@ -1145,7 +1197,7 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
         val c = controller ?: return
         c.playbackParameters = androidx.media3.common.PlaybackParameters(
             lastSpeed,
-            KeyShift.totalPitch(lastSpeed, lastRetroMode, keyShiftSemitones),
+            KeyShift.totalPitch(lastSpeed, lastRetroMode, keyShiftHalfSteps),
         )
     }
 

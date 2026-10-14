@@ -8,8 +8,13 @@ import androidx.media3.common.audio.BaseAudioProcessor
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.audio.AudioSink
 import androidx.media3.exoplayer.audio.DefaultAudioSink
+import androidx.media3.exoplayer.audio.ForwardingAudioSink
+import java.io.BufferedOutputStream
 import java.io.File
+import java.io.FileOutputStream
 import java.nio.ByteBuffer
+import java.nio.ByteOrder
+import kotlin.math.abs
 
 /**
  * v1.5.0 P2 spike（分支 `spike/karaoke-p2-processor`）· **只做验证，不进正式功能**。
@@ -24,43 +29,63 @@ import java.nio.ByteBuffer
  *
  *  1. **Media3 版本差异**：2026-10-12 用 javap 查得 **Media3 1.7.1 的 `ExoPlayer.Builder`
  *     根本没有 `buildAudioSink` 方法** —— 插入点已挪到
- *     `DefaultRenderersFactory.buildAudioSink(Context, boolean, boolean)`。当年覆写的那个方法
- *     在现在的版本里不存在，所以"当年那次失败"**不能直接外推到今天的代码**。
- *  2. **处理器自身的配置**：`ChannelMixingAudioProcessor.onConfigure` 的字节码是
- *     `matrix = matrixByInputChannelCount.get(inputFormat.channelCount);
- *      if (matrix == null) throw new UnhandledAudioFormatException(...)`
- *     —— **没给该采样格式的实际声道数注册混音矩阵就直接抛异常**。处理器在 configure 抛异常 →
- *     `DefaultAudioSink.configure()` 返回 false → **整条音频输出配不起来 = 一点声音都没有**，
- *     与当年"播不了"的症状完全一致。也就是说那更可能是一次**处理器配置错误**，而不是管线不可用。
+ *     `DefaultRenderersFactory.buildAudioSink(Context, boolean, boolean)`。
+ *  2. **处理器自身的配置**：`ChannelMixingAudioProcessor.onConfigure` 只要没给该声道数注册矩阵就
+ *     直接抛 `UnhandledAudioFormatException` → sink 配不起来 → 完全静音。那更可能是一次
+ *     **处理器配置错误**，而不是管线不可用。
  *
- * 所以本 spike 用一个**格式不变的 1:1 透传处理器**（一个字节都不改）来单独检验"管线能不能插"，
- * 并用一个三档开关把三个假设分开归因：
+ * 四档开关（把三个假设分开归因）：
  *
  * | [MODE] | 条件 | 能区分什么 |
  * |---|---|---|
  * | `0` | **完全不换** factory（原样默认） | 基线：确认设备/版本本身正常 |
  * | `1` | 换 factory，但 `buildAudioSink` 里**不挂** processor | 换 RenderersFactory 本身有没有副作用 |
- * | `2` | 换 factory + 挂 1:1 透传 processor | **processor 机制本身能不能用**（本次要问的） |
+ * | `2` | 换 factory + 挂 1:1 透传 processor | **processor 机制本身能不能用** |
+ * | `3` | 档 2 + 外面再包一层 `ForwardingAudioSink` | **时间戳锚定**（每个 buffer 拿 `presentationTimeUs`） |
  *
  * 默认 `0`（基线）—— **不会把用户正在用的播放搞坏**。
  *
- * ### 三档开关怎么切
- * `getExternalFilesDir(null)/karaoke-mix-mode` 里写 `0`/`1`/`2`（文件不存在 = 0）。可由 adb 直接改，
- * 不必重装：
+ * ### 开关怎么切
+ * `getExternalFilesDir(null)/karaoke-mix-mode` 里写 `0`/`1`/`2`/`3`（文件不存在 = 0）：
  * ```
- * adb shell "echo 2 > /sdcard/Android/data/com.shiyin.music/files/karaoke-mix-mode"
+ * adb shell "echo 3 > /sdcard/Android/data/com.shiyin.music/files/karaoke-mix-mode"
  * adb shell "echo 0 > /sdcard/Android/data/com.shiyin.music/files/karaoke-mix-mode"
- * adb shell rm       /sdcard/Android/data/com.shiyin.music/files/karaoke-mix-mode
  * ```
  * ⚠️ **改档后必须在播放器重建时才生效**（ExoPlayer 在 `PlaybackService.onCreate` 里建一次）——
  * 杀掉 App 重进即可。
+ *
+ * ### 探针开关（步骤 2b/2c）
+ * `getExternalFilesDir(null)/karaoke-mix-probe` **的内容**决定探针模式：
+ * | 内容 | 模式 | 用途 |
+ * |---|---|---|
+ * | 文件不存在 | 关 | — |
+ * | 空 / `1` / `fn` | 帧号真值 | 从音频数据里解出绝对帧号（`make_framenum_fixture.py` 生成的文件） |
+ * | `2` / `click` | 咔哒 | 找缓冲内首个 `|采样|>阈值` 的偏移（**有损格式**：MP3 只能这么测） |
+ * | `3` / `capture` | PCM 采集 | 把处理器收到的 PCM 原样落盘（端到端对齐用的互相关底料） |
+ * ```
+ * adb shell "echo fn      > /sdcard/Android/data/com.shiyin.music/files/karaoke-mix-probe"
+ * adb shell "echo click   > /sdcard/Android/data/com.shiyin.music/files/karaoke-mix-probe"
+ * adb shell "echo capture > /sdcard/Android/data/com.shiyin.music/files/karaoke-mix-probe"
+ * adb shell rm            /sdcard/Android/data/com.shiyin.music/files/karaoke-mix-probe
+ * ```
  */
-/** logcat tag，本文件三个类共用（`adb logcat -s KaraokeMix`）。 */
+/** logcat tag，本文件几个类共用（`adb logcat -s KaraokeMix`）。 */
 private const val TAG = "KaraokeMix"
+
+/** 探针：flush 之后逐块打印几个 buffer（最先几个最能看出重锚对不对）。 */
+private const val PROBE_POST_FLUSH = 5
+
+/** 咔哒检测阈值：咔哒幅度 0.5×32767≈16383，帧号真值文件只有 ±2048 ⇒ 6000 两边都安全。 */
+private const val CLICK_THRESHOLD = 6000
+
+/** 采集模式默认采多少秒（端到端互相关只要开头一段就够）。 */
+private const val CAPTURE_SECONDS = 10
 
 object KaraokeAudioSpike {
 
     private const val MODE_FILE = "karaoke-mix-mode"
+    /** 真值探针开关文件（**内容**决定模式）。只在档 2/3（挂处理器）下有意义。 */
+    private const val PROBE_FILE = "karaoke-mix-probe"
 
     /** 基线：完全不碰渲染链。 */
     const val MODE_STOCK = 0
@@ -68,58 +93,445 @@ object KaraokeAudioSpike {
     const val MODE_FACTORY_ONLY = 1
     /** 换 factory + 挂 1:1 透传处理器。 */
     const val MODE_PASSTHROUGH = 2
+    /** 档 2 + 外层 `ForwardingAudioSink`：**用每个 buffer 的 `presentationTimeUs` 锚定**。 */
+    const val MODE_ANCHORED = 3
+    /** 档 3 + **按系数混音**（步骤 3：`out = g_o·原曲 + g_a·伴奏`，切换 300ms 系数插值）。 */
+    const val MODE_MIX = 4
+
+    /** 探针关闭。 */
+    const val PROBE_OFF = 0
+    /** 帧号真值（无损文件，`make_framenum_fixture.py`）。 */
+    const val PROBE_FN = 1
+    /** 咔哒（有损文件，`--mode click`）。 */
+    const val PROBE_CLICK = 2
+    /** 采集处理器收到的 PCM（端到端互相关）。 */
+    const val PROBE_CAPTURE = 3
 
     private fun modeFile(context: Context): File? =
         context.getExternalFilesDir(null)?.let { File(it, MODE_FILE) }
+
+    private fun probeFile(context: Context): File? =
+        context.getExternalFilesDir(null)?.let { File(it, PROBE_FILE) }
 
     /** 读当前档位；文件缺失/非法一律回落到基线，**绝不因为开关读不出来就把播放弄坏**。 */
     fun mode(context: Context): Int = runCatching {
         val f = modeFile(context) ?: return MODE_STOCK
         if (!f.isFile) return MODE_STOCK
-        f.readText().trim().toIntOrNull()?.coerceIn(0, 2) ?: MODE_STOCK
+        f.readText().trim().toIntOrNull()?.coerceIn(0, MODE_MIX) ?: MODE_STOCK
     }.getOrDefault(MODE_STOCK)
 
     /** 供调试面板写档位（spike 用）。 */
     fun setMode(context: Context, mode: Int): Boolean = runCatching {
         val f = modeFile(context) ?: return false
         f.parentFile?.mkdirs()
-        f.writeText(mode.coerceIn(0, 2).toString())
+        f.writeText(mode.coerceIn(0, MODE_MIX).toString())
         true
     }.getOrDefault(false)
 
+    /**
+     * **运行期**探针模式（调试面板改档后不必重进 App）。
+     *
+     * 为什么需要：探针模式原先在 `buildAudioSink` 时被读进处理器构造参数，而**换歌不会重建
+     * 音频 sink** ⇒ 一个 App 会话里只能测一种模式（要测 MP3 咔哒就得杀 App 重进）。
+     * 全自动扫描要在一个会话里同时跑「帧号真值」和「咔哒」两类文件，所以改成处理器每次
+     * 都能读到的最新值。UI 线程写、audio 线程读。
+     */
+    @Volatile
+    var liveProbeMode: Int = PROBE_OFF
+
+    /**
+     * 读探针模式。**空文件 = 帧号真值**（向后兼容 2b 之前 `touch` 出来的开关）。
+     */
+    fun probeMode(context: Context): Int = runCatching {
+        val f = probeFile(context) ?: return PROBE_OFF
+        if (!f.isFile) return PROBE_OFF
+        when (f.readText().trim().lowercase()) {
+            "", "1", "fn" -> PROBE_FN
+            "2", "click" -> PROBE_CLICK
+            "3", "capture" -> PROBE_CAPTURE
+            else -> PROBE_FN
+        }
+    }.getOrDefault(PROBE_OFF).also { liveProbeMode = it }
+
+    /** 供调试面板写探针模式（spike 用）。**立即生效**（处理器读 [liveProbeMode]）。 */
+    fun setProbeMode(context: Context, m: Int): Boolean = runCatching {
+        val f = probeFile(context) ?: return false
+        f.parentFile?.mkdirs()
+        when (m.coerceIn(PROBE_OFF, PROBE_CAPTURE)) {
+            PROBE_OFF -> f.delete()
+            PROBE_FN -> f.writeText("fn")
+            PROBE_CLICK -> f.writeText("click")
+            else -> f.writeText("capture")
+        }
+        liveProbeMode = m.coerceIn(PROBE_OFF, PROBE_CAPTURE)
+        true
+    }.getOrDefault(false)
+
+    fun probeEnabled(context: Context): Boolean = probeMode(context) != PROBE_OFF
+
+    /**
+     * 采集「从头开始」的待命旗标（步骤 2c 端到端对齐）。
+     *
+     * 用法：面板置 true → 把当前曲目 seek 到 0 并播放 → 处理器**只在落到文件开头 0.5s 内**的
+     * 那个 buffer 上开始采集（不依赖 flush：同一位置反复 seek 时 ExoPlayer 可能不发 flush）。
+     * UI 线程写、audio 线程读，故 `@Volatile`。
+     */
+    @Volatile
+    var captureArmed: Boolean = false
+
+    /** 给人看的说法——不要在界面上出现"档位 / factory / 透传"这类黑话。 */
     fun describe(mode: Int): String = when (mode) {
-        MODE_STOCK -> "0 · 基线（不碰渲染链）"
-        MODE_FACTORY_ONLY -> "1 · 只换 RenderersFactory（不挂处理器）"
-        else -> "2 · 换 factory + 1:1 透传处理器"
+        MODE_STOCK -> "不启用 —— 与改动前完全一样"
+        MODE_FACTORY_ONLY -> "只换输出组件 —— 换了音频输出这一环，但不加任何处理"
+        MODE_PASSTHROUGH -> "启用处理 —— 把伴唱用的处理器接进播放链路"
+        MODE_ANCHORED -> "启用处理 + 时间戳锚定 —— 每个数据块都用播放器时间戳对位"
+        else -> "启用混音 —— 原曲 / 伴奏 / 人声 三档，切换时 300ms 系数插值"
+    }
+
+    fun describeProbe(mode: Int): String = when (mode) {
+        PROBE_OFF -> "关闭"
+        PROBE_FN -> "帧号真值（无损测试文件）"
+        PROBE_CLICK -> "咔哒（有损格式，如 MP3）"
+        else -> "采集 PCM（端到端对齐用）"
     }
 }
 
 /**
- * **格式不变的 1:1 透传处理器**：输入什么就吐什么，一个字节不改。
+ * v1.5.0 P2 spike 步骤 2b：**app 侧 → 处理器**的「本次 seek 请求的目标位置」投递口。
  *
- * 为什么故意什么都不做：这样"能播/不能播"的结论才干净 —— 若它挂了，就是这条管线/这个机制的问题，
- * 与"混合算法写错了"无关。后续步骤 2/3 才往里加帧号计数与混合。
+ * 为什么需要：探针能读出"flush 后第一个采样的真实帧号"，但**没有基准可比** ——
+ * 要回答「重锚准不准」，必须知道 **app 请求的是哪个位置**。`PlayerController.seekToAbsolute`
+ * 是唯一 seek 入口，在那里写；处理器在 `flush()` 里读。
  *
- * ⚠️ **缓冲契约（本次专门用 javap 反汇编核实过，写错就会完全没声音——正好是 v23 的症状）**：
+ * 服务与 app **同进程**（清单里没有 `android:process`）⇒ 进程内 `@Volatile` 就够。
+ * **只写两个 volatile 字段，不改变任何播放行为**；档位 0 时处理器不在链上，这两句等于空转。
+ *
+ * ⚠️ spike 专用：随 spike 一起删。
+ */
+object KaraokeSeekAnchor {
+    /** 递增序号：用来把"哪几次 flush 属于同一次 seek"分开。 */
+    @Volatile var seq: Int = -1
+        private set
+
+    /** 请求的**绝对**位置（ms）。 */
+    @Volatile var absMs: Long = -1L
+        private set
+
+    /** 请求在**当前媒体条目内**的相对位置（ms）——对拍用这个。 */
+    @Volatile var relMs: Long = -1L
+        private set
+
+    fun set(abs: Long, rel: Long) {
+        absMs = abs
+        relMs = rel
+        seq += 1
+    }
+}
+
+/**
+ * v1.5.0 P2 spike 步骤 2c：**播放链路 → 处理器**的「本 buffer 的播放器时间戳」投递口。
+ *
+ * 为什么需要：2b 实测「app 请求的位置」与「真实落点」最多差 ~100ms（会被对齐到解码缓冲边界），
+ * 拿请求位置当锚点会直接造成伴奏/原曲错位。**每个 buffer 的 `presentationTimeUs` 才是权威**
+ * ——它每个 buffer 都有，不依赖有没有 seek，换曲 / 暂停恢复 / gapless 全都覆盖。
+ *
+ * ### 数据流与线程
+ * `KaraokeAnchoringSink.handleBuffer(buf, ptsUs, n)`（ExoPlayer 播放线程）先记录
+ * `(处理器当时的已过帧数, ptsUs)`，再交给真正的 sink；真正的 sink 在**同一次调用内**把 buffer
+ * 喂给处理器（`queueInput` 也是播放线程）。所以**不需要锁**。
+ *
+ * ### 为什么记「处理器当时的已过帧数」而不是简单 FIFO
+ * - sink 在 AudioTrack 缓冲满时**可以返回 false 且不消费 buffer**，renderer 会**拿同一个 buffer
+ *   重调**（pts 相同）⇒ sink 侧用 `lastPts` 去重，避免重复入队；
+ * - `TrimmingAudioProcessor` 可能把**一个**输入 buffer 拆成**多次** `queueInput`
+ *   （起始填充裁剪要等多攒够帧才吐）⇒ 不能假设"一次 handleBuffer ↔ 一次 queueInput"。
+ *
+ * 于是锚点用**严格相等**匹配：只有当某条锚点的 `hookFrames` **正好等于**处理器当前的已过帧数时，
+ * 才认为它就是本 buffer 的锚点。`hookFrames` 取的是**处理器自己的计数器在 sink 收到该 buffer 时的快照**，
+ * 而该计数器只在处理器真正消费数据时才前进 —— 所以搬运过程中的拆分/合并都不会错配。
+ *
+ * ⚠️ spike 专用：随 spike 一起删。
+ */
+object KaraokeBufferAnchor {
+
+    /** 队列上限（正常情况最多 1 条待处理，留余量防异常路径堆积）。 */
+    private const val CAP = 16
+
+    /** 每条 = [hookFrames, ptsUs]。 */
+    private val queue = ArrayDeque<LongArray>()
+
+    /** 供报告：最近一次被采用的 pts（-1 = 还没有）。 */
+    @Volatile var lastPtsUs: Long = -1L
+        private set
+
+    /** 因 `hookFrames` 对不上而被丢弃的锚点数（>0 说明匹配规则有问题，报告里要写）。 */
+    @Volatile var dropped: Int = 0
+        private set
+
+    /** sink 侧调用：记录「处理器当时已过 hookFrames 帧时收到 ptsUs」。 */
+    fun push(hookFrames: Long, ptsUs: Long) {
+        val head = queue.firstOrNull()
+        if (head != null && head[0] == hookFrames) {
+            // 上一条锚点还没被消费，说明它对应的输入 buffer 没走到处理器（被裁剪吃掉了）
+            // —— 后到的这条才是有效的，替换掉它。
+            queue.removeFirst()
+        }
+        if (queue.size >= CAP) queue.removeFirst()
+        queue.addLast(longArrayOf(hookFrames, ptsUs))
+    }
+
+    /**
+     * 处理器侧调用：取「属于本 buffer」的锚点。
+     * 严格相等才命中；比当前已过帧数更早的锚点一律作废（它们对应的 buffer 已经过去了）。
+     * @return ptsUs，没命中返回 -1。
+     */
+    fun take(framesSeen: Long): Long {
+        while (true) {
+            val head = queue.firstOrNull() ?: return -1L
+            if (head[0] < framesSeen) {
+                queue.removeFirst()
+                dropped++
+                continue
+            }
+            if (head[0] == framesSeen) {
+                queue.removeFirst()
+                lastPtsUs = head[1]
+                return head[1]
+            }
+            return -1L
+        }
+    }
+
+    fun clear() {
+        queue.clear()
+        lastPtsUs = -1L
+    }
+}
+
+/**
+ * v1.5.0 P2 spike 步骤 3：**混音档位**（原曲 / 伴奏 / 人声）与**占位伴奏源**的运行时开关。
+ *
+ * 系数向量（用户定的）：
+ * | 档位 | `g_o`（原曲） | `g_a`（伴奏） | 听感 |
+ * |---|---|---|---|
+ * | 原曲 | 1 | 0 | 只有原曲 |
+ * | 伴奏 | 0 | 1 | 只有伴奏 |
+ * | 人声 | 1 | −1 | `原曲 − 伴奏` = 人声 |
+ *
+ * 切换时**在系数空间做线性插值**（约 300ms），不是把输出音量拉低再拉高 ⇒ **音频全程不断**。
+ *
+ * ⚠️ 占位伴奏：分离引擎还没接进来，所以"伴奏"轨的内容由 [sourceKind] 决定：
+ * - [SRC_IDENTITY]：伴奏 = 原曲本身 ⇒ **人声档应该是"完全静音"**（完美的零拍检测！
+ *   差一个采样就会漏出梳状声，耳朵和数据分析都立刻发现）；
+ * - [SRC_TONE]：220Hz 正弦（能直接听出"混进去的东西"和系数比例）；
+ * - [SRC_SILENCE]：静音（人声档 = 原曲，伴奏档 = 静音）。
+ */
+object KaraokeMixControl {
+
+    const val MODE_ORIGINAL = 0
+    const val MODE_ACCOMP = 1
+    const val MODE_VOCAL = 2
+
+    const val SRC_IDENTITY = 0
+    const val SRC_TONE = 1
+    const val SRC_SILENCE = 2
+
+    /** 当前档位（UI 线程写、audio 线程读）。 */
+    @Volatile var mode: Int = MODE_ORIGINAL
+
+    /** 占位伴奏源类型。 */
+    @Volatile var sourceKind: Int = SRC_IDENTITY
+
+    /** 交叉淡化时长（毫秒）。用户定 300。 */
+    @Volatile var rampMs: Int = 300
+
+    fun coeffOf(m: Int): FloatArray = when (m) {
+        MODE_ORIGINAL -> floatArrayOf(1f, 0f)
+        MODE_ACCOMP -> floatArrayOf(0f, 1f)
+        else -> floatArrayOf(1f, -1f)
+    }
+
+    fun label(m: Int): String = when (m) {
+        MODE_ORIGINAL -> "原曲"
+        MODE_ACCOMP -> "伴奏"
+        else -> "人声（原曲−伴奏）"
+    }
+
+    fun sourceLabel(k: Int): String = when (k) {
+        SRC_IDENTITY -> "占位=原曲本身 ⇒ 人声档(原曲−原曲)应**完全无声**（唯一能证明对位的档）"
+        // ⚠️ 别写"人声档=歌里减掉纯音"——那是错的：纯音本来不在原曲里，
+        // 减一个独立纯音 = 加一份**反相**纯音，反相只差 180° 相位，**听起来还是同一个音**。
+        SRC_TONE -> "占位=220Hz 纯音 ⇒ 原曲档=歌 / 伴奏档=纯音 / 人声档=歌+反相纯音（听着仍有纯音，正常）"
+        else -> "占位=静音 ⇒ 伴奏档无声 / 人声档=原曲"
+    }
+}
+
+/**
+ * 系数在 [rampFrames] 帧内从当前值**沿直线**走到目标值（"在系数空间做线性插值"的字面意思）。
+ *
+ * ⚠️ **每个分量用自己的速率**（`Δ_i / rampFrames`），不是共用一个按最大分量归一化的速率。
+ * 两者对 (1,0)→(0,1) 这种等距切换没区别，但 (0,1)→(1,−1)（伴奏→人声）不一样：
+ *  - 各走各的速率 ⇒ 路径是系数空间的**直线**，中点 (0.5, 0)；
+ *  - 共用一个速率 ⇒ 走得近的那个**先到并停住**，路径在拐点处**折弯**，中点 (1, 0)。
+ * 用户规格说的是"系数空间线性插值"，所以取前者。
+ * （这条是 `CoefficientRampTest` 抓出来的：我先写成了后者，测试直接失败。）
+ *
+ * 纯逻辑，无 Android 依赖。
+ */
+class CoefficientRamp(go: Float, ga: Float) {
+    var curGo: Float = go; private set
+    var curGa: Float = ga; private set
+    private var tgtGo: Float = go
+    private var tgtGa: Float = ga
+    private var stepGo = 0f
+    private var stepGa = 0f
+
+    fun moveTo(go: Float, ga: Float, rampFrames: Int) {
+        tgtGo = go; tgtGa = ga
+        if (rampFrames <= 0) {
+            stepGo = 0f; stepGa = 0f
+            return
+        }
+        stepGo = (tgtGo - curGo) / rampFrames
+        stepGa = (tgtGa - curGa) / rampFrames
+    }
+
+    val atTarget: Boolean get() = curGo == tgtGo && curGa == tgtGa
+
+    /** 前进 [frames] 帧的插值量（各自在目标处截断）。 */
+    fun advance(frames: Int) {
+        if (stepGo == 0f && stepGa == 0f) { curGo = tgtGo; curGa = tgtGa; return }
+        curGo = approach(curGo, tgtGo, abs(stepGo) * frames)
+        curGa = approach(curGa, tgtGa, abs(stepGa) * frames)
+    }
+
+    private fun approach(c: Float, t: Float, d: Float): Float {
+        val diff = t - c
+        return if (abs(diff) <= d) t else c + if (diff > 0) d else -d
+    }
+}
+
+/**
+ * 占位伴奏源：把 [frames] 帧伴奏（交错 L,R）写进 [dst]。真实实现将来换成"按物理文件帧号
+ * 读缓存伴奏"的 reader；接口按**绝对源帧号**取，就是为了那天直接接上。
+ */
+fun interface AccompanimentSource {
+    fun readAbs(absFrame: Long, sampleRate: Int, srcOrig: ShortArray, dst: ShortArray, frames: Int)
+}
+
+/** 伴奏 = 原曲本身 ⇒ 人声档 `原曲 − 伴奏` = **完全静音**（零拍检测）。 */
+val IdentityAccompaniment = AccompanimentSource { _, _, srcOrig, dst, frames ->
+    System.arraycopy(srcOrig, 0, dst, 0, frames * 2)
+}
+
+/** 伴奏 = 静音 ⇒ 伴奏档静音、人声档 = 原曲。 */
+val SilenceAccompaniment = AccompanimentSource { _, _, _, dst, frames ->
+    java.util.Arrays.fill(dst, 0, frames * 2, 0.toShort())
+}
+
+/** 伴奏 = 220Hz 正弦（幅度 0.4）——能直接听出"混进来的东西"与系数比例。 */
+val ToneAccompaniment = AccompanimentSource { absFrame, sampleRate, _, dst, frames ->
+    val w = 2.0 * Math.PI * 220.0 / sampleRate
+    for (i in 0 until frames) {
+        val v = (0.4 * 32767.0 * Math.sin(w * (absFrame + i))).toInt()
+            .coerceIn(-32768, 32767).toShort()
+        dst[2 * i] = v
+        dst[2 * i + 1] = v
+    }
+}
+
+/**
+ * **格式不变的 1:1 透传处理器** + 探针（步骤 2 / 2b / 2c）。
+ *
+ * ⚠️ **缓冲契约（用 javap 反汇编核实过，写错就会完全没声音——正好是 v23 的症状）**：
  *  - `BaseAudioProcessor.getOutput()` **只是把 `outputBuffer` 交出去，不会替你 `flip()`**；
  *  - `replaceOutputBuffer(size)` 在**复用**旧缓冲时走 `clear()` → `limit = capacity`（**可能大于本次 size**）；
- *  - Media3 自己的处理器（`ToInt16PcmAudioProcessor`、`ChannelMixingAudioProcessor`）
- *    都是填完**显式 `flip()`**。漏掉 → 新建缓冲时 `remaining()==0`（全静音）、
- *    复用较大缓冲时是静音+垃圾（"杂音"）。
+ *  - Media3 自己的处理器（`ToInt16PcmAudioProcessor`、`ChannelMixingAudioProcessor`）都显式 `flip()`。
+ *
+ * ### 它在管线里的位置（javap 反汇编 `DefaultAudioSink` 构造器得出，**不是猜的**）
+ * ```
+ * ToInt16PcmAudioProcessor → ChannelMappingAudioProcessor → TrimmingAudioProcessor
+ *   → ★本处理器★ → SonicAudioProcessor(变速) → SilenceSkippingAudioProcessor
+ * ```
+ * 两条推论（都写进了报告）：
+ *  1. **`TrimmingAudioProcessor`（gapless 起始填充裁剪）在我们之前** ⇒ 我们看到的 PCM
+ *     是**裁剪之后**的，处理器里的"第 0 帧 ≠ 文件的第 0 帧"（差值 = `Format.encoderDelay`）；
+ *  2. **`SonicAudioProcessor` 在我们之后** ⇒ 变速不改变我们看到的帧率，
+ *     "按源帧序号混合"在变速下依然成立（这是这条路线的一条好消息）。
  */
-class KaraokeMixProcessor : BaseAudioProcessor() {
+class KaraokeMixProcessor(
+    /** 探针模式（[KaraokeAudioSpike.PROBE_OFF] / FN / CLICK / CAPTURE）。构造时给初值。 */
+    initialProbeMode: Int = KaraokeAudioSpike.PROBE_OFF,
+    /**
+     * 探针**写文件**（步骤 2b 修正）：上一次只靠 logcat，缓冲区一滚数据就没了。
+     * 一行一条、追加写，不再赌 logcat。
+     */
+    private val logFile: File? = null,
+    /** 采集模式的落盘文件（PI 用同一个目录）。 */
+    private val captureFile: File? = null,
+    /**
+     * 档 3 才有外层 [KaraokeAnchoringSink] 往 [KaraokeBufferAnchor] 投递时间戳。
+     * 档 2 没有 ⇒ 整套时间戳记账都不该跑（否则每块都会被记成"拿不到锚点"）。
+     */
+    private val anchored: Boolean = false,
+    /** 步骤 3：把 1:1 透传换成**按系数混音**（`out = g_o·原曲 + g_a·伴奏`）。 */
+    private val mixing: Boolean = false,
+) : BaseAudioProcessor() {
 
-    /** configure 时的输入格式，供后续步骤的帧号换算用（本步只记录）。 */
+    init {
+        KaraokeAudioSpike.liveProbeMode = initialProbeMode
+    }
+
+    /** **每次读都取最新值** —— 调试面板换模式立即生效，不必重进 App（换歌不重建 sink）。 */
+    private val probeMode: Int get() = KaraokeAudioSpike.liveProbeMode
+
+    /** configure 时的输入格式，供后续步骤的帧号换算用。 */
     var inputSampleRate: Int = 0; private set
     var inputChannelCount: Int = 0; private set
+    var inputEncoding: Int = 0; private set
 
-    /** 流过的输入帧数（步骤 2 的帧号对拍要拿它当计数器）。 */
+    /** 流过的输入帧数（自本实例开始；**flush 不归零**，见 2b 实测）。 */
     var framesSeen: Long = 0L; private set
 
     var flushCount: Int = 0; private set
     private var bytesPerFrame = 0
     /** 心跳节流：上一次打日志时的"秒数"。 */
     private var heartbeatSec = -1
+    /** 探针自己的节流预算（与心跳**各自记账**，否则心跳会把预算吃光）。 */
+    private var lastProbeSec = -1
+    /** 探针：flush 之后还要逐块打印几个 buffer。 */
+    private var probeBuffersAfterFlush = 0
+    /** flush 那一刻从 app 侧拿到的"请求目标"（步骤 2b 的对拍基准）。 */
+    private var flushSeq: Int = -1
+    private var flushReqAbsMs: Long = -1L
+    private var flushReqRelMs: Long = -1L
+
+    // ── 步骤 2c：时间戳锚定 ────────────────────────────────────────────────
+    /** 下一个待入样本的**绝对源帧号**（-1 = 尚未锚定）。每个 buffer 都会被时间戳修正。 */
+    private var absNext: Long = -1L
+    /** 时间戳与自数帧偏差 > 1 个采样而重锚的次数（验收指标之一）。 */
+    var realignCount: Int = 0; private set
+    /** 拿不到锚点的 buffer 次数（正常情况下应恒为 0）。 */
+    var anchorMissCount: Int = 0; private set
+
+    // ── 采集模式 ───────────────────────────────────────────────────────────
+    private var captureOut: BufferedOutputStream? = null
+    private var capturedFrames: Long = 0L
+    private var captureFirstPtsFrame: Long = -1L
+    private var captureNo = 0
+    private var captureBytes: ByteArray = ByteArray(0)
+
+    /** 探针输出：logcat **加**写文件（文件是权威 —— logcat 缓冲区一滚数据就没了）。 */
+    private fun emit(line: String) {
+        Log.i(TAG, line)
+        logFile?.let { f -> runCatching { f.appendText(line + "\n") } }
+    }
+
+    private fun encodingName(enc: Int): String = when (enc) {
+        C.ENCODING_PCM_16BIT -> "PCM_16BIT"
+        C.ENCODING_PCM_FLOAT -> "PCM_FLOAT"
+        else -> "enc=$enc"
+    }
 
     /**
      * 只接 PCM 16bit / float（用户步骤 4 定的边界）。其它格式**抛
@@ -134,14 +546,25 @@ class KaraokeMixProcessor : BaseAudioProcessor() {
         }
         inputSampleRate = inputAudioFormat.sampleRate
         inputChannelCount = inputAudioFormat.channelCount
+        inputEncoding = inputAudioFormat.encoding
         bytesPerFrame = inputAudioFormat.channelCount * bytes
         framesSeen = 0
         flushCount = 0
-        Log.i(
-            TAG,
-            "onConfigure in=${inputAudioFormat.sampleRate}Hz/${inputAudioFormat.channelCount}ch/" +
-                "enc=${inputAudioFormat.encoding} → 1:1 透传（bytesPerFrame=$bytesPerFrame）",
-        )
+        probeBuffersAfterFlush = 0
+        lastProbeSec = -1
+        absNext = -1L
+        realignCount = 0
+        anchorMissCount = 0
+        mixBlockLogged = 0
+        endCapture("onConfigure")
+        val msg = "onConfigure ← 输入格式 ${inputAudioFormat.sampleRate}Hz / " +
+            "${inputAudioFormat.channelCount}ch / ${encodingName(inputAudioFormat.encoding)}" +
+            " → ${if (mixing) "混音（out = g_o·原曲 + g_a·伴奏）" else "1:1 透传"}，" +
+            "bytesPerFrame=$bytesPerFrame"
+        Log.i(TAG, msg)
+        if (probeMode != KaraokeAudioSpike.PROBE_OFF) {
+            emit("[探针] === configure 模式=${KaraokeAudioSpike.describeProbe(probeMode)} $msg ===")
+        }
         // 返回**同一个** AudioFormat：输出格式与输入完全一致 = 真正的 1:1
         return inputAudioFormat
     }
@@ -155,32 +578,400 @@ class KaraokeMixProcessor : BaseAudioProcessor() {
     override fun queueInput(inputBuffer: ByteBuffer) {
         val size = inputBuffer.remaining()
         if (size <= 0) return
-        if (bytesPerFrame > 0) framesSeen += size / bytesPerFrame
+        val frames = if (bytesPerFrame > 0) size / bytesPerFrame else 0
+
+        // ── 步骤 2c：**每个 buffer** 都用 presentationTimeUs 换算帧号，与自数帧对拍 ──
+        val predicted = absNext
+        val ptsUs = if (anchored) KaraokeBufferAnchor.take(framesSeen) else -1L
+        val ptsFrame = if (ptsUs >= 0 && inputSampleRate > 0) {
+            Math.round(ptsUs.toDouble() * inputSampleRate / 1_000_000.0)
+        } else -1L
+        if (ptsFrame >= 0) {
+            if (predicted < 0) {
+                absNext = ptsFrame                      // 本段第一次锚定
+            } else {
+                val d = ptsFrame - predicted
+                if (d > 1L || d < -1L) realignCount++   // 用户定的判据：> 1 个采样才叫"重锚"
+                absNext = ptsFrame                      // 时间戳是权威，永远以它为准
+            }
+        } else if (anchored && probeMode != KaraokeAudioSpike.PROBE_OFF) {
+            anchorMissCount++
+        }
+        // ⚠️ **本块第一帧的绝对源帧**必须在下面 `absNext += frames` **之前**取。
+        // 混音就是按这个帧号去伴奏缓存取数据的；晚一步取就会整体错开一整块（4096 帧 ≈ 93ms）——
+        // 占位源选"原曲本身"时看不出来（它忽略帧号），接了真伴奏就是灾难性错位。
+        val bufferStartFrame = if (absNext >= 0) absNext else 0L
+
+        // ── 采集模式：从"落到文件开头"的那个 buffer 开始，把收到的 PCM 原样落盘 ──
+        // 两个起采条件（任一条满足即可）：① 时间戳落在开头 0.5s 内（档 3）；
+        // ② 本块是 flush 后第一块（档 2 没有时间戳时靠这个）。
+        if (probeMode == KaraokeAudioSpike.PROBE_CAPTURE && KaraokeAudioSpike.captureArmed) {
+            val byPts = ptsFrame in 0..(inputSampleRate / 2L)
+            val byFlush = probeBuffersAfterFlush == PROBE_POST_FLUSH
+            if (byPts || byFlush) {
+                KaraokeAudioSpike.captureArmed = false
+                startCapture(if (byPts) ptsFrame else -1L)
+            }
+        }
+        if (probeMode == KaraokeAudioSpike.PROBE_CAPTURE) writeCapture(inputBuffer, frames)
+
+        // ── 探针（步骤 2 / 2b）──
+        val probeable = probeMode != KaraokeAudioSpike.PROBE_OFF && bytesPerFrame >= 4 && frames >= 1
+        if (probeable) {
+            val sec = (framesSeen / maxOf(1, inputSampleRate)).toInt()
+            val postFlush = probeBuffersAfterFlush > 0
+            if (postFlush || sec > lastProbeSec) {
+                lastProbeSec = sec
+                val where = if (postFlush) {
+                    "flush 后第 ${PROBE_POST_FLUSH - probeBuffersAfterFlush + 1} 块"
+                } else "稳态"
+                emit("[探针] $where：${probeLine(inputBuffer, frames, ptsUs, ptsFrame, predicted, postFlush)}")
+            }
+            if (postFlush) probeBuffersAfterFlush--
+        }
+
+        framesSeen += frames
+        if (ptsFrame < 0 && predicted >= 0) absNext = predicted + frames  // 没锚点就靠自数往下走
+        else if (ptsFrame >= 0) absNext = ptsFrame + frames
+
         // 每约 1 秒音频打一次心跳，用来**证明音频确实穿过了这里**（而不是被旁路）。
         if (framesSeen / maxOf(1, inputSampleRate) > heartbeatSec) {
             heartbeatSec = (framesSeen / maxOf(1, inputSampleRate)).toInt()
-            Log.i(TAG, "透传心跳：已过 ${framesSeen} 帧（≈${heartbeatSec}s）flush=$flushCount")
+            Log.i(TAG, "透传心跳：已过 $framesSeen 帧（≈${heartbeatSec}s）flush=$flushCount")
         }
         val out = replaceOutputBuffer(size)
-        out.put(inputBuffer)
+        // 混音按 **(L,R) 成对**取数 ⇒ 只有立体声才敢走。
+        // ⚠️ 并且**整段包 try/catch**：处理器在音频线程上抛异常 = 整条播放链路报废
+        // （真机上表现为"卡住/反复念同一小段"）。这里宁可**退回透传**，也不能让播放断掉——
+        // 混音是加法功能，绝不能因为它的 bug 把"正常听歌"一起带走。
+        var mixed = false
+        if (mixing && inputChannelCount == 2) {
+            mixed = try {
+                mixInto(inputBuffer, out, frames, bufferStartFrame)
+                true
+            } catch (t: Throwable) {
+                mixFailCount++
+                if (mixFailCount == 1L) Log.w(TAG, "混音失败 → 本块退回透传", t)
+                false
+            }
+        } else if (mixing) {
+            nonStereoPassCount++
+            if (nonStereoPassCount == 1L) {
+                Log.i(TAG, "混音跳过：非立体声（ch=$inputChannelCount）→ 退回透传")
+            }
+        }
+        if (!mixed) {
+            // 混音可能只写了一半 —— clear() 后重新按透传写，保证字节数正确
+            out.clear()
+            out.put(inputBuffer)
+        }
         // ⚠️ 必须 flip —— 见类注释的缓冲契约
         out.flip()
     }
 
-    /** `flush()` 只在**不连续**（seek / 换源）时被调用，且**不告诉你跳到哪了** —— 步骤 2 的核心难点。 */
+    // ── 步骤 3：混音 ────────────────────────────────────────────────────────
+    private val ramp = CoefficientRamp(1f, 0f)
+    private var lastMixMode = -1
+    private var mixSrc = ShortArray(0)
+    private var mixAcc = ShortArray(0)
+    /** 一次淡化的累计帧数（报告用）。 */
+    var fadeFrames: Long = 0L; private set
+    /** 因**非立体声**而退回透传的块数（报告用；>0 说明这个文件混音没生效）。 */
+    var nonStereoPassCount: Long = 0L; private set
+    /** 混音抛异常而退回透传的块数（>0 = 混音有 bug，但播放没断）。 */
+    var mixFailCount: Long = 0L; private set
+    /** 临时诊断用：每个流前几块打日志的计数。 */
+    private var mixBlockLogged = 0
+
+    private fun sourceOf(kind: Int): AccompanimentSource = when (kind) {
+        KaraokeMixControl.SRC_TONE -> ToneAccompaniment
+        KaraokeMixControl.SRC_SILENCE -> SilenceAccompaniment
+        else -> IdentityAccompaniment
+    }
+
+    /**
+     * `out[i] = g_o·原曲[i] + g_a·伴奏[i]`，系数逐帧按 [CoefficientRamp] 走（切换档位时约 300ms）。
+     *
+     * ⚠️ 写完必须把 `out.position()` 推到 `size` —— `flip()` 是拿 position 当 limit 的，
+     * 只写内容不动 position 会输出 0 字节（= 静音），正好是 v23 那类症状。
+     */
+    private fun mixInto(inputBuffer: ByteBuffer, out: ByteBuffer, frames: Int, startFrame: Long) {
+        val n = frames * 2
+        if (mixSrc.size < n) {
+            mixSrc = ShortArray(n)
+            mixAcc = ShortArray(n)
+        }
+        inputBuffer.duplicate().order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(mixSrc, 0, n)
+
+        val mode = KaraokeMixControl.mode
+        if (mode != lastMixMode) {
+            val c = KaraokeMixControl.coeffOf(mode)
+            val rampFrames = (KaraokeMixControl.rampMs.toLong() * inputSampleRate / 1000L).toInt()
+            ramp.moveTo(c[0], c[1], rampFrames)
+            fadeFrames += rampFrames
+            Log.i(
+                TAG,
+                "混音切换 → ${KaraokeMixControl.label(mode)} 系数=(${c[0]},${c[1]}) " +
+                    "在 $rampFrames 帧（${KaraokeMixControl.rampMs}ms）内线性插值" +
+                    " 伴奏源=${KaraokeMixControl.sourceLabel(KaraokeMixControl.sourceKind)}",
+            )
+            lastMixMode = mode
+        }
+        sourceOf(KaraokeMixControl.sourceKind)
+            .readAbs(startFrame, inputSampleRate, mixSrc, mixAcc, frames)
+
+        // 临时诊断（2026-10-14 排查"混音档卡住"）：每个流的前 3 块把**输入/伴奏/系数**打出来。
+        // 真机上"卡住"看不出是哪一步错，这三行能直接判断是系数、还是伴奏源、还是缓冲的问题。
+        if (mixBlockLogged < 3) {
+            mixBlockLogged++
+            Log.i(
+                TAG,
+                "混音块#$mixBlockLogged 档=${KaraokeMixControl.label(mode)} " +
+                    "源=${KaraokeMixControl.sourceLabel(KaraokeMixControl.sourceKind)} " +
+                    "go=${ramp.curGo} ga=${ramp.curGa} frames=$frames " +
+                    "in=[${mixSrc[0]},${mixSrc[1]},${mixSrc[2]}] " +
+                    "acc=[${mixAcc[0]},${mixAcc[1]},${mixAcc[2]}]",
+            )
+        }
+
+        val oS = out.order(ByteOrder.LITTLE_ENDIAN).asShortBuffer()
+        for (i in 0 until frames) {
+            ramp.advance(1)
+            val go = ramp.curGo
+            val ga = ramp.curGa
+            val l = (go * mixSrc[2 * i] + ga * mixAcc[2 * i]).toInt()
+            val r = (go * mixSrc[2 * i + 1] + ga * mixAcc[2 * i + 1]).toInt()
+            oS.put(2 * i, l.coerceIn(-32768, 32767).toShort())
+            oS.put(2 * i + 1, r.coerceIn(-32768, 32767).toShort())
+        }
+        out.position(out.position() + size2(frames))
+
+        // ⚠️⚠️ **必须消费输入缓冲**（2026-10-14 真机事故的根因）：
+        // `AudioProcessingPipeline.processData` 是个 `while (isProcessed)` 循环，判据是
+        // 「某个处理器的输入 `hasRemaining()`」——只要还剩字节它就**再喂一遍同一块**。
+        // 透传分支用 `out.put(inputBuffer)` 天然消费掉了；而这里是 `duplicate()` 读的，
+        // 原缓冲 position 没动 ⇒ 管线认为没处理完 ⇒ 无限重喂 ⇒ 听感是"同一小段被反复念"，
+        // 音频线程原地打转。**放在最后**（不是读之前）：万一中途抛异常，输入还没被消费，
+        // 上面的 try/catch 兜底走 `out.put(inputBuffer)` 透传仍然成立。
+        inputBuffer.position(inputBuffer.limit())
+    }
+
+    private fun size2(frames: Int): Int = frames * bytesPerFrame
+
+    /**
+     * 一行探针内容。字段名保持稳定（`tools/karaoke/analyze_probe.py` 按名字解析）：
+     * - `计数器` / `真值首帧` / `差(真值首帧−请求帧)`：2b 的口径（与 app 请求位置对拍）
+     * - `锚点pts帧` / `自数预测` / `锚偏差` / `重锚`：2c 的口径（**时间戳 vs 真值**，验收指标）
+     */
+    private fun probeLine(
+        buf: ByteBuffer,
+        frames: Int,
+        ptsUs: Long,
+        ptsFrame: Long,
+        predicted: Long,
+        withAnchor: Boolean,
+    ): String {
+        val start = buf.position()
+        val end = buf.limit() - bytesPerFrame
+        val anchor = if (ptsFrame >= 0) {
+            "锚点ptsμs=$ptsUs 锚点pts帧=$ptsFrame 自数预测=$predicted 锚偏差=${ptsFrame - predicted}" +
+                " 重锚=$realignCount 锚缺=$anchorMissCount"
+        } else {
+            "锚点pts帧=无 重锚=$realignCount 锚缺=$anchorMissCount 队列丢弃=${KaraokeBufferAnchor.dropped}"
+        }
+        // 三种模式的"真值首帧"（本块第一个采样在源文件里的帧号）——统一成一个变量，
+        // 后面的 `差(真值首帧−请求帧)` 与 `戳差(P−T)` 都用它，避免各写各的写错。
+        var truth = -1L
+        val body = when (probeMode) {
+            KaraokeAudioSpike.PROBE_FN -> {
+                if (end < start) "$anchor 空块"
+                else {
+                    // 真值走 KaraokeFrameCodec（唯一实现，内部强制小端；那条规则已被回归测试钉住）。
+                    truth = KaraokeFrameCodec.decodeFrameAt(buf, start).toLong()
+                    val last = KaraokeFrameCodec.decodeFrameAt(buf, end)
+                    // 原始采样值只用于诊断 —— ⚠️ 也必须小端，否则打印出来的是"调换字节"的假象。
+                    val d = buf.duplicate().order(ByteOrder.LITTLE_ENDIAN)
+                    val n = minOf(6, (end - start) / bytesPerFrame + 1)
+                    val raw = StringBuilder()
+                    for (i in 0 until n) {
+                        raw.append(d.getShort(start + i * bytesPerFrame).toInt()).append(' ')
+                    }
+                    "$anchor 真值首帧=$truth 末帧=$last 差=${truth - framesSeen}" +
+                        "（本块 $frames 帧）原始左声道前$n=[${raw.toString().trim()}]"
+                }
+            }
+            KaraokeAudioSpike.PROBE_CLICK -> {
+                val click = firstClickOffset(buf, start, end)
+                if (click < 0) {
+                    "$anchor 首咔哒偏移=无（本块 $frames 帧）"
+                } else if (ptsFrame >= 0) {
+                    // 真值文件每秒 0 帧处一个咔哒 ⇒ 咔哒的绝对帧号必是整数秒；
+                    // 相位 = 落点相对网格的余数（MP3 的编码器前置延迟会体现为一个恒定相位）。
+                    val at = ptsFrame + click
+                    val sr = inputSampleRate.toLong()
+                    val phase = ((at % sr) + sr) % sr
+                    truth = at - phase
+                    "$anchor 首咔哒偏移=$click 相位=$phase 真值首帧=$truth 差=${truth - framesSeen}" +
+                        "（本块 $frames 帧）"
+                } else {
+                    "$anchor 首咔哒偏移=$click（本块 $frames 帧，无锚点算不出相位）"
+                }
+            }
+            else -> {
+                truth = ptsFrame
+                "$anchor 已采=${capturedFrames}帧（本块 $frames 帧）"
+            }
+        }
+        // 步骤 2c 验收指标：**时间戳换算的帧号 − 真值帧号**，|·| ≤ 1 才算通过。
+        val ptsDiff = if (ptsFrame >= 0 && truth >= 0) " 戳差(P−T)=${ptsFrame - truth}" else ""
+        // 步骤 2b：flush 之后那几块带上"app 请求的目标帧号"（由 ms 换算，可能差 ±1 帧 —— 那是
+        // ms→帧 的取整，不是错位）。
+        val req = if (withAnchor) {
+            val reqFrame = if (flushReqRelMs >= 0 && inputSampleRate > 0) {
+                flushReqRelMs * inputSampleRate / 1000
+            } else -1L
+            " 请求#${flushSeq} abs=${flushReqAbsMs}ms rel=${flushReqRelMs}ms 请求帧=$reqFrame" +
+                " 差(真值首帧−请求帧)=${if (reqFrame >= 0 && truth >= 0) truth - reqFrame else 0L}"
+        } else ""
+        return "计数器=$framesSeen $body$ptsDiff$req"
+    }
+
+    /** 缓冲内首个 `|左声道| > 阈值` 的**帧偏移**（相对缓冲起点）；找不到返回 -1。 */
+    private fun firstClickOffset(buf: ByteBuffer, start: Int, end: Int): Int {
+        if (end < start) return -1
+        val d = buf.duplicate().order(ByteOrder.LITTLE_ENDIAN)
+        var off = start
+        while (off <= end) {
+            if (abs(d.getShort(off).toInt()) > CLICK_THRESHOLD) return (off - start) / bytesPerFrame
+            off += bytesPerFrame
+        }
+        return -1
+    }
+
+    /** `flush()` 只在**不连续**（seek / 换源）时被调用，且**不告诉你跳到哪了**。 */
     override fun onFlush() {
         flushCount++
-        Log.i(TAG, "onFlush #$flushCount（此前已过 $framesSeen 帧）——flush 后帧号必须由 app 侧重新锚定")
+        Log.i(TAG, "onFlush #$flushCount（此前已过 $framesSeen 帧）——flush 后帧号必须由外部重新锚定")
+        absNext = -1L                    // 不连续 ⇒ 自数帧作废，等下一个时间戳
+        KaraokeBufferAnchor.clear()      // 之前的锚点全部过期
+        if (probeMode != KaraokeAudioSpike.PROBE_OFF) {
+            // 步骤 2b：**在 flush 这一刻把 app 请求的目标抄下来**（之后 app 可能又 seek 一次）。
+            flushSeq = KaraokeSeekAnchor.seq
+            flushReqAbsMs = KaraokeSeekAnchor.absMs
+            flushReqRelMs = KaraokeSeekAnchor.relMs
+            emit(
+                "[探针] flush #$flushCount 计数器=$framesSeen 重锚=$realignCount 锚缺=$anchorMissCount" +
+                    " 请求#${flushSeq} abs=${flushReqAbsMs}ms rel=${flushReqRelMs}ms",
+            )
+            probeBuffersAfterFlush = PROBE_POST_FLUSH
+        }
     }
 
     override fun onReset() {
-        Log.i(TAG, "onReset（释放）")
+        Log.i(TAG, "onReset（释放）重锚=$realignCount 锚缺=$anchorMissCount")
+        endCapture("onReset")
         inputSampleRate = 0
         inputChannelCount = 0
+        inputEncoding = 0
         bytesPerFrame = 0
         framesSeen = 0
         flushCount = 0
         heartbeatSec = -1
+        probeBuffersAfterFlush = 0
+        lastProbeSec = -1
+        absNext = -1L
+    }
+
+    // ── 采集（步骤 2c 端到端对齐）────────────────────────────────────────────
+
+    private fun startCapture(firstPtsFrame: Long) {
+        val f = captureFile ?: return
+        runCatching {
+            f.parentFile?.mkdirs()
+            captureOut = BufferedOutputStream(FileOutputStream(f, false), 1 shl 16)
+            capturedFrames = 0L
+            captureFirstPtsFrame = firstPtsFrame
+            emit(
+                "[探针] capture 开始：sampleRate=$inputSampleRate ch=$inputChannelCount " +
+                    "encoding=${encodingName(inputEncoding)} 首块pts帧=$firstPtsFrame → ${f.name}",
+            )
+        }.onFailure { Log.w(TAG, "capture 打开失败", it) }
+    }
+
+    private fun writeCapture(buf: ByteBuffer, frames: Int) {
+        val out = captureOut ?: return
+        val limitFrames = inputSampleRate.toLong() * CAPTURE_SECONDS
+        if (capturedFrames >= limitFrames) return
+        val take = minOf(frames.toLong(), limitFrames - capturedFrames).toInt()
+        val bytes = take * bytesPerFrame
+        if (captureBytes.size < bytes) captureBytes = ByteArray(bytes)
+        val d = buf.duplicate()
+        d.position(buf.position())
+        d.get(captureBytes, 0, bytes)
+        runCatching { out.write(captureBytes, 0, bytes) }.onFailure { endCapture("写入失败") }
+        capturedFrames += take
+        if (capturedFrames >= limitFrames) endCapture("采满 ${CAPTURE_SECONDS}s")
+    }
+
+    /** 关闭采集并写旁车文件（速率/声道/帧数/首块 pts —— 互相关要用）。 */
+    private fun endCapture(reason: String) {
+        val out = captureOut ?: return
+        captureOut = null
+        runCatching { out.flush(); out.close() }
+        emit("[探针] capture 结束（$reason）：共 $capturedFrames 帧，首块pts帧=$captureFirstPtsFrame")
+        val f = captureFile ?: return
+        runCatching {
+            f.parentFile?.mkdirs()
+            File(f.parentFile, f.nameWithoutExtension + ".txt").writeText(
+                "sampleRate=$inputSampleRate\nchannels=$inputChannelCount\n" +
+                    "encoding=${encodingName(inputEncoding)}\nframes=$capturedFrames\n" +
+                    "firstPtsFrame=$captureFirstPtsFrame\nreason=$reason\n" +
+                    "bytesPerFrame=$bytesPerFrame\n",
+            )
+        }
+    }
+}
+
+/**
+ * 档 3 的**时间戳锚定**：包住真正 sink，在 `handleBuffer` 里把每个 buffer 的
+ * `presentationTimeUs` 交给 [KaraokeBufferAnchor]，再原样转发。
+ *
+ * 为什么用 `ForwardingAudioSink` 而不是自己实现 `AudioSink`：`AudioSink` 的缓冲契约
+ * （pending / 容量 / `getCurrentPositionUs` 语义）写错会产生**与 v23 同类**的症状；这个类
+ * 只多覆写 `handleBuffer` 一个方法，其余逐字转发 ⇒ 风险面最小。
+ *
+ * ⚠️ 去重：`handleBuffer` 在 AudioTrack 缓冲满时可以**返回 false 且不消费**，renderer 会拿
+ * **同一个 buffer（同一 pts）** 重调；不去重就会重复入队。`flush`/`reset` 时清空并重置去重。
+ */
+class KaraokeAnchoringSink(
+    inner: AudioSink,
+    private val processor: KaraokeMixProcessor,
+) : ForwardingAudioSink(inner) {
+
+    private var lastPtsUs = Long.MIN_VALUE
+
+    override fun handleBuffer(
+        buffer: ByteBuffer,
+        presentationTimeUs: Long,
+        encodedAccessUnitCount: Int,
+    ): Boolean {
+        if (presentationTimeUs != lastPtsUs) {
+            lastPtsUs = presentationTimeUs
+            KaraokeBufferAnchor.push(processor.framesSeen, presentationTimeUs)
+        }
+        return super.handleBuffer(buffer, presentationTimeUs, encodedAccessUnitCount)
+    }
+
+    override fun flush() {
+        lastPtsUs = Long.MIN_VALUE
+        KaraokeBufferAnchor.clear()
+        super.flush()
+    }
+
+    override fun reset() {
+        lastPtsUs = Long.MIN_VALUE
+        KaraokeBufferAnchor.clear()
+        super.reset()
     }
 }
 
@@ -190,8 +981,8 @@ class KaraokeMixProcessor : BaseAudioProcessor() {
  * 为什么是这里而不是 `ExoPlayer.Builder`：Media3 **1.7.1 的 `ExoPlayer.Builder` 没有
  * `buildAudioSink`**（javap 核实），插入点在这个 factory 上。
  *
- * `buildAudioSink` 的实现**刻意与 Media3 默认逐行一致，只多一句 `setAudioProcessors`** ——
- * 任何其它偏离都会成为新的混杂因素，让"挂了到底是谁的锅"说不清。
+ * `buildAudioSink` 的实现**刻意与 Media3 默认逐行一致，只多 `setAudioProcessors`（档 3 再多一层
+ * 包装 sink）** —— 任何其它偏离都会成为新的混杂因素，让"挂了到底是谁的锅"说不清。
  */
 class KaraokeRenderersFactory(context: Context) : DefaultRenderersFactory(context) {
 
@@ -206,12 +997,39 @@ class KaraokeRenderersFactory(context: Context) : DefaultRenderersFactory(contex
         val base = DefaultAudioSink.Builder(context)
             .setEnableFloatOutput(enableFloatOutput)
             .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
-        return if (mode == KaraokeAudioSpike.MODE_PASSTHROUGH) {
-            Log.i("KaraokeMix", "buildAudioSink：挂 1:1 透传处理器（mode=2）")
-            base.setAudioProcessors(arrayOf(KaraokeMixProcessor())).build()
-        } else {
+        if (mode != KaraokeAudioSpike.MODE_PASSTHROUGH && mode != KaraokeAudioSpike.MODE_ANCHORED &&
+            mode != KaraokeAudioSpike.MODE_MIX
+        ) {
             Log.i("KaraokeMix", "buildAudioSink：不挂处理器（mode=$mode）")
-            base.build()
+            return base.build()
+        }
+        val probe = KaraokeAudioSpike.probeMode(appContext)
+        // 探针写文件（步骤 2b）：logcat 会滚、监听也只是部分流，文件才是权威。
+        // **总是准备好文件**（哪怕当前探针是关）——探针模式可在运行期切，换歌不重建 sink，
+        // 若此刻不给文件，运行期从「关」切到「帧号真值」就写不出东西了。
+        val dir = appContext.getExternalFilesDir(null)
+        val logFile = File(dir, "karaoke_probe.log")
+        val captureFile = File(dir, "karaoke_capture.pcm")
+        val anchored = mode == KaraokeAudioSpike.MODE_ANCHORED || mode == KaraokeAudioSpike.MODE_MIX
+        val mixing = mode == KaraokeAudioSpike.MODE_MIX
+        val proc = KaraokeMixProcessor(
+            initialProbeMode = probe,
+            logFile = logFile,
+            captureFile = captureFile,
+            anchored = anchored,
+            mixing = mixing,
+        )
+        val sink = base.setAudioProcessors(arrayOf(proc)).build()
+        return if (anchored) {
+            Log.i(
+                "KaraokeMix",
+                "buildAudioSink：挂处理器 + 时间戳锚定（mode=$mode, 混音=$mixing, " +
+                    "探针=${KaraokeAudioSpike.describeProbe(probe)}）",
+            )
+            KaraokeAnchoringSink(sink, proc)
+        } else {
+            Log.i("KaraokeMix", "buildAudioSink：挂 1:1 透传处理器（mode=2, 探针=${KaraokeAudioSpike.describeProbe(probe)}）")
+            sink
         }
     }
 }

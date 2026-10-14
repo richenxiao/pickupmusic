@@ -47,4 +47,23 @@ object KaraokeFrameCodec {
     /** 从**交错立体声** int16 PCM 里解出第 [frame] 帧（0-based）自带的帧号。 */
     fun decodeAt(samples: ShortArray, frame: Int, bits: Int = BITS_DEFAULT): Int =
         decodeFrame(samples[frame * 2].toInt(), samples[frame * 2 + 1].toInt(), bits)
+
+    /**
+     * 从**交错立体声 16bit PCM 缓冲**里解出 [byteOffset] 处那一帧自带的帧号。
+     *
+     * ⚠️⚠️ **必须按小端读**：`ByteBuffer` 的默认字节序是**大端**，而 PCM 是小端。
+     * 忘了指定就会把**每个采样的两个字节调换**：斜坡步长 1 变成 256、还溢出回绕，
+     * 解出来的帧号变成天文数字。
+     *
+     * 这是本项目**第 4 个字节序坑**（2026-10-13 真机实测抓出）：同一份测试文件，
+     * 手机上的采样是 `-2048,-2047,-2046`，探针却打印 `248,504,760` ——
+     * `-2048`(0xF800) 调换字节正好 = `0x00F8` = 248。
+     *
+     * 所以这里**主动 `.order(LITTLE_ENDIAN)`**，并且用 [KaraokeFrameCodecTest] 把
+     * "默认字节序会读错"这件事**钉成回归测试**（不再依赖真机才发现）。
+     */
+    fun decodeFrameAt(buffer: java.nio.ByteBuffer, byteOffset: Int, bits: Int = BITS_DEFAULT): Int {
+        val d = buffer.duplicate().order(java.nio.ByteOrder.LITTLE_ENDIAN)
+        return decodeFrame(d.getShort(byteOffset).toInt(), d.getShort(byteOffset + 2).toInt(), bits)
+    }
 }

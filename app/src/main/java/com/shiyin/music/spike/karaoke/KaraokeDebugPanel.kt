@@ -75,6 +75,25 @@ fun KaraokeDebugPanel(vm: MainViewModel) {
     var exportCount by remember { mutableStateOf<Int?>(null) }
     var exportRefresh by remember { mutableStateOf(0) }
     var mixMode by remember { mutableStateOf(KaraokeAudioSpike.mode(context)) }
+    /** 步骤 3 混音档位（原曲/伴奏/人声）与占位伴奏源。 */
+    var mixSlot by remember { mutableStateOf(com.shiyin.music.playback.KaraokeMixControl.mode) }
+    var mixSrcKind by remember { mutableStateOf(com.shiyin.music.playback.KaraokeMixControl.sourceKind) }
+    var probeMode by remember { mutableStateOf(KaraokeAudioSpike.probeMode(context)) }
+    /** 最近一次通过面板播放的本地测试文件（`file://` URI + 名字）——扫描计划行与解码导出都用它。 */
+    var spikeUri by remember { mutableStateOf<android.net.Uri?>(null) }
+    var spikeName by remember { mutableStateOf("") }
+    var fixtureFiles by remember { mutableStateOf<List<java.io.File>>(emptyList()) }
+    var e2eMsg by remember { mutableStateOf<String?>(null) }
+
+    // 测试文件目录（app 私有外部目录下 fixtures/，不经 MediaStore）
+    val fixtureDir = remember { java.io.File(context.getExternalFilesDir(null), "fixtures") }
+    LaunchedEffect(fixtureDir, exportRefresh) {
+        fixtureFiles = withContext(Dispatchers.IO) {
+            fixtureDir.listFiles()
+                ?.filter { it.isFile && it.name.substringAfterLast('.', "") in setOf("wav", "flac", "mp3", "m4a") }
+                ?.sortedBy { it.name } ?: emptyList()
+        }
+    }
 
     // 导出目录的文件数（走 MediaStore 查询，别在主线程上做）
     LaunchedEffect(exportRefresh) {
@@ -273,9 +292,9 @@ fun KaraokeDebugPanel(vm: MainViewModel) {
 
         // ── P2 spike：音频管线档位（把"管线能不能插处理器"和"覆写本身有问题"分开归因）──
         Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text("音频管线档位（改档后需杀掉 App 重进才生效）", style = body(12f, color = c.n600))
+            Text("伴唱音频处理（开发用 · 改完要重进 App）", style = body(12f, color = c.n600))
             ThreeStopSegmentedControl(
-                labels = listOf("基线", "只换factory", "＋透传"),
+                labels = listOf("不启用", "只换输出", "透传", "时间戳", "混音"),
                 selectedIndex = mixMode,
                 onSelect = { i ->
                     mixMode = i
@@ -283,6 +302,203 @@ fun KaraokeDebugPanel(vm: MainViewModel) {
                 },
             )
             Text(KaraokeAudioSpike.describe(mixMode), style = body(11f, color = c.n600))
+
+            // ── 步骤 3：混音档位（原曲 / 伴奏 / 人声）——**立即生效**，改档位要重进 App ──
+            Text(
+                "混音档位（立即生效；需先把上面的档位切到「混音」并重进 App）",
+                style = body(12f, color = c.n600),
+            )
+            ThreeStopSegmentedControl(
+                labels = listOf("原曲", "伴奏", "人声"),
+                selectedIndex = mixSlot,
+                onSelect = { i ->
+                    mixSlot = i
+                    com.shiyin.music.playback.KaraokeMixControl.mode = i
+                    status = "混音档位 → ${com.shiyin.music.playback.KaraokeMixControl.label(i)}"
+                },
+            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("占位伴奏源", style = body(11f, color = c.n600))
+                Spacer(Modifier.width(8.dp))
+                listOf(0, 1, 2).forEach { k ->
+                    Text(
+                        when (k) {
+                            0 -> "原曲本身"
+                            1 -> "220Hz"
+                            else -> "静音"
+                        },
+                        style = body(11f, color = if (mixSrcKind == k) c.surface else c.text),
+                        modifier = Modifier
+                            .padding(end = 6.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(if (mixSrcKind == k) c.text else c.n100)
+                            .clickableNoRipple {
+                                mixSrcKind = k
+                                com.shiyin.music.playback.KaraokeMixControl.sourceKind = k
+                            }
+                            .padding(horizontal = 8.dp, vertical = 4.dp),
+                    )
+                }
+            }
+            Text(
+                com.shiyin.music.playback.KaraokeMixControl.sourceLabel(mixSrcKind) +
+                    " · 淡化 ${com.shiyin.music.playback.KaraokeMixControl.rampMs}ms",
+                style = body(11f, color = c.n600),
+            )
+
+            Text("探针模式（开发用 · 立即生效）", style = body(12f, color = c.n600))
+            ThreeStopSegmentedControl(
+                labels = listOf("关闭", "帧号真值", "咔哒", "采 PCM"),
+                selectedIndex = probeMode,
+                onSelect = { i ->
+                    probeMode = i
+                    if (!KaraokeAudioSpike.setProbeMode(context, i)) status = "探针写入失败"
+                },
+            )
+            Text(KaraokeAudioSpike.describeProbe(probeMode), style = body(11f, color = c.n600))
+        }
+
+        // ── 测试文件（fixtures/ 目录，不经曲库）──
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(
+                "测试文件（${fixtureDir.absolutePath}）" +
+                    if (fixtureFiles.isEmpty()) " —— 空" else "",
+                style = body(11f, color = c.n600),
+            )
+            fixtureFiles.forEach { f ->
+                val u = android.net.Uri.fromFile(f)
+                val isCurrent = spikeUri == u
+                Text(
+                    (if (isCurrent) "▶ " else "· ") + f.name + "  ${f.length() / 1024 / 1024}MB",
+                    style = body(12f, color = if (isCurrent) c.text else c.n600),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(c.n100)
+                        .clickableNoRipple(enabled = !vm.probeSweepRunning) {
+                            spikeUri = u
+                            spikeName = f.name
+                            vm.player.playSpikeFile(u, f.name)
+                            status = "正在播放 ${f.name}"
+                        }
+                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                )
+            }
+        }
+
+        // ── P2 spike 步骤 2c：**全自动扫描套件**（用户时间有限，一个按钮跑完所有测试文件）──
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(
+                "全自动扫描：自动挨个载入 fixtures/ 里的测试文件、自动切探针模式、" +
+                    "每个扫 75 个随机位置（含暂停/恢复）",
+                style = body(11f, color = c.n600),
+            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    when {
+                        vm.autoSweepRunning -> "运行中 ${vm.probeSweepDone}/${vm.probeSweepTotal} · ${vm.autoSweepStatus}"
+                        vm.autoSweepStatus.isNotBlank() -> vm.autoSweepStatus
+                        else -> "未开始（全程不用操作，约 6–8 分钟）"
+                    },
+                    style = body(12f, color = c.n600),
+                    modifier = Modifier.weight(1f),
+                )
+                Spacer(Modifier.width(10.dp))
+                Text(
+                    "停止",
+                    style = body(12f, color = if (!vm.autoSweepRunning && !vm.probeSweepRunning) c.n500 else c.text),
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(c.n100)
+                        .clickableNoRipple(enabled = vm.autoSweepRunning || vm.probeSweepRunning) {
+                            vm.stopSweep()
+                        }
+                        .padding(horizontal = 12.dp, vertical = 6.dp),
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    "开始全自动",
+                    style = body(12f, color = if (vm.autoSweepRunning || vm.probeSweepRunning) c.n500 else c.surface),
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(if (vm.autoSweepRunning || vm.probeSweepRunning) c.n100 else c.text)
+                        .clickableNoRipple(enabled = !vm.autoSweepRunning && !vm.probeSweepRunning) {
+                            vm.autoSweepAll(75, 300L)
+                        }
+                        .padding(horizontal = 12.dp, vertical = 6.dp),
+                )
+            }
+
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    if (vm.probeSweepRunning) "单文件扫描中 ${vm.probeSweepDone}/${vm.probeSweepTotal}…"
+                    else "只扫当前这一个（先在上面点一个测试文件）",
+                    style = body(11f, color = c.n600),
+                    modifier = Modifier.weight(1f),
+                )
+                Text(
+                    "开始扫",
+                    style = body(12f, color = if (vm.probeSweepRunning || vm.autoSweepRunning) c.n500 else c.text),
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(c.n100)
+                        .clickableNoRipple(enabled = !vm.probeSweepRunning && !vm.autoSweepRunning) {
+                            vm.probeSweep(75, 300L, spikeName)
+                        }
+                        .padding(horizontal = 12.dp, vertical = 6.dp),
+                )
+            }
+        }
+
+        // ── 步骤 2c：端到端对齐（播放链路 PCM ⇄ 分离流水线解码 PCM，互相关测零点偏差）──
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text("端到端对齐（同一首真实歌曲，两条解码路径）", style = body(12f, color = c.n600))
+            Text(
+                "① 采播放链路 PCM（探针模式=采 PCM，先把歌放起来）",
+                style = body(12f, color = c.text),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(c.n100)
+                    .clickableNoRipple { vm.player.spikeCaptureFromStart(); status = "已回到开头并开始采集" }
+                    .padding(horizontal = 10.dp, vertical = 6.dp),
+            )
+            Text(
+                "② 导出分离流水线解码 PCM（同一首）",
+                style = body(12f, color = c.text),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(c.n100)
+                    .clickableNoRipple(enabled = !running) {
+                        val uri = spikeUri ?: vm.player.currentId?.let { id ->
+                            vm.tracksRaw.firstOrNull { it.id == id }?.uri
+                        }
+                        if (uri == null) { e2eMsg = "先点上面一个测试文件，或先放一首库里的歌"; return@clickableNoRipple }
+                        running = true; e2eMsg = "解码中…"
+                        scope.launch {
+                            try {
+                                val out = java.io.File(context.getExternalFilesDir(null), "e2e_decoder.pcm")
+                                val info = withContext(Dispatchers.IO) {
+                                    AudioDecoder.decodeToPcm16File(context, uri, out)
+                                }
+                                withContext(Dispatchers.IO) {
+                                    java.io.File(context.getExternalFilesDir(null), "e2e_decoder.txt").writeText(
+                                        "sampleRate=${info.srcRate}\nchannels=2\nencoding=PCM_16BIT\n" +
+                                            "frames=${info.frames}\nsource=$uri\n",
+                                    )
+                                }
+                                e2eMsg = "已导出 ${info.frames} 帧 @ ${info.srcRate}Hz（e2e_decoder.pcm）"
+                            } catch (t2: Throwable) {
+                                e2eMsg = "❌ ${t2.javaClass.simpleName}: ${t2.message}"
+                            } finally {
+                                running = false
+                            }
+                        }
+                    }
+                    .padding(horizontal = 10.dp, vertical = 6.dp),
+            )
+            e2eMsg?.let { Text(it, style = body(11f, color = c.n600)) }
         }
 
         // ── 导出目录（隔离在 Download/PickUpMusic-debug/，不碰 Music/）──
