@@ -3,8 +3,8 @@ package com.shiyin.music.playback
 import androidx.media3.common.C
 import androidx.media3.common.audio.AudioProcessor
 import org.junit.After
-import org.junit.Assert.assertEquals
 import org.junit.Assert.assertArrayEquals
+import org.junit.Assert.assertEquals
 import org.junit.Test
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -175,6 +175,52 @@ class KaraokeMixProcessorTest {
         val input = buf(7, 8, 9, 10)
         p.queueInput(input)
         assertEquals(0, input.remaining())
+    }
+
+    @Test
+    fun `常驻处理器_原曲档输出与输入逐位一致（块 1 闸门）`() {
+        // 正式设计：处理器**常驻**在播放链路里，原曲档必须与"链路上没有处理器"逐位一致。
+        // 用伪随机数据（含极值）跑多块，逐位比对 —— 不是"听起来一样"。
+        KaraokeMixControl.mode = KaraokeMixControl.MODE_ORIGINAL
+        KaraokeMixControl.sourceKind = KaraokeMixControl.SRC_IDENTITY
+        KaraokeMixControl.rampMs = 0
+        val p = proc()
+        p.configure(fmt())
+
+        val rnd = java.util.Random(42)
+        repeat(20) { blk ->
+            val samples = IntArray(512 * 2) { rnd.nextInt(65536) - 32768 }
+            val input = buf(*samples)
+            val inBytes = input.remaining()
+            p.queueInput(input)
+            val out = p.getOutput()
+            assertEquals("第 $blk 块字节数不一致", inBytes, out.remaining())
+            assertArrayEquals("第 $blk 块内容不一致", samples.map { it.toShort() }.toShortArray(), shortsOf(out))
+        }
+        // 并且必须是走**透传分支**、而不是"算 1×原曲+0×伴奏"：混音分支会推进系数插值
+        assertEquals("原曲档不该进入混音分支（fadeFrames 应保持 0）", 0L, p.fadeFrames)
+    }
+
+    @Test
+    fun `常驻处理器_运行期切到人声档立刻生效_不需要重建`() {
+        KaraokeMixControl.mode = KaraokeMixControl.MODE_ORIGINAL
+        KaraokeMixControl.sourceKind = KaraokeMixControl.SRC_IDENTITY
+        KaraokeMixControl.rampMs = 0
+        val p = proc()
+        p.configure(fmt())
+
+        // 先原曲档：透传
+        val in1 = buf(1000, 2000, 3000, 4000)
+        p.queueInput(in1)
+        assertArrayEquals(shortArrayOf(1000, 2000, 3000, 4000), shortsOf(p.getOutput()))
+        assertEquals(0L, p.fadeFrames)
+
+        // 同一实例、不重建，直接切人声档（占位=原曲本身）⇒ 立刻静音
+        // （静音本身就是"确实走了混音分支"的证据：透传会把输入原样还回来）
+        KaraokeMixControl.mode = KaraokeMixControl.MODE_VOCAL
+        val in2 = buf(1000, 2000, 3000, 4000)
+        p.queueInput(in2)
+        assertArrayEquals(ShortArray(4), shortsOf(p.getOutput()))
     }
 
     @Test

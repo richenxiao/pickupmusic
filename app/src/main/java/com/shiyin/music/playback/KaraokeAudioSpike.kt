@@ -114,11 +114,20 @@ object KaraokeAudioSpike {
         context.getExternalFilesDir(null)?.let { File(it, PROBE_FILE) }
 
     /** 读当前档位；文件缺失/非法一律回落到基线，**绝不因为开关读不出来就把播放弄坏**。 */
+    /**
+     * 读当前档位。
+     *
+     * ⚠️ **2026-10-14 起：文件不存在时默认 = [MODE_ANCHORED]（处理器常驻）**，不再是 0。
+     * 原因（外部复核 + 用户 2026-10-14 拍板）：正式设计是**处理器常驻在播放链路里、原曲档原样通过**，
+     * 点伴唱只切**内部模式**、**不重建播放器**（重建会打断正在播的歌）。
+     * 文件仍可作为**调试覆盖**（0/1/2 用于 A/B 与"无处理器逐位对比"）。
+     * 文件缺失/非法一律回落到常驻 —— 常驻态在原曲档下与无处理器**逐位一致**（有单测钉住）。
+     */
     fun mode(context: Context): Int = runCatching {
-        val f = modeFile(context) ?: return MODE_STOCK
-        if (!f.isFile) return MODE_STOCK
-        f.readText().trim().toIntOrNull()?.coerceIn(0, MODE_MIX) ?: MODE_STOCK
-    }.getOrDefault(MODE_STOCK)
+        val f = modeFile(context) ?: return MODE_ANCHORED
+        if (!f.isFile) return MODE_ANCHORED
+        f.readText().trim().toIntOrNull()?.coerceIn(0, MODE_MIX) ?: MODE_ANCHORED
+    }.getOrDefault(MODE_ANCHORED)
 
     /** 供调试面板写档位（spike 用）。 */
     fun setMode(context: Context, mode: Int): Boolean = runCatching {
@@ -613,7 +622,7 @@ class KaraokeMixProcessor(
                 startCapture(if (byPts) ptsFrame else -1L)
             }
         }
-        if (probeMode == KaraokeAudioSpike.PROBE_CAPTURE) writeCapture(inputBuffer, frames)
+        // （采集在下面、输出算好之后再做 —— 采的是**处理器的输出**。）
 
         // ── 探针（步骤 2 / 2b）──
         val probeable = probeMode != KaraokeAudioSpike.PROBE_OFF && bytesPerFrame >= 4 && frames >= 1
@@ -644,8 +653,13 @@ class KaraokeMixProcessor(
         // ⚠️ 并且**整段包 try/catch**：处理器在音频线程上抛异常 = 整条播放链路报废
         // （真机上表现为"卡住/反复念同一小段"）。这里宁可**退回透传**，也不能让播放断掉——
         // 混音是加法功能，绝不能因为它的 bug 把"正常听歌"一起带走。
+        // 运行期决定走哪条路（不再需要重启）：
+        //  - **原曲档 ⇒ 透传分支**：`out.put(inputBuffer)`，与"链路上没有处理器"逐位一致
+        //    （这是块 1 的闸门，有单测钉住）；
+        //  - 伴奏/人声档 ⇒ 混音。
+        val wantMix = mixing && KaraokeMixControl.mode != KaraokeMixControl.MODE_ORIGINAL
         var mixed = false
-        if (mixing && inputChannelCount == 2) {
+        if (wantMix && inputChannelCount == 2) {
             mixed = try {
                 mixInto(inputBuffer, out, frames, bufferStartFrame)
                 true
@@ -654,7 +668,7 @@ class KaraokeMixProcessor(
                 if (mixFailCount == 1L) Log.w(TAG, "混音失败 → 本块退回透传", t)
                 false
             }
-        } else if (mixing) {
+        } else if (wantMix) {
             nonStereoPassCount++
             if (nonStereoPassCount == 1L) {
                 Log.i(TAG, "混音跳过：非立体声（ch=$inputChannelCount）→ 退回透传")
@@ -667,6 +681,9 @@ class KaraokeMixProcessor(
         }
         // ⚠️ 必须 flip —— 见类注释的缓冲契约
         out.flip()
+        // 采集：采**处理器的输出**（不是输入）—— 抓到的就是真正送去出声的东西，
+        // 可直接与源文件／独立解码结果逐位对比，验证整条链（含本处理器）是否透明。
+        if (probeMode == KaraokeAudioSpike.PROBE_CAPTURE) writeCapture(out, frames)
     }
 
     // ── 步骤 3：混音 ────────────────────────────────────────────────────────
@@ -1011,7 +1028,10 @@ class KaraokeRenderersFactory(context: Context) : DefaultRenderersFactory(contex
         val logFile = File(dir, "karaoke_probe.log")
         val captureFile = File(dir, "karaoke_capture.pcm")
         val anchored = mode == KaraokeAudioSpike.MODE_ANCHORED || mode == KaraokeAudioSpike.MODE_MIX
-        val mixing = mode == KaraokeAudioSpike.MODE_MIX
+        // **常驻处理器一律"可以混音"**：真正要不要混由运行期 `KaraokeMixControl.mode` 每块决定，
+        // 这样点伴唱只切内部模式、不用重建播放器（重建会打断正在播的歌）。
+        // 原曲档走的是**透传分支**（不是算 1×原曲+0×伴奏），保证与无处理器逐位一致。
+        val mixing = anchored
         val proc = KaraokeMixProcessor(
             initialProbeMode = probe,
             logFile = logFile,

@@ -1109,6 +1109,49 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     var hasMediaPermission by mutableStateOf(false); private set
 
+    // ── spike 调试脚手架：adb 指令通道（**正式发布前必须删掉**）─────────────────────
+    // 为什么需要：块 2/3 的自动验证（真机 RTF、PCM 抓取与"无处理器逐位对比"、50 次切档、
+    // gapless、息屏 RTF…）必须在**无人操作**下跑起来。面板按钮要手指点、`input tap` 又太脆。
+    // 做法：轮询应用私有目录里的 `karaoke-cmd`，读到就执行**并删除**（删掉才能重复触发同一命令）。
+    // **只执行下面这个 when 里列举的固定命令**，不接受任意代码；文件在应用私有目录、普通 App 读不到。
+    init {
+        viewModelScope.launch {
+            val dir = getApplication<Application>().getExternalFilesDir(null) ?: return@launch
+            val cmdFile = java.io.File(dir, "karaoke-cmd")
+            while (true) {
+                runCatching {
+                    if (cmdFile.isFile) {
+                        val text = cmdFile.readText()
+                        cmdFile.delete()
+                        text.lineSequence().map { it.trim() }.filter { it.isNotEmpty() }
+                            .forEach { runSpikeCommand(it) }
+                    }
+                }
+                kotlinx.coroutines.delay(700L)
+            }
+        }
+    }
+
+    /** 只认识这几条固定命令。见上面 init 的说明。 */
+    private suspend fun runSpikeCommand(line: String) {
+        val p = line.split(' ')
+        appendProbeLog("[指令] $line")
+        val dir = getApplication<Application>().getExternalFilesDir(null)
+        when (p[0]) {
+            "play" -> player.playSpikeFile(
+                android.net.Uri.fromFile(java.io.File(java.io.File(dir, "fixtures"), p[1])), p[1],
+            )
+            "stop" -> player.spikePause()
+            "mix" -> com.shiyin.music.playback.KaraokeMixControl.mode = p[1].toInt()
+            "source" -> com.shiyin.music.playback.KaraokeMixControl.sourceKind = p[1].toInt()
+            "probe" -> com.shiyin.music.playback.KaraokeAudioSpike.setProbeMode(getApplication(), p[1].toInt())
+            "capture" -> player.spikeCaptureFromStart()
+            "wait" -> kotlinx.coroutines.delay(p[1].toLong())
+            "sweep" -> runSweep(p[1].toInt(), p.getOrNull(2)?.toLong() ?: 300L, "cmd")
+            "say" -> appendProbeLog("[标记] " + p.drop(1).joinToString(" "))
+        }
+    }
+
     init {
         viewModelScope.launch {
             settingsStore.flow.collect { s ->
