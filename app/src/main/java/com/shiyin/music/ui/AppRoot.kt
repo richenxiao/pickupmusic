@@ -1523,7 +1523,7 @@ private fun PlayerMenuSheetContent(vm: MainViewModel) {
                         trailing = {
                             if (vm.karaokeState != com.shiyin.music.ui.components.KaraokeButtonState.Idle) {
                                 Text(
-                                    listOf("原曲", "人声", "伴奏")[vm.karaokeMixIndex],
+                                    listOf("人声", "原曲", "伴奏")[vm.karaokeMixIndex],
                                     style = body(12.5f, FontWeight.SemiBold, c.n500),
                                 )
                             }
@@ -3244,9 +3244,9 @@ private fun KaraokeMixPanel(vm: MainViewModel) {
             Spacer(Modifier.weight(1f))
         }
 
-        // 三档混音：原曲（默认）— 人声 — 伴奏。**常显**。
+        // 三档混音：**人声 — 原曲（默认，居中＝中立位）— 伴奏**（用户设计稿的顺序，2026-10-15 纠正）。常显。
         ThreeStopSegmentedControl(
-            labels = listOf("原曲", "人声", "伴奏"),
+            labels = listOf("人声", "原曲", "伴奏"),
             selectedIndex = vm.karaokeMixIndex,
             onSelect = { vm.selectKaraokeMix(it) },
         )

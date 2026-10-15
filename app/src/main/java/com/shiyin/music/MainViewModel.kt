@@ -252,14 +252,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     var karaokeState by mutableStateOf(com.shiyin.music.ui.components.KaraokeButtonState.Idle); private set
 
     /**
-     * v1.5.0 伴唱面板：三档混音选择（**0 = 原曲（默认）/ 1 = 人声 / 2 = 伴奏**）。
+     * v1.5.0 伴唱面板：三档混音选择（**0 = 人声 / 1 = 原曲（默认）/ 2 = 伴奏**）。
      *
      * A70（用户 2026-10-15 口述）改口径：**进面板默认就是「原曲」**；选「人声/伴奏」
      * **本身**就会起分离并把按钮变 Loading（**原曲继续唱着**），就绪后 300ms 淡入。
      * 旧版要先按一次「开启伴唱」、且未开启时档位滑块**根本不显示**——用户判定为
      * "完全没有用的步骤"，已删掉那一步。
+     *
+     * ⚠️ **顺序保持用户设计稿的「人声 — 原曲 — 伴奏」**（原曲居中＝中立位，左右各是一种
+     * 提取方向，像 EQ 的中间档）。用户 2026-10-15 明确纠正："我之前说的是 人声 — 原曲 — 伴奏"。
      */
-    var karaokeMixIndex by mutableStateOf(0); private set
+    var karaokeMixIndex by mutableStateOf(1); private set
 
     /** 已就绪的伴奏缓存目录（null = 还没算好）。换曲 / 回原曲时清空。 */
     private var karaokeReadyDir: java.io.File? = null
@@ -278,9 +281,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch { settingsStore.setKaraokeModelId(_karaokeModelId.value) }
     }
 
-    /** 档位序号 → 处理器档位。顺序是 UI 顺序（原曲/人声/伴奏），**与 MODE_* 的数值不同**，必须显式映射。 */
+    /** 档位序号 → 处理器档位。UI 顺序是 **人声 / 原曲 / 伴奏**（0/1/2），与 MODE_* 数值不同，必须显式映射。 */
     private fun modeOfMixIndex(i: Int): Int = when (i) {
-        1 -> com.shiyin.music.playback.KaraokeMixControl.MODE_VOCAL
+        0 -> com.shiyin.music.playback.KaraokeMixControl.MODE_VOCAL
         2 -> com.shiyin.music.playback.KaraokeMixControl.MODE_ACCOMP
         else -> com.shiyin.music.playback.KaraokeMixControl.MODE_ORIGINAL
     }
@@ -300,7 +303,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val why = karaokeGate(t)
         if (why != null) {
             showToast(why, null)
-            karaokeMixIndex = 0
+            karaokeMixIndex = 1
             return
         }
         karaokePendingMode = target
@@ -351,7 +354,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             } catch (e: Throwable) {
                 karaokeStatus = "分离失败：${e.javaClass.simpleName}"
                 karaokeState = com.shiyin.music.ui.components.KaraokeButtonState.Idle
-                karaokeMixIndex = 0
+                karaokeMixIndex = 1
             }
         }
     }
@@ -5610,7 +5613,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         if (karaokeState == com.shiyin.music.ui.components.KaraokeButtonState.Idle) {
             selectKaraokeMix(2)
         } else {
-            selectKaraokeMix(0)
+            selectKaraokeMix(1)
         }
     }
 
@@ -5624,7 +5627,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             com.shiyin.music.playback.KaraokeMixControl.MODE_ORIGINAL
         karaokeState = com.shiyin.music.ui.components.KaraokeButtonState.Idle
         karaokeStatus = ""
-        karaokeMixIndex = 0
+        karaokeMixIndex = 1
     }
 
     /** v1.5.0 右滑固定：该条目当前是否已固定。 */
