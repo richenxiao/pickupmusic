@@ -1314,6 +1314,8 @@ fun TrackRow(
     // v5.2 隐藏曲:整库 songs 列表+歌单里也要让人看出这是被跳过的曲。
     // 调用方传 isHiddenTrack=true 时行变灰,标题压暗。
     isHiddenTrack: Boolean = false,
+    /** v1.5.0 右滑固定：已固定 ⇒ 标题左侧画一个绿色小图钉（用户 2026-10-15 规格）。 */
+    pinned: Boolean = false,
 ) {
     val c = LocalOrganic.current
     // v4.3: search-result highlighting — matched spans tinted with the theme
@@ -1357,11 +1359,15 @@ fun TrackRow(
                     isHiddenTrack -> c.n500
                     else -> c.text
                 }
-                Text(
-                    titleAnnotated,
-                    style = body(15f, FontWeight.SemiBold, titleColor),
-                    maxLines = 1, overflow = TextOverflow.Ellipsis,
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    // 规格：已固定 ⇒ 标题文字左侧 4–8dp 处一个绿色实心小图钉
+                    if (pinned) PinnedMark(Modifier.padding(end = 6.dp))
+                    Text(
+                        titleAnnotated,
+                        style = body(15f, FontWeight.SemiBold, titleColor),
+                        maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    )
+                }
                 Text(
                     subtitleAnnotated,
                     style = body(12.5f, FontWeight.Normal, c.n600),
