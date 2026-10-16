@@ -1376,6 +1376,22 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 }
             }
             "say" -> appendProbeLog("[标记] " + p.drop(1).joinToString(" "))
+            // 起**真实伴唱流程**（与用户点按钮同一条路径）：播该曲 + 起分离 + 就绪后挂真伴奏。
+            // 给 P0-1（升调）与 P1-1（按钮状态跟随实际）做真机验收用 —— 手点 UI 太脆。
+            "kplay" -> {
+                val q = p.drop(1).joinToString(" ")
+                val t = tracksRaw.firstOrNull {
+                    it.title.contains(q, ignoreCase = true) || it.artist.contains(q, ignoreCase = true)
+                }
+                if (t == null) {
+                    appendProbeLog("[kplay] 找不到曲目：$q（库内 ${tracksRaw.size} 首）")
+                } else {
+                    appendProbeLog("[kplay] title=${t.title} artist=${t.artist} uri=${t.uri}")
+                    karaokePendingMode = com.shiyin.music.playback.KaraokeMixControl.MODE_ACCOMP
+                    player.playSpikeFile(t.uri, t.title)
+                    startKaraokeSeparation(t)
+                }
+            }
             // 块 3 闸门：把**原曲本身**当"伴奏"写进缓存（独立路径：解码 → 分块落盘 → 按帧号读），
             // 于是 人声 = 原曲 − 缓存(原曲) 必须**恒为 0**。差一个采样就会漏出梳状声。
             "seed" -> {
