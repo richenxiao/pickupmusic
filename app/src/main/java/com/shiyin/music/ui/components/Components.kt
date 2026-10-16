@@ -1359,21 +1359,23 @@ fun TrackRow(
                     isHiddenTrack -> c.n500
                     else -> c.text
                 }
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    // 规格：已固定 ⇒ 标题文字左侧 4–8dp 处一个绿色实心小图钉
+                Text(
+                    titleAnnotated,
+                    style = body(15f, FontWeight.SemiBold, titleColor),
+                    maxLines = 1, overflow = TextOverflow.Ellipsis,
+                )
+                // 用户 2026-10-16：图钉放**第二行（类型行）的第一个位置**
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.padding(top = 2.dp),
+                ) {
                     if (pinned) PinnedMark(Modifier.padding(end = 6.dp))
                     Text(
-                        titleAnnotated,
-                        style = body(15f, FontWeight.SemiBold, titleColor),
+                        subtitleAnnotated,
+                        style = body(12.5f, FontWeight.Normal, c.n600),
                         maxLines = 1, overflow = TextOverflow.Ellipsis,
                     )
                 }
-                Text(
-                    subtitleAnnotated,
-                    style = body(12.5f, FontWeight.Normal, c.n600),
-                    maxLines = 1, overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.padding(top = 2.dp),
-                )
             }
             if (isCurrent) EqBars(isPlaying)
             trailing?.invoke()

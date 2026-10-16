@@ -14,17 +14,30 @@ package com.shiyin.music.ui.components
  */
 object SwipePin {
 
-    /** 操作区宽度（dp）。规格 88–96dp，取上限贴近 GIF 满展开的观感。 */
-    const val ACTION_WIDTH_DP = 96f
+    /**
+     * 操作区（最大露出）宽度 = **行宽的 50%**。
+     *
+     * 用户 2026-10-16 更正：原型 GIF 能拉到**页面宽度的一半**；随后又说"旧规格的宽度还行"
+     * ⇒ 取**行宽的 45%**（就是旧规格 `MAX_REVEAL_FRACTION = 0.45` 的值）。
+     * 改为按**行自身宽度**取一半（比"屏宽一半"更贴实际边距；满铺行的观感与 GIF 一致）。
+     */
+    const val ACTION_WIDTH_FRACTION = 0.45f
 
-    /** 松手提交阈值：占操作区宽度的比例（规格 0.4）。 */
+    /**
+     * 松手提交阈值：占操作区宽度的比例 —— **0.4**。
+     *
+     * 用户 2026-10-16 把数值交给我定，要求是"只拉一点点不要触发，防手滑"。
+     * 操作区是半屏，0.4 ⇒ 实际要拖到约**屏宽的 20%**（≈80dp，约 1cm 多）才提交：
+     * 小抖动/手滑不会误触发，真要固定也不费劲。**这是唯一需要调的旋钮。**
+     */
     const val COMMIT_THRESHOLD = 0.4f
 
     /** 图钉图标尺寸（dp）。规格 ~24dp。 */
     const val PIN_ICON_DP = 24f
 
-    /** 操作区宽度（px）。 */
-    fun actionWidthPx(densityScale: Float): Float = ACTION_WIDTH_DP * densityScale
+    /** 操作区宽度（px）：**行宽的一半**。行宽未知（0 或负）时返回 0（此时不提交、不漏色）。 */
+    fun actionWidthPx(rowWidthPx: Float): Float =
+        if (rowWidthPx > 0f) rowWidthPx * ACTION_WIDTH_FRACTION else 0f
 
     /**
      * 向右拖 → 已露出宽度（px），**夹在 [0, actionWidthPx]**。

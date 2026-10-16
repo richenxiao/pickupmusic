@@ -14,15 +14,19 @@ import org.junit.Test
  */
 class SwipePinTest {
 
-    private val w = SwipePin.actionWidthPx(1f)   // density=1 时数值 = dp
+    private val w = SwipePin.actionWidthPx(400f)   // 行宽 400 → 操作区 180
 
     // ── 规格常量本身 ────────────────────────────────────────────────────────
 
     @Test
-    fun `操作区宽度在规格范围内`() {
-        // 规格 A.2 / 尺寸一节：ACTION_WIDTH = 88–96dp
-        assertTrue("ACTION_WIDTH_DP 应在 88..96，实际 ${SwipePin.ACTION_WIDTH_DP}",
-            SwipePin.ACTION_WIDTH_DP in 88f..96f)
+    fun `操作区宽度是行宽的45%`() {
+        // 用户 2026-10-16：「拉到页面宽度的一半」→ 再更正为「旧规格的宽度还行」⇒ 行宽 45%
+        assertEquals(0.45f, SwipePin.ACTION_WIDTH_FRACTION, 0.0001f)
+        assertEquals(180f, SwipePin.actionWidthPx(400f), 0.001f)
+        // 行宽未知时不得漏色、也不得提交
+        assertEquals(0f, SwipePin.actionWidthPx(0f), 0.001f)
+        assertEquals(0f, SwipePin.actionWidthPx(-5f), 0.001f)
+        assertFalse(SwipePin.shouldCommit(10f, SwipePin.actionWidthPx(0f)))
     }
 
     @Test
