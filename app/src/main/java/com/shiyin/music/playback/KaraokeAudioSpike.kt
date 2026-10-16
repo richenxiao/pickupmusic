@@ -1,20 +1,26 @@
 package com.shiyin.music.playback
 
 import android.content.Context
+import android.os.Handler
 import android.util.Log
 import androidx.media3.common.C
+import androidx.media3.common.Format
 import androidx.media3.common.audio.AudioProcessor
 import androidx.media3.common.audio.BaseAudioProcessor
 import androidx.media3.exoplayer.DefaultRenderersFactory
+import androidx.media3.exoplayer.Renderer
+import androidx.media3.exoplayer.audio.AudioRendererEventListener
 import androidx.media3.exoplayer.audio.AudioSink
 import androidx.media3.exoplayer.audio.DefaultAudioSink
 import androidx.media3.exoplayer.audio.ForwardingAudioSink
+import androidx.media3.exoplayer.mediacodec.MediaCodecSelector
 import com.shiyin.music.data.karaoke.StemCache
 import java.io.BufferedOutputStream
 import java.io.File
 import java.io.FileOutputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.util.ArrayList
 import kotlin.math.abs
 
 /**
@@ -75,6 +81,12 @@ private const val TAG = "KaraokeMix"
 
 /** 探针：flush 之后逐块打印几个 buffer（最先几个最能看出重锚对不对）。 */
 private const val PROBE_POST_FLUSH = 5
+
+/**
+ * sink 诊断（闸门 1 准备项 a）：**换条目 / seek / configure 之后**详打几个 buffer。
+ * 边界附近的头几块才是有信息量的（能看到新条目的 pts 起点）；稳态每块都打会淹掉日志。
+ */
+private const val BUFFER_LOGS_AT_BOUNDARY = 5
 
 /** 咔哒检测阈值：咔哒幅度 0.5×32767≈16383，帧号真值文件只有 ±2048 ⇒ 6000 两边都安全。 */
 private const val CLICK_THRESHOLD = 6000
@@ -329,35 +341,142 @@ object KaraokeBufferAnchor {
     }
 }
 
+/** 渲染器 epoch 的**帧数**：`1e12 µs × rate / 1e6`（44100 → 44,100,000,000 帧）。 */
+fun epochFramesOf(rate: Int): Long = rate.toLong() * 1_000_000L
+
 /**
- * `presentationTimeUs` → **源文件帧号**要减掉的恒定偏移（帧）。**块 3 闸门失败的真因就缺这一步。**
+ * **渲染器 pts → 源文件帧号** 的重锚状态机（纯逻辑、无 Android 依赖，**可 JVM 单测**）。
  *
- * Media3 递给 sink 的 pts 是**渲染器时间**，含 `MediaPeriodQueue.INITIAL_RENDERER_POSITION_OFFSET_US`
- * （= 1e12 µs 的 epoch）。真机实测（`.karaoke/probe3.log`，帧号真值 fixture）：
- * ```
- * 计数器=4410 锚点pts帧=44100004410 真值首帧=4410 → 戳差(P−T) 恒为 44100000000
- * 44100000000 = 1e12µs × 44100 / 1e6   ← 正好是 epoch 的帧数
- * ```
- * 同一份日志里另有一段（seek 到 30.000s）：`计数器=4410 锚点pts帧=44101327410`
- * ⇒ `44101327410 − 44100000000 = 1327410 = 1323000(30s) + 4410` —— **偏移在 seek 前后不变**，
- * 所以减掉它，seek 之后照样精确。
+ * ### 为什么需要减偏移
+ * Media3 递给 sink 的 pts 是**渲染器时间**，等于「条目内时间 + 渲染器偏移」，而偏移含
+ * `MediaPeriodQueue.INITIAL_RENDERER_POSITION_OFFSET_US = 1e12 µs` 的 epoch，
+ * **并在播放列表里逐条目累加**。真机实测（帧号真值 fixture）：`戳差(P−T)` 恒为
+ * 44,100,000,000 = epoch 的帧数；seek 到 30s 后偏移不变（仍精确）。
+ * 不扣它的后果：`absFrame` ≈ 441 亿 ≫ 缓存总帧数 ⇒ `readFrames` 永远 null ⇒ 一直回退原曲。
  *
- * 不扣这个偏移的后果：`absFrame` ≈ 441 亿 ≫ 缓存总帧数 ⇒ `readFrames` 永远返回 null
- * ⇒ 一直走"欠载回退原曲" ⇒ 人声档听不出任何变化、独立缓存路径零拍测出来是原曲。
+ * ### 偏移从哪来（Media3 1.7.1 源码实证，行号见 `KARAOKE-PROGRESS.md`）
+ * · `DecoderAudioRenderer.onStreamChanged`（`:720-741`）拿到**本条目**的 `offsetUs`：
+ *   首条立即下发；后续条目**排队**进 `pendingOutputStreamOffsetsUs`。
+ * · `DecoderAudioRenderer.processFirstSampleOfStream()`（`:516-527`）——由
+ *   `drainOutputBuffer()`（`:458`，条件 `outputBuffer.isFirstSample()`）在**本流第一个采样**时调用——
+ *   先 `audioSink.handleDiscontinuity()`（`:517`）**再** `setOutputStreamOffsetUs(pending[0])`（`:519`）；
+ *   同一 `drainOutputBuffer()` 稍后才 `audioSink.handleBuffer(...)`（`:501`）。
+ *   ⇒ **换条目时偏移一定先于该条目第一个 buffer 到达 sink**，这就是"**用播放器给的偏移重锚**
+ *   （候选 1）"能成立的依据 —— 不必再自己猜 `itemOffset`。
+ * · ⚠️ **真机实测（2026-10-16，三条目 44.1k→48k FLAC→44.1k）看到的实际顺序是**
+ *   `setOutputStreamOffsetUs → handleDiscontinuity → configure → handleBuffer`：
+ *   偏移**先**到、不连续事件在后（与上面那个方法的书写顺序不同 ⇒ 偏移不是只从那条路径来）。
+ *   **结论不变**：偏移在任何**被消费的** buffer 之前到位，这正是设计依赖的性质。
+ * · ⚠️ `MediaCodecAudioRenderer.onOutputStreamOffsetUsChanged`（`:891`）在 1.7.1 里**没有任何调用方**，
+ *   偏移实际走 `DecoderAudioRenderer` 的 `setOutputStreamOffsetUs`（`:530-535`）——上一轮"日志没打出来
+ *   所以它从不被调用"的结论**是错的**（错在把"没打日志"当成"没走到"）。
  *
- * 取值优先级：
- *  1. Media3 给的 `setOutputStreamOffsetUs`（口径是"渲染器时间 − 流时间"，含播放列表内前面
- *     条目的时长 ⇒ 顺带能覆盖 gapless 换曲）——但**只在它不小于 epoch 时才敢信**；
- *  2. 否则退回 **epoch 常量** `rate × 1e6`（已实测精确：单条曲目 + 同一条目内任意 seek）。
- *
- * ⚠️ **已知未覆盖**：多条目播放列表的非首条（gapless 自动续播）在 Media3 不给偏移时，
- * 该条目的 `itemOffset` 无从得知 —— 报告里要写成"未验证"，别写成"已验证"。
+ * ### 兜底
+ * 偏移**按 µs 存**、用时才按**当前采样率**换算 —— 这样 44.1k→48k 换条目时不会拿旧采样率算。
+ * 播放器还没报过偏移（理论上只在首个 buffer 之前）才退回 **epoch 常量**。
  */
-fun ptsOffsetFramesOf(rate: Int, outputOffsetUs: Long): Long {
-    val epochFrames = rate.toLong() * 1_000_000L
-    if (outputOffsetUs <= 0L) return epochFrames
-    val fromSink = Math.round(outputOffsetUs.toDouble() * rate / 1_000_000.0)
-    return if (fromSink >= epochFrames) fromSink else epochFrames
+class PtsReanchor {
+
+    /** 播放器报过的偏移（µs）；-1 = 还不知道。**存 µs 而不是帧**，换采样率时不必重报。 */
+    var offsetUs: Long = -1L
+        private set
+
+    /** 下一条待入样本的**绝对源帧号**（-1 = 尚未锚定）。 */
+    var absNext: Long = -1L
+        private set
+
+    /** **本条目内**「戳算出来的帧号」与「自数预测」差 > 1 帧的次数（验收指标；换条目不计）。 */
+    var realignCount: Int = 0
+        private set
+
+    /** 检测到的**条目切换**次数（播放器报来的偏移变了）。 */
+    var itemChangeCount: Int = 0
+        private set
+
+    /** sink 报来的 `handleDiscontinuity` 次数。 */
+    var discontinuityCount: Int = 0
+        private set
+
+    /** 拿不到锚点的 buffer 次数。 */
+    var anchorMissCount: Int = 0
+        private set
+
+    /** 播放器报过几次偏移（报告用；首条 1 次，之后每换一条 +1）。 */
+    var offsetReportCount: Int = 0
+        private set
+
+    /**
+     * 新流开始（`onConfigure`）：**每流**的指标归零，但**保留偏移**（偏移在 configure 之前就到，
+     * 别把它丢了）与 [itemChangeCount] / [offsetReportCount]（这两个是**会话级**累计 ——
+     * 换采样率的条目边界恰好会触发 configure，把它清掉就等于把最该看的那次切换抹掉）。
+     */
+    fun onConfigureReset() {
+        absNext = -1L
+        realignCount = 0
+        anchorMissCount = 0
+        discontinuityCount = 0
+    }
+
+    /** 处理器被释放（`onReset`）：连同偏移一起清干净 —— 下次是新 sink / 新渲染器，会重新报。 */
+    fun onRelease() {
+        onConfigureReset()
+        offsetUs = -1L
+        itemChangeCount = 0
+        offsetReportCount = 0
+    }
+
+    /** `flush`（seek / 换源）：自数帧作废，等下一个时间戳重新锚定。 */
+    fun onFlush() {
+        absNext = -1L
+    }
+
+    /** 播放器报来新的「流时间 → 渲染器时间」偏移（µs）。**偏移变了 = 换条目。** */
+    fun onSinkOffset(us: Long) {
+        if (us <= 0L) return
+        offsetReportCount++
+        if (us == offsetUs) return
+        offsetUs = us
+        if (absNext >= 0L) {
+            itemChangeCount++
+            absNext = -1L     // 自数帧跨条目不作数，等本条第一个 buffer 用新偏移重新锚定
+        }
+    }
+
+    /** sink 报来 pts 不连续。**只计数**：不重置 [absNext]，因为非锚定档没有 pts 可重新锚定。 */
+    fun onDiscontinuity() {
+        discontinuityCount++
+    }
+
+    /** 本块要减掉的偏移（帧），按**当前**采样率换算。 */
+    fun offsetFramesFor(rate: Int): Long =
+        if (offsetUs > 0L) Math.round(offsetUs.toDouble() * rate / 1_000_000.0)
+        else epochFramesOf(rate)
+
+    /**
+     * 处理一个 buffer（**必须在把帧数累加之前调**）。
+     *
+     * @param ptsUs 本 buffer 的渲染器时间戳；< 0 = 拿不到
+     * @param rate 当前采样率
+     * @param frames 本 buffer 的帧数
+     * @param countMiss 拿不到 pts 时是否计入 [anchorMissCount]（非锚定档不记，免得每块都 +1）
+     * @return 本块**第一帧**的绝对源帧号；-1 = 无可用锚点 ⇒ 调用方按欠载处理（退回原曲）
+     */
+    fun onBuffer(ptsUs: Long, rate: Int, frames: Int, countMiss: Boolean): Long {
+        if (ptsUs < 0L || rate <= 0) {
+            if (countMiss) anchorMissCount++
+            val a = absNext
+            if (a >= 0L) absNext = a + frames
+            return a
+        }
+        val ptsFrame = Math.round(ptsUs.toDouble() * rate / 1_000_000.0)
+        val src = ptsFrame - offsetFramesFor(rate)
+        if (absNext >= 0L) {
+            val d = src - absNext
+            if (d > 1L || d < -1L) realignCount++   // 用户定的判据：> 1 个采样才叫"重锚"
+        }
+        absNext = src + frames
+        return src
+    }
 }
 
 /**
@@ -653,12 +772,31 @@ class KaraokeMixProcessor(
     private var flushReqRelMs: Long = -1L
 
     // ── 步骤 2c：时间戳锚定 ────────────────────────────────────────────────
-    /** 下一个待入样本的**绝对源帧号**（-1 = 尚未锚定）。每个 buffer 都会被时间戳修正。 */
-    private var absNext: Long = -1L
+    /**
+     * 重锚状态机（见 [PtsReanchor]）。本类**不再自己维护 `absNext`** —— 那套算术有真机踩过的坑
+     * （epoch 未扣、多条目偏移累加），抽成纯逻辑后才好在 JVM 上按"三条目序列"逐事件测。
+     */
+    val reanchor = PtsReanchor()
+
     /** 时间戳与自数帧偏差 > 1 个采样而重锚的次数（验收指标之一）。 */
-    var realignCount: Int = 0; private set
+    val realignCount: Int get() = reanchor.realignCount
     /** 拿不到锚点的 buffer 次数（正常情况下应恒为 0）。 */
-    var anchorMissCount: Int = 0; private set
+    val anchorMissCount: Int get() = reanchor.anchorMissCount
+
+    /**
+     * sink 报来**新的渲染器偏移**（µs）。换条目时它**先于该条目第一个 buffer** 到达
+     * （`DecoderAudioRenderer.drainOutputBuffer`：`:519` 早于 `:501`）⇒ 拿它当权威即可。
+     */
+    fun onSinkOffset(us: Long) = reanchor.onSinkOffset(us)
+
+    /** sink 报来 pts 不连续（换条目 / seek 预滚动丢弃）。 */
+    fun onSinkDiscontinuity() = reanchor.onDiscontinuity()
+
+    /**
+     * 供 sink 诊断把日志写进**同一个探针文件**（`karaoke_probe.log`）。
+     * logcat 缓冲区会滚，长时间连播时**文件才是权威**。
+     */
+    fun emitDiag(line: String) = emit(line)
 
     // ── 采集模式 ───────────────────────────────────────────────────────────
     private var captureOut: BufferedOutputStream? = null
@@ -698,9 +836,12 @@ class KaraokeMixProcessor(
         flushCount = 0
         probeBuffersAfterFlush = 0
         lastProbeSec = -1
-        absNext = -1L
-        realignCount = 0
-        anchorMissCount = 0
+        reanchor.onConfigureReset()
+        // ⚠️ 必须清锚点队列：`configure` 把 `framesSeen` 归零（换采样率的条目边界会发生），
+        // 而队里可能还压着**上一条目**的锚点（例如被 Trimming 拆分、最终没走到处理器的那个 buffer）。
+        // 不清的话 `take(0)` 会撞上 `head[0]=1024` ⇒ 直接不命中 ⇒ 本块退回原曲。
+        // 清掉是安全的：`configure` 一定发生在该条目第一个 `handleBuffer` **之前**（源码顺序）。
+        KaraokeBufferAnchor.clear()
         mixBlockLogged = 0
         mixDiagLogged = 0
         endCapture("onConfigure")
@@ -728,34 +869,24 @@ class KaraokeMixProcessor(
         val frames = if (bytesPerFrame > 0) size / bytesPerFrame else 0
 
         // ── 步骤 2c：**每个 buffer** 都用 presentationTimeUs 换算帧号，与自数帧对拍 ──
-        val predicted = absNext
+        // 偏移与重锚全部交给 [PtsReanchor]（纯逻辑，有 JVM 单测钉住"三条目 gapless"逐事件序列）。
+        // 它按 `pts − 播放器报来的偏移` 得到源文件帧号 —— 偏移含 1e12µs 的 epoch **并逐条目累加**，
+        // 不扣就会去查 441 亿帧处的伴奏（`readFrames` 永远 null ⇒ 一直回退原曲，块 3 失败真因）。
+        //
+        // ⚠️ **本块第一帧的绝对源帧**必须在帧数累加**之前**取：混音就是按这个帧号去伴奏缓存取数的，
+        // 晚一步就整体错开一整块（4096 帧 ≈ 93ms）。**保留 -1**（不兜成 0）：帧号无效时伴奏源
+        // 按欠载处理 ⇒ 退回原曲，绝不会拿"第 0 帧的伴奏"去跟中间某处混（那才会出错误的声音）。
+        val predicted = reanchor.absNext
         val ptsUs = if (anchored) KaraokeBufferAnchor.take(framesSeen) else -1L
-        val ptsFrame = if (ptsUs >= 0 && inputSampleRate > 0) {
+        val ptsFrame = if (ptsUs >= 0) {
             Math.round(ptsUs.toDouble() * inputSampleRate / 1_000_000.0)
         } else -1L
-        // ⚠️⚠️ **必须扣掉渲染器 epoch**（见 [ptsOffsetFramesOf]）——pts 里含 1e12µs 的
-        // `INITIAL_RENDERER_POSITION_OFFSET_US`；不扣就会去查 441 亿帧处的伴奏，
-        // `readFrames` 永远返回 null ⇒ 一直回退原曲（**块 3 闸门失败的真因**）。
-        val srcFrame = if (ptsFrame >= 0) {
-            ptsFrame - ptsOffsetFramesOf(inputSampleRate, KaraokeBufferAnchor.outputOffsetUs)
-        } else -1L
-        if (srcFrame >= 0) {
-            if (predicted < 0) {
-                absNext = srcFrame                      // 本段第一次锚定
-            } else {
-                val d = srcFrame - predicted
-                if (d > 1L || d < -1L) realignCount++   // 用户定的判据：> 1 个采样才叫"重锚"
-                absNext = srcFrame                      // 时间戳是权威，永远以它为准
-            }
-        } else if (anchored && probeMode != KaraokeAudioSpike.PROBE_OFF) {
-            anchorMissCount++
-        }
-        // ⚠️ **本块第一帧的绝对源帧**必须在下面 `absNext += frames` **之前**取。
-        // 混音就是按这个帧号去伴奏缓存取数据的；晚一步取就会整体错开一整块（4096 帧 ≈ 93ms）——
-        // 占位源选"原曲本身"时看不出来（它忽略帧号），接了真伴奏就是灾难性错位。
-        // **保留 -1**（不兜成 0）：帧号无效时伴奏源会当欠载处理 ⇒ 退回原曲，
-        // 而不是拿"第 0 帧的伴奏"去跟中间某处混（那才会出错误的声音）。
-        val bufferStartFrame = absNext
+        val srcFrame = reanchor.onBuffer(
+            ptsUs = ptsUs,
+            rate = inputSampleRate,
+            frames = frames,
+            countMiss = anchored && probeMode != KaraokeAudioSpike.PROBE_OFF,
+        )
 
         // ── 采集模式：从"落到文件开头"的那个 buffer 开始，把收到的 PCM 原样落盘 ──
         // 两个起采条件（任一条满足即可）：① 时间戳落在开头 0.5s 内（档 3）；
@@ -786,8 +917,6 @@ class KaraokeMixProcessor(
         }
 
         framesSeen += frames
-        if (srcFrame < 0 && predicted >= 0) absNext = predicted + frames  // 没锚点就靠自数往下走
-        else if (srcFrame >= 0) absNext = srcFrame + frames
 
         // 每约 1 秒音频打一次心跳，用来**证明音频确实穿过了这里**（而不是被旁路）。
         if (framesSeen / maxOf(1, inputSampleRate) > heartbeatSec) {
@@ -819,7 +948,7 @@ class KaraokeMixProcessor(
         var mixed = false
         if (wantMix && inputChannelCount == 2) {
             mixed = try {
-                mixInto(inputBuffer, out, frames, bufferStartFrame)
+                mixInto(inputBuffer, out, frames, srcFrame)
                 true
             } catch (t: Throwable) {
                 mixFailCount++
@@ -1054,8 +1183,14 @@ class KaraokeMixProcessor(
     override fun onFlush() {
         flushCount++
         Log.i(TAG, "onFlush #$flushCount（此前已过 $framesSeen 帧）——flush 后帧号必须由外部重新锚定")
-        absNext = -1L                    // 不连续 ⇒ 自数帧作废，等下一个时间戳
-        KaraokeBufferAnchor.clear()      // 之前的锚点全部过期
+        reanchor.onFlush()               // 不连续 ⇒ 自数帧作废，等下一个时间戳
+        // ⚠️⚠️ **这里绝不能 `KaraokeBufferAnchor.clear()`**（2026-10-16 真机实测抓到的缺陷）：
+        // 流水线在**每条流第一个 `handleBuffer` 内部**会再 flush 一次（configure 之后紧接着），
+        // 而 sink 是**先 push 锚点、再进 handleBuffer** 的 —— 在这里清就会把**刚推的那个**锚点抹掉，
+        // 于是每条的第一个块 `take(0)` 落空 ⇒ `srcFrame=-1` ⇒ 欠载退回原曲（≈100ms 少一段伴奏）。
+        // 真机日志：`sink#4 handleBuffer pts=1e12 …` → `onFlush #1` → `[探针] … 锚缺=1`。
+        // 清锚点改在**流边界**做（`onConfigure`）与 sink 层的 `flush()`/`reset()`（真正的 seek）做；
+        // seek 时同格式不重建 pipeline，旧锚点会被 `take()` 的「`head[0] < framesSeen` 即作废」规则淘汰。
         if (probeMode != KaraokeAudioSpike.PROBE_OFF) {
             // 步骤 2b：**在 flush 这一刻把 app 请求的目标抄下来**（之后 app 可能又 seek 一次）。
             flushSeq = KaraokeSeekAnchor.seq
@@ -1081,7 +1216,7 @@ class KaraokeMixProcessor(
         heartbeatSec = -1
         probeBuffersAfterFlush = 0
         lastProbeSec = -1
-        absNext = -1L
+        reanchor.onRelease()
     }
 
     // ── 采集（步骤 2c 端到端对齐）────────────────────────────────────────────
@@ -1135,12 +1270,22 @@ class KaraokeMixProcessor(
 }
 
 /**
- * 档 3 的**时间戳锚定**：包住真正 sink，在 `handleBuffer` 里把每个 buffer 的
- * `presentationTimeUs` 交给 [KaraokeBufferAnchor]，再原样转发。
+ * 档 3 的**时间戳锚定 + 诊断**：包住真正 sink，把每个 buffer 的 `presentationTimeUs` 交给
+ * [KaraokeBufferAnchor]，并把播放器报来的**渲染器偏移**交给 [KaraokeMixProcessor.onSinkOffset]，
+ * 其余逐字转发。
  *
  * 为什么用 `ForwardingAudioSink` 而不是自己实现 `AudioSink`：`AudioSink` 的缓冲契约
  * （pending / 容量 / `getCurrentPositionUs` 语义）写错会产生**与 v23 同类**的症状；这个类
- * 只多覆写 `handleBuffer` 一个方法，其余逐字转发 ⇒ 风险面最小。
+ * 只多覆写几个方法，其余逐字转发 ⇒ 风险面最小。
+ *
+ * ### 闸门 1 准备项 a：诊断日志（**带单调序号**）
+ * 覆盖 `configure` / `handleBuffer` / `setOutputStreamOffsetUs` / `flush` / `reset` /
+ * `handleDiscontinuity`，每条带 `sink#N` 单调序号 —— 把 sink 侧事件与处理器侧日志按时间排成**一条线**。
+ * `handleBuffer` 只在**边界附近**详打（[BUFFER_LOGS_AT_BOUNDARY] 块），稳态不打，免得淹没日志。
+ *
+ * 要回答的两个问题（都靠这套日志）：
+ *  1. `setOutputStreamOffsetUs` 到底会不会被调用、每次换条目的值是多少（**累加**才说明能当权威）；
+ *  2. `handleDiscontinuity` 与偏移更新、与"新条目第一个 buffer"的**先后顺序**。
  *
  * ⚠️ 去重：`handleBuffer` 在 AudioTrack 缓冲满时可以**返回 false 且不消费**，renderer 会拿
  * **同一个 buffer（同一 pts）** 重调；不去重就会重复入队。`flush`/`reset` 时清空并重置去重。
@@ -1148,15 +1293,58 @@ class KaraokeMixProcessor(
 class KaraokeAnchoringSink(
     inner: AudioSink,
     private val processor: KaraokeMixProcessor,
+    /**
+     * 真正在链上的 sink 类名。`ForwardingAudioSink` 的 `sink` 字段是 **private**，子类取不到，
+     * 只能由构造方（[KaraokeRenderersFactory]）传进来 —— 报告里要写清"实际是哪个 sink"。
+     */
+    private val innerSinkName: String = inner.javaClass.simpleName,
 ) : ForwardingAudioSink(inner) {
 
+    /** 单调事件序号：sink 侧事件与处理器侧日志靠它排成一条时间线。 */
+    private var seq = 0
+
+    /** `handleBuffer` 的详细打印预算（每次 configure / 偏移变化 / flush 后重新给满）。 */
+    private var bufferLogsLeft = 0
+
     private var lastPtsUs = Long.MIN_VALUE
+
+    private fun log(msg: String) {
+        seq++
+        val line = "sink#$seq $msg"
+        Log.i(TAG, line)
+        processor.emitDiag(line)      // 同时进探针文件，长时间连播也不怕 logcat 滚掉
+    }
+
+    override fun configure(
+        inputFormat: Format,
+        specifiedBufferSize: Int,
+        outputChannels: IntArray?,
+    ) {
+        lastPtsUs = Long.MIN_VALUE
+        bufferLogsLeft = BUFFER_LOGS_AT_BOUNDARY
+        log(
+            "configure ${inputFormat.sampleRate}Hz ${inputFormat.channelCount}ch " +
+                "enc=${inputFormat.sampleMimeType} 内层sink=$innerSinkName " +
+                "（处理器此前已过帧=${processor.framesSeen}）",
+        )
+        super.configure(inputFormat, specifiedBufferSize, outputChannels)
+    }
 
     override fun handleBuffer(
         buffer: ByteBuffer,
         presentationTimeUs: Long,
         encodedAccessUnitCount: Int,
     ): Boolean {
+        if (bufferLogsLeft > 0) {
+            bufferLogsLeft--
+            val bpf = processor.inputChannelCount * 2
+            val frames = if (bpf > 0) buffer.remaining() / bpf else -1
+            log(
+                "handleBuffer pts=${presentationTimeUs}µs 剩余字节=${buffer.remaining()} 帧≈$frames " +
+                    "（边界后第 ${BUFFER_LOGS_AT_BOUNDARY - bufferLogsLeft} 块）" +
+                    " 处理器已过帧=${processor.framesSeen}",
+            )
+        }
         if (presentationTimeUs != lastPtsUs) {
             lastPtsUs = presentationTimeUs
             KaraokeBufferAnchor.push(processor.framesSeen, presentationTimeUs)
@@ -1165,29 +1353,47 @@ class KaraokeAnchoringSink(
     }
 
     /**
-     * Media3 用这个告诉我们「流时间 → 渲染器时间」的偏移（含那个 1e12µs 的 epoch）。
-     * 只记下来供 [ptsOffsetFramesOf] 择优 + 打日志留证 —— **不改变任何播放行为**。
+     * Media3 用这个告诉我们「流时间 → 渲染器时间」的偏移 —— 含 1e12µs 的 epoch，**并逐条目累加**。
+     * 这是 [PtsReanchor] 的权威输入；**不改变任何播放行为**（只记录 + 打日志）。
      */
     override fun setOutputStreamOffsetUs(outputStreamOffsetUs: Long) {
+        val prev = KaraokeBufferAnchor.outputOffsetUs
         KaraokeBufferAnchor.setOutputOffset(outputStreamOffsetUs)
-        Log.i(TAG, "sink.setOutputStreamOffsetUs=$outputStreamOffsetUs（µs）")
+        processor.onSinkOffset(outputStreamOffsetUs)
+        bufferLogsLeft = BUFFER_LOGS_AT_BOUNDARY
+        log(
+            "setOutputStreamOffsetUs=${outputStreamOffsetUs}µs（上一条=${prev}µs，Δ=${outputStreamOffsetUs - prev}µs）" +
+                " ⇒ 条目切换累计 ${processor.reanchor.itemChangeCount} 次",
+        )
         super.setOutputStreamOffsetUs(outputStreamOffsetUs)
     }
 
-    /** 渲染器侧发现"时间不连续"（seek / 换源 / gapless 边界）—— 只记一笔，便于报告里对时间线。 */
+    /**
+     * 渲染器侧发现"时间不连续"（换条目 / seek 预滚动丢弃）。
+     * 日志里把**当时的**渲染器偏移打出来：真机实测的顺序是
+     * `setOutputStreamOffsetUs → handleDiscontinuity → configure → handleBuffer`，
+     * 所以这里打出来的通常已经是**新条目**的偏移 —— 打它就是为了留证这个先后。
+     */
     override fun handleDiscontinuity() {
-        Log.i(TAG, "sink.handleDiscontinuity（pts 不连续）已过帧=${processor.framesSeen}")
+        processor.onSinkDiscontinuity()
+        log(
+            "handleDiscontinuity（pts 不连续）处理器已过帧=${processor.framesSeen} " +
+                "此刻偏移=${KaraokeBufferAnchor.outputOffsetUs}µs",
+        )
         super.handleDiscontinuity()
     }
 
     override fun flush() {
         lastPtsUs = Long.MIN_VALUE
+        bufferLogsLeft = BUFFER_LOGS_AT_BOUNDARY
+        log("flush 处理器已过帧=${processor.framesSeen} 偏移=${KaraokeBufferAnchor.outputOffsetUs}µs")
         KaraokeBufferAnchor.clear()
         super.flush()
     }
 
     override fun reset() {
         lastPtsUs = Long.MIN_VALUE
+        log("reset")
         KaraokeBufferAnchor.clear()
         super.reset()
     }
@@ -1247,10 +1453,44 @@ class KaraokeRenderersFactory(context: Context) : DefaultRenderersFactory(contex
                 "buildAudioSink：挂处理器 + 时间戳锚定（mode=$mode, 混音=$mixing, " +
                     "探针=${KaraokeAudioSpike.describeProbe(probe)}）",
             )
-            KaraokeAnchoringSink(sink, proc)
+            KaraokeAnchoringSink(sink, proc, sink.javaClass.simpleName)
         } else {
             Log.i("KaraokeMix", "buildAudioSink：挂 1:1 透传处理器（mode=2, 探针=${KaraokeAudioSpike.describeProbe(probe)}）")
             sink
         }
+    }
+
+    /**
+     * 闸门 1 准备项 a：**只加一行日志**地打出实际渲染器类名（报告要写"FLAC/MP3 到底走的哪个渲染器"）。
+     *
+     * 实现刻意是「`super` 原样 + 打日志」——**不增删任何渲染器**，避免成为新的混杂因素。
+     * 这是唯一能拿到渲染器类名的地方：`ExoPlayer` 不对外暴露 `audioRenderers`。
+     */
+    override fun buildAudioRenderers(
+        context: Context,
+        extensionRendererMode: Int,
+        mediaCodecSelector: MediaCodecSelector,
+        enableDecoderFallback: Boolean,
+        audioSink: AudioSink,
+        eventHandler: Handler,
+        eventListener: AudioRendererEventListener,
+        out: ArrayList<Renderer>,
+    ) {
+        val before = out.size
+        super.buildAudioRenderers(
+            context,
+            extensionRendererMode,
+            mediaCodecSelector,
+            enableDecoderFallback,
+            audioSink,
+            eventHandler,
+            eventListener,
+            out,
+        )
+        Log.i(
+            "KaraokeMix",
+            "buildAudioRenderers：sink=${audioSink.javaClass.simpleName} " +
+                "新增渲染器=${(before until out.size).joinToString { out[it].javaClass.simpleName }}",
+        )
     }
 }

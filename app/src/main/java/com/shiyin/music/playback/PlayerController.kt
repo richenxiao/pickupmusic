@@ -1088,6 +1088,31 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
         c.play()
     }
 
+    /**
+     * 闸门 1（gapless 重锚）专用：把**一组**本地测试文件当播放列表播，**自动续播**。
+     *
+     * 与 [playSpikeFile] 的唯一区别是 `setMediaItems`（多条）而不是 `setMediaItem`（单条）。
+     * `pauseAtEndOfMediaItems` 全 app 没有任何地方设过 ⇒ 默认 false ⇒ 一条放完自动接下一条，
+     * 渲染器对**每条**各发一次 `onStreamChanged` / `handleDiscontinuity` /
+     * `setOutputStreamOffsetUs` —— 这正是要验的"换条目重锚"。
+     */
+    fun playSpikePlaylist(uris: List<android.net.Uri>, titles: List<String>) {
+        val c = controller ?: return
+        // 关掉循环：否则最后一条放完又绕回第一条，日志里多出一次换条目，对拍时容易看错。
+        c.repeatMode = Player.REPEAT_MODE_OFF
+        c.setMediaItems(
+            uris.mapIndexed { i, u ->
+                androidx.media3.common.MediaItem.Builder()
+                    .setUri(u)
+                    .setMediaId("spike-list-$i")
+                    .setTag(titles.getOrElse(i) { "item$i" })
+                    .build()
+            },
+        )
+        c.prepare()
+        c.play()
+    }
+
     /** 起「从头采集」：置待命旗标 → 回到 0 → 播放（处理器在落到开头时开始采 PCM）。 */
     fun spikeCaptureFromStart() = spikeCaptureFrom(0L)
 

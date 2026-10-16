@@ -1246,6 +1246,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 android.net.Uri.fromFile(java.io.File(java.io.File(dir, "fixtures"), p[1])), p[1],
             )
             "stop" -> player.spikePause()
+            // 闸门 1：把 fixtures/ 下的若干文件当**播放列表**自动连播（验"换条目重锚"）。
+            // 与 play 的唯一区别是自动续播 —— 渲染器会对每条各发一次换条目事件。
+            "playlist" -> {
+                val names = p.drop(1)
+                player.playSpikePlaylist(
+                    names.map {
+                        android.net.Uri.fromFile(java.io.File(java.io.File(dir, "fixtures"), it))
+                    },
+                    names,
+                )
+            }
             "mix" -> com.shiyin.music.playback.KaraokeMixControl.mode = p[1].toInt()
             "source" -> com.shiyin.music.playback.KaraokeMixControl.sourceKind = p[1].toInt()
             "probe" -> com.shiyin.music.playback.KaraokeAudioSpike.setProbeMode(getApplication(), p[1].toInt())
