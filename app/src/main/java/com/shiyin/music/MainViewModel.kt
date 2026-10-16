@@ -1259,6 +1259,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             }
             "mix" -> com.shiyin.music.playback.KaraokeMixControl.mode = p[1].toInt()
             "source" -> com.shiyin.music.playback.KaraokeMixControl.sourceKind = p[1].toInt()
+            // 闸门 2：**瞬时淡化开关**（0 = 不做 300ms 系数插值，直接跳到目标档）。
+            // 用来把"残差是淡化本身"和"残差是别的东西"分开：同一次实验只改这一个变量。
+            "ramp" -> com.shiyin.music.playback.KaraokeMixControl.rampMs = p[1].toInt()
             "probe" -> com.shiyin.music.playback.KaraokeAudioSpike.setProbeMode(getApplication(), p[1].toInt())
             "capture" -> player.spikeCaptureFromStart()
             /** 从**非零位置**起采集（块 3 闸门：随机拖动后仍要零拍）。 */
