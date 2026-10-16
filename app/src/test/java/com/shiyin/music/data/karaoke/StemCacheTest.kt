@@ -113,7 +113,8 @@ class StemCacheTest {
         val c = cache()
         val a = c.variantDir(key("aaaa"), "m", "1")
         val b = c.variantDir(key("bbbb"), "m", "1")
-        val a2 = c.variantDir(key("aaaa"), "m", "1", engineVersion = 2)
+        // 引擎版本必须与"当前"不同，才验得到"版本变了就换目录"（当前 = ENGINE_VERSION，P0-1 起为 2）
+        val a2 = c.variantDir(key("aaaa"), "m", "1", engineVersion = StemCache.ENGINE_VERSION + 1)
         assertTrue(a.path != b.path && a.path != a2.path)
     }
 

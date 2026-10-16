@@ -54,6 +54,14 @@ object KaraokeCacheJob {
         val fp = fingerprintOf(tmp, info)
         val key = StemCache.SourceKey(fp, info.srcRate, 2, info.frames)
 
+        // ⚠️⚠️ **两个帧域必须分清**（P0-1「伴奏升调/加速」的根因）：
+        //  · **源域**：`info.srcRate` / `info.frames` —— 播放器与伴奏读取侧用；
+        //  · **模型域**：恒 **44100**，帧数 = `ceil(源帧数 × 44100 / 源率)` —— 分离引擎与缓存块用。
+        // 分离引擎只在 44.1k 里工作（模型的输入必须是 44.1k），而 `AudioDecoder.PcmFileReader`
+        // 的索引空间也是 44.1k。此前把**源帧数**直接喂给它 ⇒ 48k 歌的伴奏被压成 `48/44.1 = 1.0884`
+        // 倍速（+1.47 半音）；44.1k 歌比值恰好为 1，所以一直没暴露。
+        val modelFrames = Math.ceil(info.frames.toDouble() * 44100.0 / info.srcRate).toInt()
+
         onStatus("加载模型…")
         val modelFile = KaraokeStemRunner.ensureModelFile(context, model)
         val env = OrtEnvironment.getEnvironment()
@@ -77,6 +85,7 @@ object KaraokeCacheJob {
                 key = key,
                 modelVersion = MODEL_VERSION,
                 provider = AudioDecoder.PcmFileReader(info),
+                modelFrames = modelFrames,
                 onProgress = { p ->
                     // "首段可用"= 播放头所在那块已经写好（不是"第一块写好"——用户可能从中间点伴唱）
                     if (!fired && cache.hasChunk(dir, (playFrame() / gen).toInt())) {

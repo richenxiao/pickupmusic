@@ -28,8 +28,13 @@ import java.io.RandomAccessFile
 class StemCache(private val root: File) {
 
     companion object {
-        /** 引擎版本：算法/参数变化时 +1，让旧缓存自然失效。 */
-        const val ENGINE_VERSION = 1
+        /**
+         * 引擎版本：算法/参数变化时 +1，让旧缓存自然失效。
+         *
+         * **2（2026-10-16，P0-1 升调）**：修掉了"源帧数被当成 44.1k 模型域帧数"的口径错误。
+         * 1 版本缓存里的伴奏对**非 44.1k 的源**是**错的**（按 源率/44100 倍速），必须整体作废。
+         */
+        const val ENGINE_VERSION = 2
 
         fun defaultRoot(filesDir: File): StemCache =
             StemCache(File(filesDir, "pickup/accompaniment-cache"))
@@ -40,11 +45,18 @@ class StemCache(private val root: File) {
         val modelVersion: String,
         val fingerprint: String,
         val genSize: Int,
+        /** **缓存内容自己的采样率** —— 恒为模型域 44100（分离引擎只在 44.1k 里工作）。 */
         val sampleRate: Int,
         val channels: Int,
         val totalChunks: Int,
         val complete: Boolean,
         val lastAccess: Long,
+        /**
+         * **源文件**的采样率与帧数（0 = 老缓存没写，按"与 [sampleRate] 相同"处理）。
+         * 播放按源帧号取伴奏，所以要靠这两个字段把源帧号换算到缓存（模型）帧号。
+         */
+        val srcRate: Int = 0,
+        val srcFrames: Int = 0,
     )
 
     /**
@@ -104,6 +116,9 @@ class StemCache(private val root: File) {
                 totalChunks = o.get("totalChunks").asInt,
                 complete = o.get("complete").asBoolean,
                 lastAccess = o.get("lastAccess").asLong,
+                // 老缓存（e1）没有这两个字段：0 表示"与缓存采样率相同"（那时 44.1k 源确实同域）
+                srcRate = o.get("srcRate")?.asInt ?: 0,
+                srcFrames = o.get("srcFrames")?.asInt ?: 0,
             )
         }.getOrNull()
     }
@@ -202,6 +217,9 @@ class StemCache(private val root: File) {
         sampleRate: Int = 44100,
         channels: Int = 2,
         lastAccess: Long,
+        /** 源文件采样率/帧数（播放按源帧号取伴奏，靠这两个字段做域换算）。 */
+        srcRate: Int = sampleRate,
+        srcFrames: Int = 0,
     ) {
         dir.mkdirs()
         val o = JsonObject().apply {
@@ -216,6 +234,8 @@ class StemCache(private val root: File) {
             addProperty("totalChunks", totalChunks)
             addProperty("complete", complete)
             addProperty("lastAccess", lastAccess)
+            addProperty("srcRate", srcRate)
+            addProperty("srcFrames", srcFrames)
         }
         val tmp = File(dir, "manifest.json.tmp")
         val dst = File(dir, "manifest.json")

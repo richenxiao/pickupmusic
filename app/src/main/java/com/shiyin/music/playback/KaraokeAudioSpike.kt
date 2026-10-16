@@ -690,6 +690,10 @@ class StemCacheAccompaniment(
 
     private var scratch = ShortArray(0)
 
+    /** 跨域重采样器（按输出采样率缓存；只在音频线程用）。 */
+    private var rsOutRate = -1
+    private var rs: com.shiyin.music.data.karaoke.dsp.SincResampler? = null
+
     override fun readAbs(
         absFrame: Long, sampleRate: Int, srcOrig: ShortArray, dst: ShortArray, frames: Int,
     ): Boolean {
@@ -699,7 +703,15 @@ class StemCacheAccompaniment(
             underruns++
             return false
         }
-        val got = cache.readFrames(dir, absFrame, frames)
+        val m = cache.readManifest(dir)
+        val got: ShortArray? = when {
+            m == null -> null
+            // **同域直通**：缓存采样率 == 播放采样率（44.1k 源走这条）⇒ 与修复前逐位一致。
+            sampleRate == m.sampleRate -> cache.readFrames(dir, absFrame, frames)
+            // **跨域**：源帧号 → 缓存（模型，44.1k）帧号，读一段加余量的缓存再重采样回源率域。
+            // 少了这一步，44.1k 的伴奏按 48k 播出来就是升调 + 加速（P0-1）。
+            else -> resampledFromCache(absFrame, sampleRate, frames)
+        }
         if (got == null) {
             underruns++
             logRead(absFrame, frames, null, -1)
@@ -715,6 +727,39 @@ class StemCacheAccompaniment(
         if (n > 0 && (0 until n).none { got[it] != 0.toShort() }) zeroHits++
         logRead(absFrame, frames, got, n)
         return true
+    }
+
+    /**
+     * 把缓存（模型域，采样率 [StemCache.Manifest.sampleRate]）里的伴奏，按**源帧号**
+     * 取出来并重采样到**源采样率**。
+     *
+     * 换算：源帧号 `f` ⇄ 模型帧号 `f × cacheRate / srcRate`（连续坐标，可含小数）。
+     * 读缓存时在两端各留 `taps/2` 帧余量，越界的头尾补零。
+     *
+     * @return 长度 `frames*2` 的交错 PCM；缓存缺块返回 null（调用方按欠载退回原曲）。
+     */
+    private fun resampledFromCache(absFrame: Long, srcRate: Int, frames: Int): ShortArray? {
+        val m = cache.readManifest(dir) ?: return null
+        val cacheRate = m.sampleRate
+        if (rsOutRate != srcRate || rs == null) {
+            rs = com.shiyin.music.data.karaoke.dsp.SincResampler(cacheRate, srcRate)
+            rsOutRate = srcRate
+        }
+        val r = rs!!
+        val step = cacheRate.toDouble() / srcRate          // 每个源帧对应多少缓存帧
+        val firstPos = absFrame * step                     // 输出第 0 帧的缓存坐标
+        val margin = r.taps / 2
+        val fromRaw = Math.floor(firstPos).toInt() - margin
+        val from = fromRaw.coerceAtLeast(0)
+        val padHead = from - fromRaw
+        val to = Math.ceil(firstPos + frames * step).toInt() + margin + 1
+        val need = (to - from).coerceAtLeast(1)
+        val raw = cache.readFrames(dir, from.toLong(), need) ?: return null
+        val win = ShortArray((padHead * 2) + raw.size)
+        System.arraycopy(raw, 0, win, padHead * 2, raw.size)
+        val out = ShortArray(frames * 2)
+        r.process(win, firstPos - fromRaw, frames, out)
+        return out
     }
 
     /**

@@ -59,17 +59,24 @@ class SeparationJob(
         key: StemCache.SourceKey,
         modelVersion: String,
         provider: MdxSeparator.ChunkProvider,
+        /**
+         * **模型域帧数**（44.1k）：`ceil(源帧数 × 44100 / 源采样率)`。
+         * ⚠️ 绝不能传源帧数 —— `PcmFileReader` 的索引空间是 44.1k，传源帧数会让非 44.1k 的歌
+         * 被按 `源率/44100` 压缩（P0-1 升调事故的根因）。
+         */
+        modelFrames: Int,
         onProgress: (Progress) -> Unit = {},
         isCancelled: () -> Boolean = { false },
     ): Result {
         val gen = genSize
-        val total = totalChunksFor(key.totalFrames)
+        val total = totalChunksFor(modelFrames)
         val dir = cache.variantDir(key, model.id, modelVersion)
         // 开跑先落一份"未完成"的 manifest：中途被杀时状态是诚实的（不会谎报可用）。
         val already = cache.doneChunks(dir)
         cache.writeManifest(
             dir, model.id, modelVersion, key.fingerprint, gen, total,
             complete = false, lastAccess = System.currentTimeMillis(),
+            srcRate = key.sampleRate, srcFrames = key.totalFrames,
         )
 
         val t0 = System.nanoTime()
@@ -93,7 +100,7 @@ class SeparationJob(
         }
 
         val summary = MdxSeparator(model, env, session).run(
-            totalFrames = key.totalFrames,
+            totalFrames = modelFrames,
             provider = provider,
             sink = sink,
             onProgress = { p ->
@@ -115,6 +122,7 @@ class SeparationJob(
         cache.writeManifest(
             dir, model.id, modelVersion, key.fingerprint, gen, total,
             complete = complete, lastAccess = System.currentTimeMillis(),
+            srcRate = key.sampleRate, srcFrames = key.totalFrames,
         )
         return Result(
             dir = dir,
