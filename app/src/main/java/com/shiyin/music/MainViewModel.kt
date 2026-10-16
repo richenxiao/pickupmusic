@@ -278,6 +278,59 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private fun karaokeSourceIdentity(t: Track): String =
         "${t.dataPath}|${t.sizeBytes}|${t.dateAdded}"
 
+    /**
+     * P1-1：「分离已就绪、但**还没听到**伴奏」—— 等处理器确认后再点亮按钮。
+     * 由 `onReady` / 秒切快路径置 true，由下面的轮询消费。
+     */
+    @Volatile
+    private var karaokeAwaitingAudible = false
+
+    /**
+     * P1-1：**按钮完成态的触发源**。
+     *
+     * 以前是"分离回调说缓存写好"就直接切完成态；但缓存写好 ≠ 耳朵听到 ——
+     * 中间还隔着"处理器下一次读缓存"，那一步欠载就会退回原曲，于是出现
+     * "按钮已完成、耳朵里还是原曲，几秒后才换过去"。
+     * 现在改成：处理器（音频线程）每块上报"伴奏是否真的生效"，这里以它为准；
+     * 回退期间（连续欠载 ≥2 块）如实退回"未就绪"。
+     *
+     * 轮询 100ms：验收要求"按钮切完成态"与"处理器开始淡入"相差 ≤300ms。
+     */
+    init {
+        viewModelScope.launch {
+            val A = com.shiyin.music.playback.KaraokeAccompState
+            val M = com.shiyin.music.ui.components.KaraokeButtonMachine
+            val ACTIVE = com.shiyin.music.ui.components.KaraokeButtonState.Active
+            val LOADING = com.shiyin.music.ui.components.KaraokeButtonState.Loading
+            while (true) {
+                kotlinx.coroutines.delay(100L)
+                runCatching {
+                    if (karaokeAwaitingAudible && A.audibleMode == karaokePendingMode && !A.inFallback) {
+                        val next = M.onReady(karaokeState)
+                        if (next == ACTIVE) {
+                            val now = android.os.SystemClock.elapsedRealtime()
+                            val dt = if (A.audibleAtMs > 0) now - A.audibleAtMs else -1L
+                            android.util.Log.i(
+                                "KaraokeMix",
+                                "[P1-1] 按钮切为完成态 t=${now}ms；与处理器开始淡入相差 ${dt}ms" +
+                                    "（判据 ≤300ms）",
+                            )
+                            appendProbeLog("[P1-1] 按钮切为完成态 t=${now}ms Δ=${dt}ms")
+                            karaokeState = next
+                        }
+                        karaokeAwaitingAudible = false
+                    } else if (A.inFallback && karaokeState == ACTIVE) {
+                        // 拖到未缓存处 / 分离跟不上 ⇒ 确实在回退原曲，如实显示"未就绪"
+                        android.util.Log.i("KaraokeMix", "[P1-1] 处理器欠载回退 ⇒ 按钮退回未就绪")
+                        appendProbeLog("[P1-1] 处理器欠载回退 ⇒ 按钮退回未就绪")
+                        karaokeState = LOADING
+                        karaokeAwaitingAudible = true
+                    }
+                }
+            }
+        }
+    }
+
     /** 加载期间用户改选的档位 —— 就绪后切到**最后一次**选的那个，而不是最初点的那个。 */
     private var karaokePendingMode = com.shiyin.music.playback.KaraokeMixControl.MODE_ACCOMP
 
@@ -327,7 +380,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             com.shiyin.music.playback.KaraokeMixControl.realSource =
                 com.shiyin.music.playback.StemCacheAccompaniment(stemCache, readyDir)
             com.shiyin.music.playback.KaraokeMixControl.mode = target
-            karaokeState = com.shiyin.music.ui.components.KaraokeButtonState.Active
+            // P1-1：**先不点亮按钮** —— 等处理器真的读到伴奏（下一次读缓存）再切完成态
+            karaokeAwaitingAudible = true
             karaokeStatus = ""
             return
         }
@@ -360,8 +414,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                                 com.shiyin.music.playback.StemCacheAccompaniment(stemCache, dir)
                             com.shiyin.music.playback.KaraokeMixControl.mode = karaokePendingMode
                             karaokeStatus = ""
+                            // P1-1：**先不点亮按钮**。缓存写好 ≠ 耳朵听到；要等处理器下一次
+                            // 读缓存真的读到伴奏（见 init 里的轮询），那才是"开始淡入"。
+                            karaokeAwaitingAudible = true
+                        } else {
+                            karaokeState = next
                         }
-                        karaokeState = next
                     },
                 )
                 karaokeJob = h
@@ -5673,6 +5731,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         karaokeJob?.job?.cancel()
         karaokeJob = null
         karaokeReady.keepAcrossStop()   // 显式写出来：这里是"有意不清"，不是漏了
+        karaokeAwaitingAudible = false
+        com.shiyin.music.playback.KaraokeAccompState.reset()   // P1-1：下次点重新等"真的出声"
         com.shiyin.music.playback.KaraokeMixControl.realSource = null
         com.shiyin.music.playback.KaraokeMixControl.mode =
             com.shiyin.music.playback.KaraokeMixControl.MODE_ORIGINAL

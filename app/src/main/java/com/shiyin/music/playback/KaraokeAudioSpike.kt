@@ -228,6 +228,74 @@ object KaraokeAudioSpike {
 }
 
 /**
+ * **P1-1：按钮状态必须跟随"耳朵听到的"，不是"开关打开了"。**
+ *
+ * 事故：分离的"首段可用"回调（缓存里播放头那块写好了）一到，界面就把按钮切成**完成态**；
+ * 但伴奏真正出声还要等**处理器下一次读缓存**——那一步可能因为欠载而回退成原曲。
+ * 于是用户看到"按钮已经完成了，耳朵里还是原曲，几秒后才真的换过去"。
+ *
+ * 这里由**处理器**（音频线程）记录"伴奏真的开始生效了"，UI 只读不算：
+ *  · [audibleSeq]：每档位第一次**成功读到伴奏**（非欠载）时 +1；UI 用它当"可以切成完成态"的边沿。
+ *  · [audibleMode] / [audibleAtMs]：那一次是哪一档、什么时候（给日志对时用）。
+ *  · [fallbackBlocks]：**连续**欠载块数；≥ [FALLBACK_MIN_BLOCKS] 才算"确实在回退"，
+ *    避免单块抖动让按钮来回闪。
+ */
+object KaraokeAccompState {
+
+    /** 连续欠载多少块才算"真的在回退"（约 2×100ms，够滤掉单块抖动，又能在 300ms 内反映出来）。 */
+    const val FALLBACK_MIN_BLOCKS = 2
+
+    /** 每档位第一次成功读到伴奏就 +1。 */
+    @Volatile
+    var audibleSeq: Long = 0L
+        private set
+
+    /** 上述那一次对应的档位（-1 = 还没发生过）。 */
+    @Volatile
+    var audibleMode: Int = -1
+        private set
+
+    /** 上述那一次的墙钟时刻（`elapsedRealtime`）。 */
+    @Volatile
+    var audibleAtMs: Long = -1L
+        private set
+
+    /** 连续欠载块数（成功读到就清零）。 */
+    @Volatile
+    var fallbackBlocks: Int = 0
+        private set
+
+    /** 当前是否"确实在回退原曲"（UI 据此显示未就绪）。 */
+    val inFallback: Boolean get() = fallbackBlocks >= FALLBACK_MIN_BLOCKS
+
+    /**
+     * 处理器每块调用一次。
+     * @param ready 这一块伴奏是否真的读到了（false = 欠载，输出被退回原曲）
+     */
+    fun onBlock(ready: Boolean, mode: Int, nowMs: Long) {
+        if (!ready) {
+            fallbackBlocks++
+            return
+        }
+        fallbackBlocks = 0
+        // 换档后第一次读到伴奏 = "处理器开始把伴奏淡入"
+        if (mode != audibleMode) {
+            audibleMode = mode
+            audibleAtMs = nowMs
+            audibleSeq++
+        }
+    }
+
+    /** 关伴唱 / 换曲：状态清零（下次点重新算）。 */
+    fun reset() {
+        audibleSeq = 0L
+        audibleMode = -1
+        audibleAtMs = -1L
+        fallbackBlocks = 0
+    }
+}
+
+/**
  * v1.5.0 P2 spike 步骤 2b：**app 侧 → 处理器**的「本次 seek 请求的目标位置」投递口。
  *
  * 为什么需要：探针能读出"flush 后第一个采样的真实帧号"，但**没有基准可比** ——
@@ -1129,6 +1197,18 @@ class KaraokeMixProcessor(
         // 真伴奏（块 3）优先；没有就退回占位源（调试用）。
         val src = KaraokeMixControl.realSource ?: sourceOf(KaraokeMixControl.sourceKind)
         val ready = src.readAbs(startFrame, inputSampleRate, mixSrc, mixAcc, frames)
+
+        // P1-1：把"伴奏**是否真的生效**"报给 UI —— 按钮的完成态以这个为准，
+        // 而不是以"分离开关已打开 / 缓存已写好"为准（那两者之间还隔着这一次读）。
+        val audibleBefore = KaraokeAccompState.audibleSeq
+        KaraokeAccompState.onBlock(ready, mode, android.os.SystemClock.elapsedRealtime())
+        if (KaraokeAccompState.audibleSeq != audibleBefore) {
+            Log.i(
+                TAG,
+                "[P1-1] 处理器开始把伴奏淡入 档=${KaraokeMixControl.label(mode)} " +
+                    "t=${KaraokeAccompState.audibleAtMs}ms absFrame=$startFrame",
+            )
+        }
 
         if (!ready) {
             // **欠载**（这段还没算好）：退回**原曲**，而不是拿半截数据出声。
