@@ -1096,10 +1096,12 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
      * 渲染器对**每条**各发一次 `onStreamChanged` / `handleDiscontinuity` /
      * `setOutputStreamOffsetUs` —— 这正是要验的"换条目重锚"。
      */
-    fun playSpikePlaylist(uris: List<android.net.Uri>, titles: List<String>) {
+    fun playSpikePlaylist(uris: List<android.net.Uri>, titles: List<String>, startIndex: Int = 0) {
         val c = controller ?: return
-        // 关掉循环：否则最后一条放完又绕回第一条，日志里多出一次换条目，对拍时容易看错。
+        // 循环模式由 `repeat` 指令单独控制（默认 OFF）：否则最后一条放完又绕回第一条，
+        // 日志里多出一次换条目，对拍时容易看错。
         c.repeatMode = Player.REPEAT_MODE_OFF
+        c.shuffleModeEnabled = false
         c.setMediaItems(
             uris.mapIndexed { i, u ->
                 androidx.media3.common.MediaItem.Builder()
@@ -1108,9 +1110,37 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
                     .setTag(titles.getOrElse(i) { "item$i" })
                     .build()
             },
+            startIndex.coerceIn(0, (uris.size - 1).coerceAtLeast(0)),
+            0L,
         )
         c.prepare()
         c.play()
+    }
+
+    // ── 闸门 1 补证：播放列表场景控制（随 spike 一起删）─────────────────────
+
+    fun spikeNext() {
+        controller?.seekToNextMediaItem()
+    }
+
+    fun spikePrev() {
+        controller?.seekToPreviousMediaItem()
+    }
+
+    fun spikeRepeatMode(mode: Int) {
+        repeatMode = mode
+        controller?.repeatMode = mode
+    }
+
+    fun spikeShuffle(on: Boolean) {
+        controller?.shuffleModeEnabled = on
+    }
+
+    /** 当前条目序号 / 总数 / 随机是否开（写进探针文件，便于事后对时间线）。 */
+    fun spikeQueueState(): String {
+        val c = controller ?: return "无播放器"
+        return "条目=${c.currentMediaItemIndex + 1}/${c.mediaItemCount} " +
+            "随机=${c.shuffleModeEnabled} 循环=${c.repeatMode}"
     }
 
     /** 起「从头采集」：置待命旗标 → 回到 0 → 播放（处理器在落到开头时开始采 PCM）。 */

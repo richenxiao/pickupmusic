@@ -86,10 +86,9 @@ class PtsReanchorTest {
         val frames = 4096
 
         for (i in 0..2) {
-            if (i > 0) {
-                r.onDiscontinuity()
-                r.onSinkOffset(offUs[i])
-            }
+            // 播放器**每一条**都会报一次偏移（首条也报）—— 首条那次是"条目开始"，不是"换条目"。
+            if (i > 0) r.onDiscontinuity()
+            r.onSinkOffset(offUs[i])
             assertEquals(
                 "第 ${i + 1} 条起点",
                 0L,
@@ -224,5 +223,42 @@ class PtsReanchorTest {
         assertEquals(0, r.itemChangeCount)
         assertEquals(0, r.offsetReportCount)
         assertEquals("偏移清掉后回到 epoch 兜底", 44_100_000_000L, r.offsetFramesFor(44100))
+    }
+
+    // ── 候选 1 vs 候选 2 的交叉校验（闸门 1 补证）──────────────────────────
+
+    @Test
+    fun `候选1与候选2一致时不报错`() {
+        val r = PtsReanchor()
+        r.onSinkOffset(epochUs)
+        feed(r, ptsUsOf(0, 44100, epochUs), 44100, 4096)
+        r.onDiscontinuity()
+        r.onSinkOffset(epochUs + 30_000_000L)
+        feed(r, ptsUsOf(0, 44100, epochUs + 30_000_000L), 44100, 4096)
+        assertEquals("首条开始 + 换条目各校验一次", 2, r.crossChecks)
+        assertEquals(0, r.crossCheckErrors)
+    }
+
+    @Test
+    fun `候选1算不出第0帧时交叉校验必须报错`() {
+        // 故意让"播放器报的偏移"与"首块 pts"对不上（偏移下发了但值不对）：
+        // 候选 1 算出 22050 帧，候选 2 说应为 0 ⇒ 必须记一次不一致并回调。
+        val bad = ArrayList<Long>()
+        val r = PtsReanchor { bad.add(it) }
+        r.onSinkOffset(epochUs)
+        feed(r, ptsUsOf(0, 44100, epochUs), 44100, 4096)
+        r.onSinkOffset(epochUs + 30_000_000L)
+        feed(r, ptsUsOf(22050, 44100, epochUs + 30_000_000L), 44100, 4096)
+        assertEquals(1, r.crossCheckErrors)
+        assertEquals(listOf(22050L), bad)
+    }
+
+    @Test
+    fun `不换条目就不触发交叉校验`() {
+        val r = PtsReanchor()
+        r.onSinkOffset(epochUs)
+        repeat(5) { i -> feed(r, ptsUsOf(i * 4096L, 44100, epochUs), 44100, 4096) }
+        assertEquals("只有'首条开始'和'换条目'才校验，稳态不校验", 1, r.crossChecks)
+        assertEquals(0, r.crossCheckErrors)
     }
 }

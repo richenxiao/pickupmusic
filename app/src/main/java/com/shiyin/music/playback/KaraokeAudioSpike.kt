@@ -384,7 +384,10 @@ fun epochFramesOf(rate: Int): Long = rate.toLong() * 1_000_000L
  * 偏移**按 µs 存**、用时才按**当前采样率**换算 —— 这样 44.1k→48k 换条目时不会拿旧采样率算。
  * 播放器还没报过偏移（理论上只在首个 buffer 之前）才退回 **epoch 常量**。
  */
-class PtsReanchor {
+class PtsReanchor(
+    /** 交叉校验不一致时的回调（处理器用它打 ERROR 并落进探针文件；单测用默认空实现）。 */
+    private val onCrossCheckMismatch: (Long) -> Unit = {},
+) {
 
     /** 播放器报过的偏移（µs）；-1 = 还不知道。**存 µs 而不是帧**，换采样率时不必重报。 */
     var offsetUs: Long = -1L
@@ -412,6 +415,21 @@ class PtsReanchor {
 
     /** 播放器报过几次偏移（报告用；首条 1 次，之后每换一条 +1）。 */
     var offsetReportCount: Int = 0
+        private set
+
+    // ── 候选 1 vs 候选 2 的交叉校验（闸门 1 补证）────────────────────────────
+    /**
+     * **候选 2** 的假设：「换条目后收到的第一个缓冲块 = 该条目第 0 帧」。
+     * 换条目时置位，等下一个带 pts 的 buffer 拿它跟候选 1 的答案对一次。
+     */
+    private var expectItemFrameZero = false
+
+    /** 已经做过的交叉校验次数。 */
+    var crossChecks: Int = 0
+        private set
+
+    /** 候选 1 与候选 2 **不一致**的次数（验收口径：必须为 0）。 */
+    var crossCheckErrors: Int = 0
         private set
 
     /**
@@ -444,11 +462,13 @@ class PtsReanchor {
         if (us <= 0L) return
         offsetReportCount++
         if (us == offsetUs) return
+        val firstReport = offsetUs <= 0L
         offsetUs = us
-        if (absNext >= 0L) {
-            itemChangeCount++
-            absNext = -1L     // 自数帧跨条目不作数，等本条第一个 buffer 用新偏移重新锚定
-        }
+        if (!firstReport) itemChangeCount++   // 第一次报是"首条开始"，不是换条目
+        // 换条目 ⇒ 下一个带 pts 的 buffer 应当是该条目第 0 帧（**候选 2** 的假设）。
+        // 把旗标立起来，等它到了与候选 1 的答案对一次（见 onBuffer 里的交叉校验）。
+        expectItemFrameZero = true
+        absNext = -1L     // 自数帧跨条目不作数，等本条第一个 buffer 用新偏移重新锚定
     }
 
     /** sink 报来 pts 不连续。**只计数**：不重置 [absNext]，因为非锚定档没有 pts 可重新锚定。 */
@@ -479,6 +499,16 @@ class PtsReanchor {
         }
         val ptsFrame = Math.round(ptsUs.toDouble() * rate / 1_000_000.0)
         val src = ptsFrame - offsetFramesFor(rate)
+        // **候选 1（播放器偏移）vs 候选 2（换条目后首块=第 0 帧）的交叉校验。**
+        // 两者对不上就是换条目重锚出了问题，必须报 ERROR 而不是悄悄过去。
+        if (expectItemFrameZero) {
+            expectItemFrameZero = false
+            crossChecks++
+            if (src > 1L || src < -1L) {
+                crossCheckErrors++
+                onCrossCheckMismatch(src)
+            }
+        }
         if (absNext >= 0L) {
             val d = src - absNext
             if (d > 1L || d < -1L) realignCount++   // 用户定的判据：> 1 个采样才叫"重锚"
@@ -785,7 +815,12 @@ class KaraokeMixProcessor(
      * 重锚状态机（见 [PtsReanchor]）。本类**不再自己维护 `absNext`** —— 那套算术有真机踩过的坑
      * （epoch 未扣、多条目偏移累加），抽成纯逻辑后才好在 JVM 上按"三条目序列"逐事件测。
      */
-    val reanchor = PtsReanchor()
+    val reanchor = PtsReanchor { src ->
+        val msg = "❌ 候选1/候选2 交叉校验不一致：按播放器偏移算出的源帧号=$src，" +
+            "但「换条目后首块=第 0 帧」要求它为 0"
+        Log.e(TAG, msg)
+        emit(msg)
+    }
 
     /** 时间戳与自数帧偏差 > 1 个采样而重锚的次数（验收指标之一）。 */
     val realignCount: Int get() = reanchor.realignCount
@@ -1130,6 +1165,14 @@ class KaraokeMixProcessor(
         startFrame: Long,
         src: AccompanimentSource,
     ) {
+        // ⚠️⚠️ **只在伴奏档判定**。人声档的输出是 `原曲 − 伴奏`，"输出为 0"在那里是**完全正常**
+        // 的现象（间奏没有人声、或模型把整段都归给伴奏）—— 在那种档位上看必然满屏误报。
+        // 而 A74 报的是"**伴奏**突然没声"，正好就是伴奏档。
+        if (mode != KaraokeMixControl.MODE_ACCOMP) {
+            silentFrames = 0L
+            silenceWarnedSec = -1L
+            return
+        }
         if (inPeak <= SILENCE_INPUT_FLOOR || outPeak != 0) {
             silentFrames = 0L
             silenceWarnedSec = -1L
@@ -1174,9 +1217,12 @@ class KaraokeMixProcessor(
         val anchor = if (ptsFrame >= 0) {
             "锚点ptsμs=$ptsUs 锚点pts帧=$ptsFrame 原始pts帧=$rawPtsFrame" +
                 " 自数预测=$predicted 锚偏差=${ptsFrame - predicted}" +
-                " 重锚=$realignCount 锚缺=$anchorMissCount"
+                " 重锚=$realignCount 锚缺=$anchorMissCount 条目切换=${reanchor.itemChangeCount}" +
+                " 交叉校验=${reanchor.crossChecks} 不一致=${reanchor.crossCheckErrors}"
         } else {
-            "锚点pts帧=无 重锚=$realignCount 锚缺=$anchorMissCount 队列丢弃=${KaraokeBufferAnchor.dropped}"
+            "锚点pts帧=无 重锚=$realignCount 锚缺=$anchorMissCount 队列丢弃=${KaraokeBufferAnchor.dropped}" +
+                " 条目切换=${reanchor.itemChangeCount} 交叉校验=${reanchor.crossChecks}" +
+                " 不一致=${reanchor.crossCheckErrors}"
         }
         // 三种模式的"真值首帧"（本块第一个采样在源文件里的帧号）——统一成一个变量，
         // 后面的 `差(真值首帧−请求帧)` 与 `戳差(P−T)` 都用它，避免各写各的写错。

@@ -264,8 +264,19 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      */
     var karaokeMixIndex by mutableStateOf(1); private set
 
-    /** 已就绪的伴奏缓存目录（null = 还没算好）。换曲 / 回原曲时清空。 */
-    private var karaokeReadyDir: java.io.File? = null
+    /**
+     * 已就绪的伴奏缓存目录（A75：**取消/回原曲不清、换曲才清**）——
+     * 寿命规则与理由见 [com.shiyin.music.data.karaoke.KaraokeReadyCache]。
+     */
+    private val karaokeReady = com.shiyin.music.data.karaoke.KaraokeReadyCache()
+
+    /**
+     * 廉价源身份：路径 + 字节数 + 加入时间。
+     * 权威指纹是解码出来的音频指纹（[com.shiyin.music.data.karaoke.StemCache.findComplete] 用它），
+     * 那个要解码整首 —— 这里刻意只用**不需要解码**的字段挡一道。
+     */
+    private fun karaokeSourceIdentity(t: Track): String =
+        "${t.dataPath}|${t.sizeBytes}|${t.dateAdded}"
 
     /** 加载期间用户改选的档位 —— 就绪后切到**最后一次**选的那个，而不是最初点的那个。 */
     private var karaokePendingMode = com.shiyin.music.playback.KaraokeMixControl.MODE_ACCOMP
@@ -307,7 +318,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
         karaokePendingMode = target
-        val readyDir = karaokeReadyDir
+        val track = t ?: return
+        // A75：**缓存已就绪就直接切档**，不再起分离（也就不会再解码整首 / 重建 ONNX 会话）。
+        // 取消过一次也照样命中的就是这里 —— 取消**不清**这个目录。
+        val readyDir = karaokeReady.reusableFor(track.id, karaokeSourceIdentity(track))
         if (readyDir != null) {
             // 缓存已就绪：直接切档（处理器在系数空间 300ms 淡入），不再起分离
             com.shiyin.music.playback.KaraokeMixControl.realSource =
@@ -317,7 +331,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             karaokeStatus = ""
             return
         }
-        startKaraokeSeparation(t!!)
+        startKaraokeSeparation(track)
     }
 
     /** 起一次分离，并把"首段可用"接到淡入。**原曲不停**，只把按钮变 Loading。 */
@@ -341,7 +355,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                         val next = com.shiyin.music.ui.components.KaraokeButtonMachine
                             .onReady(karaokeState)
                         if (next == com.shiyin.music.ui.components.KaraokeButtonState.Active) {
-                            karaokeReadyDir = dir
+                            karaokeReady.mark(dir, t.id, karaokeSourceIdentity(t))
                             com.shiyin.music.playback.KaraokeMixControl.realSource =
                                 com.shiyin.music.playback.StemCacheAccompaniment(stemCache, dir)
                             com.shiyin.music.playback.KaraokeMixControl.mode = karaokePendingMode
@@ -1247,16 +1261,28 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             )
             "stop" -> player.spikePause()
             // 闸门 1：把 fixtures/ 下的若干文件当**播放列表**自动连播（验"换条目重锚"）。
-            // 与 play 的唯一区别是自动续播 —— 渲染器会对每条各发一次换条目事件。
+            // 可选的 `@N` 前缀 = **从第 N 条起播**（0 基），用于"从第 2 条起播"的场景。
             "playlist" -> {
-                val names = p.drop(1)
+                val args = p.drop(1)
+                val start = if (args.firstOrNull()?.startsWith("@") == true) {
+                    args.first().drop(1).toIntOrNull() ?: 0
+                } else 0
+                val names = if (start > 0 || args.firstOrNull()?.startsWith("@") == true) args.drop(1) else args
                 player.playSpikePlaylist(
                     names.map {
                         android.net.Uri.fromFile(java.io.File(java.io.File(dir, "fixtures"), it))
                     },
                     names,
+                    start,
                 )
             }
+            // 闸门 1 补证：播放列表场景控制
+            "next" -> player.spikeNext()
+            "prev" -> player.spikePrev()
+            "repeat" -> player.spikeRepeatMode(p[1].toInt())
+            "shuffle" -> player.spikeShuffle(p[1].toInt() != 0)
+            "seekto" -> player.seekToMs(p[1].toLong())
+            "queue" -> appendProbeLog("[队列] ${player.spikeQueueState()}")
             "mix" -> com.shiyin.music.playback.KaraokeMixControl.mode = p[1].toInt()
             "source" -> com.shiyin.music.playback.KaraokeMixControl.sourceKind = p[1].toInt()
             // 闸门 2：**瞬时淡化开关**（0 = 不做 300ms 系数插值，直接跳到目标档）。
@@ -4710,7 +4736,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             lastKaraokeTrackId = id
             // **换曲才丢缓存目录**（A75）：`stopKaraoke` 现在会保留它，好让"取消后再点"走秒切；
             // 但目录属于**上一首**，换曲必须清掉，否则处理器会按绝对帧号去读上一首的伴奏。
-            karaokeReadyDir = null
+            karaokeReady.onTrackChanged(id)
             if (karaokeState != com.shiyin.music.ui.components.KaraokeButtonState.Idle ||
                 com.shiyin.music.playback.KaraokeMixControl.realSource != null
             ) {
@@ -5646,6 +5672,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun stopKaraoke() {
         karaokeJob?.job?.cancel()
         karaokeJob = null
+        karaokeReady.keepAcrossStop()   // 显式写出来：这里是"有意不清"，不是漏了
         com.shiyin.music.playback.KaraokeMixControl.realSource = null
         com.shiyin.music.playback.KaraokeMixControl.mode =
             com.shiyin.music.playback.KaraokeMixControl.MODE_ORIGINAL
