@@ -88,6 +88,15 @@ private const val PROBE_POST_FLUSH = 5
  */
 private const val BUFFER_LOGS_AT_BOUNDARY = 5
 
+/**
+ * 静音看门狗（闸门 3 / A74）的判据阈值。
+ *
+ * `SILENCE_INPUT_FLOOR`：原曲峰值超过它才算"这一块有内容"——避免把歌里**真正的静音段**
+ * 误判成故障。`SILENCE_WARN_MS`：连续多久"输入有声、输出全零"才告警。
+ */
+private const val SILENCE_INPUT_FLOOR = 64
+private const val SILENCE_WARN_MS = 500
+
 /** 咔哒检测阈值：咔哒幅度 0.5×32767≈16383，帧号真值文件只有 ±2048 ⇒ 6000 两边都安全。 */
 private const val CLICK_THRESHOLD = 6000
 
@@ -993,6 +1002,14 @@ class KaraokeMixProcessor(
     /** 临时诊断用：确认处理器读到的 mixing/mode 是什么（块 3 定位）。 */
     private var mixDiagLogged = 0
 
+    // ── 闸门 3：静音看门狗（A74「伴奏突然放着就没声了」的现场取证）────────────
+    /** 连续"原曲有内容、输出整块为零"的帧数。 */
+    private var silentFrames: Long = 0L
+    /** 上次告警时的秒数（-1 = 未告警；用来限流：每 5 秒最多一条）。 */
+    private var silenceWarnedSec: Long = -1L
+    /** 告警次数（报告用）。 */
+    var silenceEvents: Int = 0; private set
+
     private fun sourceOf(kind: Int): AccompanimentSource = when (kind) {
         KaraokeMixControl.SRC_TONE -> ToneAccompaniment
         KaraokeMixControl.SRC_SILENCE -> SilenceAccompaniment
@@ -1061,16 +1078,26 @@ class KaraokeMixProcessor(
         }
 
         val oS = out.order(ByteOrder.LITTLE_ENDIAN).asShortBuffer()
+        // 闸门 3：顺手统计这一块的**输入峰值 / 输出峰值**，供静音看门狗判断（见 watchSilence）。
+        var inPeak = 0
+        var outPeak = 0
         for (i in 0 until frames) {
             ramp.advance(1)
             val go = ramp.curGo
             val ga = ramp.curGa
-            val l = (go * mixSrc[2 * i] + ga * mixAcc[2 * i]).toInt()
-            val r = (go * mixSrc[2 * i + 1] + ga * mixAcc[2 * i + 1]).toInt()
-            oS.put(2 * i, l.coerceIn(-32768, 32767).toShort())
-            oS.put(2 * i + 1, r.coerceIn(-32768, 32767).toShort())
+            val il = mixSrc[2 * i].toInt()
+            val ir = mixSrc[2 * i + 1].toInt()
+            if (abs(il) > inPeak) inPeak = abs(il)
+            if (abs(ir) > inPeak) inPeak = abs(ir)
+            val l = (go * il + ga * mixAcc[2 * i]).toInt().coerceIn(-32768, 32767)
+            val r = (go * ir + ga * mixAcc[2 * i + 1]).toInt().coerceIn(-32768, 32767)
+            if (abs(l) > outPeak) outPeak = abs(l)
+            if (abs(r) > outPeak) outPeak = abs(r)
+            oS.put(2 * i, l.toShort())
+            oS.put(2 * i + 1, r.toShort())
         }
         out.position(out.position() + size2(frames))
+        watchSilence(mode, inPeak, outPeak, frames, startFrame, src)
 
         // ⚠️⚠️ **必须消费输入缓冲**（2026-10-14 真机事故的根因）：
         // `AudioProcessingPipeline.processData` 是个 `while (isProcessed)` 循环，判据是
@@ -1083,6 +1110,47 @@ class KaraokeMixProcessor(
     }
 
     private fun size2(frames: Int): Int = frames * bytesPerFrame
+
+    /**
+     * **静音看门狗**（闸门 3 / A74「伴奏突然放着就没声了」）。
+     *
+     * 判据：**原曲这一块有内容**（峰值 > [SILENCE_INPUT_FLOOR]）而**输出整块为零**。
+     * 这才叫"真没声"。必须与「**欠载**退回原曲」分开：后者输出 = 原曲，**听着还有声**，
+     * 两者的成因与修法完全不同 —— 混在一起看就会得出"回退是好的"这种错结论（已踩过）。
+     *
+     * 连续超过 [SILENCE_WARN_MS] 就打一条**带现场状态**的告警（每 5 秒最多一条），
+     * 把"哪一档、哪个帧号、缓存命中/未命中/命中但全零各多少次"全部落进探针文件 ——
+     * 这类问题不可复现，过后只能靠当时留下的现场。
+     */
+    private fun watchSilence(
+        mode: Int,
+        inPeak: Int,
+        outPeak: Int,
+        frames: Int,
+        startFrame: Long,
+        src: AccompanimentSource,
+    ) {
+        if (inPeak <= SILENCE_INPUT_FLOOR || outPeak != 0) {
+            silentFrames = 0L
+            silenceWarnedSec = -1L
+            return
+        }
+        silentFrames += frames
+        if (silentFrames < SILENCE_WARN_MS.toLong() * inputSampleRate / 1000L) return
+        val sec = framesSeen / maxOf(1, inputSampleRate)
+        if (silenceWarnedSec >= 0 && sec - silenceWarnedSec < 5L) return
+        silenceWarnedSec = sec
+        silenceEvents++
+        val cache = src as? StemCacheAccompaniment
+        emit(
+            "⚠️ 静音看门狗#$silenceEvents 档=${KaraokeMixControl.label(mode)} " +
+                "连续 ${silentFrames} 帧（${silentFrames * 1000 / maxOf(1, inputSampleRate)}ms）输出全零，" +
+                "而原曲峰值=$inPeak ⇒ **真没声**（不是「欠载退回原曲」）" +
+                " absFrame=$startFrame 欠载累计=$underrunCount " +
+                "缓存[未命中=${cache?.underruns ?: -1} 命中=${cache?.hits ?: -1} " +
+                "命中但全零=${cache?.zeroHits ?: -1}] realSource=${KaraokeMixControl.realSource != null}",
+        )
+    }
 
     /**
      * 一行探针内容。字段名保持稳定（`tools/karaoke/analyze_probe.py` 按名字解析）：

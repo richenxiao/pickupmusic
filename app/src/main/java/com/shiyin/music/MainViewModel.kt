@@ -4708,6 +4708,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         // 判定同上去重口径：同一个 id（单曲循环重播）不复位——缓存目录与 epoch 偏移都还有效。
         if (id != lastKaraokeTrackId) {
             lastKaraokeTrackId = id
+            // **换曲才丢缓存目录**（A75）：`stopKaraoke` 现在会保留它，好让"取消后再点"走秒切；
+            // 但目录属于**上一首**，换曲必须清掉，否则处理器会按绝对帧号去读上一首的伴奏。
+            karaokeReadyDir = null
             if (karaokeState != com.shiyin.music.ui.components.KaraokeButtonState.Idle ||
                 com.shiyin.music.playback.KaraokeMixControl.realSource != null
             ) {
@@ -5631,11 +5634,18 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** 关伴唱：**淡回原曲**（系数插值保证不断音）并停掉分离（已算好的块保留，下次接着用）。 */
+    /**
+     * 关伴唱：**淡回原曲**（系数插值保证不断音）并停掉分离。
+     *
+     * ⚠️ **不要清 `karaokeReadyDir`**（A75 真机反馈："中途取消伴奏，再点又要加载一遍"）。
+     * 已算好的块留在盘上，[selectKaraokeMix] 靠这个目录走"秒切"快路径；清掉它就会重新走
+     * `startKaraokeSeparation` —— 那一步要**重新解码整首 + 重建 ONNX 会话**才轮到
+     * `findComplete`，用户看到的就是又转圈。
+     * 目录只在**换曲**时清（见 `onTrackStarted` 里 `id != lastKaraokeTrackId` 的分支）。
+     */
     fun stopKaraoke() {
         karaokeJob?.job?.cancel()
         karaokeJob = null
-        karaokeReadyDir = null
         com.shiyin.music.playback.KaraokeMixControl.realSource = null
         com.shiyin.music.playback.KaraokeMixControl.mode =
             com.shiyin.music.playback.KaraokeMixControl.MODE_ORIGINAL
