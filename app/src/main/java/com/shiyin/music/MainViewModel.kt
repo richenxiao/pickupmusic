@@ -1376,7 +1376,28 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 }
             }
             "say" -> appendProbeLog("[标记] " + p.drop(1).joinToString(" "))
-            // 起**真实伴唱流程**（与用户点按钮同一条路径）：播该曲 + 起分离 + 就绪后挂真伴奏。
+            // P0-1 取证：逐个报出伴奏缓存目录的清单。
+            // 缓存根在**内部存储**（`filesDir/pickup/accompaniment-cache`），release 包非 debuggable
+            // ⇒ adb/run-as 都读不到，只能由 App 自己吐进探针文件（那个在外部目录，可 pull）。
+            "caches" -> {
+                val root = com.shiyin.music.data.karaoke.StemCache
+                    .defaultRoot(getApplication<Application>().filesDir).rootDir
+                appendProbeLog("[缓存] 根=$root 存在=${root.isDirectory}")
+                var n = 0
+                root.walkTopDown().maxDepth(4)
+                    .filter { it.isDirectory && java.io.File(it, "manifest.json").isFile }
+                    .forEach { d ->
+                        val m = stemCache.readManifest(d)
+                        n++
+                        appendProbeLog(
+                            "[缓存] ${d.relativeTo(root).path} model=${m?.modelId} ver=${m?.modelVersion} " +
+                                "cacheRate=${m?.sampleRate} srcRate=${m?.srcRate} srcFrames=${m?.srcFrames} " +
+                                "gen=${m?.genSize} chunks=${m?.totalChunks} done=${stemCache.doneChunks(d)} " +
+                                "complete=${m?.complete}",
+                        )
+                    }
+                appendProbeLog("[缓存] 共 $n 个变体目录")
+            }
             // 给 P0-1（升调）与 P1-1（按钮状态跟随实际）做真机验收用 —— 手点 UI 太脆。
             "kplay" -> {
                 val q = p.drop(1).joinToString(" ")

@@ -27,6 +27,9 @@ import java.io.RandomAccessFile
  */
 class StemCache(private val root: File) {
 
+    /** 缓存根目录（取证/统计用；`root` 本身是私有的，不要外泄可变引用）。 */
+    val rootDir: File get() = root
+
     companion object {
         /**
          * 引擎版本：算法/参数变化时 +1，让旧缓存自然失效。

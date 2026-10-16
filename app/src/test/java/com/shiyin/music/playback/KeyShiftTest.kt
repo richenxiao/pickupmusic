@@ -1,6 +1,7 @@
 package com.shiyin.music.playback
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -75,5 +76,48 @@ class KeyShiftTest {
         assertEquals("+1.5", KeyShift.label(3))
         assertEquals("−0.5", KeyShift.label(-1))
         assertEquals("+6", KeyShift.label(12))
+    }
+
+    /**
+     * **P0-1 备选假设的排除**："升降 Key / 加速模式被误带入"不是那次升调的原因。
+     *
+     * ⚠️ 先说清一条**站不住**的论证，免得以后有人误用：
+     * 说"1.08844 对应 2.936 个半音步、不是整数所以取不到"是**不够的** ——
+     * 最近的整数档 `+3 步（+1.5 半音）= 1.09051` 只差 0.19%（约 3 音分），
+     * 耳朵分不出来。所以这里**不靠**那一条。
+     *
+     * 真正排除它的是**机制**：
+     *  1. `KeyShift` 只写 `PlaybackParameters(speed, pitch)`（见 PlayerController.applyPlaybackParameters），
+     *     那是**播放器级**参数，经 Sonic 作用在**整条混音输出**上 —— 原曲与伴奏一起变，
+     *     而用户的现象是"**只有伴奏**升调，取消伴唱立刻恢复原调" ⇒ 不可能是它；
+     *  2. `keyShift` 规格上**刻意不持久化**（见 MainViewModel 字段注释），不存在"启动伴唱时从存储带进来"；
+     *  3. 决定性证据在 `KaraokeSampleRateDomainTest`：**完全没有播放器、没有 Sonic、没有变速变调**，
+     *     只跑 PcmFileReader + 真实模型 + 缓存读取，就复现出**精确的 48000/44100**。
+     *
+     * 本用例守住其中的"取值"部分：原调/原速必须**精确**是 1.0，且没有任何整数步**精确等于**该比例。
+     */
+    @Test
+    fun `升降Key的音高系数不等于 48000比44100`() {
+        val target = 48000.0 / 44100.0
+        assertEquals("原调必须精确是 1.0（源头就避开了 pow 噪声）", 1.0f, KeyShift.factor(0), 0f)
+        assertEquals(
+            "速度 1.0 + 原调 ⇒ 总音高精确 1.0，不会自己冒出来 1.088",
+            1.0f, KeyShift.totalPitch(1.0f, retroMode = true, halfSteps = 0), 0f,
+        )
+        for (s in KeyShift.MIN..KeyShift.MAX) {
+            // 用 1e-3 而不是"是否整数"：最接近的 +3 步也只差 0.19%，不能拿"够近"当"就是它"。
+            assertTrue(
+                "半音步 $s 的系数 ${"%.5f".format(KeyShift.factor(s))} 精确地等于 $target —— 不该发生",
+                kotlin.math.abs(KeyShift.factor(s) - target) > 1e-3,
+            )
+        }
+        // 顺带把"最近档差多少"钉住：差值小到不能用数值区分 ⇒ 排除它必须靠机制
+        val nearest = (KeyShift.MIN..KeyShift.MAX).minByOrNull { kotlin.math.abs(KeyShift.factor(it) - target) }!!
+        assertTrue(
+            "最近的一档是 $nearest 步（${"%.5f".format(KeyShift.factor(nearest))}），离目标只差 " +
+                "${"%.5f".format(kotlin.math.abs(KeyShift.factor(nearest) - target))}" +
+                " ⇒ 数值上区分不开；排除它靠的是机制（播放器级参数一起变 + 不持久化 + 无播放器也能复现）",
+            kotlin.math.abs(KeyShift.factor(nearest) - target) < 0.005,
+        )
     }
 }
