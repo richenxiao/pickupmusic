@@ -214,23 +214,13 @@ object KaraokeStemRunner {
     }
 
     internal fun ensureModelFile(context: Context, model: MdxModel): File {
-        val f = File(context.cacheDir, model.assetName)
-        if (!f.exists()) {
-            // v1.5.0 块 4：**包内只内置 9482**（用户 A57 拍板：<40MB 才自带；另外两个各 66MB，
-            // 正式版自带会超线）。所以缺 asset 是**预期情况**，必须给一句人话，
-            // 而不是抛一个 FileNotFoundException 让人以为坏了。
-            try {
-                context.assets.open(model.assetName).use { input ->
-                    f.outputStream().buffered().use { input.copyTo(it) }
-                }
-            } catch (e: java.io.IOException) {
-                throw IllegalStateException(
-                    "这个模型没有内置在安装包里（${model.displayName}）—— 当前版本只内置 9482",
-                    e,
-                )
-            }
-        }
-        return f
+        // 模型统一由 KaraokeModelStore 管（`filesDir/karaoke-models/`，不是 cacheDir ——
+        // cacheDir 会被系统清掉，几十 MB 的模型被清就得让用户重下）。
+        val store = com.shiyin.music.data.karaoke.KaraokeModelStore(context)
+        return store.ensure(context, model)
+            ?: throw IllegalStateException(
+                "这个模型还没下载（${model.displayName}）—— 到「设置 · 播放 · 伴唱」里下载后再用",
+            )
     }
 
     internal fun wavHeader(frames: Int): ByteArray {

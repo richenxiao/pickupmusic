@@ -112,6 +112,7 @@ fun SettingsHost(
         FilesView.LyricsSources -> LyricsSourcesScreen(vm, scrollStates)
         FilesView.CloudBackup -> CloudBackupScreen(vm, scrollStates)
         FilesView.PlaySettings -> PlaySettingsScreen(vm, scrollStates)
+        FilesView.KaraokeSettings -> KaraokeSettingsScreen(vm, scrollStates)
         FilesView.Equalizer -> EqualizerScreen(vm, scrollStates)
         FilesView.Logs -> LogsScreen(vm, scrollStates)
         FilesView.DataManage -> DataManageScreen(vm, scrollStates)
@@ -1487,40 +1488,9 @@ private fun LyricsBookScreen(vm: MainViewModel, scrollStates: MutableMap<String,
                 OrganicSwitch(vm.karaokeEnabled) { vm.setKaraokeEnabled(!vm.karaokeEnabled) }
             }
             // A73（用户 2026-10-15）：分轨默认模型。**只有 9482 内置**（A57），其余两项
-            // 置灰并写明原因 —— 不做假选择（"点了没反应"正是这次要消灭的东西）。
-            SectionLabel("分轨模型")
-            Column(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(start = 16.dp, end = 16.dp, bottom = 10.dp)
-            ) {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    com.shiyin.music.data.karaoke.MdxModel.values().forEach { m ->
-                        val selected = vm.karaokeModelId == m.id
-                        val enabled = m.bundled
-                        Text(
-                            m.displayName,
-                            style = body(
-                                12.5f, FontWeight.SemiBold,
-                                if (!enabled) c.n500 else if (selected) c.surface else c.n600,
-                            ),
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(10.dp))
-                                .background(if (selected && enabled) c.accent else c.n100)
-                                .then(
-                                    if (enabled) Modifier.clickable { vm.setKaraokeModelId(m.id) }
-                                    else Modifier
-                                )
-                                .padding(horizontal = 12.dp, vertical = 8.dp),
-                        )
-                    }
-                }
-                Text(
-                    "只内置了 9482（29.7MB，轻量、人声模型）。另两个各约 67MB，本版本未随包发布，置灰不可选。",
-                    style = body(11.5f, FontWeight.Normal, c.n500),
-                    modifier = Modifier.padding(top = 6.dp),
-                )
-            }
+            // 2026-10-17：原来这里有一段"分轨模型"三选一（当时另两个没内置、置灰不可选）。
+            // 现在三个模型都能从「设置 · 播放 · 伴唱」下载并选择，那段既过时又与那边重复，
+            // 按用户要求"歌词本只留一个伴唱按钮"→ 配置统一收进伴唱设置页，这里删掉。
         }
         // 外语自动翻译:进入歌词本时外语歌自动触发 AI 翻译(默认关——AI 永远用户主动
         // 触发,不静默烧 token)。默认显示译文:有保存译文时进页面直接给看(译完即存
@@ -1603,11 +1573,244 @@ private fun PlaySettingsScreen(vm: MainViewModel, scrollStates: MutableMap<Strin
             }
             CardEntryRow(
                 Lucide.SlidersVertical, c.n700, "均衡器", null,
-                divider = false,
+                divider = true,
             ) { vm.navFilesTo(FilesView.Equalizer) }
+            // 2026-10-17：伴唱的"正式设置"入口（模型下载/选择/默认/删除 + 缓存策略）。
+            // 歌词本那边只留一个麦克风按钮，配置一律收进这里。
+            CardEntryRow(
+                Lucide.Mic, c.n700, "伴唱", null,
+                divider = false,
+            ) { vm.navFilesTo(FilesView.KaraokeSettings) }
         }
         Box(Modifier.height(114.dp))
     }
+}
+
+// ── v1.5.0 设置 · 播放 · 伴唱（2026-10-17 用户要求出"正式版"）─────────────────
+/** 本页用的别名：`RetentionMode` 全名太长，而本地 `val M = 枚举类` 在 Kotlin 里不成立。 */
+private typealias StemRet = com.shiyin.music.data.karaoke.RetentionMode
+// 歌词本那边**只留一个麦克风按钮**，模型/缓存这些配置全部收到这里（用户原话）。
+// 模型铭牌（人声/伴奏、高频截至、相对耗时）是**从参数算出来的**，不是文案：
+//  · 高频截至 = (dim_f−1) × 44100 / n_fft —— 超过它的频段人声估计恒为 0，
+//    也就意味着这段原曲会原封不动留在伴奏里（齿音/镲片顶端就是这么漏出来的）；
+//  · 相对耗时 = n_fft × dim_f（以 9482 = 1.00× 为基准）。
+@Composable
+private fun KaraokeSettingsScreen(vm: MainViewModel, scrollStates: MutableMap<String, ScrollState>) {
+    val c = LocalOrganic.current
+    androidx.compose.runtime.LaunchedEffect(Unit) { vm.refreshKaraokeSettings() }
+    val models = com.shiyin.music.data.karaoke.MdxModel.values()
+
+    Column(
+        Modifier
+            .fillMaxSize()
+            .verticalScroll(scrollStateOf(scrollStates, "karaokesettings"))
+            .padding(horizontal = 20.dp)
+            .padding(top = 22.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        SubPageHeader(
+            "伴唱",
+            help = "关于伴唱" to
+                "伴唱会把歌拆成「人声」和「伴奏」两轨，在播放时实时混：人声档 = 原曲 − 伴奏，" +
+                "伴奏档 = 直接放伴奏。演唱效果取决于用哪个模型。\n\n" +
+                "· **9482**（内置，约 29.7 MB）：人声模型，横向频段截至约 14.7 kHz —— 更快，但更高的" +
+                "齿音/镲片顶端会留在伴奏里。\n" +
+                "· **Inst_HQ_3**（需下载，约 63.7 MB）：直接输出伴奏，质量最高、频段全（约 22.0 kHz），" +
+                "但计算量约为 9482 的 1.5 倍。\n" +
+                "· **Voc_FT**（需下载，约 63.7 MB）：人声模型，频段约 17.6 kHz，计算量约为 1.9 倍。\n\n" +
+                "下载走国内可达的镜像地址，并会用官方 sha256 校验；校验不过一律不装 —— " +
+                "模型下坏了的表现是「伴奏听着不对」，那种问题事后极难追。\n\n" +
+                "缓存是分离好的伴奏，按下面的策略自动清理。删掉某个模型只会删文件，不影响设置。",
+        ) { vm.navFilesBack() }
+
+        SectionLabel("模型")
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .shadowSm(RoundedCornerShape(28.dp))
+                .clip(RoundedCornerShape(28.dp))
+                .background(c.surface)
+                .padding(vertical = 6.dp),
+        ) {
+            models.forEachIndexed { i, m ->
+                val installed = m.id in vm.karaokeModelsInstalled
+                val broken = m.id in vm.karaokeModelsBroken
+                val isDefault = vm.karaokeModelId == m.id
+                val downloading = vm.karaokeDownloadId == m.id
+                Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            m.displayName,
+                            style = body(14f, FontWeight.SemiBold, c.text),
+                            modifier = Modifier.weight(1f),
+                        )
+                        if (isDefault) {
+                            Text(
+                                "默认",
+                                style = body(11f, FontWeight.SemiBold, c.surface),
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(c.accent)
+                                    .padding(horizontal = 8.dp, vertical = 3.dp),
+                            )
+                        }
+                    }
+                    // 铭牌：都是从参数算出来的
+                    Row(
+                        Modifier.padding(top = 6.dp),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        KaraokeBadge(m.stemLabel, c)
+                        KaraokeBadge("高频截至 ${"%.1f".format(m.maxHz / 1000.0)} kHz", c)
+                        KaraokeBadge("耗时 ${"%.1f".format(m.relativeCost)}×", c)
+                        KaraokeBadge(com.shiyin.music.data.karaoke.MdxModel.humanSize(m.sizeBytes), c)
+                    }
+                    Text(
+                        when {
+                            downloading -> "下载中 ${(vm.karaokeDownloadPct * 100).toInt()}%"
+                            broken -> "文件损坏（大小不对），建议重下"
+                            installed -> if (m.bundled) "已内置" else "已下载"
+                            else -> "未下载"
+                        },
+                        style = body(11.5f, FontWeight.Normal, if (broken) c.a700 else c.n500),
+                        modifier = Modifier.padding(top = 6.dp),
+                    )
+                    if (downloading) {
+                        androidx.compose.material3.LinearProgressIndicator(
+                            progress = { vm.karaokeDownloadPct },
+                            modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+                        )
+                    }
+                    Row(
+                        Modifier.padding(top = 8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        KaraokeAction(if (isDefault) "当前默认" else "设为默认", !isDefault) {
+                            vm.setKaraokeModelId(m.id)
+                        }
+                        if (!installed || broken) {
+                            KaraokeAction(if (broken) "重新下载" else "下载", vm.karaokeDownloadId == null) {
+                                vm.downloadKaraokeModel(m.id)
+                            }
+                        }
+                        if (installed || broken) {
+                            KaraokeAction("删除", vm.karaokeDownloadId == null) { vm.deleteKaraokeModel(m.id) }
+                        }
+                    }
+                }
+                if (i != models.lastIndex) {
+                    Box(
+                        Modifier
+                            .padding(start = 16.dp)
+                            .fillMaxWidth()
+                            .height(1.dp)
+                            .background(c.divider),
+                    )
+                }
+            }
+        }
+
+        SectionLabel("缓存")
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .shadowSm(RoundedCornerShape(28.dp))
+                .clip(RoundedCornerShape(28.dp))
+                .background(c.surface)
+                .padding(horizontal = 16.dp, vertical = 6.dp),
+        ) {
+            SettingRow(Lucide.Download, "已占用", null, divider = true) {
+                Text(
+                    com.shiyin.music.data.karaoke.MdxModel.humanSize(vm.stemCacheBytes),
+                    style = body(13f, FontWeight.SemiBold, c.n600),
+                )
+            }
+            Column(Modifier.fillMaxWidth().padding(vertical = 12.dp)) {
+                Text("保留策略", style = body(13.5f, FontWeight.SemiBold, c.text))
+                Row(
+                    Modifier.padding(top = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    KaraokeChip("最近 ${vm.stemRetentionCount} 首", vm.stemRetentionMode == StemRet.COUNT, c) {
+                        vm.setStemRetention(StemRet.COUNT, vm.stemRetentionCount, vm.stemRetentionMb)
+                    }
+                    KaraokeChip("限制 ${vm.stemRetentionMb} MB", vm.stemRetentionMode == StemRet.SIZE_MB, c) {
+                        vm.setStemRetention(StemRet.SIZE_MB, vm.stemRetentionCount, vm.stemRetentionMb)
+                    }
+                    KaraokeChip("不保留", vm.stemRetentionMode == StemRet.NONE, c) {
+                        vm.setStemRetention(StemRet.NONE, vm.stemRetentionCount, vm.stemRetentionMb)
+                    }
+                }
+                when (vm.stemRetentionMode) {
+                    StemRet.COUNT -> Row(Modifier.padding(top = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        listOf(5, 10, 20, 50).forEach { n ->
+                            KaraokeChip("$n 首", vm.stemRetentionCount == n, c) {
+                                vm.setStemRetention(StemRet.COUNT, n, vm.stemRetentionMb)
+                            }
+                        }
+                    }
+                    StemRet.SIZE_MB -> Row(Modifier.padding(top = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        listOf(300, 600, 1200, 3000).forEach { mb ->
+                            KaraokeChip("$mb MB", vm.stemRetentionMb == mb, c) {
+                                vm.setStemRetention(StemRet.SIZE_MB, vm.stemRetentionCount, mb)
+                            }
+                        }
+                    }
+                    StemRet.NONE -> Text(
+                        "用完即删：每首放完就把它的伴奏删掉。省空间，但同一首再听要重新分离。",
+                        style = body(11.5f, FontWeight.Normal, c.n500),
+                        modifier = Modifier.padding(top = 6.dp),
+                    )
+                }
+            }
+            SettingRow(Lucide.Trash, "清空伴奏缓存", null, divider = false) {
+                KaraokeAction("清空", vm.stemCacheBytes > 0) { vm.clearStemCache() }
+            }
+        }
+        Box(Modifier.height(114.dp))
+    }
+}
+
+/** 伴唱页的小铭牌。 */
+@Composable
+private fun KaraokeBadge(text: String, c: com.shiyin.music.ui.theme.OrganicColors) {
+    Text(
+        text,
+        style = body(10.5f, FontWeight.SemiBold, c.n600),
+        modifier = Modifier
+            .clip(RoundedCornerShape(7.dp))
+            .background(c.n100)
+            .padding(horizontal = 6.dp, vertical = 3.dp),
+    )
+}
+
+/** 伴唱页的小操作按钮（文字按钮，够用且和卡片风格不打架）。 */
+@Composable
+private fun KaraokeAction(label: String, enabled: Boolean, onClick: () -> Unit) {
+    val c = LocalOrganic.current
+    Text(
+        label,
+        style = body(12.5f, FontWeight.SemiBold, if (enabled) c.accent else c.n500),
+        modifier = Modifier
+            .clip(RoundedCornerShape(10.dp))
+            .background(c.n100)
+            .then(if (enabled) Modifier.clickable { onClick() } else Modifier)
+            .padding(horizontal = 12.dp, vertical = 7.dp),
+    )
+}
+
+/** 可选项的小胶囊。 */
+@Composable
+private fun KaraokeChip(label: String, selected: Boolean, c: com.shiyin.music.ui.theme.OrganicColors, onClick: () -> Unit) {
+    Text(
+        label,
+        style = body(12f, FontWeight.SemiBold, if (selected) c.surface else c.n600),
+        modifier = Modifier
+            .clip(RoundedCornerShape(10.dp))
+            .background(if (selected) c.accent else c.n100)
+            .clickable { onClick() }
+            .padding(horizontal = 11.dp, vertical = 7.dp),
+    )
 }
 
 // ── v1.3.x 均衡器子页(用户反馈"均衡器不是开关,是多频段调节")──────────────────

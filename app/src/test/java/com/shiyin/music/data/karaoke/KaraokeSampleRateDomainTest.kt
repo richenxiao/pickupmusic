@@ -90,6 +90,14 @@ class KaraokeSampleRateDomainTest {
             "模型域帧数必须按源率折算；直接拿源帧数就是那个升调 bug",
             (44100 * seconds).toInt(), modelFrames,
         )
+        // **时长比必须为 1**：模型域时长 = 源域时长（这是"不加速"的等价说法）
+        val durSrc = srcFrames.toDouble() / srcRate
+        val durModel = modelFrames.toDouble() / 44100.0
+        assertTrue(
+            "时长比必须是 1（源 ${"%.6f".format(durSrc)}s vs 模型域 ${"%.6f".format(durModel)}s）；" +
+                "旧口径下模型域时长会是源的 ${"%.4f".format(srcRate / 44100.0)} 倍",
+            abs(durSrc - durModel) < 0.001,
+        )
 
         val cache = StemCache(File(tmp.root, "cache"))
         val key = StemCache.SourceKey("fp$srcRate", srcRate, 2, srcFrames)
@@ -125,6 +133,9 @@ class KaraokeSampleRateDomainTest {
             )
         }
     }
+
+    @Test
+    fun `44k1 源_走真实模型后伴奏音高不变`() = assertPitchPreservedThroughModel(44100)
 
     @Test
     fun `48k 源_走真实模型后伴奏音高不变`() = assertPitchPreservedThroughModel(48000)

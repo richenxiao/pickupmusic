@@ -50,7 +50,7 @@ import java.util.Locale
 
 enum class Tab { Home, Search, Library }
 enum class ObStage { Perm, Scan, Done }
-enum class FilesView { Root, Clean, Trash, Folders, FolderContent, Ignored, Devices, About, Merges, ImageSources, LyricsBook, LyricsSources, CloudBackup, PlaySettings, Equalizer, Logs, DataManage, FilesManage, Artists }
+enum class FilesView { Root, Clean, Trash, Folders, FolderContent, Ignored, Devices, About, Merges, ImageSources, LyricsBook, LyricsSources, CloudBackup, PlaySettings, KaraokeSettings, Equalizer, Logs, DataManage, FilesManage, Artists }
 enum class LyState { Idle, Searching, Failed }
 enum class LyricsKind { Embedded, Sidecar, Online, Imported }
 
@@ -343,6 +343,87 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun setKaraokeModelId(id: String) {
         _karaokeModelId.value = com.shiyin.music.data.karaoke.MdxModel.byId(id).id
         viewModelScope.launch { settingsStore.setKaraokeModelId(_karaokeModelId.value) }
+    }
+
+    // ── 设置 · 播放 · 伴唱页（2026-10-17 用户要求"正式版"）──────────────────────
+    private val karaokeModelStore by lazy {
+        com.shiyin.music.data.karaoke.KaraokeModelStore(getApplication())
+    }
+
+    /** 已安装的模型 id（进页面刷新一次；下载/删除后刷新）。 */
+    var karaokeModelsInstalled by mutableStateOf<Set<String>>(emptySet()); private set
+
+    /** 文件在但大小不对 = 半截/损坏，UI 提示"可重下"。 */
+    var karaokeModelsBroken by mutableStateOf<Set<String>>(emptySet()); private set
+
+    /** 正在下载的模型 id（null = 空闲）、进度、给人看的结果。 */
+    var karaokeDownloadId by mutableStateOf<String?>(null); private set
+    var karaokeDownloadPct by mutableStateOf(0f); private set
+    var karaokeDownloadMsg by mutableStateOf(""); private set
+
+    /** 伴奏缓存占用（字节）与保留策略三档。 */
+    var stemCacheBytes by mutableStateOf(0L); private set
+    var stemRetentionMode by mutableStateOf(com.shiyin.music.data.karaoke.RetentionMode.COUNT); private set
+    var stemRetentionCount by mutableStateOf(10); private set
+    var stemRetentionMb by mutableStateOf(600); private set
+
+    /** 进伴唱设置页时刷新：模型安装状态 + 缓存占用 + 保留策略。 */
+    fun refreshKaraokeSettings() {
+        val store = karaokeModelStore
+        val all = com.shiyin.music.data.karaoke.MdxModel.values()
+        karaokeModelsInstalled = all.filter { store.isInstalled(it) }.map { it.id }.toSet()
+        karaokeModelsBroken = all.filter { store.isBroken(it) }.map { it.id }.toSet()
+        stemCacheBytes = stemCache.usageBytes()
+        viewModelScope.launch {
+            val (m, cnt, mb) = settingsStore.stemRetention()
+            stemRetentionMode = m; stemRetentionCount = cnt; stemRetentionMb = mb
+        }
+    }
+
+    /** 下载并安装一个模型（多源顺序重试 + sha256 校验，见 [KaraokeModelStore.download]）。 */
+    fun downloadKaraokeModel(id: String) {
+        if (karaokeDownloadId != null) return
+        val m = com.shiyin.music.data.karaoke.MdxModel.byId(id)
+        karaokeDownloadId = m.id
+        karaokeDownloadPct = 0f
+        karaokeDownloadMsg = "下载中…"
+        viewModelScope.launch {
+            val (ok, msg) = karaokeModelStore.download(m) { karaokeDownloadPct = it }
+            karaokeDownloadMsg = msg
+            karaokeDownloadId = null
+            refreshKaraokeSettings()
+            showToast(if (ok) "${m.stemLabel}模型已就绪" else msg, null)
+        }
+    }
+
+    /** 删除已下载的模型。**内置的那个删了也会在下次使用时自动解包回来**，如实说明。 */
+    fun deleteKaraokeModel(id: String) {
+        val m = com.shiyin.music.data.karaoke.MdxModel.byId(id)
+        karaokeModelStore.delete(m)
+        // 删掉的正好是默认模型 ⇒ 默认值退回内置的那个，免得下次点伴唱拿到一个不存在的模型
+        if (karaokeModelId == m.id && !m.bundled) setKaraokeModelId(com.shiyin.music.data.karaoke.MdxModel.default().id)
+        refreshKaraokeSettings()
+        showToast(
+            if (m.bundled) "已删除；它是内置模型，下次用伴唱会自动恢复"
+            else "已删除 ${m.displayName}",
+            null,
+        )
+    }
+
+    /** 清空全部伴奏缓存。**先把伴唱关掉**，否则处理器还在读那个马上要被删的目录。 */
+    fun clearStemCache() {
+        stopKaraoke()
+        karaokeReady.clear()
+        val n = stemCache.deleteAll()
+        refreshKaraokeSettings()
+        showToast("已清理 $n 首的伴奏缓存", null)
+    }
+
+    fun setStemRetention(mode: com.shiyin.music.data.karaoke.RetentionMode, count: Int, mb: Int) {
+        stemRetentionMode = mode
+        stemRetentionCount = count.coerceIn(1, 200)
+        stemRetentionMb = mb.coerceIn(100, 20_000)
+        viewModelScope.launch { settingsStore.setStemRetention(stemRetentionMode, stemRetentionCount, stemRetentionMb) }
     }
 
     /** 档位序号 → 处理器档位。UI 顺序是 **人声 / 原曲 / 伴奏**（0/1/2），与 MODE_* 数值不同，必须显式映射。 */

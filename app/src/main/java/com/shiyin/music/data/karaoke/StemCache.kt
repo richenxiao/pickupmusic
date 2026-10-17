@@ -262,6 +262,21 @@ class StemCache(private val root: File) {
     /** 按**目录名**删（保留策略只拿到名字，不重建整条 key）。 */
     fun deleteByDirName(dirName: String): Boolean = File(root, dirName).deleteRecursively()
 
+    /**
+     * **清空全部伴奏缓存**（设置页的"删除缓存"）。
+     *
+     * 只删 `root` 下的一级目录（每个源文件一个），不动模型仓库 —— 那在另一个目录、另一个仓库里。
+     * @return 删掉的一级目录数
+     */
+    fun deleteAll(): Int {
+        val dirs = root.listFiles()?.filter { it.isDirectory } ?: return 0
+        var n = 0
+        for (d in dirs) {
+            if (d.deleteRecursively()) n++
+        }
+        return n
+    }
+
     fun usageBytes(): Long {
         var total = 0L
         root.walkTopDown().forEach { if (it.isFile) total += it.length() }

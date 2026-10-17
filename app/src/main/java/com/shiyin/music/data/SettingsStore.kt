@@ -99,6 +99,11 @@ private val keyPinnedLibItems = stringSetPreferencesKey("pinned_lib_items")
     private val keyKaraokeEnabled = booleanPreferencesKey("karaoke_enabled")
     /** 分轨模型 id（A73，用户 2026-10-15）：默认 = 内置的那个（9482）。见 [MdxModel.default]。 */
     private val keyKaraokeModelId = stringPreferencesKey("karaoke_model_id")
+    // v1.5.0 伴唱缓存保留策略（设置·播放·伴唱页）。刻意**不并进 [Settings] 大对象** ——
+    // 那需要同步改数据类/映射/默认值三处，而这三项只在伴唱设置页用，独立读写更小更稳。
+    private val keyStemRetentionMode = stringPreferencesKey("stem_retention_mode")
+    private val keyStemRetentionCount = intPreferencesKey("stem_retention_count")
+    private val keyStemRetentionMb = intPreferencesKey("stem_retention_mb")
     /** v1.5.0 A56:歌词"制作人行"跳过翻译(默认开)。作词/作曲/编曲/XX演奏 等不译。 */
     private val keySkipCreditsTranslation = booleanPreferencesKey("skip_credits_translation")
     // v1.5.0 A62：歌手栏是否隐藏"客串歌手"（只参与合作、无个人作品）。默认开。
@@ -308,6 +313,30 @@ private val keyPinnedLibItems = stringSetPreferencesKey("pinned_lib_items")
      */
     suspend fun setKaraokeModelId(id: String) =
         context.dataStore.edit { it[keyKaraokeModelId] = com.shiyin.music.data.karaoke.MdxModel.byId(id).id }
+
+    /**
+     * 伴唱缓存保留策略（设置·播放·伴唱页）：模式 + 首歌数 + 上限 MB。
+     *
+     * 读时**逐项夹到合法区间**（坏值/缺省一律回默认 COUNT / 10 首 / 600MB）——
+     * 一个坏值要么变成"缓存永远被清"、要么变成"永不清理"，两种都很难查。
+     */
+    suspend fun stemRetention(): Triple<com.shiyin.music.data.karaoke.RetentionMode, Int, Int> {
+        val p = context.dataStore.data.first()
+        val mode = runCatching {
+            com.shiyin.music.data.karaoke.RetentionMode.valueOf(p[keyStemRetentionMode] ?: "")
+        }.getOrDefault(com.shiyin.music.data.karaoke.RetentionMode.COUNT)
+        val count = (p[keyStemRetentionCount] ?: 10).coerceIn(1, 200)
+        val mb = (p[keyStemRetentionMb] ?: 600).coerceIn(100, 20_000)
+        return Triple(mode, count, mb)
+    }
+
+    suspend fun setStemRetention(
+        mode: com.shiyin.music.data.karaoke.RetentionMode, count: Int, mb: Int,
+    ) = context.dataStore.edit {
+        it[keyStemRetentionMode] = mode.name
+        it[keyStemRetentionCount] = count.coerceIn(1, 200)
+        it[keyStemRetentionMb] = mb.coerceIn(100, 20_000)
+    }
     /** v1.5.0 A56 制作人行跳过翻译写入。 */
     suspend fun setSkipCreditsTranslation(v: Boolean) = context.dataStore.edit { it[keySkipCreditsTranslation] = v }
 
