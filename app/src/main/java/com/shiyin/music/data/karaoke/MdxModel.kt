@@ -94,6 +94,13 @@ enum class MdxModel(
     /** 输出的是哪一轨（给设置页做铭牌）。 */
     val stemLabel: String get() = if (predictsInstrumental) "伴奏" else "人声"
 
+    /** 按**下载渠道**给出该试的顺序（见 [DownloadChannel]）。 */
+    fun urlsFor(channel: DownloadChannel): List<String> = when (channel) {
+        DownloadChannel.AUTO -> urlDomestic + urlOfficial
+        DownloadChannel.DOMESTIC -> urlDomestic
+        DownloadChannel.OFFICIAL -> urlOfficial
+    }
+
     /**
      * **模型能表示的最高频率**（Hz）= `(dim_f − 1) × 采样率 / n_fft`。
      *

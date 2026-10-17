@@ -1484,7 +1484,8 @@ private fun LyricsBookScreen(vm: MainViewModel, scrollStates: MutableMap<String,
             }
             // v1.5.0 伴唱总开关（规格 §10）。默认开；关闭后歌词页不显示麦克风入口，
             // 设备慢的用户可彻底关掉。
-            SettingRow(Lucide.Mic, "启用伴唱功能", null, divider = true) {
+            // 图标用音符，不用那个残缺的麦克风（用户 2026-10-17 指出）
+            SettingRow(Lucide.Music, "启用伴唱功能", null, divider = true) {
                 OrganicSwitch(vm.karaokeEnabled) { vm.setKaraokeEnabled(!vm.karaokeEnabled) }
             }
             // A73（用户 2026-10-15）：分轨默认模型。**只有 9482 内置**（A57），其余两项
@@ -1578,7 +1579,7 @@ private fun PlaySettingsScreen(vm: MainViewModel, scrollStates: MutableMap<Strin
             // 2026-10-17：伴唱的"正式设置"入口（模型下载/选择/默认/删除 + 缓存策略）。
             // 歌词本那边只留一个麦克风按钮，配置一律收进这里。
             CardEntryRow(
-                Lucide.Mic, c.n700, "伴唱", null,
+                Lucide.Music, c.n700, "伴唱", null,
                 divider = false,
             ) { vm.navFilesTo(FilesView.KaraokeSettings) }
         }
@@ -1610,17 +1611,11 @@ private fun KaraokeSettingsScreen(vm: MainViewModel, scrollStates: MutableMap<St
     ) {
         SubPageHeader(
             "伴唱",
-            help = "关于伴唱" to
-                "伴唱会把歌拆成「人声」和「伴奏」两轨，在播放时实时混：人声档 = 原曲 − 伴奏，" +
-                "伴奏档 = 直接放伴奏。演唱效果取决于用哪个模型。\n\n" +
-                "· **9482**（内置，约 29.7 MB）：人声模型，横向频段截至约 14.7 kHz —— 更快，但更高的" +
-                "齿音/镲片顶端会留在伴奏里。\n" +
-                "· **Inst_HQ_3**（需下载，约 63.7 MB）：直接输出伴奏，质量最高、频段全（约 22.0 kHz），" +
-                "但计算量约为 9482 的 1.5 倍。\n" +
-                "· **Voc_FT**（需下载，约 63.7 MB）：人声模型，频段约 17.6 kHz，计算量约为 1.9 倍。\n\n" +
-                "下载走国内可达的镜像地址，并会用官方 sha256 校验；校验不过一律不装 —— " +
-                "模型下坏了的表现是「伴奏听着不对」，那种问题事后极难追。\n\n" +
-                "缓存是分离好的伴奏，按下面的策略自动清理。删掉某个模型只会删文件，不影响设置。",
+            help = "伴唱怎么用" to
+                "点伴唱后会把歌拆成「人声」和「伴奏」两轨，你可以只听伴奏来跟唱。\n\n" +
+                "第一次拆某首歌要等一会儿（拆好的部分会存起来，同一首再听就很快）。\n\n" +
+                "模型决定效果：默认的 9482 最快；想要更干净的人声消除，可以下载 Inst_HQ_3。\n\n" +
+                "拆出来的伴奏占空间，下面的保存策略会自动清理旧的。",
         ) { vm.navFilesBack() }
 
         SectionLabel("模型")
@@ -1632,6 +1627,20 @@ private fun KaraokeSettingsScreen(vm: MainViewModel, scrollStates: MutableMap<St
                 .background(c.surface)
                 .padding(vertical = 6.dp),
         ) {
+            // 下载渠道：用户实测"下到 6% 又回到 1%"，要能自己选走哪条线
+            Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)) {
+                Text("下载渠道", style = body(13.5f, FontWeight.SemiBold, c.text))
+                Row(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    com.shiyin.music.data.karaoke.DownloadChannel.entries.forEach { ch ->
+                        KaraokeChip(
+                            ch.label,
+                            vm.karaokeDownloadChannel == ch,
+                            c,
+                        ) { vm.chooseKaraokeDownloadChannel(ch) }
+                    }
+                }
+            }
+            Box(Modifier.padding(start = 16.dp).fillMaxWidth().height(1.dp).background(c.divider))
             models.forEachIndexed { i, m ->
                 val installed = m.id in vm.karaokeModelsInstalled
                 val broken = m.id in vm.karaokeModelsBroken
@@ -1655,20 +1664,17 @@ private fun KaraokeSettingsScreen(vm: MainViewModel, scrollStates: MutableMap<St
                             )
                         }
                     }
-                    // 铭牌：都是从参数算出来的
-                    Row(
-                        Modifier.padding(top = 6.dp),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    ) {
+                    Row(Modifier.padding(top = 6.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         KaraokeBadge(m.stemLabel, c)
-                        KaraokeBadge("高频截至 ${"%.1f".format(m.maxHz / 1000.0)} kHz", c)
+                        KaraokeBadge("高频 ${"%.1f".format(m.maxHz / 1000.0)}kHz", c)
                         KaraokeBadge("耗时 ${"%.1f".format(m.relativeCost)}×", c)
                         KaraokeBadge(com.shiyin.music.data.karaoke.MdxModel.humanSize(m.sizeBytes), c)
                     }
                     Text(
                         when {
-                            downloading -> "下载中 ${(vm.karaokeDownloadPct * 100).toInt()}%"
-                            broken -> "文件损坏（大小不对），建议重下"
+                            downloading -> "下载中 ${(vm.karaokeDownloadPct * 100).toInt()}%" +
+                                (if (vm.karaokeDownloadHost.isNotEmpty()) " · ${vm.karaokeDownloadHost}" else "")
+                            broken -> "文件损坏，建议重新下载"
                             installed -> if (m.bundled) "已内置" else "已下载"
                             else -> "未下载"
                         },
@@ -1676,15 +1682,25 @@ private fun KaraokeSettingsScreen(vm: MainViewModel, scrollStates: MutableMap<St
                         modifier = Modifier.padding(top = 6.dp),
                     )
                     if (downloading) {
-                        androidx.compose.material3.LinearProgressIndicator(
-                            progress = { vm.karaokeDownloadPct },
-                            modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
-                        )
+                        // 自己画的**确定态**进度条：Material3 那个默认走的是"不确定态"动画，
+                        // 两头一起动，用户看了会以为坏了。
+                        Box(
+                            Modifier
+                                .padding(top = 8.dp)
+                                .fillMaxWidth()
+                                .height(4.dp)
+                                .clip(RoundedCornerShape(2.dp))
+                                .background(c.n100),
+                        ) {
+                            Box(
+                                Modifier
+                                    .fillMaxWidth(vm.karaokeDownloadPct.coerceIn(0f, 1f))
+                                    .fillMaxHeight()
+                                    .background(c.accent),
+                            )
+                        }
                     }
-                    Row(
-                        Modifier.padding(top = 8.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
+                    Row(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         KaraokeAction(if (isDefault) "当前默认" else "设为默认", !isDefault) {
                             vm.setKaraokeModelId(m.id)
                         }
@@ -1699,13 +1715,7 @@ private fun KaraokeSettingsScreen(vm: MainViewModel, scrollStates: MutableMap<St
                     }
                 }
                 if (i != models.lastIndex) {
-                    Box(
-                        Modifier
-                            .padding(start = 16.dp)
-                            .fillMaxWidth()
-                            .height(1.dp)
-                            .background(c.divider),
-                    )
+                    Box(Modifier.padding(start = 16.dp).fillMaxWidth().height(1.dp).background(c.divider))
                 }
             }
         }
@@ -1726,40 +1736,67 @@ private fun KaraokeSettingsScreen(vm: MainViewModel, scrollStates: MutableMap<St
                 )
             }
             Column(Modifier.fillMaxWidth().padding(vertical = 12.dp)) {
-                Text("保留策略", style = body(13.5f, FontWeight.SemiBold, c.text))
-                Row(
-                    Modifier.padding(top = 8.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    KaraokeChip("最近 ${vm.stemRetentionCount} 首", vm.stemRetentionMode == StemRet.COUNT, c) {
+                Text("保存策略", style = body(13.5f, FontWeight.SemiBold, c.text))
+                Row(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    KaraokeChip("按曲目", vm.stemRetentionMode == StemRet.COUNT, c) {
                         vm.setStemRetention(StemRet.COUNT, vm.stemRetentionCount, vm.stemRetentionMb)
                     }
-                    KaraokeChip("限制 ${vm.stemRetentionMb} MB", vm.stemRetentionMode == StemRet.SIZE_MB, c) {
+                    KaraokeChip("按大小", vm.stemRetentionMode == StemRet.SIZE_MB, c) {
                         vm.setStemRetention(StemRet.SIZE_MB, vm.stemRetentionCount, vm.stemRetentionMb)
                     }
-                    KaraokeChip("不保留", vm.stemRetentionMode == StemRet.NONE, c) {
-                        vm.setStemRetention(StemRet.NONE, vm.stemRetentionCount, vm.stemRetentionMb)
-                    }
                 }
-                when (vm.stemRetentionMode) {
-                    StemRet.COUNT -> Row(Modifier.padding(top = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                val isCount = vm.stemRetentionMode == StemRet.COUNT
+                // 预设（点一下就用）+ 自己输入（下面那个框）
+                Row(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (isCount) {
                         listOf(5, 10, 20, 50).forEach { n ->
                             KaraokeChip("$n 首", vm.stemRetentionCount == n, c) {
                                 vm.setStemRetention(StemRet.COUNT, n, vm.stemRetentionMb)
                             }
                         }
-                    }
-                    StemRet.SIZE_MB -> Row(Modifier.padding(top = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        listOf(300, 600, 1200, 3000).forEach { mb ->
-                            KaraokeChip("$mb MB", vm.stemRetentionMb == mb, c) {
+                    } else {
+                        listOf(200 to "200MB", 500 to "500MB", 1024 to "1GB", 0 to "不限制").forEach { (mb, label) ->
+                            KaraokeChip(label, vm.stemRetentionMb == mb, c) {
                                 vm.setStemRetention(StemRet.SIZE_MB, vm.stemRetentionCount, mb)
                             }
                         }
                     }
-                    StemRet.NONE -> Text(
-                        "用完即删：每首放完就把它的伴奏删掉。省空间，但同一首再听要重新分离。",
-                        style = body(11.5f, FontWeight.Normal, c.n500),
-                        modifier = Modifier.padding(top = 6.dp),
+                }
+                // 自己填：改完立刻生效
+                var draft by remember(vm.stemRetentionMode, vm.stemRetentionCount, vm.stemRetentionMb) {
+                    mutableStateOf(
+                        (if (isCount) vm.stemRetentionCount else vm.stemRetentionMb).toString(),
+                    )
+                }
+                Row(
+                    Modifier.padding(top = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text("自定义", style = body(12.5f, FontWeight.Normal, c.n600))
+                    androidx.compose.material3.OutlinedTextField(
+                        value = draft,
+                        onValueChange = { s ->
+                            val digits = s.filter { it.isDigit() }.take(6)
+                            draft = digits
+                            val v = digits.toIntOrNull() ?: return@OutlinedTextField
+                            if (isCount) {
+                                if (v in 1..200) vm.setStemRetention(StemRet.COUNT, v, vm.stemRetentionMb)
+                            } else {
+                                if (v in 0..1_000_000) vm.setStemRetention(StemRet.SIZE_MB, vm.stemRetentionCount, v)
+                            }
+                        },
+                        singleLine = true,
+                        modifier = Modifier.padding(start = 10.dp).width(96.dp),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = c.text, unfocusedTextColor = c.text,
+                            cursorColor = c.accent, focusedBorderColor = c.accent,
+                            unfocusedBorderColor = c.n400,
+                        ),
+                    )
+                    Text(
+                        if (isCount) "首" else "MB（0 = 不限制）",
+                        style = body(12.5f, FontWeight.Normal, c.n600),
+                        modifier = Modifier.padding(start = 8.dp),
                     )
                 }
             }

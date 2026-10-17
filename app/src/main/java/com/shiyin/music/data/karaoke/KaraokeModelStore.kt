@@ -82,19 +82,21 @@ class KaraokeModelStore(private val dir: File) {
     }
 
     /**
-     * 下载模型。**按 [MdxModel.urlDomestic] → [MdxModel.urlOfficial] 顺序试**，
-     * 每个源下完都校验 sha256；任一源成功即返回。
+     * 下载模型。**多源顺序重试 + 断点续传 + sha256 校验**。
      *
-     * @param onProgress 0..1（源本身不给 Content-Length 时按已知大小与已收字节估）
-     * @return 成功与否 + 人话原因（失败时给 UI 直接显示）
+     * @param urls 由调用方按用户选的**下载渠道**给出（国内镜像 / 官方直连 / 自动）
+     * @param onProgress 回调 `(已收字节, 总字节, 当前源主机)` —— 三个都给，UI 才能说明白
+     *   "为什么慢"（比如卡在哪个源上），而不是只看到一个百分比。
+     * @return 成功与否 + 人话原因
      */
     suspend fun download(
         model: MdxModel,
-        onProgress: (Float) -> Unit = {},
+        urls: List<String>,
+        onProgress: (Long, Long, String) -> Unit = { _, _, _ -> },
     ): Pair<Boolean, String> = withContext(Dispatchers.IO) {
         dir.mkdirs()
         val errors = mutableListOf<String>()
-        for (url in model.urlDomestic + model.urlOfficial) {
+        for (url in urls) {
             try {
                 val f = fetchToFile(url, model, onProgress)
                 if (f == null) {
@@ -118,43 +120,73 @@ class KaraokeModelStore(private val dir: File) {
                 errors += "${hostOf(url)}：${t.javaClass.simpleName}"
             }
         }
-        false to ("下载失败（所有源都不可用）：" + errors.joinToString("；"))
+        false to ("所有下载源都失败了：" + errors.joinToString("；"))
     }
 
-    /** 下载到 `.tmp`；字节数不符返回 null。 */
-    private fun fetchToFile(url: String, model: MdxModel, onProgress: (Float) -> Unit): File? {
+    /**
+     * 下到 `.tmp`，**支持断点续传**。
+     *
+     * 为什么要续传：用户实测 "HQ3 下到 6% 就失败回到 1%" —— 那是**换源后从头再来**。
+     * 现在换了源会先看 `.tmp` 已有多少字节，发 `Range: bytes=N-`；服务器回 206 就接着下，
+     * 回 200 才从头（并如实告诉 UI "这个源不支持续传，已重下"）。
+     *
+     * 读超时给到 60s：实测 `hf-mirror.com` 单个 1KB 要 12s，30s 的超时会被慢源反复掐断。
+     */
+    private fun fetchToFile(
+        url: String,
+        model: MdxModel,
+        onProgress: (Long, Long, String) -> Unit,
+    ): File? {
         val tmp = File(dir, model.assetName + ".tmp")
-        if (tmp.exists()) tmp.delete()
+        var done = if (tmp.isFile) tmp.length() else 0L
+        if (done > model.sizeBytes) {           // 大小已经超了说明这文件不可信，重来
+            tmp.delete(); done = 0L
+        }
+        val host = hostOf(url)
         val conn = (URL(url).openConnection() as HttpURLConnection).apply {
             connectTimeout = 20_000
-            readTimeout = 30_000
+            readTimeout = 60_000
             instanceFollowRedirects = true
             setRequestProperty("User-Agent", "PickUpMusic/1.0")
+            // .onnx 是二进制，别让中间层做 gzip（Content-Length 会对不上）
+            setRequestProperty("Accept-Encoding", "identity")
+            if (done > 0L) setRequestProperty("Range", "bytes=$done-")
         }
         try {
             val code = conn.responseCode
+            val resumed = code == HttpURLConnection.HTTP_PARTIAL   // 206
             if (code !in 200..299) throw IOException("HTTP $code")
-            val total = conn.contentLengthLong.takeIf { it > 0 } ?: model.sizeBytes
-            var got = 0L
+            if (done > 0L && !resumed) {
+                // 这个源不支持续传 ⇒ 从头来（如实回传，UI 会看到进度回到 0）
+                tmp.delete(); done = 0L
+            }
+            val total = model.sizeBytes
+            onProgress(done, total, host)
             conn.inputStream.use { input ->
-                tmp.outputStream().buffered(1 shl 16).use { out ->
+                java.io.FileOutputStream(tmp, /* append = */ resumed).buffered(1 shl 16).use { out ->
                     val buf = ByteArray(1 shl 16)
+                    var lastTick = 0L
                     while (true) {
                         val n = input.read(buf)
                         if (n <= 0) break
                         out.write(buf, 0, n)
-                        got += n
-                        onProgress((got.toDouble() / total).toFloat().coerceIn(0f, 1f))
+                        done += n
+                        // 每 256KB 回传一次，避免每 64KB 就跨线程抖一下 UI
+                        if (done - lastTick >= 262_144L) {
+                            lastTick = done
+                            onProgress(done, total, host)
+                        }
                     }
                 }
             }
-            return if (tmp.length() == model.sizeBytes) tmp else { tmp.delete(); null }
+            onProgress(done, total, host)
+            return if (tmp.length() == model.sizeBytes) tmp else null
         } finally {
             runCatching { conn.disconnect() }
         }
     }
 
-    private fun hostOf(url: String): String = runCatching { URL(url).host }.getOrDefault(url)
+    fun hostOf(url: String): String = runCatching { URL(url).host }.getOrDefault(url)
 
     companion object {
         /** sha256 校验（十六进制、大小写不敏感）。纯逻辑，可 JVM 单测。 */
@@ -171,5 +203,32 @@ class KaraokeModelStore(private val dir: File) {
             val got = md.digest().joinToString("") { "%02x".format(it) }
             got.equals(expectedHex, ignoreCase = true)
         }.getOrDefault(false)
+    }
+}
+
+/**
+ * **下载渠道**（用户 2026-10-17 要求："请给出两种下载渠道选择"）。
+ *
+ * 起因：用户实测 Inst_HQ_3 "下到 6% 就失败回到 1%" —— 那时的源顺序把**慢源排在了前面**，
+ * 慢源被读超时掐断后换源又从 0 开始。现在：渠道可选、换源**断点续传**、UI 显示当前源。
+ *
+ * 2026-10-17 本机实测（每个只取 1KB 验连通，**未整包下载**）：
+ *  · `huggingface.co` **连接超时，不可用**；
+ *  · GitHub releases 直连（跟随重定向）206，约 2.1s；
+ *  · `ghproxy.net` 206，约 **1.1s，最快**；
+ *  · `hf-mirror.com` 206，约 12.3s，**明显慢**。
+ * ⚠️ 该实测是**当时那台机器**的网络；若当时挂着代理，GitHub 那项不代表国内裸连。
+ */
+enum class DownloadChannel(val label: String) {
+    /** 默认：国内镜像优先，失败再走官方。 */
+    AUTO("自动"),
+    /** 只用国内镜像（ghproxy / hf-mirror）。 */
+    DOMESTIC("国内镜像"),
+    /** 只用官方源（GitHub / HuggingFace）——挂着梯子时选它往往最快。 */
+    OFFICIAL("官方直连");
+
+    companion object {
+        fun byName(n: String?): DownloadChannel =
+            entries.firstOrNull { it.name == n } ?: AUTO
     }
 }

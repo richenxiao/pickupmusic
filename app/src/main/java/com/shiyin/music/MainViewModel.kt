@@ -356,18 +356,25 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** 文件在但大小不对 = 半截/损坏，UI 提示"可重下"。 */
     var karaokeModelsBroken by mutableStateOf<Set<String>>(emptySet()); private set
 
-    /** 正在下载的模型 id（null = 空闲）、进度、给人看的结果。 */
+    /** 正在下载的模型 id（null = 空闲）、进度、当前源主机、给人看的结果。 */
     var karaokeDownloadId by mutableStateOf<String?>(null); private set
     var karaokeDownloadPct by mutableStateOf(0f); private set
+
+    /** 当前正在下的源主机 —— 用户问过"为什么这么慢"，得能看出来卡在哪个源上。 */
+    var karaokeDownloadHost by mutableStateOf(""); private set
     var karaokeDownloadMsg by mutableStateOf(""); private set
 
-    /** 伴奏缓存占用（字节）与保留策略三档。 */
+    /** 下载渠道（自动 / 国内镜像 / 官方直连）。 */
+    var karaokeDownloadChannel by mutableStateOf(com.shiyin.music.data.karaoke.DownloadChannel.AUTO)
+        private set
+
+    /** 伴奏缓存占用（字节）与保留策略：**只有两种方式**（按曲目 / 按大小），mb=0 表示不限制。 */
     var stemCacheBytes by mutableStateOf(0L); private set
     var stemRetentionMode by mutableStateOf(com.shiyin.music.data.karaoke.RetentionMode.COUNT); private set
     var stemRetentionCount by mutableStateOf(10); private set
     var stemRetentionMb by mutableStateOf(600); private set
 
-    /** 进伴唱设置页时刷新：模型安装状态 + 缓存占用 + 保留策略。 */
+    /** 进伴唱设置页时刷新：模型安装状态 + 缓存占用 + 保留策略 + 下载渠道。 */
     fun refreshKaraokeSettings() {
         val store = karaokeModelStore
         val all = com.shiyin.music.data.karaoke.MdxModel.values()
@@ -377,18 +384,64 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             val (m, cnt, mb) = settingsStore.stemRetention()
             stemRetentionMode = m; stemRetentionCount = cnt; stemRetentionMb = mb
+            karaokeDownloadChannel = settingsStore.karaokeDownloadChannel()
         }
     }
 
-    /** 下载并安装一个模型（多源顺序重试 + sha256 校验，见 [KaraokeModelStore.download]）。 */
+    /**
+     * **按保留策略淘汰旧缓存**。
+     *
+     * ⚠️ 此前 `StemRetention.planEviction` **只在单测里被调用过**，正式代码里一次都没有
+     * ⇒ 设置页那个策略一直是**摆设**，缓存从来不会自动清。这里把它真正接上。
+     *
+     * @param protectDir 正在用的变体目录，连带它所属的那一份产出一起保护（不能把正在听的删了）
+     */
+    private fun sweepStemCache(protectDir: java.io.File? = null) {
+        // 变体目录是 `…/<SourceKey.dirName>/<modelId>/<ver>-e<engine>`，防淘汰要的是**源目录名**
+        val protectedKeys = protectDir?.parentFile?.parentFile?.name?.let { setOf(it) } ?: emptySet()
+        if (stemRetentionMode == com.shiyin.music.data.karaoke.RetentionMode.SIZE_MB && stemRetentionMb <= 0) {
+            return   // 不限制
+        }
+        val entries = stemCache.cachedSongs().map {
+            com.shiyin.music.data.karaoke.StemRetention.Entry(it.keyDirName, it.bytes, it.lastAccess)
+        }
+        if (entries.isEmpty()) return
+        val victims = com.shiyin.music.data.karaoke.StemRetention.planEviction(
+            entries,
+            stemRetentionMode,
+            maxCount = stemRetentionCount,
+            maxMb = stemRetentionMb,
+            protectedKeys = protectedKeys,
+        )
+        if (victims.isEmpty()) return
+        for (k in victims) {
+            val d = java.io.File(stemCache.rootDir, k)
+            if (d.isDirectory) runCatching { d.deleteRecursively() }
+        }
+        refreshKaraokeSettings()
+    }
+
+    // ⚠️ 不能叫 setKaraokeDownloadChannel —— `var ... private set` 生成的私有 setter
+    // 与同名函数 JVM 签名冲突（karaokeEnabled / setKaraokeMixIndex 都踩过同一个坑）。
+    fun chooseKaraokeDownloadChannel(ch: com.shiyin.music.data.karaoke.DownloadChannel) {
+        karaokeDownloadChannel = ch
+        viewModelScope.launch { settingsStore.setKaraokeDownloadChannel(ch) }
+    }
+
+    /** 下载并安装一个模型（按渠道选源，**多源重试 + 断点续传 + sha256 校验**）。 */
     fun downloadKaraokeModel(id: String) {
         if (karaokeDownloadId != null) return
         val m = com.shiyin.music.data.karaoke.MdxModel.byId(id)
         karaokeDownloadId = m.id
         karaokeDownloadPct = 0f
+        karaokeDownloadHost = ""
         karaokeDownloadMsg = "下载中…"
         viewModelScope.launch {
-            val (ok, msg) = karaokeModelStore.download(m) { karaokeDownloadPct = it }
+            val urls = m.urlsFor(karaokeDownloadChannel)
+            val (ok, msg) = karaokeModelStore.download(m, urls) { got, total, host ->
+                karaokeDownloadPct = if (total > 0) (got.toDouble() / total).toFloat().coerceIn(0f, 1f) else 0f
+                karaokeDownloadHost = host
+            }
             karaokeDownloadMsg = msg
             karaokeDownloadId = null
             refreshKaraokeSettings()
@@ -422,8 +475,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun setStemRetention(mode: com.shiyin.music.data.karaoke.RetentionMode, count: Int, mb: Int) {
         stemRetentionMode = mode
         stemRetentionCount = count.coerceIn(1, 200)
-        stemRetentionMb = mb.coerceIn(100, 20_000)
+        stemRetentionMb = mb.coerceIn(0, 1_000_000)   // 0 = 不限制
         viewModelScope.launch { settingsStore.setStemRetention(stemRetentionMode, stemRetentionCount, stemRetentionMb) }
+        sweepStemCache()
     }
 
     /** 档位序号 → 处理器档位。UI 顺序是 **人声 / 原曲 / 伴奏**（0/1/2），与 MODE_* 数值不同，必须显式映射。 */
@@ -498,6 +552,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                             // P1-1：**先不点亮按钮**。缓存写好 ≠ 耳朵听到；要等处理器下一次
                             // 读缓存真的读到伴奏（见 init 里的轮询），那才是"开始淡入"。
                             karaokeAwaitingAudible = true
+                            // 刚产出一份新缓存 ⇒ 顺手按保留策略淘汰旧的（含"不限制"时直接跳过）
+                            sweepStemCache(dir)
                         } else {
                             karaokeState = next
                         }
