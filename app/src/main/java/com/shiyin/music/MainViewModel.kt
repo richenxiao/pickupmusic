@@ -244,7 +244,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      * key 形如 "pl:p3" / "album:<albumKey>" / "artist:<名字>" / "song:<trackId>"。
      * 消费方是 LibraryScreen 既有的「固定优先」排序（LibItem.pinned），不另造排序。
      */
-    var pinnedLibItems by mutableStateOf<Set<String>>(emptySet()); private set
+    /**
+     * v1.5.0 右滑固定：被用户固定的音乐库条目 key，**有序 —— index 0 = 最近固定**
+     * （用户 2026-10-15 规格："pinned 区置顶、后固定者在上"）。
+     * key 形如 "pl:p3" / "album:<albumKey>" / "artist:<名字>" / "song:<trackId>"。
+     * 消费方是 LibraryScreen 的「固定优先」排序（经 [pinnedRank]），不另造排序。
+     */
+    var pinnedLibItems by mutableStateOf<List<String>>(emptyList()); private set
     /**
      * v1.5.0 伴唱按钮的视觉状态。对应用户 2026-10-07 口述的「无底色 → 动画过渡到底色 →
      * 完成后变六边形」。**分离引擎尚未接入**，现在只会 Idle <-> Loading；Active 由引擎回写。
@@ -5862,10 +5868,20 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** v1.5.0 右滑固定：该条目当前是否已固定。 */
     fun isLibItemPinned(itemKey: String): Boolean = itemKey in pinnedLibItems
 
+    /**
+     * 排序位次：已固定者按"后固定者在上"给 0,1,2…；未固定者一律 [Int.MAX_VALUE]。
+     * 因为 Kotlin 的 `sortedBy` 是**稳定排序**，未固定者会保持各自原有的排序不变
+     * （规格："普通区原排序不变"），取消固定后也自然回到原位。
+     */
+    fun pinnedRank(itemKey: String): Int =
+        pinnedLibItems.indexOf(itemKey).let { if (it < 0) Int.MAX_VALUE else it }
+
     /** v1.5.0 右滑固定：提交固定 / 取消固定（内存态即时生效，落盘异步）。 */
     fun setLibItemPinned(itemKey: String, pinned: Boolean) {
         if (pinned == isLibItemPinned(itemKey)) return
-        pinnedLibItems = if (pinned) pinnedLibItems + itemKey else pinnedLibItems - itemKey
+        // 固定 ⇒ 插到最前（"后固定者在上"）；取消 ⇒ 移除，位次失效后自动回到普通区原位。
+        pinnedLibItems = if (pinned) listOf(itemKey) + pinnedLibItems.filter { it != itemKey }
+        else pinnedLibItems.filter { it != itemKey }
         viewModelScope.launch { settingsStore.setPinnedLibItem(itemKey, pinned) }
     }
     fun setDeepSeekKey(v: String) = viewModelScope.launch { settingsStore.setDeepSeekKey(v) }

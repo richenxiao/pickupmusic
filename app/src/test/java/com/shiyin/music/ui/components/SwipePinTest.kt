@@ -6,75 +6,74 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * v1.5.0 右滑固定 / 取消固定 —— 纯逻辑测试（重做版）。
+ * v1.5.0 右滑固定 / 取消固定 —— 纯逻辑测试。
  *
- * 重做的核心修正：固定/取消固定后条目**弹回正常位置**（restingReveal 恒为 0），
- * 固定状态靠"排序置顶 + 小图标"体现，不靠永久右偏移。
- * 旧版（18f0e7e）让固定条目永久停在 45% 屏宽的 reveal 位 → 用户实测"UI错乱"。
+ * 真源：用户 2026-10-15 对官方录屏 `固定.gif` 的逐帧核对规格。这些用例**把规格里的
+ * 数字钉住**（操作区宽度范围、阈值 40%），这样以后谁把常量改歪都会在这里失败，
+ * 而不是等真机上用手感发现——固定功能已经因为"悄悄改口径"返工过多次。
  */
 class SwipePinTest {
 
-    // ── 拖动 → reveal 映射 ────────────────────────────────────────────────
+    private val w = SwipePin.actionWidthPx(400f)   // 行宽 400 → 操作区 180
+
+    // ── 规格常量本身 ────────────────────────────────────────────────────────
 
     @Test
-    fun `向右拖_reveal从0到1`() {
-        val maxPx = 400f
-        assertEquals(0f, SwipePin.revealFromDrag(0f, maxPx))
-        assertEquals(0.5f, SwipePin.revealFromDrag(200f, maxPx), 0.001f)
-        assertEquals(1f, SwipePin.revealFromDrag(400f, maxPx), 0.001f)
+    fun `操作区宽度是行宽的45%`() {
+        // 用户 2026-10-16：「拉到页面宽度的一半」→ 再更正为「旧规格的宽度还行」⇒ 行宽 45%
+        assertEquals(0.45f, SwipePin.ACTION_WIDTH_FRACTION, 0.0001f)
+        assertEquals(180f, SwipePin.actionWidthPx(400f), 0.001f)
+        // 行宽未知时不得漏色、也不得提交
+        assertEquals(0f, SwipePin.actionWidthPx(0f), 0.001f)
+        assertEquals(0f, SwipePin.actionWidthPx(-5f), 0.001f)
+        assertFalse(SwipePin.shouldCommit(10f, SwipePin.actionWidthPx(0f)))
     }
 
     @Test
-    fun `不允许拖过最大reveal`() {
-        val maxPx = 400f
-        assertEquals(1f, SwipePin.revealFromDrag(999f, maxPx), 0.001f)
+    fun `提交阈值是操作区宽度的40%`() {
+        // 规格：THRESHOLD = 0.4 × ACTION_WIDTH
+        assertEquals(0.4f, SwipePin.COMMIT_THRESHOLD, 0.0001f)
+        assertFalse(SwipePin.shouldCommit(w * 0.4f - 1f, w))
+        assertTrue(SwipePin.shouldCommit(w * 0.4f, w))          // 达到即提交
+        assertTrue(SwipePin.shouldCommit(w * 0.6f, w))
     }
 
     @Test
-    fun `向左拖_reveal钳到0`() {
-        val maxPx = 400f
-        assertEquals(0f, SwipePin.revealFromDrag(-100f, maxPx), 0.001f)
+    fun `图钉尺寸约24dp`() {
+        assertTrue(SwipePin.PIN_ICON_DP in 20f..26f)
     }
 
-    // ── 松手提交阈值 ────────────────────────────────────────────────────────
+    // ── 拖动 → 露出宽度 ─────────────────────────────────────────────────────
 
     @Test
-    fun `松手过阈值_提交`() {
-        assertTrue(SwipePin.shouldCommit(0.5f))
-        assertTrue(SwipePin.shouldCommit(0.8f))
-        assertTrue(SwipePin.shouldCommit(1f))
+    fun `向右拖_露出宽度跟手`() {
+        assertEquals(0f, SwipePin.revealPxFromDrag(0f, w), 0.001f)
+        assertEquals(30f, SwipePin.revealPxFromDrag(30f, w), 0.001f)
+        assertEquals(w, SwipePin.revealPxFromDrag(w, w), 0.001f)
     }
 
     @Test
-    fun `松手未过阈值_不提交`() {
-        assertFalse(SwipePin.shouldCommit(0f))
-        assertFalse(SwipePin.shouldCommit(0.3f))
-        assertFalse(SwipePin.shouldCommit(0.49f))
+    fun `不允许拖过操作区宽度`() {
+        assertEquals(w, SwipePin.revealPxFromDrag(9999f, w), 0.001f)
     }
 
-    // ── 静止位置：始终弹回 0（重做的核心修正） ────────────────────────────────
+    @Test
+    fun `向左拖_钳到0`() {
+        assertEquals(0f, SwipePin.revealPxFromDrag(-100f, w), 0.001f)
+    }
+
+    @Test
+    fun `操作区宽度为0时不崩且不提交`() {
+        assertEquals(0f, SwipePin.revealPxFromDrag(50f, 0f), 0.001f)
+        assertFalse(SwipePin.shouldCommit(0f, 0f))
+        assertFalse(SwipePin.shouldCommit(50f, -1f))
+    }
+
+    // ── 静止位置 ────────────────────────────────────────────────────────────
 
     @Test
     fun `固定后弹回正常位置_不永久偏移`() {
         assertEquals(0f, SwipePin.restingReveal())
-    }
-
-    @Test
-    fun `取消固定后也弹回正常位置`() {
-        assertEquals(0f, SwipePin.restingReveal())
-    }
-
-    // ── 颜色插值进度 ────────────────────────────────────────────────────────
-
-    @Test
-    fun `进度0_颜色接近暗色`() {
-        // reveal=0 时 bg 应为暗色（几乎看不到操作色）
-        assertEquals(0f, SwipePin.colorProgress(0f), 0.001f)
-    }
-
-    @Test
-    fun `进度1_颜色到达最亮`() {
-        assertEquals(1f, SwipePin.colorProgress(1f), 0.001f)
     }
 
     // ── 手势仲裁（横 vs 竖） ────────────────────────────────────────────────

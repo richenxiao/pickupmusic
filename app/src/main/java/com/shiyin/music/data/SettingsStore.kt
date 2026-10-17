@@ -52,6 +52,15 @@ class SettingsStore(private val context: Context) {
     private val keyDisabledImageSources = stringSetPreferencesKey("disabled_image_sources")
 /** v1.5.0 右滑固定：被用户固定的音乐库条目 key（"pl:p3" / "album:<key>" / "artist:<name>" / "song:<id>"）。 */
 private val keyPinnedLibItems = stringSetPreferencesKey("pinned_lib_items")
+    /**
+     * **有序**固定列表（用户 2026-10-15 规格："pinned 区置顶、**后固定者在上**"）。
+     * Set 没有顺序，所以另存一条分隔字符串：index 0 = 最近固定。
+     * [keyPinnedLibItems] 保留作**迁移兜底**（用户设备上已有旧数据）。
+     */
+    private val keyPinnedOrder = stringPreferencesKey("pinned_lib_items_order")
+
+    /** 有序固定列表的分隔符（单元分隔符 U+0001；专辑/歌手名里不可能出现）。 */
+    private val PINNED_SEP = ""
     /** v1.3.2: 自定义写真源(JSON,见 CustomImageSourceCodec)。 */
     private val keyCustomImageSources = stringPreferencesKey("custom_image_sources")
     /** v22: 「检查更新」状态(JSON,见 UpdateStateCodec)——最近一次检查结果 + 已忽略版本。 */
@@ -140,8 +149,8 @@ private val keyPinnedLibItems = stringSetPreferencesKey("pinned_lib_items")
         val fanartApiKey: String,
         val lastfmApiKey: String,
         val disabledImageSources: Set<String>,
-        /** v1.5.0 右滑固定：被固定的音乐库条目 key 集合。 */
-        val pinnedLibItems: Set<String>,
+        /** v1.5.0 右滑固定：被固定的音乐库条目 key，**有序**（index 0 = 最近固定）。 */
+        val pinnedLibItems: List<String>,
         val customImageSources: List<com.shiyin.music.data.image.CustomImageSourceDef>,
         /** v1.3.x 歌词本:日语歌默认开振假名(默认 true)。 */
         val furiganaDefaultOn: Boolean,
@@ -214,7 +223,7 @@ private val keyPinnedLibItems = stringSetPreferencesKey("pinned_lib_items")
             fanartApiKey = p[keyFanartApiKey] ?: "",
             lastfmApiKey = p[keyLastfmApiKey] ?: "",
             disabledImageSources = p[keyDisabledImageSources] ?: emptySet(),
-            pinnedLibItems = p[keyPinnedLibItems] ?: emptySet(),
+            pinnedLibItems = readPinnedOrder(p),
             customImageSources = com.shiyin.music.data.image.CustomImageSourceCodec.decode(p[keyCustomImageSources] ?: ""),
             furiganaDefaultOn = p[keyFuriganaDefaultOn] ?: true,
             furiganaAutoVerify = p[keyFuriganaAutoVerify] ?: true,
@@ -290,8 +299,21 @@ private val keyPinnedLibItems = stringSetPreferencesKey("pinned_lib_items")
      * 固定状态本身由 LibraryScreen 的既有「固定优先」排序消费（LibItem.pinned）。
      */
     suspend fun setPinnedLibItem(itemKey: String, pinned: Boolean) = context.dataStore.edit { p ->
-        val cur = p[keyPinnedLibItems] ?: emptySet()
-        p[keyPinnedLibItems] = if (pinned) cur + itemKey else cur - itemKey
+        val cur = readPinnedOrder(p)
+        // 固定 ⇒ **插到最前**（"后固定者在上"）；取消 ⇒ 移除后自然回到普通排序的原位。
+        val next = if (pinned) listOf(itemKey) + cur.filter { it != itemKey }
+        else cur.filter { it != itemKey }
+        p[keyPinnedOrder] = PinnedOrder.encode(next)
+    }
+
+    /**
+     * 读有序固定列表；新键为空时**回退到旧的 Set 键**（迁移：用户设备上已有的固定数据
+     * 不能因为换了存储形态就丢掉；顺序未知，按 Set 的迭代序当顺序，可接受）。
+     */
+    private fun readPinnedOrder(p: androidx.datastore.preferences.core.Preferences): List<String> {
+        val ordered = PinnedOrder.decode(p[keyPinnedOrder])
+        if (ordered.isNotEmpty()) return ordered
+        return (p[keyPinnedLibItems] ?: emptySet()).toList()
     }
 
     /** v1.3.2: 保存全部自定义写真源(JSON,见 CustomImageSourceCodec)。 */

@@ -1,0 +1,64 @@
+package com.shiyin.music.data
+
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+/**
+ * 有序固定列表的编解码（用户 2026-10-15 规格："后固定者在上" 需要顺序，而 Set 存不了顺序）。
+ *
+ * 这些用例把**分隔符本身**也钉住：源码里写一个不可见控制字符很容易被工具链改坏/吞掉
+ * （本轮真踩过一次），所以用 [PinnedOrder.SEP_CODE] 显式码点，并在测试里断言它。
+ */
+class PinnedOrderTest {
+
+    @Test
+    fun `编码再解码_顺序不变`() {
+        val keys = listOf("song:7", "album:abc", "artist:周杰伦", "pl:p3")
+        assertEquals(keys, PinnedOrder.decode(PinnedOrder.encode(keys)))
+    }
+
+    @Test
+    fun `分隔符就是 U+0001 且只有一个字符`() {
+        val encoded = PinnedOrder.encode(listOf("a", "b"))
+        assertEquals(3, encoded.length)                  // a + sep + b
+        assertEquals(1, PinnedOrder.SEP_CODE)
+        assertEquals(PinnedOrder.SEP_CODE.toChar(), encoded[1])
+    }
+
+    @Test
+    fun `key 里含逗号或换行也不会被切开`() {
+        // 分隔符刻意不用逗号/换行：歌手名可能含逗号，标签值可能含换行
+        val keys = listOf("artist:A, B", "album:x\ny", "artist:AC/DC")
+        assertEquals(keys, PinnedOrder.decode(PinnedOrder.encode(keys)))
+    }
+
+    @Test
+    fun `空列表编码成空串`() {
+        assertEquals("", PinnedOrder.encode(emptyList()))
+        assertEquals(emptyList<String>(), PinnedOrder.decode(""))
+        assertEquals(emptyList<String>(), PinnedOrder.decode(null))
+    }
+
+    @Test
+    fun `脏数据里的空片段被过滤`() {
+        val sep = PinnedOrder.SEP_CODE.toChar()
+        // 连续分隔符（中间有空片段）
+        assertEquals(listOf("a", "b"), PinnedOrder.decode("a$sep${sep}b"))
+        // 首尾多余分隔符
+        assertEquals(listOf("a", "b"), PinnedOrder.decode("${sep}a${sep}b$sep"))
+    }
+
+    @Test
+    fun `编码时丢掉空字符串项`() {
+        assertEquals(listOf("a"), PinnedOrder.decode(PinnedOrder.encode(listOf("", "a"))))
+    }
+
+    @Test
+    fun `重复项保持两次出现_由调用方去重`() {
+        // 编解码本身不负责去重（去重语义在 VM 的 setLibItemPinned 里），这里只保证不丢数据
+        val keys = listOf("a", "b", "a")
+        assertEquals(keys, PinnedOrder.decode(PinnedOrder.encode(keys)))
+        assertTrue(PinnedOrder.decode(PinnedOrder.encode(keys)).size == 3)
+    }
+}

@@ -360,8 +360,8 @@ private fun LibraryRoot(
     val c = LocalOrganic.current
     val chip = vm.libChip
     val songsBase = if (chip == "songs") vm.sortedSongs() else emptyList()
-    // v1.5.0 右滑固定：固定先行——与 buildLibItems 末尾同一条规则，不另造排序
-    val songs = songsBase.sortedByDescending { vm.isLibItemPinned("song:${it.id}") }
+    // v1.5.0 右滑固定：固定先行 + **后固定者在上**——与 buildLibItems 末尾同一条规则（[pinnedRank]）
+    val songs = songsBase.sortedBy { vm.pinnedRank("song:${it.id}") }
     val items = if (chip == "songs") emptyList() else buildLibItems(vm)
 
     LazyColumn(
@@ -437,7 +437,7 @@ private fun LibraryRoot(
               SwipeToPin(
                 pinned = vm.isLibItemPinned("song:${t.id}"),
                 onPinnedChange = { p -> vm.setLibItemPinned("song:${t.id}", p) },
-                modifier = Modifier.animateItem(placementSpec = androidx.compose.animation.core.tween(220)),
+                modifier = Modifier.animateItem(placementSpec = androidx.compose.animation.core.tween(300, easing = androidx.compose.animation.core.LinearOutSlowInEasing)),
               ) {
                 TrackRow(
                     track = t,
@@ -448,6 +448,7 @@ private fun LibraryRoot(
                     onLongClick = { vm.trackMenuFor = t.id },
                     trailing = { TrackMenuButton(vm, t) },
                     isHiddenTrack = vm.isHidden(t.id),
+                    pinned = vm.isLibItemPinned("song:${t.id}"),
                 )
               }
             }
@@ -459,9 +460,9 @@ private fun LibraryRoot(
                 SwipeToPin(
                     pinned = item.pinned,
                     onPinnedChange = { p -> vm.setLibItemPinned(item.key, p) },
-                    // 「我的喜欢」是永久固定，不参与右滑（避免误"取消固定"）
-                    enabled = !item.isHeart && item.key.isNotEmpty(),
-                    modifier = Modifier.animateItem(placementSpec = androidx.compose.animation.core.tween(220)),
+                    // 用户 2026-10-16「喜欢歌单取消默认固定」⇒ 它也能右滑固定/取消，不再永久固定
+                    enabled = item.key.isNotEmpty(),
+                    modifier = Modifier.animateItem(placementSpec = androidx.compose.animation.core.tween(300, easing = androidx.compose.animation.core.LinearOutSlowInEasing)),
                 ) { MixedListRow(vm, item) }
             }
         } else {
@@ -518,7 +519,7 @@ private fun buildLibItems(vm: MainViewModel): List<LibItem> {
                     add(
                         LibItem(
                             p.name, "${prefix("歌单")}$count 首", c.a400, Color.White, "♥",
-                            RoundedCornerShape(10.dp), isHeart = true, pinned = true, key = "pl:${p.id}",
+                            RoundedCornerShape(10.dp), isHeart = true, pinned = vm.isLibItemPinned("pl:${p.id}"), key = "pl:${p.id}",
                         ) { vm.openPlaylist(p.id) }
                     )
                 } else {
@@ -578,7 +579,10 @@ private fun buildLibItems(vm: MainViewModel): List<LibItem> {
         list.sortedWith(compareBy(collator) { it.title })
     } else list
     val pinned = sorted.filter { it.pinned }
-    return pinned + sorted.filterNot { it.pinned }
+    val rest = sorted.filterNot { it.pinned }
+    // pinned 区内部 **后固定者在上**（用户 2026-10-15 规格）。用户 2026-10-16 又要求
+    // 「喜欢歌单取消默认固定」⇒ 它不再有特权，与其它条目同一把尺子（纯按 [pinnedRank]）。
+    return pinned.sortedBy { vm.pinnedRank(it.key.ifEmpty { it.title }) } + rest
 }
 
 @Composable
@@ -668,7 +672,14 @@ private fun MixedListRow(vm: MainViewModel, item: LibItem) {
         }
         Column(Modifier.weight(1f)) {
             Text(item.title, style = body(15f, FontWeight.Bold, c.text), maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Text(item.sub, style = body(12.5f, FontWeight.Normal, c.n600), modifier = Modifier.padding(top = 2.dp), maxLines = 1)
+            // 用户 2026-10-16：图钉放**第二行（类型行）的第一个位置**，如 `📌 专辑*周杰伦`
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.padding(top = 2.dp),
+            ) {
+                if (item.pinned) com.shiyin.music.ui.components.PinnedMark(Modifier.padding(end = 6.dp))
+                Text(item.sub, style = body(12.5f, FontWeight.Normal, c.n600), maxLines = 1)
+            }
         }
         OIcon(Lucide.ChevronRight, 17.dp, c.n400)
     }
