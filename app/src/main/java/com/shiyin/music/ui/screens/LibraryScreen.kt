@@ -360,7 +360,7 @@ private fun LibraryRoot(
     val c = LocalOrganic.current
     val chip = vm.libChip
     val songsBase = if (chip == "songs") vm.sortedSongs() else emptyList()
-    // v1.5.0 右滑固定：固定先行 + **后固定者在上**——与 buildLibItems 末尾同一条规则（[pinnedRank]）
+    // v1.5.0 右滑固定：固定先行 + **先固定者在上**——与 buildLibItems 末尾同一条规则（[pinnedRank]）
     val songs = songsBase.sortedBy { vm.pinnedRank("song:${it.id}") }
     val items = if (chip == "songs") emptyList() else buildLibItems(vm)
 
@@ -580,8 +580,8 @@ private fun buildLibItems(vm: MainViewModel): List<LibItem> {
     } else list
     val pinned = sorted.filter { it.pinned }
     val rest = sorted.filterNot { it.pinned }
-    // pinned 区内部 **后固定者在上**（用户 2026-10-15 规格）。用户 2026-10-16 又要求
-    // 「喜欢歌单取消默认固定」⇒ 它不再有特权，与其它条目同一把尺子（纯按 [pinnedRank]）。
+    // pinned 区内部 **先固定者在上**（用户 2026-10-18 更正；旧规格是"后固定者在上"）。
+    // 用户 2026-10-16 另要求「喜欢歌单取消默认固定」⇒ 它不再有特权，与其它条目同一把尺子。
     return pinned.sortedBy { vm.pinnedRank(it.key.ifEmpty { it.title }) } + rest
 }
 
