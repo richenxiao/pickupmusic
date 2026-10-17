@@ -61,4 +61,48 @@ class PinnedOrderTest {
         assertEquals(keys, PinnedOrder.decode(PinnedOrder.encode(keys)))
         assertTrue(PinnedOrder.decode(PinnedOrder.encode(keys)).size == 3)
     }
+
+    // ── 排序规则（用户 2026-10-18 更正为"先固定者在上"）─────────────────────
+
+    @Test
+    fun `先固定的排在前面_后固定追加到末尾`() {
+        var cur = emptyList<String>()
+        cur = PinnedOrder.applyPin(cur, "第一个固定的", pinned = true)
+        cur = PinnedOrder.applyPin(cur, "第二个固定的", pinned = true)
+        cur = PinnedOrder.applyPin(cur, "第三个固定的", pinned = true)
+        assertEquals(
+            "index 0 必须在最上 ⇒ 最先固定的排第一（旧版是后固定者在上，已更正）",
+            listOf("第一个固定的", "第二个固定的", "第三个固定的"), cur,
+        )
+    }
+
+    @Test
+    fun `取消固定只移除_其余顺序不变`() {
+        val cur = listOf("a", "b", "c")
+        assertEquals(listOf("a", "c"), PinnedOrder.applyPin(cur, "b", pinned = false))
+        assertEquals(listOf("a", "b", "c"), PinnedOrder.applyPin(cur, "不在列表里的", pinned = false))
+    }
+
+    @Test
+    fun `对已固定的项再固定一次_原位不动`() {
+        // 幂等：否则用户误触一次就会把条目莫名挪到末尾
+        val cur = listOf("a", "b", "c")
+        assertEquals(cur, PinnedOrder.applyPin(cur, "b", pinned = true))
+    }
+
+    @Test
+    fun `空 key 不参与排序`() {
+        val cur = listOf("a")
+        assertEquals(cur, PinnedOrder.applyPin(cur, "", pinned = true))
+        assertEquals(cur, PinnedOrder.applyPin(cur, "", pinned = false))
+    }
+
+    @Test
+    fun `取消后再固定_会排到末尾`() {
+        var cur = listOf("a", "b", "c")
+        cur = PinnedOrder.applyPin(cur, "a", pinned = false)   // 取消 a
+        assertEquals(listOf("b", "c"), cur)
+        cur = PinnedOrder.applyPin(cur, "a", pinned = true)    // 再固定 a
+        assertEquals("重新固定 = 新的一次固定 ⇒ 排在末尾", listOf("b", "c", "a"), cur)
+    }
 }

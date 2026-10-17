@@ -5959,9 +5959,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** v1.5.0 右滑固定：提交固定 / 取消固定（内存态即时生效，落盘异步）。 */
     fun setLibItemPinned(itemKey: String, pinned: Boolean) {
         if (pinned == isLibItemPinned(itemKey)) return
-        // 固定 ⇒ 插到最前（"后固定者在上"）；取消 ⇒ 移除，位次失效后自动回到普通区原位。
-        pinnedLibItems = if (pinned) listOf(itemKey) + pinnedLibItems.filter { it != itemKey }
-        else pinnedLibItems.filter { it != itemKey }
+        // 规则在 [com.shiyin.music.data.PinnedOrder.applyPin] 一处定义：
+        // **先固定者在上**（用户 2026-10-18 更正；旧版是"后固定者在上"）。
+        pinnedLibItems = com.shiyin.music.data.PinnedOrder.applyPin(pinnedLibItems, itemKey, pinned)
         viewModelScope.launch { settingsStore.setPinnedLibItem(itemKey, pinned) }
     }
     fun setDeepSeekKey(v: String) = viewModelScope.launch { settingsStore.setDeepSeekKey(v) }

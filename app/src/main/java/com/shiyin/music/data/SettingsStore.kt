@@ -302,10 +302,8 @@ private val keyPinnedLibItems = stringSetPreferencesKey("pinned_lib_items")
      */
     suspend fun setPinnedLibItem(itemKey: String, pinned: Boolean) = context.dataStore.edit { p ->
         val cur = readPinnedOrder(p)
-        // 固定 ⇒ **插到最前**（"后固定者在上"）；取消 ⇒ 移除后自然回到普通排序的原位。
-        val next = if (pinned) listOf(itemKey) + cur.filter { it != itemKey }
-        else cur.filter { it != itemKey }
-        p[keyPinnedOrder] = PinnedOrder.encode(next)
+        // 规则在 [PinnedOrder.applyPin] 一处定义：**先固定者在上**（用户 2026-10-18 更正）。
+        p[keyPinnedOrder] = PinnedOrder.encode(PinnedOrder.applyPin(cur, itemKey, pinned))
     }
 
     /**
