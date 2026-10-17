@@ -44,8 +44,10 @@ enum class MdxModel(
     val urlOfficial: List<String>,
 ) {
     // 9482 = vocals 模型：伴奏 = 原曲 − 人声×compensate
+    // ⚠️ 名字里**不再带「（默认·人声模型）」这类后缀** —— 铭牌已经写了"人声/伴奏"、"默认"，
+    //    再写一遍就是牛皮癣（用户 2026-10-17 明确要求去掉）。
     M9482(
-        "mdx_9482", "9482（默认·人声模型）", "UVR_MDXNET_9482.onnx", bundled = true,
+        "mdx_9482", "9482", "UVR_MDXNET_9482.onnx", bundled = true,
         nFft = 6144, hop = 1024, dimF = 2048, dimT = 256,
         predictsInstrumental = false, compensate = 1.035f,
         sizeBytes = 29_704_436L,
@@ -59,7 +61,7 @@ enum class MdxModel(
     ),
     // Inst_HQ_3 = instrumental 模型：伴奏 = 模型输出（原样）
     INST_HQ_3(
-        "inst_hq_3", "Inst_HQ_3（伴奏模型）", "UVR-MDX-NET-Inst_HQ_3.onnx", bundled = false,
+        "inst_hq_3", "Inst_HQ_3", "UVR-MDX-NET-Inst_HQ_3.onnx", bundled = false,
         nFft = 6144, hop = 1024, dimF = 3072, dimT = 256,
         predictsInstrumental = true, compensate = 1.022f,
         sizeBytes = 66_759_214L,
@@ -75,7 +77,7 @@ enum class MdxModel(
     ),
     // Voc_FT = vocals 模型（n_fft 与另两个不同）
     VOC_FT(
-        "voc_ft", "Voc_FT（人声模型）", "UVR-MDX-NET-Voc_FT.onnx", bundled = false,
+        "voc_ft", "Voc_FT", "UVR-MDX-NET-Voc_FT.onnx", bundled = false,
         nFft = 7680, hop = 1024, dimF = 3072, dimT = 256,
         predictsInstrumental = false, compensate = 1.021f,
         sizeBytes = 66_762_490L,
@@ -93,6 +95,13 @@ enum class MdxModel(
 
     /** 输出的是哪一轨（给设置页做铭牌）。 */
     val stemLabel: String get() = if (predictsInstrumental) "伴奏" else "人声"
+
+    /** 按**下载渠道**给出该试的顺序（见 [DownloadChannel]）。 */
+    fun urlsFor(channel: DownloadChannel): List<String> = when (channel) {
+        DownloadChannel.AUTO -> urlDomestic + urlOfficial
+        DownloadChannel.DOMESTIC -> urlDomestic
+        DownloadChannel.OFFICIAL -> urlOfficial
+    }
 
     /**
      * **模型能表示的最高频率**（Hz）= `(dim_f − 1) × 采样率 / n_fft`。

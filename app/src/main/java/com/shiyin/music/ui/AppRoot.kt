@@ -1519,7 +1519,7 @@ private fun PlayerMenuSheetContent(vm: MainViewModel) {
                 // 未开启伴唱功能时整行隐藏（与歌词页入口的隐藏条件一致）。
                 if (vm.karaokeEnabled) {
                     SheetActionRow(
-                        Lucide.Mic, "伴唱",
+                        Lucide.Music, "伴唱",
                         trailing = {
                             if (vm.karaokeState != com.shiyin.music.ui.components.KaraokeButtonState.Idle) {
                                 Text(

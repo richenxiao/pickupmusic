@@ -113,6 +113,8 @@ private val keyPinnedLibItems = stringSetPreferencesKey("pinned_lib_items")
     private val keyStemRetentionMode = stringPreferencesKey("stem_retention_mode")
     private val keyStemRetentionCount = intPreferencesKey("stem_retention_count")
     private val keyStemRetentionMb = intPreferencesKey("stem_retention_mb")
+    /** 伴唱模型下载渠道（AUTO=国内优先 / DOMESTIC / OFFICIAL）。 */
+    private val keyKaraokeDownloadChannel = stringPreferencesKey("karaoke_download_channel")
     /** v1.5.0 A56:歌词"制作人行"跳过翻译(默认开)。作词/作曲/编曲/XX演奏 等不译。 */
     private val keySkipCreditsTranslation = booleanPreferencesKey("skip_credits_translation")
     // v1.5.0 A62：歌手栏是否隐藏"客串歌手"（只参与合作、无个人作品）。默认开。
@@ -348,7 +350,7 @@ private val keyPinnedLibItems = stringSetPreferencesKey("pinned_lib_items")
             com.shiyin.music.data.karaoke.RetentionMode.valueOf(p[keyStemRetentionMode] ?: "")
         }.getOrDefault(com.shiyin.music.data.karaoke.RetentionMode.COUNT)
         val count = (p[keyStemRetentionCount] ?: 10).coerceIn(1, 200)
-        val mb = (p[keyStemRetentionMb] ?: 600).coerceIn(100, 20_000)
+        val mb = (p[keyStemRetentionMb] ?: 600).coerceIn(0, 1_000_000)   // 0 = 不限制
         return Triple(mode, count, mb)
     }
 
@@ -357,8 +359,17 @@ private val keyPinnedLibItems = stringSetPreferencesKey("pinned_lib_items")
     ) = context.dataStore.edit {
         it[keyStemRetentionMode] = mode.name
         it[keyStemRetentionCount] = count.coerceIn(1, 200)
-        it[keyStemRetentionMb] = mb.coerceIn(100, 20_000)
+        // mb = 0 表示**不限制**（用户 2026-10-17 要的第四个预设），所以下限放到 0
+        it[keyStemRetentionMb] = mb.coerceIn(0, 1_000_000)
     }
+
+    /** 伴唱模型下载渠道（自动 / 国内镜像 / 官方直连）。 */
+    suspend fun karaokeDownloadChannel(): com.shiyin.music.data.karaoke.DownloadChannel =
+        com.shiyin.music.data.karaoke.DownloadChannel
+            .byName(context.dataStore.data.first()[keyKaraokeDownloadChannel])
+
+    suspend fun setKaraokeDownloadChannel(c: com.shiyin.music.data.karaoke.DownloadChannel) =
+        context.dataStore.edit { it[keyKaraokeDownloadChannel] = c.name }
     /** v1.5.0 A56 制作人行跳过翻译写入。 */
     suspend fun setSkipCreditsTranslation(v: Boolean) = context.dataStore.edit { it[keySkipCreditsTranslation] = v }
 
