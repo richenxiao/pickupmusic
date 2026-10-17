@@ -1701,8 +1701,11 @@ private fun KaraokeSettingsScreen(vm: MainViewModel, scrollStates: MutableMap<St
                         }
                     }
                     Row(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        KaraokeAction(if (isDefault) "当前默认" else "设为默认", !isDefault) {
-                            vm.setKaraokeModelId(m.id)
+                        // 已经是默认 ⇒ **不放按钮**（上面那个「默认」徽章已经说清了）。
+                        // 之前这里放一个灰色的"当前默认"、旁边是橙色的"设为默认"，
+                        // 分不清哪个是**状态**哪个是**能点的动作**（用户 2026-10-17 指出）。
+                        if (!isDefault) {
+                            KaraokeAction("设为默认", true) { vm.setKaraokeModelId(m.id) }
                         }
                         if (!installed || broken) {
                             KaraokeAction(if (broken) "重新下载" else "下载", vm.karaokeDownloadId == null) {
