@@ -86,7 +86,7 @@ private const val PROBE_POST_FLUSH = 5
  * sink 诊断（闸门 1 准备项 a）：**换条目 / seek / configure 之后**详打几个 buffer。
  * 边界附近的头几块才是有信息量的（能看到新条目的 pts 起点）；稳态每块都打会淹掉日志。
  */
-private const val BUFFER_LOGS_AT_BOUNDARY = 5
+private const val BUFFER_LOGS_AT_BOUNDARY = 8
 
 /**
  * 静音看门狗（闸门 3 / A74）的判据阈值。
@@ -1561,9 +1561,16 @@ class KaraokeAnchoringSink(
     ) {
         lastPtsUs = Long.MIN_VALUE
         bufferLogsLeft = BUFFER_LOGS_AT_BOUNDARY
+        // P0-2 取证：**MP3 对齐查的就是这里**。
+        // `encoderDelay/encoderPadding` 是"要不要裁掉编码器填充"的元数据 —— 它来自容器
+        // （MP3 的 LAME/Xing 标签、或 MediaExtractor 的判断）。有没有它、值是多少，
+        // 直接决定"我们收到的第一个 PCM 样本到底是文件的第几帧"。
+        // 之前只能靠猜"623 帧是不是编码器延迟"，现在把源头数字打出来。
         log(
             "configure ${inputFormat.sampleRate}Hz ${inputFormat.channelCount}ch " +
                 "enc=${inputFormat.sampleMimeType} 内层sink=$innerSinkName " +
+                "**encoderDelay=${inputFormat.encoderDelay} encoderPadding=${inputFormat.encoderPadding}** " +
+                "id=${inputFormat.id} label=${inputFormat.label} " +
                 "（处理器此前已过帧=${processor.framesSeen}）",
         )
         super.configure(inputFormat, specifiedBufferSize, outputChannels)
