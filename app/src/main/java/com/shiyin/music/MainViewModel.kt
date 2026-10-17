@@ -383,6 +383,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** 进伴唱设置页时刷新：模型安装状态 + 缓存占用 + 保留策略 + 下载渠道。 */
     fun refreshKaraokeSettings() {
         importPushedModels()
+        // 追加 B：**引擎版本不匹配的缓存永远读不到** —— 别让它占空间、也别占"保留 N 首"的名额
+        val purged = runCatching { stemCache.purgeStaleEngines() }.getOrDefault(0)
+        if (purged > 0) appendProbeLog("[缓存] 清理了 $purged 个旧引擎版本的变体目录")
         val store = karaokeModelStore
         val all = com.shiyin.music.data.karaoke.MdxModel.values()
         karaokeModelsInstalled = all.filter { store.isInstalled(it) }.map { it.id }.toSet()

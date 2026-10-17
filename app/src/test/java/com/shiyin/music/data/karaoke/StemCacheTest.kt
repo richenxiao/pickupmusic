@@ -150,4 +150,54 @@ class StemCacheTest {
         assertTrue(c.deleteModel(keys[1], "m"))
         assertTrue(c.cachedSongs().isEmpty())
     }
+
+    // ── 追加 B：旧引擎版本的缓存要自动清掉（用户 2026-10-18 要求）─────────────
+
+    /** 造一个变体目录（只放一个块 + manifest）。 */
+    private fun makeVariant(c: StemCache, k: StemCache.SourceKey, modelId: String, ver: String, engine: Int) {
+        val dir = c.variantDir(k, modelId, ver, engineVersion = engine)
+        c.writeChunk(dir, 0, shorts(8, 1))
+        c.writeManifest(dir, modelId, ver, k.fingerprint, 4, 1, complete = true, lastAccess = 1L)
+    }
+
+    @Test
+    fun `旧引擎版本的变体被清掉_当前版本保留`() {
+        val c = cache()
+        val k = key("purge1")
+        makeVariant(c, k, "mdx_9482", "1", engine = StemCache.ENGINE_VERSION - 1)
+        makeVariant(c, k, "mdx_9482", "1", engine = StemCache.ENGINE_VERSION)
+
+        assertEquals("只有一个旧版本目录该被清", 1, c.purgeStaleEngines())
+        val left = c.cachedSongs()
+        assertEquals(1, left.size)
+        assertTrue("当前版本的缓存必须还在", c.readManifest(
+            c.variantDir(k, "mdx_9482", "1", StemCache.ENGINE_VERSION),
+        ) != null)
+    }
+
+    @Test
+    fun `清干净后空壳源目录一并删掉`() {
+        val c = cache()
+        val k = key("purge2")
+        makeVariant(c, k, "mdx_9482", "1", engine = 1)   // 冒充旧版本
+        // 只有旧版本 ⇒ 源目录清空后应被删掉，不留空壳
+        c.purgeStaleEngines(current = 999)
+        assertTrue("空壳源目录不该留下", c.cachedSongs().isEmpty())
+    }
+
+    @Test
+    fun `解析不出版本号的目录不删_宁可留着`() {
+        val c = cache()
+        val k = key("purge3")
+        val weird = File(c.sourceDir(k), "mdx_9482/not-a-version")
+        weird.mkdirs()
+        File(weird, "c00000.pcm").writeBytes(ByteArray(16))
+        assertEquals("认不出来的目录一律不动", 0, c.purgeStaleEngines())
+        assertTrue(weird.isDirectory)
+    }
+
+    @Test
+    fun `没有缓存时清理是空操作`() {
+        assertEquals(0, cache().purgeStaleEngines())
+    }
 }

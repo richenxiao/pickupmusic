@@ -277,6 +277,37 @@ class StemCache(private val root: File) {
         return n
     }
 
+    /**
+     * **清掉引擎版本不一致的缓存**（追加 B，用户 2026-10-18 要求）。
+     *
+     * 为什么要自动清：`ENGINE_VERSION` 一变，旧缓存的内容口径就不一样了（比如 P0-1 升调修复
+     * 让 e1 的**非 44.1k 缓存整体作废**）。它们**永远不会再被读到**，却还占着几百 MB，
+     * 而且会挤占"保留最近 N 首"的名额 —— 于情于理都该清掉。
+     *
+     * 目录结构：`<root>/<源目录>/<modelId>/<modelVersion>-e<engineVersion>`。
+     * 只删变体目录；源目录/模型目录清空后一并删掉（否则留一堆空壳）。
+     *
+     * @return 删掉的变体目录数
+     */
+    fun purgeStaleEngines(current: Int = ENGINE_VERSION): Int {
+        val sources = root.listFiles()?.filter { it.isDirectory } ?: return 0
+        var removed = 0
+        for (sd in sources) {
+            val models = sd.listFiles()?.filter { it.isDirectory } ?: continue
+            for (md in models) {
+                val variants = md.listFiles()?.filter { it.isDirectory } ?: continue
+                for (vd in variants) {
+                    // 目录名形如 `1-e2`；解析不出来就当不是我们的目录，**不删**（宁可留着）
+                    val e = vd.name.substringAfterLast("-e", "").toIntOrNull() ?: continue
+                    if (e != current && vd.deleteRecursively()) removed++
+                }
+                if (md.listFiles()?.isEmpty() != false) md.delete()
+            }
+            if (sd.listFiles()?.isEmpty() != false) sd.delete()
+        }
+        return removed
+    }
+
     fun usageBytes(): Long {
         var total = 0L
         root.walkTopDown().forEach { if (it.isFile) total += it.length() }
