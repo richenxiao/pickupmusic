@@ -376,6 +376,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     /** 进伴唱设置页时刷新：模型安装状态 + 缓存占用 + 保留策略 + 下载渠道。 */
     fun refreshKaraokeSettings() {
+        importPushedModels()
         val store = karaokeModelStore
         val all = com.shiyin.music.data.karaoke.MdxModel.values()
         karaokeModelsInstalled = all.filter { store.isInstalled(it) }.map { it.id }.toSet()
@@ -385,6 +386,29 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             val (m, cnt, mb) = settingsStore.stemRetention()
             stemRetentionMode = m; stemRetentionCount = cnt; stemRetentionMb = mb
             karaokeDownloadChannel = settingsStore.karaokeDownloadChannel()
+        }
+    }
+
+    /**
+     * **离线导入**：如果有人把模型文件放进了
+     * `Android/data/com.shiyin.music/files/models/`（比如用数据线拷进去的），
+     * 进这个页面就自动装好。
+     *
+     * 为什么要有这条路：实测某些网络下所有镜像都只有 ~0.2 MB/s，68MB 要 7 分钟还常被掐断；
+     * 而数据线拷 133MB 只要 5 秒。默认走网络，但**别把人堵死在网络上**。
+     * 照样校验 sha256 —— 拷过来的文件也可能坏。
+     */
+    private fun importPushedModels() {
+        val ext = getApplication<Application>().getExternalFilesDir(null) ?: return
+        val srcDir = java.io.File(ext, "models")
+        if (!srcDir.isDirectory) return
+        for (m in com.shiyin.music.data.karaoke.MdxModel.values()) {
+            if (karaokeModelStore.isInstalled(m)) continue
+            val f = java.io.File(srcDir, m.assetName)
+            if (!f.isFile) continue
+            if (karaokeModelStore.installFromFile(f, m)) {
+                appendProbeLog("[模型] 已从外部目录导入 ${m.assetName}")
+            }
         }
     }
 

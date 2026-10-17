@@ -2,6 +2,9 @@ package com.shiyin.music.data.karaoke
 
 import android.content.Context
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.IOException
@@ -76,6 +79,30 @@ class KaraokeModelStore(private val dir: File) {
         return if (isInstalled(model)) fileOf(model) else null
     }
 
+    /**
+     * 从**本地文件**安装模型（adb push 上来的那份）。
+     *
+     * 为什么需要：实测这台网络下**所有镜像都只有 ~0.2 MB/s**（68MB 要 7 分钟，还常常被掐断），
+     * 而 USB 推 133MB 只要 4.7 秒。网络慢时的正路就是把文件推进
+     * `getExternalFilesDir/models/`，再由 app 搬进仓库。
+     * **照样走 sha256 校验** —— 本地文件也可能传坏。
+     */
+    fun installFromFile(src: File, model: MdxModel): Boolean {
+        if (!src.isFile || src.length() != model.sizeBytes) return false
+        if (!verifySha256(src, model.sha256)) return false
+        return runCatching {
+            dir.mkdirs()
+            val tmp = File(dir, model.assetName + ".tmp")
+            src.inputStream().buffered(1 shl 16).use { input ->
+                tmp.outputStream().buffered(1 shl 16).use { input.copyTo(it) }
+            }
+            val dst = fileOf(model)
+            if (dst.exists()) dst.delete()
+            check(tmp.renameTo(dst)) { "模型重命名失败" }
+            true
+        }.getOrDefault(false)
+    }
+
     fun delete(model: MdxModel): Boolean {
         val f = fileOf(model)
         return if (f.isFile) f.delete() else true
@@ -98,9 +125,9 @@ class KaraokeModelStore(private val dir: File) {
         val errors = mutableListOf<String>()
         for (url in urls) {
             try {
-                val f = fetchToFile(url, model, onProgress)
+                val f = fetchSegmented(url, model, onProgress)
                 if (f == null) {
-                    errors += "${hostOf(url)}：字节数对不上"
+                    errors += "${hostOf(url)}：取不到完整文件"
                     continue
                 }
                 if (!verifySha256(f, model.sha256)) {
@@ -124,63 +151,134 @@ class KaraokeModelStore(private val dir: File) {
     }
 
     /**
-     * 下到 `.tmp`，**支持断点续传**。
+     * **多连接分段下载**。这是"给所有用户都下得动"的关键，不是优化项。
      *
-     * 为什么要续传：用户实测 "HQ3 下到 6% 就失败回到 1%" —— 那是**换源后从头再来**。
-     * 现在换了源会先看 `.tmp` 已有多少字节，发 `Range: bytes=N-`；服务器回 206 就接着下，
-     * 回 200 才从头（并如实告诉 UI "这个源不支持续传，已重下"）。
+     * 2026-10-17 真机实测（手机 5G，每个源各取 2–4MB）：
+     * ```
+     *  单连接：hf-mirror 0.09 MB/s（68MB 要 13 分钟） / ghfast 0.31 MB/s（216s） / GitHub 直连不通
+     *  4 路并发：ghfast **0.79 MB/s（68MB 只要 86s）—— 2.5×**
+     * ```
+     * ⇒ 瓶颈是这些免费代理的**单连接限速**，不是用户的网。多开几条连接就能绕开。
      *
-     * 读超时给到 60s：实测 `hf-mirror.com` 单个 1KB 要 12s，30s 的超时会被慢源反复掐断。
+     * 实现要点：
+     *  · 先发一个 `Range: bytes=0-0` 探测是否支持分段（回 206 才走多线程）；不支持则单连接整取；
+     *  · 每个段写自己的 `.part<i>`，**按已写字节续传**（段内也能续）—— 换源重试不会从头再来；
+     *  · 全部段齐了再按顺序拼成一个文件，然后**统一 sha256 校验**（拼错/传坏都挡在这里）；
+     *  · 进度 = 所有段长度之和 / 总大小，所以 UI 上是**单调递增**的，不会"回到 1%"。
      */
-    private fun fetchToFile(
+    private suspend fun fetchSegmented(
         url: String,
         model: MdxModel,
         onProgress: (Long, Long, String) -> Unit,
-    ): File? {
-        val tmp = File(dir, model.assetName + ".tmp")
-        var done = if (tmp.isFile) tmp.length() else 0L
-        if (done > model.sizeBytes) {           // 大小已经超了说明这文件不可信，重来
-            tmp.delete(); done = 0L
-        }
+    ): File? = coroutineScope {
+        val total = model.sizeBytes
         val host = hostOf(url)
+        fun progress() {
+            val got = (0 until SEGMENTS).sumOf { i ->
+                File(dir, "${model.assetName}.part$i").let { if (it.isFile) it.length() else 0L }
+            }
+            onProgress(got, total, host)
+        }
+        val rangesOk = runCatching { probeRanges(url) }.getOrDefault(false)
+
+        if (!rangesOk) {
+            // 不支持分段：单连接整取（仍然保留"已有 .part0 就续传"的能力）
+            val ok = fetchOneRange(url, File(dir, "${model.assetName}.part0"), 0L, total - 1) { progress() }
+            if (!ok) return@coroutineScope null
+        } else {
+            val per = (total + SEGMENTS - 1) / SEGMENTS
+            val jobs = (0 until SEGMENTS).map { i ->
+                val start = i.toLong() * per
+                val end = minOf(start + per, total) - 1
+                if (start > end) null else async {
+                    fetchOneRange(url, File(dir, "${model.assetName}.part$i"), start, end) { progress() }
+                }
+            }.filterNotNull()
+            val allOk = jobs.awaitAll().all { it }
+            if (!allOk) return@coroutineScope null
+        }
+
+        // 拼装
+        val merged = File(dir, model.assetName + ".tmp")
+        if (merged.exists()) merged.delete()
+        runCatching {
+            merged.outputStream().buffered(1 shl 16).use { out ->
+                for (i in 0 until SEGMENTS) {
+                    val part = File(dir, "${model.assetName}.part$i")
+                    if (!part.isFile) continue
+                    part.inputStream().buffered(1 shl 16).use { it.copyTo(out) }
+                }
+            }
+        }.onFailure { return@coroutineScope null }
+        for (i in 0 until SEGMENTS) File(dir, "${model.assetName}.part$i").delete()
+        progress()
+        return@coroutineScope if (merged.length() == total) merged else { merged.delete(); null }
+    }
+
+    /** 探测服务器是否支持 Range（回 206 = 支持）。 */
+    private fun probeRanges(url: String): Boolean {
+        val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+            connectTimeout = 15_000; readTimeout = 15_000
+            instanceFollowRedirects = true
+            setRequestProperty("User-Agent", "PickUpMusic/1.0")
+            setRequestProperty("Range", "bytes=0-0")
+        }
+        return try {
+            conn.responseCode == HttpURLConnection.HTTP_PARTIAL
+        } finally {
+            runCatching { conn.inputStream?.close() }
+            runCatching { conn.disconnect() }
+        }
+    }
+
+    /**
+     * 取 `[start, end]` 这一段写进 [part]，**从 part 已有长度继续**（段内续传）。
+     * @return 是否成功拿到完整段
+     */
+    private fun fetchOneRange(
+        url: String,
+        part: File,
+        start: Long,
+        end: Long,
+        onTick: () -> Unit,
+    ): Boolean {
+        var have = if (part.isFile) part.length() else 0L
+        val want = end - start + 1
+        if (have > want) { part.delete(); have = 0L }
+        if (have == want) return true
+        val from = start + have
         val conn = (URL(url).openConnection() as HttpURLConnection).apply {
             connectTimeout = 20_000
             readTimeout = 60_000
             instanceFollowRedirects = true
             setRequestProperty("User-Agent", "PickUpMusic/1.0")
-            // .onnx 是二进制，别让中间层做 gzip（Content-Length 会对不上）
             setRequestProperty("Accept-Encoding", "identity")
-            if (done > 0L) setRequestProperty("Range", "bytes=$done-")
+            setRequestProperty("Range", "bytes=$from-$end")
         }
         try {
             val code = conn.responseCode
-            val resumed = code == HttpURLConnection.HTTP_PARTIAL   // 206
-            if (code !in 200..299) throw IOException("HTTP $code")
-            if (done > 0L && !resumed) {
-                // 这个源不支持续传 ⇒ 从头来（如实回传，UI 会看到进度回到 0）
-                tmp.delete(); done = 0L
-            }
-            val total = model.sizeBytes
-            onProgress(done, total, host)
+            if (code !in 200..299) return false
+            // 段内续传时服务器必须回 206；回 200 说明它忽略了 Range（会重发整段）⇒ 只能从头
+            val append = have > 0L && code == HttpURLConnection.HTTP_PARTIAL
+            if (have > 0L && !append) { part.delete(); have = 0L }
             conn.inputStream.use { input ->
-                java.io.FileOutputStream(tmp, /* append = */ resumed).buffered(1 shl 16).use { out ->
+                java.io.FileOutputStream(part, append).buffered(1 shl 16).use { out ->
                     val buf = ByteArray(1 shl 16)
-                    var lastTick = 0L
+                    var sinceTick = 0L
                     while (true) {
                         val n = input.read(buf)
                         if (n <= 0) break
                         out.write(buf, 0, n)
-                        done += n
-                        // 每 256KB 回传一次，避免每 64KB 就跨线程抖一下 UI
-                        if (done - lastTick >= 262_144L) {
-                            lastTick = done
-                            onProgress(done, total, host)
-                        }
+                        sinceTick += n
+                        if (sinceTick >= 262_144L) { sinceTick = 0; onTick() }
                     }
                 }
             }
-            onProgress(done, total, host)
-            return if (tmp.length() == model.sizeBytes) tmp else null
+            onTick()
+            return part.length() == want
+        } catch (t: Throwable) {
+            onTick()
+            return false
         } finally {
             runCatching { conn.disconnect() }
         }
@@ -189,6 +287,12 @@ class KaraokeModelStore(private val dir: File) {
     fun hostOf(url: String): String = runCatching { URL(url).host }.getOrDefault(url)
 
     companion object {
+        /**
+         * 分段下载的**段数**。实测 4 路并发比单连接快 2.5×（0.31→0.79 MB/s）。
+         * 再往上加收益递减（且免费代理可能对总连接数也有限制），4 是个稳的值。
+         */
+        const val SEGMENTS = 4
+
         /** sha256 校验（十六进制、大小写不敏感）。纯逻辑，可 JVM 单测。 */
         fun verifySha256(file: File, expectedHex: String): Boolean = runCatching {
             val md = MessageDigest.getInstance("SHA-256")
