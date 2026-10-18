@@ -50,7 +50,7 @@ import java.util.Locale
 
 enum class Tab { Home, Search, Library }
 enum class ObStage { Perm, Scan, Done }
-enum class FilesView { Root, Clean, Trash, Folders, FolderContent, Ignored, Devices, About, Merges, ImageSources, LyricsBook, LyricsSources, CloudBackup, PlaySettings, KaraokeSettings, Equalizer, Logs, DataManage, FilesManage, Artists }
+enum class FilesView { Root, Clean, Trash, Folders, FolderContent, Ignored, Devices, About, Merges, ImageSources, ArtistManage, LyricsBook, LyricsSources, CloudBackup, PlaySettings, KaraokeSettings, Equalizer, Logs, DataManage, FilesManage, Artists }
 enum class LyState { Idle, Searching, Failed }
 enum class LyricsKind { Embedded, Sidecar, Online, Imported }
 

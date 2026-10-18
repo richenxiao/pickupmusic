@@ -108,6 +108,7 @@ fun SettingsHost(
         FilesView.About -> AboutScreen(vm)
         FilesView.Merges -> MergesScreen(vm)
         FilesView.ImageSources -> ImageSourcesScreen(vm)
+        FilesView.ArtistManage -> ArtistManageScreen(vm, scrollStates)
         FilesView.LyricsBook -> LyricsBookScreen(vm, scrollStates)
         FilesView.LyricsSources -> LyricsSourcesScreen(vm, scrollStates)
         FilesView.CloudBackup -> CloudBackupScreen(vm, scrollStates)
@@ -766,12 +767,9 @@ private fun SettingsRoot(vm: MainViewModel, scrollStates: MutableMap<String, Scr
             // v1.3.x: 睡眠定时可编辑——整行点击弹窗(时长档位/本曲结束/关闭),
             // 复用播放菜单同套 PlayerController 接口;不再只读展示。
             var sleepEditOpen by remember { mutableStateOf(false) }
-            // v1.5.0 A62：歌手栏显示选项（客串歌手不占位）
-            CardEntryRow(
-                Lucide.User, c.n700, "歌手栏目",
-                sub = null, divider = true,
-                trailingText = if (vm.hideFeatureArtists) "隐藏客串 ${vm.featureArtistCount()}" else "全部显示",
-            ) { vm.navFilesTo(FilesView.Artists) }
+            // ⚠️ 2026-10-18：原来这里还有一行「歌手栏目」——已收进「资源管理 · 歌手管理」
+            // （用户："把当前歌手合并改为歌手管理，然后里面集成歌手栏目、歌手合并、歌手写真源，
+            // 免得设置太难看"）。三处只留一个入口，避免同一页多点可达。
             CardEntryRow(
                 Lucide.Clock, c.n700, "睡眠定时",
                 null, divider = false, trailingText = vm.player.sleepStatusText(),
@@ -797,11 +795,6 @@ private fun SettingsRoot(vm: MainViewModel, scrollStates: MutableMap<String, Scr
                 null,
                 divider = true,
             ) { vm.navFilesTo(FilesView.FilesManage) }
-            CardEntryRow(
-                Lucide.User, c.n700, "写真源",
-                null,
-                divider = true,
-            ) { vm.navFilesTo(FilesView.ImageSources) }
             // v1.3.x 图标审计:歌词本入口用 Library(书本=歌词本,未占用);振假名默认
             // 行保留 Captions(注音语义),两处不再撞图标。
             CardEntryRow(
@@ -809,11 +802,13 @@ private fun SettingsRoot(vm: MainViewModel, scrollStates: MutableMap<String, Scr
                 null,
                 divider = true,
             ) { vm.navFilesTo(FilesView.LyricsBook) }
+            // 2026-10-18：原来这里的两行「写真源」「歌手合并」已并入「歌手管理」子页
             CardEntryRow(
-                Lucide.Users, c.n700, "歌手合并",
+                Lucide.Users, c.n700, "歌手管理",
                 null,
                 divider = false,
-            ) { vm.navFilesTo(FilesView.Merges) }
+                trailingText = if (vm.hideFeatureArtists) "隐藏客串 ${vm.featureArtistCount()}" else "全部显示",
+            ) { vm.navFilesTo(FilesView.ArtistManage) }
         }
 
         // v1.3.11:「拾光记忆」已移到「拾光 Agent 设置」里(用户定调:它属于 Agent 域,
@@ -2213,6 +2208,63 @@ private fun DevicesScreen(vm: MainViewModel) {
                     if (active) EqBars(vm.player.isPlaying)
                 }
             }
+        }
+        Box(Modifier.height(114.dp))
+    }
+}
+
+// ── v1.5.0 设置 · 歌手管理（用户 2026-10-18 要求合并）────────────────────────
+/**
+ * **歌手管理**：把散在设置各处的三个歌手相关子页收进一处。
+ *
+ * 用户原话："把当前歌手合并改为歌手管理，然后里面集成歌手栏目、歌手合并、歌手写真源等
+ * 与歌手相关的，免得设置太难看"。
+ *
+ * 纯**导航收拢**：三个子页原样搬进来，逻辑一个没动；一级页由原来的三行变成一行。
+ */
+@Composable
+private fun ArtistManageScreen(vm: MainViewModel, scrollStates: MutableMap<String, ScrollState>) {
+    val c = LocalOrganic.current
+    Column(
+        Modifier
+            .fillMaxSize()
+            .verticalScroll(scrollStateOf(scrollStates, "artistmanage"))
+            .padding(horizontal = 20.dp)
+            .padding(top = 22.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        SubPageHeader(
+            "歌手管理",
+            help = "这里管什么" to
+                "歌手栏目 —— 歌手页里显示哪些歌手（可以藏掉只在别人歌里客串的）。\n\n" +
+                "歌手合并 —— 同一个人被识别成好几个名字时，把它们并成一个。\n\n" +
+                "写真源 —— 歌手页的图片从哪几个来源找。",
+        ) { vm.navFilesBack() }
+        SectionLabel("歌手")
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .shadowSm(RoundedCornerShape(28.dp))
+                .clip(RoundedCornerShape(28.dp))
+                .background(c.surface)
+                .padding(horizontal = 16.dp, vertical = 6.dp),
+        ) {
+            CardEntryRow(
+                Lucide.User, c.n700, "歌手栏目",
+                null,
+                divider = true,
+                trailingText = if (vm.hideFeatureArtists) "隐藏客串 ${vm.featureArtistCount()}" else "全部显示",
+            ) { vm.navFilesTo(FilesView.Artists) }
+            CardEntryRow(
+                Lucide.Users, c.n700, "歌手合并",
+                null,
+                divider = true,
+            ) { vm.navFilesTo(FilesView.Merges) }
+            CardEntryRow(
+                Lucide.Palette, c.n700, "写真源",
+                null,
+                divider = false,
+            ) { vm.navFilesTo(FilesView.ImageSources) }
         }
         Box(Modifier.height(114.dp))
     }
