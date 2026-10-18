@@ -258,12 +258,15 @@ private fun DoneStep(vm: MainViewModel) {
     )
     val folders = vm.scanResultFolders
     val total = folders.sumOf { it.second }
+    // ⚠️ **2026-10-18 改布局**（用户："扫描完成后进入音乐库会被顶到下面，应该让它固定在底部；
+    // 文件夹多了可以固定一个区域滑动浏览，而不是全部排开"）：
+    // 原来是**整页 verticalScroll** + 文件夹全部排开 ⇒ 文件夹一多就把"进入音乐库"顶到屏幕外。
+    // 现在三段式：顶部图标/文案固定 → 中部文件夹列表**限高自滚**（weight(1f)）→ 底部按钮常驻。
     Column(
         Modifier
             .fillMaxSize()
-            .verticalScroll(rememberScrollState())
             .padding(horizontal = 26.dp, vertical = 28.dp),
-        verticalArrangement = Arrangement.spacedBy(24.dp, Alignment.CenterVertically),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
         Box(
             Modifier
@@ -284,7 +287,14 @@ private fun DoneStep(vm: MainViewModel) {
                 style = body(15f, FontWeight.Normal, c.n600),
             )
         }
-        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        // 中部：文件夹列表 —— **限高 + 内部滚动**，不再把底部按钮顶走
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .weight(1f)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
             for ((path, count) in folders) {
                 Row(
                     Modifier
