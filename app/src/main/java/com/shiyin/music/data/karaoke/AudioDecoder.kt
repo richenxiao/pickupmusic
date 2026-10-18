@@ -149,32 +149,52 @@ object AudioDecoder {
 
     private fun toPcm16(v: Float): Int = (v.coerceIn(-1f, 1f) * 32767f).toInt()
 
-    /** 从 PCM16 临时文件按 44.1k 帧号读块（越界补零；必要时线性重采样）。 */
+    /**
+     * 从 PCM16 临时文件按 **44.1k 模型域**帧号读块（越界补零，必要时重采样）。
+     *
+     * ⚠️ **重采样从线性插值换成窗 sinc**（2026-10-18，追加 A 实测驱动）：
+     * "人声估计置零"的往返残差在线性插值下只有 **48k −56.5dBFS / 96k −62.3dBFS**，
+     * 达不到 −70dBFS 的判据；而那点残差**全部来自这一步**（输出侧已是 64 抽头 sinc）。
+     * 同域（源率 == 44.1k）走**原样直通**，逐位不变 —— 已验收的不变量不受影响。
+     */
     class PcmFileReader(private val info: PcmFileInfo, targetRate: Int = 44100) : MdxSeparator.ChunkProvider {
         private val ratio = info.srcRate.toDouble() / targetRate
         private val raf = RandomAccessFile(info.file, "r")
         private var srcBuf = ShortArray(0)
         private var srcBufStart = 0
 
-        override fun readChunk(startFrame: Int, count: Int, left: FloatArray, right: FloatArray) {
-            // 需要的源帧范围（含插值所需的前后各 1 帧）
-            val srcFrom = floor(startFrame * ratio).toInt() - 1
-            val srcTo = ceil((startFrame + count) * ratio).toInt() + 1
-            val need = srcTo - srcFrom
-            // srcBuf 是**交错 L,R**，容量必须是帧数的 2 倍（2026-10-11 越界崩溃的根因：
-            // 原按帧数分配，却用 idx*2+1 索引）
-            if (srcBuf.size < need * 2) srcBuf = ShortArray(need * 2)
-            readSource(srcFrom, need)
-            srcBufStart = srcFrom
+        /** 源率 == 模型率时为 null ⇒ 走**原样直通**（逐位一致）。 */
+        private val resampler: com.shiyin.music.data.karaoke.dsp.SincResampler? =
+            if (info.srcRate <= 0 || info.srcRate == targetRate) null
+            else com.shiyin.music.data.karaoke.dsp.SincResampler(info.srcRate, targetRate)
+        private var rsOut = ShortArray(0)
 
+        override fun readChunk(startFrame: Int, count: Int, left: FloatArray, right: FloatArray) {
+            val rs = resampler
+            if (rs == null) {
+                // 同域：原样搬（ratio 必为 1），不经过任何滤波
+                if (srcBuf.size < count * 2) srcBuf = ShortArray(count * 2)
+                readSource(startFrame, count)
+                srcBufStart = startFrame
+                for (i in 0 until count) {
+                    left[i] = sample(startFrame + i, 0)
+                    right[i] = sample(startFrame + i, 1)
+                }
+                return
+            }
+            // 异域：读一段**带余量**的源，用窗 sinc 重采样到模型域
+            val margin = rs.taps / 2 + 1
+            val pos0 = startFrame * ratio                       // 输出第 0 帧对应的源位置
+            val fromF = floor(pos0).toInt() - margin
+            val needF = (ceil((startFrame + count) * ratio).toInt() + margin - fromF).coerceAtLeast(1)
+            if (srcBuf.size < needF * 2) srcBuf = ShortArray(needF * 2)
+            readSource(fromF, needF)
+            srcBufStart = fromF
+            if (rsOut.size < count * 2) rsOut = ShortArray(count * 2)
+            rs.process(srcBuf, pos0 - fromF, count, rsOut)
             for (i in 0 until count) {
-                val pos = (startFrame + i) * ratio
-                val i0 = floor(pos).toInt()
-                val frac = (pos - i0).toFloat()
-                val aL = sample(i0, 0); val aR = sample(i0, 1)
-                val bL = sample(i0 + 1, 0); val bR = sample(i0 + 1, 1)
-                left[i] = aL + (bL - aL) * frac
-                right[i] = aR + (bR - aR) * frac
+                left[i] = rsOut[i * 2] / 32768f
+                right[i] = rsOut[i * 2 + 1] / 32768f
             }
         }
 

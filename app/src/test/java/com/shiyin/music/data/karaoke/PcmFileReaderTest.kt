@@ -57,7 +57,7 @@ class PcmFileReaderTest {
         }
     }
 
-    /** 48k 源：按比例线性插值（不越界、幅度合理、单调段保持单调）。 */
+    /** 48k 源：按比例重采样到 44.1k（不越界、幅度合理、单调段保持单调）。 */
     @Test
     fun resamples48kWithRatio() {
         val frames = 96000 // 2 秒 @48k → 88200 帧 @44.1k
@@ -68,11 +68,14 @@ class PcmFileReaderTest {
             val count = 88200
             val l = FloatArray(count); val r = FloatArray(count)
             reader.readChunk(0, count, l, r)   // 修复前：这里越界崩溃
-            // 线性斜坡经线性插值仍是线性：首末值与原坡度一致
-            assertEquals(0f / frames - 0.5f, l[0], 5e-3f)
-            val expectedLast = (count - 1) / 44100.0 * 48000 / frames - 0.5
-            assertEquals(expectedLast.toFloat(), l[count - 1], 5e-3f)
-            for (i in 1 until count) {
+            // ⚠️ 2026-10-18：输入侧由**线性插值**换成 **64 抽头窗 sinc**（追加 A 实测驱动）后，
+            // 首尾各约 taps/2 个采样会有 FIR 的**边缘瞬态**（窗口外补零），端点**不再**等于
+            // 原坡度的精确值。所以改为断言区间**中部**贴合原坡度 + 全程无跳变。
+            val edge = 64
+            val expectedAt = { outIdx: Int -> (outIdx / 44100.0 * 48000 / frames - 0.5).toFloat() }
+            assertEquals("中部应贴合原坡度", expectedAt(edge), l[edge], 5e-3f)
+            assertEquals("尾部（去掉边缘）也应贴合", expectedAt(count - 1 - edge), l[count - 1 - edge], 5e-3f)
+            for (i in edge until count - edge) {
                 assert(abs(l[i] - l[i - 1]) < 0.01f) { "插值出现跳变 @$i" }
             }
             reader.close()

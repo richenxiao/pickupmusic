@@ -27,16 +27,30 @@ import kotlin.math.sin
  * 相位表在构造时算好（默认 128 相位 × 16 抽头）。音频线程上每个输出采样 ≈16 次乘加：
  * 一块 4608 帧 × 双声道 ≈ 15 万次乘加 ≈ 0.1ms 量级，相对 100ms 的块长可忽略。
  */
+/**
+ * 基础抽头数（**总**抽头；单侧 = 该值 / 2）。降采样时自动翻倍。
+ *
+ * 取值依据（实测，见 `tools/karaoke/analyze_resampler.py`）：
+ *  · 16 抽头：44.1k→48k 通带偏差 **0.520 dB** —— 达不到用户定的 0.1 dB，**已弃用**；
+ *  · 64 抽头：见脚本复测；成本约 4608 帧 × 64 抽头 × 2 声道 ≈ 59 万次乘加 / 块（约 0.5ms），
+ *    相对 100ms 的块长可忽略。
+ */
+private const val DEFAULT_BASE_TAPS = 64
+
 class SincResampler(
     val inRate: Int,
     val outRate: Int,
-    baseTaps: Int = 16,
+    baseTaps: Int = DEFAULT_BASE_TAPS,
     val phases: Int = 128,
 ) {
     /**
-     * 实际抽头数：**降采样时翻倍**。
-     * 折叠抑制需要更陡的过渡带 —— 16 抽头的 Blackman 窗 sinc 只够上采样用；
-     * 我们主路径是上采样（44.1k 缓存 → ≥44.1k 播放），降采样只出现在源率 < 44.1k 的少数文件上。
+     * 实际抽头数：**降采样时翻倍**（折叠抑制需要更陡的过渡带）。
+     *
+     * 抽头数是**总**抽头（单侧 = taps/2）。
+     *
+     * ⚠️ 2026-10-18 由 16 提到 [DEFAULT_BASE_TAPS]：验收实测 16 抽头在 44.1k→48k 上
+     * **通带偏差 0.520 dB**（判据 ≤0.1 dB，见 `tools/karaoke/analyze_resampler.py`），
+     * 远不达标。提到 64 后见同脚本的复测数据。
      */
     val taps: Int = if (outRate < inRate) baseTaps * 2 else baseTaps
 
@@ -91,16 +105,23 @@ class SincResampler(
         for (n in 0 until outFrames) {
             val i0 = Math.floor(pos).toInt()
             val frac = pos - i0
-            val ph = (frac * phases).toInt().coerceIn(0, phases - 1)
-            val h = table[ph]
+            // ⚠️ **相位表之间要做线性插值**（2026-10-18 追加 A 实测驱动）：
+            // 只取最近一条相位表，等效时间误差最大 1/(2×phases) 个采样 ——
+            // 实测"人声估计置零"跨域残差只有 −58dBFS，卡在这里，而不是插值方式。
+            // 相邻两行插值后相位误差降到二阶，代价只是每采样多一遍 MAC。
+            val pf = frac * phases
+            val p0 = pf.toInt().coerceIn(0, phases - 1)
+            val w = pf - p0
+            val h0 = table[p0]
+            val h1 = table[if (p0 + 1 < phases) p0 + 1 else p0]
             var l = 0.0
             var r = 0.0
             for (k in 0 until taps) {
                 val idx = i0 - half + 1 + k
                 if (idx < 0 || idx >= srcFrames) continue
-                val w = h[k]
-                l += src[idx * 2] * w
-                r += src[idx * 2 + 1] * w
+                val wgt = h0[k] + (h1[k] - h0[k]) * w
+                l += src[idx * 2] * wgt
+                r += src[idx * 2 + 1] * wgt
             }
             dst[n * 2] = clamp16(l)
             dst[n * 2 + 1] = clamp16(r)

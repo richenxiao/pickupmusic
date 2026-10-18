@@ -35,9 +35,13 @@ class StemCache(private val root: File) {
          * 引擎版本：算法/参数变化时 +1，让旧缓存自然失效。
          *
          * **2（2026-10-16，P0-1 升调）**：修掉了"源帧数被当成 44.1k 模型域帧数"的口径错误。
-         * 1 版本缓存里的伴奏对**非 44.1k 的源**是**错的**（按 源率/44100 倍速），必须整体作废。
+         * 1 版本缓存里的伴奏对**非 44.1k 的源**是**错的**（按 源率/44100 倍速）。
+         *
+         * **3（2026-10-18，追加 A）**：源→44.1k 那一步的**线性插值换成 64 抽头窗 sinc**
+         * （实测"人声估计置零"跨域残差 −56.5dBFS → 见 `analyze_resampler.py`）。
+         * 非 44.1k 源的**分离输入**变了 ⇒ 产物也不同，必须整体作废。
          */
-        const val ENGINE_VERSION = 2
+        const val ENGINE_VERSION = 3
 
         fun defaultRoot(filesDir: File): StemCache =
             StemCache(File(filesDir, "pickup/accompaniment-cache"))
