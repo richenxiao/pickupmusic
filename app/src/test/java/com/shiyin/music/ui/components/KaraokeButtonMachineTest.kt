@@ -99,4 +99,68 @@ class KaraokeButtonMachineTest {
         ready()
         assertEquals(KaraokeButtonState.Idle, s)
     }
+
+    // ── P2-D：面板里**每一档卡片**的视觉（用户 2026-10-18）────────────────────
+    // 用户口径："状态动画不使用文字/秒数/百分比"——全靠图标与底色表达；
+    // 且**只有一个状态源**（KaraokeButtonState，由音频线程的 KaraokeAccompState 驱动）。
+
+    @Test
+    fun `卡片_没选中就是灰的`() {
+        assertEquals(
+            KaraokeModeVisual.OFF,
+            karaokeModeVisual(KaraokeButtonState.Loading, selectedIndex = 2, index = 0),
+        )
+    }
+
+    @Test
+    fun `卡片_选中人声但还没出声_转圈`() {
+        assertEquals(
+            KaraokeModeVisual.COMPUTING,
+            karaokeModeVisual(KaraokeButtonState.Loading, selectedIndex = 0, index = 0),
+        )
+        assertEquals(
+            "Idle（还没起分离）也算未就绪，仍是转圈",
+            KaraokeModeVisual.COMPUTING,
+            karaokeModeVisual(KaraokeButtonState.Idle, selectedIndex = 0, index = 0),
+        )
+    }
+
+    @Test
+    fun `卡片_出声了才是橙的`() {
+        assertEquals(
+            KaraokeModeVisual.READY,
+            karaokeModeVisual(KaraokeButtonState.Active, selectedIndex = 0, index = 0),
+        )
+        assertEquals(
+            KaraokeModeVisual.READY,
+            karaokeModeVisual(KaraokeButtonState.Active, selectedIndex = 2, index = 2),
+        )
+    }
+
+    @Test
+    fun `卡片_原曲档立即算完成`() {
+        // 「原曲」不需要伴奏，本来就一直在出声 —— 任何状态都必须是完成态。
+        KaraokeButtonState.values().forEach { st ->
+            assertEquals(
+                "原曲档在 $st 下应是完成态",
+                KaraokeModeVisual.READY,
+                karaokeModeVisual(st, selectedIndex = KARAOKE_ORIGINAL_INDEX, index = KARAOKE_ORIGINAL_INDEX),
+            )
+        }
+    }
+
+    @Test
+    fun `卡片_欠载回退时退回转圈`() {
+        // MainViewModel 的轮询在 KaraokeAccompState.inFallback 时把 karaokeState 打回 Loading
+        // ⇒ 卡片随之从"橙"退回"转圈"。这条钉住"回退要如实反映"。
+        assertEquals(
+            KaraokeModeVisual.READY,
+            karaokeModeVisual(KaraokeButtonState.Active, 2, 2),
+        )
+        assertEquals(
+            "回退后状态是 Loading ⇒ 必须退回转圈",
+            KaraokeModeVisual.COMPUTING,
+            karaokeModeVisual(KaraokeButtonState.Loading, 2, 2),
+        )
+    }
 }
