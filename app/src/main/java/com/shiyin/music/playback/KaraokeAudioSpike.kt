@@ -22,6 +22,7 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.ArrayList
 import kotlin.math.abs
+import kotlin.math.roundToInt
 
 /**
  * v1.5.0 P2 spike（分支 `spike/karaoke-p2-processor`）· **只做验证，不进正式功能**。
@@ -739,6 +740,16 @@ val ToneAccompaniment = AccompanimentSource { absFrame, sampleRate, _, dst, fram
  * - **只读已完成的块**：`readFrames` 对缺块返回 null（绝不返回半截）⇒ 这里直接报欠载；
  * - 一次读要的东西可能跨块边界，`readFrames` 已经处理了。
  *
+ * **P0-A（2026-10-18）起：伴奏在源采样率域现算，原曲不再被重采样。**
+ * 缓存里存的是**模型直接输出的那一轨**（人声模型 = 人声估计，伴奏模型 = 伴奏）：
+ * ```
+ *   人声模型：伴奏 = 原曲 − 补偿系数 × 上采样(人声估计)
+ *   伴奏模型：伴奏 = 模型输出
+ * ```
+ * 旧做法是"先在 44.1k 模型域减好、再把结果升回源率"，等于把**整条原曲**降采样再升采样
+ * 一遍 —— 带宽被切掉、两次重采样的误差还全额叠在原曲的频谱上（玻璃声）。现在重采样误差
+ * 只落在人声估计那一轨上，原曲一个字节都没动。
+ *
  * 线程：只在音频线程调用（`readFrames` 是 RandomAccessFile 随机读，块是 6 秒 PCM ≈ 1MB，
  * 小读一次 ~几十微秒，不会拖垮音频线程）。
  */
@@ -751,12 +762,10 @@ class StemCacheAccompaniment(
     @Volatile var underruns: Long = 0L; private set
     /** 成功读数（报告用）。 */
     @Volatile var hits: Long = 0L; private set
-    /** 命中但**全是零**的次数（与"未命中"必须分开看：前者=缓存内容错，后者=帧号/范围错）。 */
+    /** 命中但**全是零**的次数（与"未命中"必须分开看：前者=模型这一轨本来就空，后者=帧号/范围错）。 */
     @Volatile var zeroHits: Long = 0L; private set
     /** 已打印的详细读日志条数（音频线程上不打太多）。 */
     private var readLogs = 0
-
-    private var scratch = ShortArray(0)
 
     /** 跨域重采样器（按输出采样率缓存；只在音频线程用）。 */
     private var rsOutRate = -1
@@ -772,33 +781,46 @@ class StemCacheAccompaniment(
             return false
         }
         val m = cache.readManifest(dir)
-        val got: ShortArray? = when {
-            m == null -> null
-            // **同域直通**：缓存采样率 == 播放采样率（44.1k 源走这条）⇒ 与修复前逐位一致。
-            sampleRate == m.sampleRate -> cache.readFrames(dir, absFrame, frames)
-            // **跨域**：源帧号 → 缓存（模型，44.1k）帧号，读一段加余量的缓存再重采样回源率域。
-            // 少了这一步，44.1k 的伴奏按 48k 播出来就是升调 + 加速（P0-1）。
-            else -> resampledFromCache(absFrame, sampleRate, frames)
-        }
-        if (got == null) {
+        if (m == null) {
             underruns++
             logRead(absFrame, frames, null, -1)
             return false
         }
-        // 先把缓存内容搬进 dst（长度可能是 frames*2 也可能是拼接的 —— 只取需要的部分）
-        val n = minOf(got.size, frames * 2)
-        if (scratch.size < n) scratch = ShortArray(n)
-        System.arraycopy(got, 0, scratch, 0, n)
-        java.util.Arrays.fill(dst, 0, frames * 2, 0.toShort())
-        System.arraycopy(scratch, 0, dst, 0, n)
+        val stem: ShortArray? =
+            // **同域直通**：缓存采样率 == 播放采样率（44.1k 源走这条）⇒ 不经过任何滤波。
+            if (sampleRate == m.sampleRate) cache.readFrames(dir, absFrame, frames)
+            // **跨域**：源帧号 → 缓存（模型，44.1k）帧号，读一段加余量的缓存再重采样回源率域。
+            // 少了这一步，44.1k 的缓存按 48k 播出来就是升调 + 加速（P0-1）。
+            else stemAtRate(absFrame, sampleRate, frames)
+        if (stem == null) {
+            underruns++
+            logRead(absFrame, frames, null, -1)
+            return false
+        }
+        // 合成伴奏（e4，P0-A）——**在源采样率域、拿原曲现算**，原曲不被任何重采样碰过：
+        //   人声模型：伴奏 = 原曲 − 补偿系数 × 人声估计
+        //   伴奏模型：伴奏 = 模型输出（模型直接吐的就是伴奏）
+        // ⚠️ 人声估计为 0 之处必须**逐位**等于原曲：`orig − c×0` 在浮点里精确等于原值，
+        //    `roundToInt()` 不会引入偏差 —— 这正是 P0-A 的验收判据（48k/96k 下 0 LSB）。
+        val n = minOf(stem.size, frames * 2)
+        if (m.primaryIsVocals) {
+            val c = m.compensate
+            for (i in 0 until frames * 2) {
+                val w = if (i < n) stem[i].toInt() else 0
+                dst[i] = (srcOrig[i] - c * w).roundToInt().coerceIn(-32768, 32767).toShort()
+            }
+        } else {
+            java.util.Arrays.fill(dst, 0, frames * 2, 0.toShort())
+            System.arraycopy(stem, 0, dst, 0, n)
+        }
         hits++
-        if (n > 0 && (0 until n).none { got[it] != 0.toShort() }) zeroHits++
-        logRead(absFrame, frames, got, n)
+        if (n > 0 && (0 until n).none { stem[it] != 0.toShort() }) zeroHits++
+        logRead(absFrame, frames, stem, n)
         return true
     }
 
     /**
-     * 把缓存（模型域，采样率 [StemCache.Manifest.sampleRate]）里的伴奏，按**源帧号**
+     * 把缓存（模型域，采样率 [StemCache.Manifest.sampleRate]）里那一轨，按**源帧号**
      * 取出来并重采样到**源采样率**。
      *
      * 换算：源帧号 `f` ⇄ 模型帧号 `f × cacheRate / srcRate`（连续坐标，可含小数）。
@@ -806,7 +828,7 @@ class StemCacheAccompaniment(
      *
      * @return 长度 `frames*2` 的交错 PCM；缓存缺块返回 null（调用方按欠载退回原曲）。
      */
-    private fun resampledFromCache(absFrame: Long, srcRate: Int, frames: Int): ShortArray? {
+    private fun stemAtRate(absFrame: Long, srcRate: Int, frames: Int): ShortArray? {
         val m = cache.readManifest(dir) ?: return null
         val cacheRate = m.sampleRate
         if (rsOutRate != srcRate || rs == null) {

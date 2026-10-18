@@ -15,7 +15,9 @@ import java.io.File
  *  4. **诚实的状态**：开跑先写 `complete=false`，全部写完后才标 `true`——中途被杀时
  *     manifest 不会谎报可用。
  *
- * 缓存**只存伴奏一轨**（用户约定四）：人声在 P2 由播放侧用 `原曲 − 伴奏` 得到。
+ * 缓存**只存一轨**：**模型直接输出的那一轨**（人声模型 = 人声估计，伴奏模型 = 伴奏）。
+ * 伴奏由播放侧在**源采样率域**用 `原曲 − 补偿系数 × 上采样(人声估计)` 合成（e4，P0-A）——
+ * 见 [StemCache] 类注释。
  */
 class SeparationJob(
     private val model: MdxModel,
@@ -77,6 +79,8 @@ class SeparationJob(
             dir, model.id, modelVersion, key.fingerprint, gen, total,
             complete = false, lastAccess = System.currentTimeMillis(),
             srcRate = key.sampleRate, srcFrames = key.totalFrames,
+            primaryIsVocals = !model.predictsInstrumental,
+            compensate = model.compensate,
         )
 
         val t0 = System.nanoTime()
@@ -90,9 +94,14 @@ class SeparationJob(
                 val idx = offsetInSong / gen
                 val n = minOf(count, gen)
                 val shorts = ShortArray(n * 2)
+                // 存**模型直接输出的那一轨**（e4，P0-A）：人声模型存人声估计，伴奏模型存伴奏。
+                // 伴奏的减法**绝不在这里做** —— 改到播放侧、源采样率域（`原曲 − c×上采样(人声估计)`），
+                // 这样原曲不必先降到 44.1k 再升回去（那正是玻璃声的来源）。
+                val sl = if (model.predictsInstrumental) accL else vocL
+                val sr = if (model.predictsInstrumental) accR else vocR
                 for (i in 0 until n) {
-                    shorts[i * 2] = toPcm16(accL[i])
-                    shorts[i * 2 + 1] = toPcm16(accR[i])
+                    shorts[i * 2] = toPcm16(sl[i])
+                    shorts[i * 2 + 1] = toPcm16(sr[i])
                 }
                 cache.writeChunk(dir, idx, shorts)
                 if (firstChunkMs < 0) firstChunkMs = (System.nanoTime() - t0) / 1_000_000
@@ -123,6 +132,8 @@ class SeparationJob(
             dir, model.id, modelVersion, key.fingerprint, gen, total,
             complete = complete, lastAccess = System.currentTimeMillis(),
             srcRate = key.sampleRate, srcFrames = key.totalFrames,
+            primaryIsVocals = !model.predictsInstrumental,
+            compensate = model.compensate,
         )
         return Result(
             dir = dir,

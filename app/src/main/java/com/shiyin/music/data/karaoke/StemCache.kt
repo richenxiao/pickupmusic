@@ -6,7 +6,12 @@ import java.io.File
 import java.io.RandomAccessFile
 
 /**
- * v1.5.0 P1：**伴奏块缓存**（规格 P1 修正 一）。
+ * v1.5.0 P1：**分轨块缓存**（规格 P1 修正 一）。
+ *
+ * **存的是"模型直接输出的那一轨"**（e4 起）—— 人声模型（9482/Voc_FT）存**人声估计**，
+ * 伴奏模型（Inst_HQ_3）存**伴奏**。伴奏在**播放侧、源采样率域**合成：
+ * `伴奏 = 原曲 − 补偿系数 × 上采样(人声估计)`。这样原曲**从头到尾不被重采样**，
+ * 重采样误差只落在人声估计那一轨上（P0-A 玻璃声）。
  *
  * 位置（用户指定）：`filesDir/pickup/accompaniment-cache/`
  *   `<songId>/<modelId>/<modelVersion>-e<engineVersion>-<指纹>/`
@@ -40,8 +45,14 @@ class StemCache(private val root: File) {
          * **3（2026-10-18，追加 A）**：源→44.1k 那一步的**线性插值换成 64 抽头窗 sinc**
          * （实测"人声估计置零"跨域残差 −56.5dBFS → 见 `analyze_resampler.py`）。
          * 非 44.1k 源的**分离输入**变了 ⇒ 产物也不同，必须整体作废。
+         *
+         * **4（2026-10-18，P0-A 玻璃声）**：**缓存内容换了口径** —— 存的不再是"已经减好的
+         * 伴奏"，而是**模型直接输出的原始那一轨**（人声模型存人声估计，伴奏模型存伴奏）。
+         * 伴奏改由**播放侧在源采样率域**合成（`伴奏 = 原曲 − 补偿系数 × 上采样(人声估计)`），
+         * 原曲从此**不再被任何重采样碰过**。见 [StemCache] 类注释与
+         * `StemCacheAccompaniment.readAbs`。e3 缓存的内容口径完全不同，必须整体作废。
          */
-        const val ENGINE_VERSION = 3
+        const val ENGINE_VERSION = 4
 
         fun defaultRoot(filesDir: File): StemCache =
             StemCache(File(filesDir, "pickup/accompaniment-cache"))
@@ -64,6 +75,19 @@ class StemCache(private val root: File) {
          */
         val srcRate: Int = 0,
         val srcFrames: Int = 0,
+        /**
+         * 缓存这一轨**是不是人声估计**（= 模型直接输出的那一轨；`predictsInstrumental`
+         * 为 false 的模型就是它）。播放侧据此决定伴奏怎么合成（e4 起）：
+         *  - `true`：`伴奏 = 原曲 − 补偿系数 × 上采样(本轨)`
+         *  - `false`：`伴奏 = 上采样(本轨)`（模型直接吐的就是伴奏，没有再可减的东西）
+         */
+        val primaryIsVocals: Boolean = true,
+        /**
+         * 合成伴奏时要乘的**补偿系数** —— 生产时从模型原样记下（e4 起改在播放侧生效）。
+         * ⚠️ 改代码里的 `MdxModel.compensate` **不会**影响已有缓存：那份缓存是用旧系数记的。
+         * 要让它生效就得一并提 `ENGINE_VERSION`。
+         */
+        val compensate: Float = 1f,
     )
 
     /**
@@ -126,6 +150,9 @@ class StemCache(private val root: File) {
                 // 老缓存（e1）没有这两个字段：0 表示"与缓存采样率相同"（那时 44.1k 源确实同域）
                 srcRate = o.get("srcRate")?.asInt ?: 0,
                 srcFrames = o.get("srcFrames")?.asInt ?: 0,
+                // e4 起才有；缺省按"人声估计 / 不补偿"读，与默认模型（9482）一致
+                primaryIsVocals = o.get("primaryIsVocals")?.asBoolean ?: true,
+                compensate = o.get("compensate")?.asFloat ?: 1f,
             )
         }.getOrNull()
     }
@@ -227,6 +254,10 @@ class StemCache(private val root: File) {
         /** 源文件采样率/帧数（播放按源帧号取伴奏，靠这两个字段做域换算）。 */
         srcRate: Int = sampleRate,
         srcFrames: Int = 0,
+        /** 这一轨是不是人声估计（见 [Manifest.primaryIsVocals]）。 */
+        primaryIsVocals: Boolean = true,
+        /** 播放侧合成伴奏的补偿系数（见 [Manifest.compensate]）。 */
+        compensate: Float = 1f,
     ) {
         dir.mkdirs()
         val o = JsonObject().apply {
@@ -243,6 +274,8 @@ class StemCache(private val root: File) {
             addProperty("lastAccess", lastAccess)
             addProperty("srcRate", srcRate)
             addProperty("srcFrames", srcFrames)
+            addProperty("primaryIsVocals", primaryIsVocals)
+            addProperty("compensate", compensate)
         }
         val tmp = File(dir, "manifest.json.tmp")
         val dst = File(dir, "manifest.json")

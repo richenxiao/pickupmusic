@@ -68,7 +68,9 @@ class SeparationJobTest {
         )
 
         val input = readF32BE(File(fix, "pipe_in.f32"))
-        val ref = readF32BE(File(fix, "pipe_acc_9482.f32"))
+        // ⚠️ **e4（P0-A）起缓存存的是"模型直接输出的那一轨"** —— 9482 是**人声模型**，
+        // 所以参考要拿 `pipe_voc_9482.f32`，不再是伴奏（减法已挪到播放侧的源采样率域）。
+        val ref = readF32BE(File(fix, "pipe_voc_9482.f32"))
         val n = input.size / 2
         val reader = provider(tmp.root, input, n)
         val cache = StemCache(File(tmp.root, "cache"))
@@ -99,6 +101,10 @@ class SeparationJobTest {
             assertTrue("重跑后应完成", !resumed.cancelled)
             assertTrue("manifest 应标 complete", cache.readManifest(dir)!!.complete)
             assertEquals(job.totalChunksFor(n), cache.doneChunks(dir))
+            // e4（P0-A）：清单必须记下"这一轨是什么、补偿系数多少" —— 播放侧据此合成伴奏。
+            val man = cache.readManifest(dir)!!
+            assertTrue("9482 是人声模型 ⇒ 缓存那一轨应标为人声估计", man.primaryIsVocals)
+            assertEquals("补偿系数要按模型原样记下", MdxModel.M9482.compensate, man.compensate, 1e-6f)
 
             val pcm = cache.readFrames(dir, 0, n)!!
             // 参考是扁平数组（前半左声道、后半右声道）→ 逐声道比对
