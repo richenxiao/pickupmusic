@@ -2236,11 +2236,51 @@ private fun ArtistManageScreen(vm: MainViewModel, scrollStates: MutableMap<Strin
         SubPageHeader(
             "歌手管理",
             help = "这里管什么" to
-                "歌手栏目 —— 歌手页里显示哪些歌手（可以藏掉只在别人歌里客串的）。\n\n" +
+                "隐藏客串歌手 —— 只在别人歌里客串的歌手，默认不在歌手栏占位置；" +
+                "你也可以点名让某几位照常显示。\n\n" +
                 "歌手合并 —— 同一个人被识别成好几个名字时，把它们并成一个。\n\n" +
                 "写真源 —— 歌手页的图片从哪几个来源找。",
         ) { vm.navFilesBack() }
-        SectionLabel("歌手")
+
+        // ① 隐藏客串歌手（用户 2026-10-18：原来叫"歌手栏目"，改名并逐个列出开关）
+        SectionLabel("隐藏客串歌手")
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .shadowSm(RoundedCornerShape(28.dp))
+                .clip(RoundedCornerShape(28.dp))
+                .background(c.surface)
+                .padding(horizontal = 16.dp, vertical = 6.dp),
+        ) {
+            SettingRow(Lucide.EyeOff, "隐藏客串歌手", null, divider = false) {
+                OrganicSwitch(vm.hideFeatureArtists) { vm.setHideFeatureArtists(!vm.hideFeatureArtists) }
+            }
+            val featureNames = vm.featureArtistsForManage()
+            if (featureNames.isNotEmpty()) {
+                Box(Modifier.padding(horizontal = 16.dp).padding(bottom = 4.dp).fillMaxWidth().height(1.dp).background(c.divider))
+                Text(
+                    "判定为客串的 ${featureNames.size} 位（打开开关 = 让它照常出现在歌手栏）",
+                    style = body(12f, FontWeight.Normal, c.n500),
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                )
+                // 逐个列出；列表较长时页面本身可滚动（不再单独加一层滚动，免得手势打架）
+                featureNames.forEach { name ->
+                    Row(
+                        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(name, style = body(14f, FontWeight.Normal, c.text), modifier = Modifier.weight(1f))
+                        OrganicSwitch(vm.featureArtistVisible(name)) {
+                            vm.setFeatureArtistVisible(name, !vm.featureArtistVisible(name))
+                        }
+                    }
+                }
+                Box(Modifier.height(6.dp))
+            }
+        }
+
+        // ② 歌手合并
+        SectionLabel("歌手合并")
         Column(
             Modifier
                 .fillMaxWidth()
@@ -2250,18 +2290,24 @@ private fun ArtistManageScreen(vm: MainViewModel, scrollStates: MutableMap<Strin
                 .padding(horizontal = 16.dp, vertical = 6.dp),
         ) {
             CardEntryRow(
-                Lucide.User, c.n700, "歌手栏目",
+                Lucide.Users, c.n700, "打开歌手合并",
                 null,
-                divider = true,
-                trailingText = if (vm.hideFeatureArtists) "隐藏客串 ${vm.featureArtistCount()}" else "全部显示",
-            ) { vm.navFilesTo(FilesView.Artists) }
-            CardEntryRow(
-                Lucide.Users, c.n700, "歌手合并",
-                null,
-                divider = true,
+                divider = false,
             ) { vm.navFilesTo(FilesView.Merges) }
+        }
+
+        // ③ 写真源
+        SectionLabel("写真源")
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .shadowSm(RoundedCornerShape(28.dp))
+                .clip(RoundedCornerShape(28.dp))
+                .background(c.surface)
+                .padding(horizontal = 16.dp, vertical = 6.dp),
+        ) {
             CardEntryRow(
-                Lucide.Palette, c.n700, "写真源",
+                Lucide.Palette, c.n700, "打开写真源",
                 null,
                 divider = false,
             ) { vm.navFilesTo(FilesView.ImageSources) }

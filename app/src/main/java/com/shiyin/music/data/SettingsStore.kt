@@ -372,6 +372,21 @@ private val keyPinnedLibItems = stringSetPreferencesKey("pinned_lib_items")
     suspend fun setSkipCreditsTranslation(v: Boolean) = context.dataStore.edit { it[keySkipCreditsTranslation] = v }
 
     suspend fun setHideFeatureArtists(v: Boolean) = context.dataStore.edit { it[keyHideFeatureArtists] = v }
+
+    /**
+     * P2-B（用户 2026-10-18）：用户**手动选择"不隐藏"**的客串歌手名。
+     *
+     * 语义是"**例外表**"而不是"隐藏表"：默认全部按客串处理（隐藏），
+     * 用户点名要留哪几个才进这个集合。这样新出现的客串歌手自动是隐藏的 ——
+     * 反过来（存"隐藏表"）会导致每来一个新客串歌手都得用户再关一次。
+     */
+    private val keyVisibleFeatureArtists = stringSetPreferencesKey("visible_feature_artists")
+
+    suspend fun visibleFeatureArtists(): Set<String> =
+        context.dataStore.data.first()[keyVisibleFeatureArtists] ?: emptySet()
+
+    suspend fun setVisibleFeatureArtists(v: Set<String>) =
+        context.dataStore.edit { it[keyVisibleFeatureArtists] = v }
     /** v1.3.10: 翻译按钮显隐档位写入(只收 never/majority/any,其余回 default=majority)。 */
     suspend fun setTranslateButtonMode(mode: String) =
         context.dataStore.edit { it[keyTranslateButtonMode] = if (mode in listOf("never", "any")) mode else "majority" }

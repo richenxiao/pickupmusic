@@ -1667,6 +1667,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 _karaokeModelId.value = s.karaokeModelId
                 _skipCreditsTranslation.value = s.skipCreditsTranslation
                 _hideFeatureArtists.value = s.hideFeatureArtists
+                // P2-B：客串歌手的"逐个例外表"独立读一次（它是单独的 Set 键，不在 Settings 大对象里）
+                refreshVisibleFeatureArtists()
                 translateButtonMode = s.translateButtonMode
                 // v1.3.x 播放设置同步
                 volumeNormalize = s.volumeNormalize
@@ -2666,8 +2668,31 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun libraryArtistEntries(): List<Map.Entry<String, List<Track>>> {
         val all = artistsMap().entries.toList()
         if (!_hideFeatureArtists.value) return all
-        val hidden = com.shiyin.music.data.artist.ArtistRole.featureOnlyArtists(lib())
+        // P2-B：**逐歌手例外表** —— 用户点名"不隐藏"的那几个从隐藏集合里减掉
+        val hidden = com.shiyin.music.data.artist.ArtistRole.featureOnlyArtists(lib()) - _visibleFeatureArtists.value
         return if (hidden.isEmpty()) all else all.filter { it.key !in hidden }
+    }
+
+    // ── P2-B（用户 2026-10-18）：客串歌手逐个开关 ──────────────────────────────
+    /** 用户手动选择"不隐藏"的客串歌手（**例外表**，默认全隐藏）。 */
+    private val _visibleFeatureArtists = mutableStateOf(emptySet<String>())
+
+    private fun refreshVisibleFeatureArtists() {
+        viewModelScope.launch { _visibleFeatureArtists.value = runCatching { settingsStore.visibleFeatureArtists() }.getOrDefault(emptySet()) }
+    }
+
+    /** 管理页要逐个列出的客串歌手（**计算得到**的那批，按名字排序）。 */
+    fun featureArtistsForManage(): List<String> =
+        com.shiyin.music.data.artist.ArtistRole.featureOnlyArtists(lib()).sorted()
+
+    /** 该歌手当前是否**显示**（即在例外表里）。默认 false = 隐藏。 */
+    fun featureArtistVisible(name: String): Boolean = name in _visibleFeatureArtists.value
+
+    /** 切换某个客串歌手的显隐；立即生效（内存态）+ 异步落盘。 */
+    fun setFeatureArtistVisible(name: String, visible: Boolean) {
+        val next = if (visible) _visibleFeatureArtists.value + name else _visibleFeatureArtists.value - name
+        _visibleFeatureArtists.value = next
+        viewModelScope.launch { settingsStore.setVisibleFeatureArtists(next) }
     }
 
     fun foldersMap(): Map<String, List<Track>> {
@@ -6103,8 +6128,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     /** v1.5.0 A56: 制作人行跳过翻译开关。 */
     /** v1.5.0 A62：当前被判为「客串歌手」的人数（设置页显示用，与歌手栏过滤同一来源）。 */
+    /**
+     * **实际被隐藏**的客串歌手数（= 判定的客串歌手 − 用户点名保留的）。
+     * P2-B 起这是"有效值"，不再是"判定值" —— 行尾显示的数字要跟用户眼睛看到的一致。
+     */
     fun featureArtistCount(): Int =
-        com.shiyin.music.data.artist.ArtistRole.featureOnlyArtists(lib()).size
+        (com.shiyin.music.data.artist.ArtistRole.featureOnlyArtists(lib()) - _visibleFeatureArtists.value).size
 
     /** v1.5.0 A62：切换后需要让歌手栏缓存失效，故清 artistsSig。 */
     fun setHideFeatureArtists(v: Boolean) {
