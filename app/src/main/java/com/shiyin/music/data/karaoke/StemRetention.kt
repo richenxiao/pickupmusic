@@ -52,6 +52,40 @@ object StemRetention {
         }
     }
 
+    // ── P2-A（用户 2026-10-18）：**两个上限同时生效** ──────────────────────────
+
+    /**
+     * 用户 2026-10-18 把策略从"二选一"改成"**两条线同时管**"：
+     * "两项同时生效，谁先到上限先淘汰最久未用的；留空 = 这一项不限制"。
+     *
+     * 所以不再有"模式"这一说 —— [maxCount] 与 [maxMb] 各自独立，**0 = 该项不限**。
+     * 淘汰顺序永远是**最久未用优先**；只要还有任一项超线就继续淘汰。
+     *
+     * @return 该淘汰的 `keyDirName`（按淘汰先后）
+     */
+    fun planEvictionBoth(
+        entries: List<Entry>,
+        maxCount: Int,
+        maxMb: Int,
+        protectedKeys: Set<String> = emptySet(),
+    ): List<String> {
+        if (maxCount <= 0 && maxMb <= 0) return emptyList()   // 两项都不限 = 全留
+        val evictable = entries.filter { it.keyDirName !in protectedKeys }.sortedBy { it.lastAccess }
+        val limitBytes = if (maxMb > 0) maxMb.toLong() * 1024 * 1024 else 0L
+        var kept = entries.size
+        var total = entries.sumOf { it.bytes }
+        val out = mutableListOf<String>()
+        for (e in evictable) {
+            val overCount = maxCount > 0 && kept > maxCount
+            val overSize = maxMb > 0 && total > limitBytes
+            if (!overCount && !overSize) break
+            out += e.keyDirName
+            kept--
+            total -= e.bytes
+        }
+        return out
+    }
+
     // ── 启动对账 ──────────────────────────────────────────────────────────
 
     /**

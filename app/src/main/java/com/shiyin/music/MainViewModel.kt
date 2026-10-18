@@ -415,16 +415,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private fun sweepStemCache(protectDir: java.io.File? = null) {
         // 变体目录是 `…/<SourceKey.dirName>/<modelId>/<ver>-e<engine>`，防淘汰要的是**源目录名**
         val protectedKeys = protectDir?.parentFile?.parentFile?.name?.let { setOf(it) } ?: emptySet()
-        if (stemRetentionMode == com.shiyin.music.data.karaoke.RetentionMode.SIZE_MB && stemRetentionMb <= 0) {
-            return   // 不限制
-        }
         val entries = stemCache.cachedSongs().map {
             com.shiyin.music.data.karaoke.StemRetention.Entry(it.keyDirName, it.bytes, it.lastAccess)
         }
         if (entries.isEmpty()) return
-        val victims = com.shiyin.music.data.karaoke.StemRetention.planEviction(
+        // P2-A（用户 2026-10-18）：**两个上限同时生效**（留空/0 = 该项不限）；
+        // 旧的"二选一模式"不再参与判定（`RetentionMode` 字段保留只为兼容已存的值）。
+        val victims = com.shiyin.music.data.karaoke.StemRetention.planEvictionBoth(
             entries,
-            stemRetentionMode,
             maxCount = stemRetentionCount,
             maxMb = stemRetentionMb,
             protectedKeys = protectedKeys,
@@ -486,6 +484,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val n = stemCache.deleteAll()
         refreshKaraokeSettings()
         showToast("已清理 $n 首的伴奏缓存", null)
+    }
+
+    /**
+     * P2-A（用户 2026-10-18）：**两个上限独立设置**，0 = 该项不限制。
+     * `RetentionMode` 已不再参与判定（保留字段只为兼容已存的值），所以不再暴露 mode 参数。
+     */
+    fun setStemRetentionLimits(count: Int, mb: Int) {
+        stemRetentionCount = count.coerceIn(0, 200)
+        stemRetentionMb = mb.coerceIn(0, 1_000_000)
+        viewModelScope.launch { settingsStore.setStemRetention(stemRetentionMode, stemRetentionCount, stemRetentionMb) }
+        sweepStemCache()
     }
 
     fun setStemRetention(mode: com.shiyin.music.data.karaoke.RetentionMode, count: Int, mb: Int) {

@@ -1595,6 +1595,11 @@ private fun KaraokeSettingsScreen(vm: MainViewModel, scrollStates: MutableMap<St
     val c = LocalOrganic.current
     androidx.compose.runtime.LaunchedEffect(Unit) { vm.refreshKaraokeSettings() }
     val models = com.shiyin.music.data.karaoke.MdxModel.values()
+    // 二次确认的目标（用户 2026-10-18：删除/清空这类不可逆操作一律要确认，防误触）
+    var pendingDelete by androidx.compose.runtime.remember {
+        androidx.compose.runtime.mutableStateOf<com.shiyin.music.data.karaoke.MdxModel?>(null)
+    }
+    var pendingClear by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
 
     Column(
         Modifier
@@ -1648,16 +1653,17 @@ private fun KaraokeSettingsScreen(vm: MainViewModel, scrollStates: MutableMap<St
                             style = body(14f, FontWeight.SemiBold, c.text),
                             modifier = Modifier.weight(1f),
                         )
-                        if (isDefault) {
-                            Text(
-                                "默认",
-                                style = body(11f, FontWeight.SemiBold, c.surface),
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .background(c.accent)
-                                    .padding(horizontal = 8.dp, vertical = 3.dp),
-                            )
-                        }
+                        // 状态标签**与模型名同一行、靠右**（用户 2026-10-18：别挤占下面那一行）
+                        Text(
+                            when {
+                                downloading -> "下载中 ${(vm.karaokeDownloadPct * 100).toInt()}%"
+                                broken -> "文件损坏"
+                                installed -> if (m.bundled) "已内置" else "已下载"
+                                else -> "未下载"
+                            },
+                            style = body(11.5f, FontWeight.Normal, if (broken) c.a700 else c.n500),
+                            modifier = Modifier.padding(start = 8.dp),
+                        )
                     }
                     Row(Modifier.padding(top = 6.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         KaraokeBadge(m.stemLabel, c)
@@ -1665,17 +1671,13 @@ private fun KaraokeSettingsScreen(vm: MainViewModel, scrollStates: MutableMap<St
                         KaraokeBadge("耗时 ${"%.1f".format(m.relativeCost)}×", c)
                         KaraokeBadge(com.shiyin.music.data.karaoke.MdxModel.humanSize(m.sizeBytes), c)
                     }
-                    Text(
-                        when {
-                            downloading -> "下载中 ${(vm.karaokeDownloadPct * 100).toInt()}%" +
-                                (if (vm.karaokeDownloadHost.isNotEmpty()) " · ${vm.karaokeDownloadHost}" else "")
-                            broken -> "文件损坏，建议重新下载"
-                            installed -> if (m.bundled) "已内置" else "已下载"
-                            else -> "未下载"
-                        },
-                        style = body(11.5f, FontWeight.Normal, if (broken) c.a700 else c.n500),
-                        modifier = Modifier.padding(top = 6.dp),
-                    )
+                    if (downloading && vm.karaokeDownloadHost.isNotEmpty()) {
+                        Text(
+                            "来源 ${vm.karaokeDownloadHost}",
+                            style = body(11f, FontWeight.Normal, c.n500),
+                            modifier = Modifier.padding(top = 4.dp),
+                        )
+                    }
                     if (downloading) {
                         // 自己画的**确定态**进度条：Material3 那个默认走的是"不确定态"动画，
                         // 两头一起动，用户看了会以为坏了。
@@ -1696,19 +1698,19 @@ private fun KaraokeSettingsScreen(vm: MainViewModel, scrollStates: MutableMap<St
                         }
                     }
                     Row(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        // 已经是默认 ⇒ **不放按钮**（上面那个「默认」徽章已经说清了）。
-                        // 之前这里放一个灰色的"当前默认"、旁边是橙色的"设为默认"，
-                        // 分不清哪个是**状态**哪个是**能点的动作**（用户 2026-10-17 指出）。
-                        if (!isDefault) {
-                            KaraokeAction("设为默认", true) { vm.setKaraokeModelId(m.id) }
-                        }
+                        // 用户 2026-10-18：**两态按钮** —— 未默认=不显眼的灰白「设为默认」；
+                        // 已是默认=橙色「默认」且不可再点。右上角那个「默认」名牌已去掉。
+                        DefaultModelButton(isDefault) { vm.setKaraokeModelId(m.id) }
                         if (!installed || broken) {
                             KaraokeAction(if (broken) "重新下载" else "下载", vm.karaokeDownloadId == null) {
                                 vm.downloadKaraokeModel(m.id)
                             }
                         }
                         if (installed || broken) {
-                            KaraokeAction("删除", vm.karaokeDownloadId == null) { vm.deleteKaraokeModel(m.id) }
+                            // 删除统一**红色** + 二次确认（用户 2026-10-18：要有警惕性、防误触）
+                            KaraokeAction("删除", vm.karaokeDownloadId == null, danger = true) {
+                                pendingDelete = m
+                            }
                         }
                     }
                 }
@@ -1727,82 +1729,97 @@ private fun KaraokeSettingsScreen(vm: MainViewModel, scrollStates: MutableMap<St
                 .background(c.surface)
                 .padding(horizontal = 16.dp, vertical = 6.dp),
         ) {
-            SettingRow(Lucide.Download, "已占用", null, divider = true) {
-                Text(
-                    com.shiyin.music.data.karaoke.MdxModel.humanSize(vm.stemCacheBytes),
-                    style = body(13f, FontWeight.SemiBold, c.n600),
-                )
-            }
+            // ── 保存策略：**两行独立上限**（用户 2026-10-18 重构）──────────────────
             Column(Modifier.fillMaxWidth().padding(vertical = 12.dp)) {
                 Text("保存策略", style = body(13.5f, FontWeight.SemiBold, c.text))
-                Row(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    KaraokeChip("按曲目", vm.stemRetentionMode == StemRet.COUNT, c) {
-                        vm.setStemRetention(StemRet.COUNT, vm.stemRetentionCount, vm.stemRetentionMb)
-                    }
-                    KaraokeChip("按大小", vm.stemRetentionMode == StemRet.SIZE_MB, c) {
-                        vm.setStemRetention(StemRet.SIZE_MB, vm.stemRetentionCount, vm.stemRetentionMb)
-                    }
-                }
-                val isCount = vm.stemRetentionMode == StemRet.COUNT
-                // 预设（点一下就用）+ 自己输入（下面那个框）
-                Row(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    if (isCount) {
-                        listOf(5, 10, 20, 50).forEach { n ->
-                            KaraokeChip("$n 首", vm.stemRetentionCount == n, c) {
-                                vm.setStemRetention(StemRet.COUNT, n, vm.stemRetentionMb)
-                            }
-                        }
-                    } else {
-                        listOf(200 to "200MB", 500 to "500MB", 1024 to "1GB", 0 to "不限制").forEach { (mb, label) ->
-                            KaraokeChip(label, vm.stemRetentionMb == mb, c) {
-                                vm.setStemRetention(StemRet.SIZE_MB, vm.stemRetentionCount, mb)
-                            }
-                        }
-                    }
-                }
-                // 自己填：改完立刻生效
-                var draft by remember(vm.stemRetentionMode, vm.stemRetentionCount, vm.stemRetentionMb) {
-                    mutableStateOf(
-                        (if (isCount) vm.stemRetentionCount else vm.stemRetentionMb).toString(),
+                Text(
+                    "两项同时生效，谁先到上限就先淘汰最久没用的；留空 = 这一项不限制",
+                    style = body(11f, FontWeight.Normal, c.n500),
+                    modifier = Modifier.padding(top = 4.dp),
+                )
+                // 第 1 行：按曲目
+                Row(Modifier.padding(top = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text("保存", style = body(13f, FontWeight.Normal, c.text))
+                    RetentionNumberField(
+                        value = vm.stemRetentionCount,
+                        unit = "首",
+                        onCommit = { vm.setStemRetentionLimits(it, vm.stemRetentionMb) },
                     )
                 }
+                // 第 2 行：按大小 + 预设下拉框
+                Row(Modifier.padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text("最多占用", style = body(13f, FontWeight.Normal, c.text))
+                    RetentionNumberField(
+                        value = vm.stemRetentionMb,
+                        unit = "MB",
+                        onCommit = { vm.setStemRetentionLimits(vm.stemRetentionCount, it) },
+                    )
+                    RetentionPresetDropdown(vm.stemRetentionMb) { mb ->
+                        vm.setStemRetentionLimits(vm.stemRetentionCount, mb)
+                    }
+                }
+                // 已占用 + 清空（清空要二次确认）
                 Row(
-                    Modifier.padding(top = 8.dp),
+                    Modifier.padding(top = 14.dp).fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Text("自定义", style = body(12.5f, FontWeight.Normal, c.n600))
-                    androidx.compose.material3.OutlinedTextField(
-                        value = draft,
-                        onValueChange = { s ->
-                            val digits = s.filter { it.isDigit() }.take(6)
-                            draft = digits
-                            val v = digits.toIntOrNull() ?: return@OutlinedTextField
-                            if (isCount) {
-                                if (v in 1..200) vm.setStemRetention(StemRet.COUNT, v, vm.stemRetentionMb)
-                            } else {
-                                if (v in 0..1_000_000) vm.setStemRetention(StemRet.SIZE_MB, vm.stemRetentionCount, v)
-                            }
-                        },
-                        singleLine = true,
-                        modifier = Modifier.padding(start = 10.dp).width(96.dp),
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedTextColor = c.text, unfocusedTextColor = c.text,
-                            cursorColor = c.accent, focusedBorderColor = c.accent,
-                            unfocusedBorderColor = c.n400,
-                        ),
-                    )
                     Text(
-                        if (isCount) "首" else "MB（0 = 不限制）",
-                        style = body(12.5f, FontWeight.Normal, c.n600),
-                        modifier = Modifier.padding(start = 8.dp),
+                        "已占用 ${com.shiyin.music.data.karaoke.MdxModel.humanSize(vm.stemCacheBytes)}",
+                        style = body(13f, FontWeight.SemiBold, c.n600),
+                        modifier = Modifier.weight(1f),
                     )
+                    KaraokeAction("清空", vm.stemCacheBytes > 0, danger = true) { pendingClear = true }
                 }
-            }
-            SettingRow(Lucide.Trash, "清空伴奏缓存", null, divider = false) {
-                KaraokeAction("清空", vm.stemCacheBytes > 0) { vm.clearStemCache() }
             }
         }
         Box(Modifier.height(114.dp))
+
+        // ── 二次确认（用户 2026-10-18：删除/清空一律要确认，防误触）──────────────
+        pendingDelete?.let { m ->
+            androidx.compose.material3.AlertDialog(
+                onDismissRequest = { pendingDelete = null },
+                containerColor = c.surface,
+                title = { Text("删除模型", style = body(15f, FontWeight.ExtraBold, c.text)) },
+                text = {
+                    Text(
+                        "将删除「${m.displayName}」，释放 ${com.shiyin.music.data.karaoke.MdxModel.humanSize(m.sizeBytes)}。" +
+                            "下次要用需要重新下载。",
+                        style = body(12.5f, FontWeight.Normal, c.n700).copy(lineHeight = 19.sp),
+                    )
+                },
+                confirmButton = {
+                    DialogActionsRow(
+                        listOf(
+                            DialogAction("取消") { pendingDelete = null },
+                            DialogAction("删除") { vm.deleteKaraokeModel(m.id); pendingDelete = null },
+                        ),
+                    )
+                },
+            )
+        }
+        if (pendingClear) {
+            androidx.compose.material3.AlertDialog(
+                onDismissRequest = { pendingClear = false },
+                containerColor = c.surface,
+                title = { Text("清空伴奏缓存", style = body(15f, FontWeight.ExtraBold, c.text)) },
+                text = {
+                    Text(
+                        "将清空全部已分离好的伴奏（当前占用 " +
+                            "${com.shiyin.music.data.karaoke.MdxModel.humanSize(vm.stemCacheBytes)}）。" +
+                            "清空后再听需要重新分离。",
+                        style = body(12.5f, FontWeight.Normal, c.n700).copy(lineHeight = 19.sp),
+                    )
+                },
+                confirmButton = {
+                    DialogActionsRow(
+                        listOf(
+                            DialogAction("取消") { pendingClear = false },
+                            DialogAction("清空") { vm.clearStemCache(); pendingClear = false },
+                        ),
+                    )
+                },
+            )
+        }
     }
 }
 
@@ -1819,19 +1836,110 @@ private fun KaraokeBadge(text: String, c: com.shiyin.music.ui.theme.OrganicColor
     )
 }
 
-/** 伴唱页的小操作按钮（文字按钮，够用且和卡片风格不打架）。 */
+/** 伴唱页的小操作按钮（文字按钮）。[danger]=删除类，用红色以示警惕（用户 2026-10-18）。 */
 @Composable
-private fun KaraokeAction(label: String, enabled: Boolean, onClick: () -> Unit) {
+private fun KaraokeAction(
+    label: String,
+    enabled: Boolean,
+    danger: Boolean = false,
+    onClick: () -> Unit,
+) {
     val c = LocalOrganic.current
+    val fg = when {
+        !enabled -> c.n500
+        danger -> c.a700
+        else -> c.accent
+    }
     Text(
         label,
-        style = body(12.5f, FontWeight.SemiBold, if (enabled) c.accent else c.n500),
+        style = body(12.5f, FontWeight.SemiBold, fg),
         modifier = Modifier
             .clip(RoundedCornerShape(10.dp))
             .background(c.n100)
             .then(if (enabled) Modifier.clickable { onClick() } else Modifier)
             .padding(horizontal = 12.dp, vertical = 7.dp),
     )
+}
+
+/**
+ * 「设为默认 / 默认」**两态按钮**（用户 2026-10-18）：
+ * 未默认 = 不显眼的灰白底 + "设为默认"（可点）；已是默认 = 橙底白字 "默认"（不可再点）。
+ * 原来的做法是"默认"另挂一个右上角名牌 —— 已去掉，状态就由这个按钮自己表达。
+ */
+@Composable
+private fun DefaultModelButton(isDefault: Boolean, onClick: () -> Unit) {
+    val c = LocalOrganic.current
+    Text(
+        if (isDefault) "默认" else "设为默认",
+        style = body(12.5f, FontWeight.SemiBold, if (isDefault) c.surface else c.n600),
+        modifier = Modifier
+            .clip(RoundedCornerShape(10.dp))
+            .background(if (isDefault) c.accent else c.n100)
+            .then(if (isDefault) Modifier else Modifier.clickable { onClick() })
+            .padding(horizontal = 12.dp, vertical = 7.dp),
+    )
+}
+
+/** 缓存策略的数字输入框：可自由填；留空/0 = 该项不限制。失焦或每次合法输入即提交。 */
+@Composable
+private fun RetentionNumberField(value: Int, unit: String, onCommit: (Int) -> Unit) {
+    val c = LocalOrganic.current
+    var draft by androidx.compose.runtime.remember(value) {
+        androidx.compose.runtime.mutableStateOf(if (value <= 0) "" else value.toString())
+    }
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        androidx.compose.material3.OutlinedTextField(
+            value = draft,
+            onValueChange = { s ->
+                val digits = s.filter { it.isDigit() }.take(7)
+                draft = digits
+                // 空串 = 不限制（0）；非空且合法才提交
+                val v = if (digits.isEmpty()) 0 else digits.toIntOrNull() ?: return@OutlinedTextField
+                onCommit(v)
+            },
+            singleLine = true,
+            modifier = Modifier.padding(start = 10.dp).width(84.dp),
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedTextColor = c.text, unfocusedTextColor = c.text,
+                cursorColor = c.accent, focusedBorderColor = c.accent,
+                unfocusedBorderColor = c.n400,
+            ),
+        )
+        Text(unit, style = body(12.5f, FontWeight.Normal, c.n600), modifier = Modifier.padding(start = 6.dp))
+    }
+}
+
+/** 缓存上限的预设下拉框：选一个就填进输入框；也可以手填（两者等价）。 */
+@Composable
+private fun RetentionPresetDropdown(currentMb: Int, onPick: (Int) -> Unit) {
+    val c = LocalOrganic.current
+    var open by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
+    val presets = listOf(200 to "200 MB", 500 to "500 MB", 1024 to "1 GB", 2048 to "2 GB", 5120 to "5 GB", 0 to "不限制")
+    Box {
+        Row(
+            Modifier
+                .padding(start = 8.dp)
+                .clip(RoundedCornerShape(10.dp))
+                .background(c.n100)
+                .clickable { open = true }
+                .padding(horizontal = 10.dp, vertical = 9.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                presets.firstOrNull { it.first == currentMb }?.second ?: "预设",
+                style = body(12f, FontWeight.SemiBold, c.n600),
+            )
+            OIcon(Lucide.ChevronDown, 14.dp, c.n600)
+        }
+        androidx.compose.material3.DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            presets.forEach { (mb, label) ->
+                androidx.compose.material3.DropdownMenuItem(
+                    text = { Text(label, style = body(13f, FontWeight.Normal, c.text)) },
+                    onClick = { open = false; onPick(mb) },
+                )
+            }
+        }
+    }
 }
 
 /** 可选项的小胶囊。 */
