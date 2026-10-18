@@ -31,8 +31,23 @@ class ArtistRoleTest {
 
     @Test
     fun albumArtistProtectsCollaboratorOnWholeAlbum() {
-        // 整张专辑都是「A & B」：B 从没当过第一顺位，但是专辑作者之一 → 不该被藏
-        assertTrue(roles("A & B" to "A & B").isEmpty())
+        // 整张专辑都是「A & B」：B 从没当过第一顺位，但是专辑作者之一 → 不该被藏。
+        // ⚠️ 必须给**多首**才算"整张专辑" —— 判据②2026-10-18 起有这道闸门（见下一条用例）。
+        assertTrue(roles("A & B" to "A & B", "A & B" to "A & B").isEmpty())
+    }
+
+    /**
+     * **2026-10-18 修的回归**：单曲的 `ALBUM_ARTIST` 常常就是把曲目作者原样抄一遍（含 feat），
+     * 旧判据②会据此把 feat 歌手"救回" ⇒ 歌手栏冒出大量只 feat 一两首的歌手（用户实测）。
+     * 现在②只在"同一组合 ≥2 首"时生效，所以单曲里的 feat 照样藏得掉。
+     */
+    @Test
+    fun singleTrackAlbumArtistCopyDoesNotRescueFeature() {
+        assertEquals(
+            "单曲的专辑作者只是把曲目作者抄了一遍，不该因此把 AAA 放回歌手栏",
+            setOf("AAA"),
+            roles("周杰伦/AAA" to "周杰伦/AAA"),
+        )
     }
 
     @Test
