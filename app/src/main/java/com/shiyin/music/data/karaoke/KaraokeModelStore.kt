@@ -80,29 +80,12 @@ class KaraokeModelStore(private val dir: File) {
     }
 
     /**
-     * 从**本地文件**安装模型（adb push 上来的那份）。
+     * 删除模型。**必须是真删** —— 用户 2026-10-18 报"删了返回仍显示已下载"，
+     * 根因是当时 VM 里有一段"外部目录有文件就自动装上"的自动导入，刷新时把刚删的装回来了。
+     * 那段已删除；这里保持"删了就是没了"。
      *
-     * 为什么需要：实测这台网络下**所有镜像都只有 ~0.2 MB/s**（68MB 要 7 分钟，还常常被掐断），
-     * 而 USB 推 133MB 只要 4.7 秒。网络慢时的正路就是把文件推进
-     * `getExternalFilesDir/models/`，再由 app 搬进仓库。
-     * **照样走 sha256 校验** —— 本地文件也可能传坏。
+     * 幂等：文件本来就不在也返回 true（调用方不必区分）。
      */
-    fun installFromFile(src: File, model: MdxModel): Boolean {
-        if (!src.isFile || src.length() != model.sizeBytes) return false
-        if (!verifySha256(src, model.sha256)) return false
-        return runCatching {
-            dir.mkdirs()
-            val tmp = File(dir, model.assetName + ".tmp")
-            src.inputStream().buffered(1 shl 16).use { input ->
-                tmp.outputStream().buffered(1 shl 16).use { input.copyTo(it) }
-            }
-            val dst = fileOf(model)
-            if (dst.exists()) dst.delete()
-            check(tmp.renameTo(dst)) { "模型重命名失败" }
-            true
-        }.getOrDefault(false)
-    }
-
     fun delete(model: MdxModel): Boolean {
         val f = fileOf(model)
         return if (f.isFile) f.delete() else true

@@ -382,7 +382,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     /** 进伴唱设置页时刷新：模型安装状态 + 缓存占用 + 保留策略 + 下载渠道。 */
     fun refreshKaraokeSettings() {
-        importPushedModels()
+        // ⚠️ **这里曾经调用 `importPushedModels()`（外部目录有文件就自动装上）—— 已删除**
+        // （用户 2026-10-18 报"删除模型删不掉，返回后仍显示已下载"）。
+        //
+        // 根因就是这个自动导入：外部目录里一旦有同名文件，**每次刷新都会把它装回来**，
+        // 用户按删除 → 真删了 → 刷新时又被装回 ⇒ 看起来就是"删不掉"。
+        // 而且这功能本来就**不是用户要求的**（我为绕开慢网络自作主张加的）⇒ 整段删掉，
+        // 不留"需要明确操作才导入"的变体：多一个入口就多一处"文件莫名其妙回来"的可能。
         // 追加 B：**引擎版本不匹配的缓存永远读不到** —— 别让它占空间、也别占"保留 N 首"的名额
         val purged = runCatching { stemCache.purgeStaleEngines() }.getOrDefault(0)
         if (purged > 0) appendProbeLog("[缓存] 清理了 $purged 个旧引擎版本的变体目录")
@@ -395,29 +401,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             val (m, cnt, mb) = settingsStore.stemRetention()
             stemRetentionMode = m; stemRetentionCount = cnt; stemRetentionMb = mb
             karaokeDownloadChannel = settingsStore.karaokeDownloadChannel()
-        }
-    }
-
-    /**
-     * **离线导入**：如果有人把模型文件放进了
-     * `Android/data/com.shiyin.music/files/models/`（比如用数据线拷进去的），
-     * 进这个页面就自动装好。
-     *
-     * 为什么要有这条路：实测某些网络下所有镜像都只有 ~0.2 MB/s，68MB 要 7 分钟还常被掐断；
-     * 而数据线拷 133MB 只要 5 秒。默认走网络，但**别把人堵死在网络上**。
-     * 照样校验 sha256 —— 拷过来的文件也可能坏。
-     */
-    private fun importPushedModels() {
-        val ext = getApplication<Application>().getExternalFilesDir(null) ?: return
-        val srcDir = java.io.File(ext, "models")
-        if (!srcDir.isDirectory) return
-        for (m in com.shiyin.music.data.karaoke.MdxModel.values()) {
-            if (karaokeModelStore.isInstalled(m)) continue
-            val f = java.io.File(srcDir, m.assetName)
-            if (!f.isFile) continue
-            if (karaokeModelStore.installFromFile(f, m)) {
-                appendProbeLog("[模型] 已从外部目录导入 ${m.assetName}")
-            }
         }
     }
 
