@@ -103,10 +103,30 @@ class SwipePinTest {
     }
 
     @Test
-    fun `斜划不再算横向意图`() {
-        assertEquals(1.5f, SwipePin.LOCK_ASPECT, 0.001f)
-        assertFalse("45° 斜划（|dx|=|dy|）不是横滑 —— 这是误触的主因", SwipePin.isHorizontalIntent(60f, 60f, 20f))
-        assertFalse("偏 34° 以内都不算", SwipePin.isHorizontalIntent(50f, 40f, 20f))
-        assertTrue("明显横划仍然要认（偏 30° 左右）", SwipePin.isHorizontalIntent(90f, 30f, 20f))
+    fun `斜划不再算横向意图_按角度口径`() {
+        // 用户 2026-10-18：「|dx| ≥ 2.75×|dy|（约 20°）才算横向固定手势」。
+        // 1/2.75 = 0.3636 ⇒ atan = 20.0°，所以判据等价于"偏离水平 ≤ 20°"。
+        assertEquals(2.75f, SwipePin.LOCK_ASPECT, 0.001f)
+
+        // 以固定半径 r 构造各角度的位移（r 足够大，保证过 slop 闸门）
+        val r = 200f
+        val slop = 20f
+        fun at(deg: Double): Pair<Float, Float> {
+            val rad = Math.toRadians(deg)
+            return (r * Math.cos(rad)).toFloat() to (r * Math.sin(rad)).toFloat()
+        }
+
+        val (dx10, dy10) = at(10.0)
+        assertTrue("偏离水平 10° 应当算横滑", SwipePin.isHorizontalIntent(dx10, dy10, slop))
+
+        listOf(20.0, 30.0, 45.0).forEach { deg ->
+            val (dx, dy) = at(deg)
+            assertFalse(
+                "偏离水平 $deg° 不该触发固定（用户实测斜滑误触就是这一类）",
+                SwipePin.isHorizontalIntent(dx, dy, slop),
+            )
+        }
+        // 45° 是最典型的误触姿势
+        assertFalse(SwipePin.isHorizontalIntent(141f, 141f, slop))
     }
 }

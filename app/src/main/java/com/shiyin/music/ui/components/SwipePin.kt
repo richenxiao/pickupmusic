@@ -64,22 +64,48 @@ object SwipePin {
     /**
      * 横向分量至少要是纵向分量的**这个倍数**，才算"明显是横滑"。
      *
-     * 原来只要求 `|dx| > |dy|` —— 45° 斜划也算，这是误触的主因。
-     * 1.5 倍意味着**至少要偏离竖直 34°** 才认，斜划不再触发。
+     * 演进（都在同一天，用户实测推动）：
+     *  · 原判据只要求 `|dx| > |dy|` —— 45° 斜划也算，误触主因；
+     *  · `1.5` 倍（≈偏离水平 34°）—— 用户实测"**斜着滑还是会触发**"；
+     *  · **`2.75` 倍（≈偏离水平 20°）** —— 用户 2026-10-18 明确给的值：
+     *    "|dx| ≥ 2.75×|dy|（约 20°）才算横向固定手势"。
+     * `1/2.75 = 0.3636` ⇒ `atan(0.3636) = 20.0°` ✓ 与用户口径一致。
      */
-    const val LOCK_ASPECT = 1.5f
+    const val LOCK_ASPECT = 2.75f
 
     /**
-     * 横向手势仲裁：位移是否已**明显**偏向横向（用户 2026-10-18 收紧）。
+     * 横向手势仲裁：位移是否已**明显**偏向横向（用户 2026-10-18 收紧到 ~20°）。
      *
      * 两条缺一不可：
      *  1. `|dx| > touchSlop × [LOCK_SLOP_FACTOR]` —— 位移得够大，不是手指抖动；
-     *  2. `|dx| > |dy| × [LOCK_ASPECT]` —— 得**明显**横着划，斜划不算（防误触）。
-     * 不满足就**不消费**，让事件冒泡给 `LazyColumn` 的纵向滚动。
+     *  2. `|dx| > |dy| × [LOCK_ASPECT]` —— 得**明显**横着划（≥2.75 倍 ≈ 20° 以内）。
+     * 不满足就**不消费**；调用方（[SwipeToPin]）会把**整条手势**锁成纵向，之后不再回头。
      */
     fun isHorizontalIntent(dx: Float, dy: Float, touchSlopPx: Float): Boolean {
         val ax = kotlin.math.abs(dx)
         val ay = kotlin.math.abs(dy)
         return ax > touchSlopPx * LOCK_SLOP_FACTOR && ax > ay * LOCK_ASPECT
+    }
+}
+
+/**
+ * 手势方向判定日志（**仅 debug 编译**，release 里整段被跳过）。
+ *
+ * 用户 2026-10-18："加调试日志（仅 debug）记录每次手势的 dx、dy、判定结果，便于校准"。
+ * 一次手势**只打一条**（在落锤那一刻），不会刷屏。
+ */
+internal object SwipePinLog {
+    fun decided(dx: Float, dy: Float, slop: Float, horizontal: Boolean) {
+        if (!com.shiyin.music.BuildConfig.DEBUG) return
+        val ax = kotlin.math.abs(dx)
+        val ay = kotlin.math.abs(dy)
+        val ratio = if (ay > 0.01f) ax / ay else Float.MAX_VALUE
+        android.util.Log.d(
+            "SwipePin",
+            "方向判定 dx=${"%.1f".format(dx)} dy=${"%.1f".format(dy)} slop=${"%.1f".format(slop)} " +
+                "|dx|/|dy|=${"%.2f".format(ratio)}（需 ≥ ${SwipePin.LOCK_ASPECT}，且 |dx| 需 > " +
+                "${"%.1f".format(slop * SwipePin.LOCK_SLOP_FACTOR)}）" +
+                " ⇒ ${if (horizontal) "横向固定" else "纵向滚动（本条手势已锁定纵向）"}",
+        )
     }
 }

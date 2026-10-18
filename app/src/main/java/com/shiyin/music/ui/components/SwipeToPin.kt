@@ -148,21 +148,30 @@ fun SwipeToPin(
                                 // 一次手势**锁存起点状态**：无论松手前发生什么，只按这一个基准取反提交一次
                                 //（避免"反复提交/反复重排"，那正是灰绿交替闪烁的来源）。
                                 var baseAtStart: Boolean? = null
+                                // ⚠️ **方向只判一次**（用户 2026-10-18）：
+                                // "触摸超过 slop 的那一刻，用累计位移判断方向……否则本次手势整个过程
+                                //  锁定为纵向，之后再横向移动也不得触发"。
+                                // 旧实现只在"纵向占优"时才 break，所以先小幅度斜一下、之后横着拉，
+                                // 仍会被判成横向 —— 这就是"斜着滑还是会触发"的来源。
+                                var decided = false
                                 while (true) {
                                     val event = awaitPointerEvent()
                                     val ch = event.changes.firstOrNull { it.id == down.id } ?: break
                                     val dx = ch.position.x - down.position.x
                                     val dy = ch.position.y - down.position.y
-                                    if (!dragging) {
-                                        // 纵向意图优先：不消费、冒泡给 LazyColumn 滚动
-                                        if (abs(dy) > slop && abs(dy) >= abs(dx)) break
+                                    if (!dragging && !decided && (abs(dx) > slop || abs(dy) > slop)) {
+                                        // 一过 slop 就落锤：横向 ⇒ 进入拖动；否则 ⇒ **整条手势锁纵向**
+                                        decided = true
                                         if (SwipePin.isHorizontalIntent(dx, dy, slop)) {
                                             dragging = true
                                             baseAtStart = curPinned
                                             cancelFade.floatValue = 1f   // 上一次取消的淡出别影响到这次
                                             releaseJob?.cancel()         // 新拖动接管，停掉上次回弹
                                             releaseJob = null
+                                        } else {
+                                            break
                                         }
+                                        SwipePinLog.decided(dx, dy, slop, dragging)
                                     }
                                     if (dragging) {
                                         ch.consume()           // 锁定横向：列表不再纵向滚动
