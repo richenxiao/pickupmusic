@@ -71,6 +71,12 @@ class MdxSeparator(
         sink: ChunkSink,
         shouldProcess: ((chunkIndex: Int) -> Boolean)? = null,
         isCancelled: (() -> Boolean)? = null,
+        /**
+         * P0-B：**处理顺序**（块号列表，由 [KaraokeChunkSchedule.order] 给出）。
+         * 默认从头顺序；给了就让分离**先算播放头所在的那一块**，算完再绕回开头。
+         * 长度与 `total` 不符时**退回从头顺序**（不猜）。
+         */
+        order: List<Int>? = null,
         // ⚠️ onProgress 必须留在**最后**：既有调用点都把回调写成尾随 lambda，
         // 一旦它后面还有参数，尾随 lambda 会绑到后面的参数上（编译期就炸）。
         onProgress: (Progress) -> Unit = {},
@@ -101,17 +107,19 @@ class MdxSeparator(
         var firstChunkMs = -1L
         var inferTotal = 0L
         val c = model.compensate
-        val chunkTimes = LongArray(total)
+        // P0-B：按**处理顺序**追加（不是按块号落位）—— 顺序可被重排，只有追加序才是"第几个算完"。
+        val chunkTimes = ArrayList<Long>(total)
         val chunkAudioSec = (chunkSize - 2 * trim) / 44100f
 
-        var lastProcessed = -1
-        for (chunkIdx in 0 until total) {
+        // 顺序与块数不符（调用方传错）时退回从头顺序 —— 宁可慢，不要漏块。
+        val seqOrder = order?.takeIf { it.size == total } ?: (0 until total).toList()
+        for ((seq, chunkIdx) in seqOrder.withIndex()) {
             if (isCancelled?.invoke() == true) {
                 return RunSummary(
                     firstChunkMs = firstChunkMs,
                     totalMs = (System.nanoTime() - t0) / 1_000_000,
                     inferMsTotal = inferTotal,
-                    chunkTimesMs = chunkTimes.copyOfRange(0, lastProcessed + 1),
+                    chunkTimesMs = chunkTimes.toLongArray(),
                     chunkAudioSec = chunkAudioSec,
                     cancelled = true,
                 )
@@ -120,14 +128,14 @@ class MdxSeparator(
             val start = chunkIdx * genSize
             if (shouldProcess?.invoke(chunkIdx) == false) {
                 // 续算：缓存里已有这块 → 跳过计算，进度照常推进
-                val cov = (chunkIdx + 1) * chunkAudioSec
+                val cov = (seq + 1) * chunkAudioSec
                 val el = (System.nanoTime() - t0) / 1_000_000
                 onProgress(
                     Progress(
-                        chunkDone = chunkIdx + 1, chunkTotal = total,
+                        chunkDone = seq + 1, chunkTotal = total,
                         firstChunkMs = firstChunkMs, elapsedMs = el,
                         inferMsTotal = inferTotal, lastChunkMs = 0,
-                        avgChunkMs = el / (chunkIdx + 1),
+                        avgChunkMs = el / (seq + 1),
                         audioCoveredSec = cov, leadSec = cov - el / 1000f,
                     ),
                 )
@@ -170,17 +178,16 @@ class MdxSeparator(
 
             val elapsed = (System.nanoTime() - t0) / 1_000_000
             val chunkMs = (System.nanoTime() - tChunk) / 1_000_000
-            chunkTimes[chunkIdx] = chunkMs
-            lastProcessed = chunkIdx
-            if (chunkIdx == 0) firstChunkMs = elapsed
-            val coveredSec = (chunkIdx + 1) * chunkAudioSec
+            chunkTimes.add(chunkMs)
+            if (seq == 0) firstChunkMs = elapsed
+            val coveredSec = (seq + 1) * chunkAudioSec
             onProgress(
                 Progress(
-                    chunkDone = chunkIdx + 1, chunkTotal = total,
+                    chunkDone = seq + 1, chunkTotal = total,
                     firstChunkMs = firstChunkMs, elapsedMs = elapsed,
                     inferMsTotal = inferTotal,
                     lastChunkMs = chunkMs,
-                    avgChunkMs = elapsed / (chunkIdx + 1),
+                    avgChunkMs = elapsed / (seq + 1),
                     audioCoveredSec = coveredSec,
                     leadSec = coveredSec - elapsed / 1000f,
                 ),
@@ -190,7 +197,7 @@ class MdxSeparator(
             firstChunkMs = firstChunkMs,
             totalMs = (System.nanoTime() - t0) / 1_000_000,
             inferMsTotal = inferTotal,
-            chunkTimesMs = chunkTimes,
+            chunkTimesMs = chunkTimes.toLongArray(),
             chunkAudioSec = chunkAudioSec,
         )
     }

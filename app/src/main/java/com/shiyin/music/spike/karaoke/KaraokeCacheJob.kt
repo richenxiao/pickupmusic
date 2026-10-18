@@ -4,6 +4,7 @@ import android.content.Context
 import com.shiyin.music.data.Track
 import com.shiyin.music.data.karaoke.AudioDecoder
 import com.shiyin.music.data.karaoke.AudioFingerprint
+import com.shiyin.music.data.karaoke.KaraokeChunkSchedule
 import com.shiyin.music.data.karaoke.MdxModel
 import com.shiyin.music.data.karaoke.SeparationJob
 import com.shiyin.music.data.karaoke.StemCache
@@ -78,6 +79,11 @@ object KaraokeCacheJob {
             return@withContext Handle(key, dir, Job().apply { complete() })
         }
 
+        // P0-B：**先算播放头所在的那一块**（往前留 [KaraokeChunkSchedule.REWIND_MARGIN_SECONDS] 一小段），
+        // 算完再绕回开头。旧行为是从第 0 块算起 —— 播放头在 3 分钟处要先算 31 块（≈74 秒）才轮到。
+        val totalChunks = job.totalChunksFor(modelFrames)
+        val order = KaraokeChunkSchedule.order(totalChunks, gen, playFrame())
+
         val work = kotlinx.coroutines.CoroutineScope(Dispatchers.Default).launch {
             var fired = false
             onStatus("分离中…")
@@ -86,18 +92,29 @@ object KaraokeCacheJob {
                 modelVersion = MODEL_VERSION,
                 provider = AudioDecoder.PcmFileReader(info),
                 modelFrames = modelFrames,
+                order = order,
                 onProgress = { p ->
-                    // "首段可用"= 播放头所在那块已经写好（不是"第一块写好"——用户可能从中间点伴唱）
-                    if (!fired && cache.hasChunk(dir, (playFrame() / gen).toInt())) {
-                        fired = true
-                        onReady(dir)
-                    }
-                    if (!fired && p.chunkDone >= p.chunkTotal) {
-                        fired = true
-                        onReady(dir)
-                    }
                     if (!fired) {
-                        onStatus("分离中 ${p.chunkDone}/${p.chunkTotal}")
+                        // P0-B **切换门槛**：缓存**领先播放头**不足 N 秒就不切 ——
+                        // 声音继续是原曲、按钮继续转圈。宁可晚一点，也不要"切过去又漏人声"
+                        // （旧行为是"播放头那块一写好就切"，若播放头正好在那块 95% 处，
+                        //   领先只剩 0.29 秒，2.37 秒后才出下一块 ⇒ 中间欠载 ⇒ 退回原曲）。
+                        val lead = KaraokeChunkSchedule.leadSeconds(
+                            modelFrames = modelFrames,
+                            gen = gen,
+                            playModelFrame = playFrame(),
+                            has = { i -> cache.hasChunk(dir, i) },
+                        )
+                        if (lead >= KaraokeChunkSchedule.SWITCH_LEAD_SECONDS) {
+                            fired = true
+                            onReady(dir)
+                        } else if (p.chunkDone >= p.chunkTotal) {
+                            // 全曲算完仍不够领先（例如播放头已在末尾）—— 照旧就绪，别再空等
+                            fired = true
+                            onReady(dir)
+                        } else {
+                            onStatus("分离中 ${p.chunkDone}/${p.chunkTotal}（领先 ${"%.1f".format(lead)}s）")
+                        }
                     }
                 },
             )

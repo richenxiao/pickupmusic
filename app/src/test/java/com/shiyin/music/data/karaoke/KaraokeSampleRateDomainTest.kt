@@ -59,8 +59,20 @@ class KaraokeSampleRateDomainTest {
         return f
     }
 
-    private fun estimateHz(sig: ShortArray, from: Int, to: Int, rate: Int): Double {
-        var crossings = 0
+    /** 读回交错小端 int16 PCM。 */
+    private fun readPcm(p: File, frames: Int): ShortArray {
+        val bytes = p.readBytes()
+        val out = ShortArray(frames * 2)
+        var b = 0
+        for (i in 0 until frames) {
+            out[i * 2] = ((bytes[b].toInt() and 0xFF) or ((bytes[b + 1].toInt() and 0xFF) shl 8)).toShort()
+            out[i * 2 + 1] = ((bytes[b + 2].toInt() and 0xFF) or ((bytes[b + 3].toInt() and 0xFF) shl 8)).toShort()
+            b += 4
+        }
+        return out
+    }
+
+    private fun estimateHz(sig: ShortArray, from: Int, to: Int, rate: Int): Double {        var crossings = 0
         var prev = sig[from * 2]
         for (i in from + 1 until to) {
             val cur = sig[i * 2]
@@ -118,7 +130,11 @@ class KaraokeSampleRateDomainTest {
             val acc = StemCacheAccompaniment(cache, dir)
             val want = srcFrames / 2
             val start = srcFrames / 8
+            // ⚠️ **必须把真正的原曲喂进去**（e4 起）：播放侧合成的是 `原曲 − c×上采样(人声估计)`，
+            // 传全零等于量"−c×人声估计"，那就不是这条链路了（旧口径下原曲不参与合成，所以以前能糊弄过去）。
+            val src = readPcm(pcm, srcFrames)
             val orig = ShortArray(want * 2)
+            System.arraycopy(src, start * 2, orig, 0, want * 2)
             val dst = ShortArray(want * 2)
             assertTrue(
                 "按源帧号读伴奏必须命中（未命中说明块覆盖或域换算错了）",
@@ -148,6 +164,9 @@ class KaraokeSampleRateDomainTest {
     @Test
     fun `44k1 源_同域直通_不经过重采样`() {
         // 44.1k 源必须走"直通"分支 —— 那是已经验收过的路径，不能被重采样改动。
+        // ⚠️ e4 起缓存里存的是**模型那一轨**，伴奏由播放侧合成；这条测试要问的是**域映射有没有重采样**，
+        // 所以把清单标成"伴奏模型那一轨"（`primaryIsVocals = false`）⇒ 读出来就是**原样**，
+        // 不受合成公式干扰。人声模型那条合成路径由 `KaraokeAccompZeroVocalTest` 单独钉住。
         val cache = StemCache(File(tmp.root, "cache2"))
         val dir = cache.variantDir(StemCache.SourceKey("fp44", 44100, 2, 2000), "m", "1")
         val samples = ShortArray(2000 * 2) { (it % 1000).toShort() }
@@ -156,6 +175,7 @@ class KaraokeSampleRateDomainTest {
             dir, "m", "1", "fp44", genSize = 2000, totalChunks = 1, complete = true,
             sampleRate = 44100, channels = 2, lastAccess = 0L,
             srcRate = 44100, srcFrames = 2000,
+            primaryIsVocals = false, compensate = 1f,
         )
         val acc = StemCacheAccompaniment(cache, dir)
         val dst = ShortArray(500 * 2)
@@ -168,6 +188,7 @@ class KaraokeSampleRateDomainTest {
     @Test
     fun `异域时源帧号按比例映射到缓存帧号`() {
         // 缓存（44.1k）里放"帧号阶梯"，按 48k 的源帧号读 ⇒ 每过一个源帧前进 44100/48000 个缓存帧。
+        // 同上：标成"伴奏那一轨"以免被合成公式掺进来。
         val cache = StemCache(File(tmp.root, "cache3"))
         val dir = cache.variantDir(StemCache.SourceKey("fp48", 48000, 2, 48000), "m", "1")
         val gen = 4096
@@ -184,6 +205,7 @@ class KaraokeSampleRateDomainTest {
             dir, "m", "1", "fp48", genSize = gen, totalChunks = chunks, complete = true,
             sampleRate = 44100, channels = 2, lastAccess = 0L,
             srcRate = 48000, srcFrames = 48000,
+            primaryIsVocals = false, compensate = 1f,
         )
         val acc = StemCacheAccompaniment(cache, dir)
         val dst = ShortArray(4096 * 2)

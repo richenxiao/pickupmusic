@@ -67,6 +67,11 @@ class SeparationJob(
          * 被按 `源率/44100` 压缩（P0-1 升调事故的根因）。
          */
         modelFrames: Int,
+        /**
+         * P0-B：**处理顺序**（见 [KaraokeChunkSchedule.order]）。默认从头顺序。
+         * 传进来就让分离先算播放头所在那块 —— 播放头在 3 分钟处时不必先算 31 块。
+         */
+        order: List<Int>? = null,
         onProgress: (Progress) -> Unit = {},
         isCancelled: () -> Boolean = { false },
     ): Result {
@@ -124,6 +129,7 @@ class SeparationJob(
             },
             shouldProcess = { idx -> !cache.hasChunk(dir, idx) },
             isCancelled = isCancelled,
+            order = order,
         )
 
         val done = cache.doneChunks(dir)
