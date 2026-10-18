@@ -92,4 +92,21 @@ class SwipePinTest {
     fun `横向位移未过slop_不算横向意图`() {
         assertFalse(SwipePin.isHorizontalIntent(15f, 5f, 20f))
     }
+
+    // ── 防误触（用户 2026-10-18："固定应该只能左右滑动，现在太容易误触"）──────
+
+    @Test
+    fun `锁定位移提到两倍slop`() {
+        assertEquals(2.0f, SwipePin.LOCK_SLOP_FACTOR, 0.001f)
+        assertFalse("刚过 1 倍 slop 不该锁（旧版就是这里误触）", SwipePin.isHorizontalIntent(25f, 0f, 20f))
+        assertTrue("过 2 倍 slop 才锁", SwipePin.isHorizontalIntent(45f, 0f, 20f))
+    }
+
+    @Test
+    fun `斜划不再算横向意图`() {
+        assertEquals(1.5f, SwipePin.LOCK_ASPECT, 0.001f)
+        assertFalse("45° 斜划（|dx|=|dy|）不是横滑 —— 这是误触的主因", SwipePin.isHorizontalIntent(60f, 60f, 20f))
+        assertFalse("偏 34° 以内都不算", SwipePin.isHorizontalIntent(50f, 40f, 20f))
+        assertTrue("明显横划仍然要认（偏 30° 左右）", SwipePin.isHorizontalIntent(90f, 30f, 20f))
+    }
 }

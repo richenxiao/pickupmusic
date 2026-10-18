@@ -54,12 +54,32 @@ object SwipePin {
     fun restingReveal(): Float = 0f
 
     /**
-     * 横向手势仲裁：位移是否已明显偏向横向。
+     * 横向锁定前需要的位移 = **touchSlop × 本系数**。
      *
-     * 规格 A.1："一旦横向位移超过 touchSlop 就锁定横向手势，列表不再上下滚动"——
-     * 所以判据是"过 slop **且** 横向分量大于纵向"，二者缺一不可（否则会跟
-     * LazyColumn 的纵向滚动抢手势）。
+     * 用户 2026-10-18："固定应该只能左右滑动，现在太容易误触了"。
+     * 原来只要求"过 1 倍 touchSlop"（≈8dp），手指稍微一斜就锁上了 ⇒ 提到 2 倍。
      */
-    fun isHorizontalIntent(dx: Float, dy: Float, touchSlopPx: Float): Boolean =
-        kotlin.math.abs(dx) > touchSlopPx && kotlin.math.abs(dx) > kotlin.math.abs(dy)
+    const val LOCK_SLOP_FACTOR = 2.0f
+
+    /**
+     * 横向分量至少要是纵向分量的**这个倍数**，才算"明显是横滑"。
+     *
+     * 原来只要求 `|dx| > |dy|` —— 45° 斜划也算，这是误触的主因。
+     * 1.5 倍意味着**至少要偏离竖直 34°** 才认，斜划不再触发。
+     */
+    const val LOCK_ASPECT = 1.5f
+
+    /**
+     * 横向手势仲裁：位移是否已**明显**偏向横向（用户 2026-10-18 收紧）。
+     *
+     * 两条缺一不可：
+     *  1. `|dx| > touchSlop × [LOCK_SLOP_FACTOR]` —— 位移得够大，不是手指抖动；
+     *  2. `|dx| > |dy| × [LOCK_ASPECT]` —— 得**明显**横着划，斜划不算（防误触）。
+     * 不满足就**不消费**，让事件冒泡给 `LazyColumn` 的纵向滚动。
+     */
+    fun isHorizontalIntent(dx: Float, dy: Float, touchSlopPx: Float): Boolean {
+        val ax = kotlin.math.abs(dx)
+        val ay = kotlin.math.abs(dy)
+        return ax > touchSlopPx * LOCK_SLOP_FACTOR && ax > ay * LOCK_ASPECT
+    }
 }
