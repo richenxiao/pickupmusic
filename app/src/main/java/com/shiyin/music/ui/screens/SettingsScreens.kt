@@ -807,7 +807,10 @@ private fun SettingsRoot(vm: MainViewModel, scrollStates: MutableMap<String, Scr
             // 2026-10-19 用户："这个应该是**歌手管理**，而不是隐藏客串歌手……这是一个统一的
             //   归纳功能。然后**不要有**显示隐藏了多少、已开启什么" ⇒ 入口行只有名字，无尾注。
             CardEntryRow(
-                Lucide.Users, c.n700, "歌手管理",
+                // ⚠️ 图标不能撞：这一行原来用 `Users`，而里面「**歌手合并**」那个按钮也是 `Users`
+                // —— 用户 2026-10-19 直接指出"歌手管理的图标跟歌手合并一样，我说了不要雷同图标"。
+                // 换成 `Layers`（"统一的归纳功能"这个语义本身就说的是"多层收纳"）。
+                Lucide.Layers, c.n700, "歌手管理",
                 null,
                 divider = false,
                 trailingText = null,
@@ -1522,11 +1525,10 @@ private fun LyricsBookScreen(vm: MainViewModel, scrollStates: MutableMap<String,
                 OrganicSwitch(vm.skipCreditsTranslation) { vm.setSkipCreditsTranslation(!vm.skipCreditsTranslation) }
             }
         }
-        // P0 Spike 调试入口（spike/karaoke-p0 分支临时常显；正式版移除或改回仅 debug 可见）。
-        // 放在歌词本页底部：伴唱相关设置都归这页。
-        SectionLabel("伴唱 P0 调试")
-        com.shiyin.music.spike.karaoke.KaraokeP0ProbeCard()
-        com.shiyin.music.spike.karaoke.KaraokeDebugPanel(vm)
+        // 2026-10-19 用户："歌词本设置中的**伴唱相关测试内容**还用吗？不用全部给我删了"。
+        // 原来这里挂着 P0 Spike 的两个调试面板（`伴唱 P0 调试` 分区 + 探针卡片 + 调试面板）——
+        // 那是 spike 期的临时入口，正式版不该出现，已连文件一起删。
+        // 分离/探针的**命令行驱动**（`karaoke-cmd`）不受影响，仍在 MainViewModel 里。
         Box(Modifier.height(114.dp))
     }
 }
@@ -1740,27 +1742,27 @@ private fun KaraokeSettingsScreen(vm: MainViewModel, scrollStates: MutableMap<St
                     style = body(11f, FontWeight.Normal, c.n500),
                     modifier = Modifier.padding(top = 4.dp),
                 )
-                // 第 1 行：按曲目
-                Row(Modifier.padding(top = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text("保存", style = body(13f, FontWeight.Normal, c.text))
-                    RetentionNumberField(
-                        value = vm.stemRetentionCount,
-                        unit = "首",
-                        onCommit = { vm.setStemRetentionLimits(it, vm.stemRetentionMb) },
-                    )
-                }
-                // 第 2 行：按大小 + 预设下拉框
-                Row(Modifier.padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text("最多占用", style = body(13f, FontWeight.Normal, c.text))
-                    RetentionNumberField(
-                        value = vm.stemRetentionMb,
-                        unit = "MB",
-                        onCommit = { vm.setStemRetentionLimits(vm.stemRetentionCount, it) },
-                    )
-                    RetentionPresetDropdown(vm.stemRetentionMb) { mb ->
-                        vm.setStemRetentionLimits(vm.stemRetentionCount, mb)
-                    }
-                }
+                // 第 1 行：按曲目 / 第 2 行：按大小
+                // ⚠️ 2026-10-19 用户："下拉框和单选框是**一体**的，在框的**右侧**"
+                //   + "输入框要在**右侧**，不要那么大，与字体行平齐" ⇒ 标签在左、控件在右，
+                //   数字 + 单位 + 预设同在一个框里。
+                RetentionRow(
+                    label = "保存",
+                    value = vm.stemRetentionCount,
+                    unit = "首",
+                    onCommit = { vm.setStemRetentionLimits(it, vm.stemRetentionMb) },
+                    presets = null,
+                )
+                RetentionRow(
+                    label = "最多占用",
+                    value = vm.stemRetentionMb,
+                    unit = "MB",
+                    onCommit = { vm.setStemRetentionLimits(vm.stemRetentionCount, it) },
+                    presets = listOf(
+                        200 to "200 MB", 500 to "500 MB", 1024 to "1 GB",
+                        2048 to "2 GB", 5120 to "5 GB", 0 to "不限制",
+                    ),
+                )
                 // 已占用 + 清空（清空要二次确认）
                 Row(
                     Modifier.padding(top = 14.dp).fillMaxWidth(),
@@ -1893,7 +1895,47 @@ private fun DefaultModelButton(isDefault: Boolean, onClick: () -> Unit) {
     )
 }
 
-/** 缓存策略的数字输入框：可自由填；留空/0 = 该项不限制。失焦或每次合法输入即提交。 */
+/**
+ * 缓存策略的**一行**：标签在左，**控件在右**，且数字输入与预设下拉**同在一个框里**
+ * （用户 2026-10-19："下拉框和单选框是一体的，在框的右侧""输入框要在右侧，不要那么大，
+ * 与字体行平齐"）。
+ */
+@Composable
+private fun RetentionRow(
+    label: String,
+    value: Int,
+    unit: String,
+    onCommit: (Int) -> Unit,
+    presets: List<Pair<Int, String>>?,
+) {
+    val c = LocalOrganic.current
+    Row(
+        Modifier.fillMaxWidth().padding(top = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(label, style = body(13.5f, FontWeight.Normal, c.text), modifier = Modifier.weight(1f))
+        Row(
+            Modifier
+                .clip(RoundedCornerShape(10.dp))
+                .background(c.n100)
+                .border(1.dp, c.n400, RoundedCornerShape(10.dp))
+                .height(36.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            RetentionNumberField(value, unit, onCommit)
+            if (presets != null) {
+                Box(Modifier.width(1.dp).fillMaxHeight().background(c.n400))
+                // 选预设 = 直接把那个值填进去（与手填等价）
+                RetentionPresetDropdown(value, presets, onPick = onCommit)
+            }
+        }
+    }
+}
+
+/**
+ * 数字输入：**窄、与同一行的字体等高等齐**（用户嫌原来的 `OutlinedTextField` "那么大"）。
+ * 留空 = 该项不限制（内部按 0 处理），空态显示灰色的"不限"。
+ */
 @Composable
 private fun RetentionNumberField(value: Int, unit: String, onCommit: (Int) -> Unit) {
     val c = LocalOrganic.current
@@ -1901,51 +1943,64 @@ private fun RetentionNumberField(value: Int, unit: String, onCommit: (Int) -> Un
         androidx.compose.runtime.mutableStateOf(if (value <= 0) "" else value.toString())
     }
     Row(verticalAlignment = Alignment.CenterVertically) {
-        androidx.compose.material3.OutlinedTextField(
+        androidx.compose.foundation.text.BasicTextField(
             value = draft,
             onValueChange = { s ->
                 val digits = s.filter { it.isDigit() }.take(7)
                 draft = digits
                 // 空串 = 不限制（0）；非空且合法才提交
-                val v = if (digits.isEmpty()) 0 else digits.toIntOrNull() ?: return@OutlinedTextField
+                val v = if (digits.isEmpty()) 0 else digits.toIntOrNull() ?: return@BasicTextField
                 onCommit(v)
             },
             singleLine = true,
-            modifier = Modifier.padding(start = 10.dp).width(84.dp),
-            colors = OutlinedTextFieldDefaults.colors(
-                focusedTextColor = c.text, unfocusedTextColor = c.text,
-                cursorColor = c.accent, focusedBorderColor = c.accent,
-                unfocusedBorderColor = c.n400,
-            ),
+            textStyle = body(13.5f, FontWeight.SemiBold, c.text),
+            cursorBrush = androidx.compose.ui.graphics.SolidColor(c.accent),
+            modifier = Modifier.width(54.dp).padding(start = 12.dp),
+            decorationBox = { inner ->
+                Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterEnd) {
+                    if (draft.isEmpty()) {
+                        Text("不限", style = body(13.5f, FontWeight.Normal, c.n500))
+                    }
+                    inner()
+                }
+            },
         )
-        Text(unit, style = body(12.5f, FontWeight.Normal, c.n600), modifier = Modifier.padding(start = 6.dp))
+        Text(
+            unit,
+            style = body(12f, FontWeight.Normal, c.n600),
+            modifier = Modifier.padding(start = 4.dp, end = 12.dp),
+        )
     }
 }
 
-/** 缓存上限的预设下拉框：选一个就填进输入框；也可以手填（两者等价）。 */
+/**
+ * 预设下拉：**贴在同一个框的右半边**（用户："下拉框和单选框是一体的，在框的右侧"）。
+ *
+ * ⚠️ `containerColor = c.surface` 是主题适配所必需的 —— 不传的话 Material3 默认给**全白**底，
+ * 深色主题下弹出来一整块白（用户 2026-10-19 实测到并指正）。
+ * 这条与项目里 `ArtistAlbumList` 的下拉框用法一致。
+ */
 @Composable
-private fun RetentionPresetDropdown(currentMb: Int, onPick: (Int) -> Unit) {
+private fun RetentionPresetDropdown(currentMb: Int, presets: List<Pair<Int, String>>, onPick: (Int) -> Unit) {
     val c = LocalOrganic.current
     var open by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
-    val presets = listOf(200 to "200 MB", 500 to "500 MB", 1024 to "1 GB", 2048 to "2 GB", 5120 to "5 GB", 0 to "不限制")
     Box {
         Row(
-            Modifier
-                .padding(start = 8.dp)
-                .clip(RoundedCornerShape(10.dp))
-                .background(c.n100)
-                .border(1.dp, c.n400, RoundedCornerShape(10.dp))
-                .clickable { open = true }
-                .padding(horizontal = 10.dp, vertical = 9.dp),
+            Modifier.fillMaxHeight().clickable { open = true }.padding(horizontal = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
                 presets.firstOrNull { it.first == currentMb }?.second ?: "预设",
                 style = body(12f, FontWeight.SemiBold, c.n600),
+                maxLines = 1,
             )
             OIcon(Lucide.ChevronDown, 14.dp, c.n600)
         }
-        androidx.compose.material3.DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+        androidx.compose.material3.DropdownMenu(
+            expanded = open,
+            onDismissRequest = { open = false },
+            containerColor = c.surface,
+        ) {
             presets.forEach { (mb, label) ->
                 androidx.compose.material3.DropdownMenuItem(
                     text = { Text(label, style = body(13f, FontWeight.Normal, c.text)) },
@@ -2386,7 +2441,13 @@ private fun ArtistManageScreen(vm: MainViewModel, scrollStates: MutableMap<Strin
     }
 }
 
-/** 歌手管理页上的一个**大按钮**（整卡可点）。 */
+/**
+ * 歌手管理页上的一个**大按钮**（整卡可点）。
+ *
+ * ⚠️ 2026-10-19 用户："三个项被你缩小太多了，保留之前的大小" —— 所以这里**不再自己写行布局**，
+ * 直接用全 App 统一的 [SettingsRowScaffold]（卡片 + 行 = 与"歌手合并/写真源"原来一模一样的高度）。
+ * 变的是"上面不再有小标题"，不是"行变小了"。
+ */
 @Composable
 private fun ArtistManageButton(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
@@ -2394,23 +2455,22 @@ private fun ArtistManageButton(
     onClick: () -> Unit,
 ) {
     val c = LocalOrganic.current
-    Row(
+    Column(
         Modifier
             .fillMaxWidth()
-            .shadowSm(RoundedCornerShape(24.dp))
-            .clip(RoundedCornerShape(24.dp))
+            .shadowSm(RoundedCornerShape(28.dp))
+            .clip(RoundedCornerShape(28.dp))
             .background(c.surface)
-            .clickable { onClick() }
-            .padding(horizontal = 18.dp, vertical = 18.dp),
-        verticalAlignment = Alignment.CenterVertically,
+            .padding(vertical = 6.dp),
     ) {
-        OIcon(icon, 22.dp, c.n700)
-        Text(
-            label,
-            style = body(15.5f, FontWeight.SemiBold, c.text),
-            modifier = Modifier.padding(start = 14.dp).weight(1f),
+        SettingsRowScaffold(
+            title = label,
+            sub = null,
+            leading = { OIcon(icon, 19.dp, c.n700) },
+            divider = false,
+            onClick = onClick,
+            trailing = { OIcon(Lucide.ChevronRight, 18.dp, c.n500) },
         )
-        OIcon(Lucide.ChevronRight, 18.dp, c.n500)
     }
 }
 
