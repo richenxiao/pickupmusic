@@ -803,11 +803,13 @@ private fun SettingsRoot(vm: MainViewModel, scrollStates: MutableMap<String, Scr
                 divider = true,
             ) { vm.navFilesTo(FilesView.LyricsBook) }
             // 2026-10-18：原来这里的两行「写真源」「歌手合并」已并入「歌手管理」子页
+            // 2026-10-19 用户："歌手管理，会显示一个隐藏客串 30 的这个东西，不需要显示这个"
+            //   + "把歌手栏目改成隐藏客串歌手" ⇒ 入口行直接用功能名，尾注不再带数字。
             CardEntryRow(
-                Lucide.Users, c.n700, "歌手管理",
+                Lucide.Users, c.n700, "隐藏客串歌手",
                 null,
                 divider = false,
-                trailingText = if (vm.hideFeatureArtists) "隐藏客串 ${vm.featureArtistCount()}" else "全部显示",
+                trailingText = if (vm.hideFeatureArtists) "已开启" else "全部显示",
             ) { vm.navFilesTo(FilesView.ArtistManage) }
         }
 
@@ -1836,7 +1838,16 @@ private fun KaraokeBadge(text: String, c: com.shiyin.music.ui.theme.OrganicColor
     )
 }
 
-/** 伴唱页的小操作按钮（文字按钮）。[danger]=删除类，用红色以示警惕（用户 2026-10-18）。 */
+/**
+ * **删除类操作的红**（用户 2026-10-18："删除键要警惕一点，改成红色"）。
+ *
+ * ⚠️ 2026-10-19 修正：原来用 `c.a700`，而主题里的 `a700` 是**橙色系** ——
+ * 深色主题下更是浅橘 `#FFC6A5`，看着像"次要操作"，一点都不像危险。
+ * 这里用一个两套主题通用的真红。
+ */
+private val DANGER_RED = androidx.compose.ui.graphics.Color(0xFFD2453A)
+
+/** 伴唱页的小操作按钮（文字按钮）。[danger]=删除类，用**红**以示警惕。 */
 @Composable
 private fun KaraokeAction(
     label: String,
@@ -1847,7 +1858,7 @@ private fun KaraokeAction(
     val c = LocalOrganic.current
     val fg = when {
         !enabled -> c.n500
-        danger -> c.a700
+        danger -> DANGER_RED
         else -> c.accent
     }
     Text(
@@ -1855,7 +1866,7 @@ private fun KaraokeAction(
         style = body(12.5f, FontWeight.SemiBold, fg),
         modifier = Modifier
             .clip(RoundedCornerShape(10.dp))
-            .background(c.n100)
+            .background(if (danger && enabled) DANGER_RED.copy(alpha = 0.13f) else c.n100)
             .then(if (enabled) Modifier.clickable { onClick() } else Modifier)
             .padding(horizontal = 12.dp, vertical = 7.dp),
     )

@@ -347,8 +347,30 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     /** 设置页写分轨默认模型。未内置的模型会被 [SettingsStore.setKaraokeModelId] 退回默认。 */
     fun setKaraokeModelId(id: String) {
-        _karaokeModelId.value = com.shiyin.music.data.karaoke.MdxModel.byId(id).id
-        viewModelScope.launch { settingsStore.setKaraokeModelId(_karaokeModelId.value) }
+        val next = com.shiyin.music.data.karaoke.MdxModel.byId(id).id
+        val changed = next != _karaokeModelId.value
+        _karaokeModelId.value = next
+        viewModelScope.launch { settingsStore.setKaraokeModelId(next) }
+        // ⚠️ 2026-10-19 用户实测："HQ3 加载半天出不来伴奏，切到 9482 之后还是很慢，最后才有伴奏"。
+        // 真因：**在跑的那趟分离认的是起跑时那个模型** —— 换默认模型只改了"下一次用谁"，
+        // 眼前这趟还在用 HQ3 慢慢算（`startKaraokeSeparation` 见 job 非空就直接 return）。
+        // 所以换模型时**必须把在跑的那趟掐掉、按新模型重来**，否则"切换"对用户是假的。
+        if (changed && karaokeJob != null) restartKaraokeSeparation()
+    }
+
+    /**
+     * **用当前选中的模型重起一次分离**（掐掉在跑的那趟）。
+     *
+     * 只在"模型真的换了、且正在算"时调用。代次 +1 让旧任务的一切回调作废（见
+     * [karaokeSeparationGen]）—— 否则旧任务迟到的"就绪"会把按钮点亮，用户就又看到
+     * 界面说好了、耳朵里却是旧模型（甚至还没算完）的伴奏。
+     */
+    private fun restartKaraokeSeparation() {
+        val t = currentTrackForKaraoke() ?: return
+        karaokeJob?.job?.cancel()
+        karaokeJob = null
+        karaokeState = com.shiyin.music.ui.components.KaraokeButtonState.Loading
+        startKaraokeSeparation(t)
     }
 
     // ── 设置 · 播放 · 伴唱页（2026-10-17 用户要求"正式版"）──────────────────────
@@ -553,6 +575,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         if (karaokeJob != null) return        // 已经在算：改选只改 karaokePendingMode
         karaokeState = com.shiyin.music.ui.components.KaraokeButtonState.Loading
         karaokeStatus = "准备中…"
+        // **任务代次**（2026-10-19）：换模型会把在跑的任务掐掉重来，而旧任务的就绪/状态回调
+        // 可能**仍在路上** —— 不按代次丢弃的话，旧任务的"就绪"会把按钮点亮，用户就又看到
+        // "界面说好了、耳朵里是旧模型（甚至还没算完）的伴奏"。
+        val gen = ++karaokeSeparationGen
         viewModelScope.launch {
             try {
                 val h = com.shiyin.music.spike.karaoke.KaraokeCacheJob.start(
@@ -562,8 +588,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     model = com.shiyin.music.data.karaoke.MdxModel.byId(karaokeModelId),
                     // 播放头 = 源文件帧号（进度是文件绝对坐标，见 PlayerController.positionMs）
                     playFrame = { player.positionMs * 44100L / 1000L },
-                    onStatus = { karaokeStatus = it },
+                    onStatus = { if (gen == karaokeSeparationGen) karaokeStatus = it },
                     onReady = { dir ->
+                        if (gen != karaokeSeparationGen) return@start   // 过期任务：整段丢弃
                         // ⚠️ 就绪回调可能**晚于用户取消**（分离是异步的）：用状态机保证
                         // "只在仍处于 Loading 时才进 Active"，否则会把用户已取消的伴唱又打开
                         val next = com.shiyin.music.ui.components.KaraokeButtonMachine
@@ -584,8 +611,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                         }
                     },
                 )
-                karaokeJob = h
+                if (gen == karaokeSeparationGen) karaokeJob = h else h.job.cancel()
             } catch (e: Throwable) {
+                if (gen != karaokeSeparationGen) return@launch
                 karaokeStatus = "分离失败：${e.javaClass.simpleName}"
                 karaokeState = com.shiyin.music.ui.components.KaraokeButtonState.Idle
                 karaokeMixIndex = 1
@@ -5912,6 +5940,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
     private var karaokeJob: com.shiyin.music.spike.karaoke.KaraokeCacheJob.Handle? = null
 
+    /**
+     * **分离任务代次**（2026-10-19）。每次起任务 / 取消 / 换模型重启都 +1。
+     *
+     * 存在的理由：任务被掐掉之后，它的 `onReady` / `onStatus` 回调**可能仍在路上**
+     * （分离跑在协程里，取消是协作式的）。不按代次丢弃，旧任务的"就绪"就会把按钮点亮 ——
+     * 用户又看到"界面说好了、耳朵里却是旧模型的伴奏"。
+     */
+    private var karaokeSeparationGen: Int = 0
+
     /** 伴唱当前进度文案（Loading 时显示）。 */
     var karaokeStatus by mutableStateOf(""); private set
 
@@ -5959,6 +5996,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun stopKaraoke() {
         karaokeJob?.job?.cancel()
         karaokeJob = null
+        // 代次 +1：被掐掉的任务若还有回调在路上，一律作废（见 [karaokeSeparationGen]）
+        karaokeSeparationGen++
         karaokeReady.keepAcrossStop()   // 显式写出来：这里是"有意不清"，不是漏了
         karaokeAwaitingAudible = false
         com.shiyin.music.playback.KaraokeAccompState.reset()   // P1-1：下次点重新等"真的出声"

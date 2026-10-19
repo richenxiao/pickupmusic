@@ -399,7 +399,9 @@ fun AppRoot(vm: MainViewModel) {
             ) {
                 Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
                     Row(
-                        verticalAlignment = Alignment.CenterVertically,
+                        // ⚠️ 2026-10-19 用户："拾音和 PickUpMusic **底部没对齐**" —— 原来是
+                        // CenterVertically（小字浮在大字的中腰上）。改成 Bottom：两行**底边齐平**。
+                        verticalAlignment = Alignment.Bottom,
                         modifier = Modifier.height(com.shiyin.music.ui.components.TopBarHeight),
                     ) {
                         Text("拾音", style = heading(24))
@@ -3281,27 +3283,25 @@ private fun KaraokeMixPanel(vm: MainViewModel) {
             Spacer(Modifier.weight(1f))
         }
 
-        // P2-D（用户 2026-10-18 提出、10-19 更正）：**保留原来的三档滑块**，在它**上面**加一排
-        // 与三档一一对齐的**图样**（原话："我让你在原来基础上加上图样，没让你集合起来"）。
-        // 图样：人声 = 带声波的人头剪影、原曲 = **唱片**、伴奏 = 音符。
-        // ⚠️ 状态**不用文字/秒数/百分比**：灰 / 图标边缘转圈 / 橙色（见 [KaraokeModeVisual]）。
-        Row(Modifier.fillMaxWidth().padding(horizontal = 3.dp, vertical = 4.dp)) {
-            KARAOKE_MODE_LABELS.forEachIndexed { i, _ ->
-                Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
-                    KaraokeModeGlyph(
-                        index = i,
-                        visual = com.shiyin.music.ui.components.karaokeModeVisual(vm.karaokeState, selected, i),
-                    )
-                }
+        // P2-D（用户 2026-10-19 参考图定稿）：三档做成**整块卡片** —— 图标与标签框属于**同一块**，
+        // 不再是"一个图样 + 一条滑块"两个分离的元素（用户："应该和对应的图像组成一个板块"）。
+        //  · 未选中 = 灰底；加载中 = 图标边缘转圈；**加载好了整块底变橙**
+        //    （用户："单单按钮变橙不醒目，用户感觉不到自己在哪一档"）。
+        //  · 不做文字/秒数/百分比。
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 2.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            KARAOKE_MODE_LABELS.forEachIndexed { i, label ->
+                KaraokeModeBlock(
+                    label = label,
+                    index = i,
+                    visual = com.shiyin.music.ui.components.karaokeModeVisual(vm.karaokeState, selected, i),
+                    modifier = Modifier.weight(1f),
+                    onClick = { vm.selectKaraokeMix(i) },
+                )
             }
         }
-        Spacer(Modifier.height(8.dp))
-        // 原来的三档滑块（保留 —— 它同时是操作控件）
-        ThreeStopSegmentedControl(
-            labels = KARAOKE_MODE_LABELS,
-            selectedIndex = selected,
-            onSelect = { vm.selectKaraokeMix(it) },
-        )
     }
 }
 
@@ -3311,48 +3311,79 @@ private val KARAOKE_MODE_LABELS = listOf("人声", "原曲", "伴奏")
 /** P2-D：模式卡视觉（枚举类本身不能当值用，故用 typealias 少写一截包名）。 */
 private typealias KModeVisual = com.shiyin.music.ui.components.KaraokeModeVisual
 
-/** 图样的外框；转圈那道弧沿着它的边缘走。 */
-private val KARAOKE_GLYPH_BOX = 42.dp
+/** 模式卡片的高度 —— 用户 2026-10-19："这一块元素的高度也能适当拉伸，不要留太多空白了"。 */
+private val KARAOKE_BLOCK_HEIGHT = 134.dp
 
 /**
- * P2-D：**三档的图样**（画在三档滑块的**正上方**，与每一档一一对齐）。
+ * P2-D：**一档的整块卡片**（图标 + 标签框合成一体，用户 2026-10-19 参考图）。
  *
  * 人声 = 带声波的人头剪影（用户明确"**不是麦克风**"）；
- * 原曲 = **唱片图标**（用户 2026-10-19 更正："原曲也不要显示一个封面，而是唱片图标"）；
+ * 原曲 = **唱片图标**（用户 2026-10-19："原曲也不要显示一个封面，而是唱片图标"）；
  * 伴奏 = 音符。
  *
  * 状态见 [com.shiyin.music.ui.components.KaraokeModeVisual]：
- * 未选中 → 灰；选中未出声 → **图标边缘转圈**；出声 → 橙色 + 一下短暂 settle。
+ * 未选中 → 灰底；选中未出声 → **图标边缘转圈**；出声 → **整块底变橙**（用户要的就是这个
+ * "一眼看出在哪一档"，光让按钮变橙不够醒目）+ 一下短暂 settle。
  */
 @Composable
-private fun KaraokeModeGlyph(index: Int, visual: KModeVisual) {
+private fun KaraokeModeBlock(
+    label: String,
+    index: Int,
+    visual: KModeVisual,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+) {
     val c = LocalOrganic.current
     val ready = visual == KModeVisual.READY
-    val tint = if (ready) c.accent else c.n500
+    val bg = if (ready) c.accent else c.n200
+    val on = if (ready) c.bg else c.n500
 
     // "完成 = …并有短暂 settle"：只在**进入**完成态那一下动，稳态不动。
     val settle = androidx.compose.animation.core.Animatable(1f)
     androidx.compose.runtime.LaunchedEffect(ready) {
         if (ready) {
-            settle.snapTo(1.08f)
+            settle.snapTo(1.04f)
             settle.animateTo(1f, androidx.compose.animation.core.tween(180))
         } else {
             settle.snapTo(1f)
         }
     }
 
-    Box(
-        Modifier
-            .size(KARAOKE_GLYPH_BOX)
-            .graphicsLayer { scaleX = settle.value; scaleY = settle.value },
-        contentAlignment = Alignment.Center,
+    Column(
+        modifier
+            .height(KARAOKE_BLOCK_HEIGHT)
+            .graphicsLayer { scaleX = settle.value; scaleY = settle.value }
+            .clip(RoundedCornerShape(18.dp))
+            .background(bg)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 8.dp, vertical = 12.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        when (index) {
-            0 -> HeadWaveIcon(28.dp, tint)
-            com.shiyin.music.ui.components.KARAOKE_ORIGINAL_INDEX -> OIcon(Lucide.Disc, 28.dp, tint)
-            else -> OIcon(Lucide.Music, 28.dp, tint)
+        Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
+            when (index) {
+                0 -> HeadWaveIcon(38.dp, on)
+                com.shiyin.music.ui.components.KARAOKE_ORIGINAL_INDEX -> OIcon(Lucide.Disc, 38.dp, on)
+                else -> OIcon(Lucide.Music, 38.dp, on)
+            }
+            if (visual == KModeVisual.COMPUTING) KaraokeSpinRing(46.dp, c.accent)
         }
-        if (visual == KModeVisual.COMPUTING) KaraokeSpinRing(KARAOKE_GLYPH_BOX, c.accent)
+        // 标签框：与图标同属这一块（用户参考图里就是一个框，不是外面那个滑块条）
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(10.dp))
+                .background(if (ready) c.bg.copy(alpha = 0.20f) else c.n100)
+                .border(
+                    1.dp,
+                    if (ready) androidx.compose.ui.graphics.Color.Transparent else c.n400,
+                    RoundedCornerShape(10.dp),
+                )
+                .padding(vertical = 6.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(label, style = body(12.5f, FontWeight.SemiBold, on))
+        }
     }
 }
 
