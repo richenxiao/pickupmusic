@@ -679,17 +679,21 @@ fun AppRoot(vm: MainViewModel) {
                 // v1.3.3b: 播放速度子页有自定义速度输入框——contentWindowInsets 置零后
                 // sheet 不再自动避让 IME,内容包 imePadding 让输入框随键盘顶起。
                 //
-                // P2-D（用户 2026-10-18）：**统一面板高度** —— 所有子页同一个高度，
-                // 取旧高度的约 2 倍并**封顶屏幕高度 60%**（用户：短的子页比如"升降 Key"
-                // "非常矮"，要求"抬高抬高一倍"）。内容超出时**在面板内滚动**，不撑破面板。
+                // P2-D（用户 2026-10-18）：面板**抬高** —— 原先完全由内容决定高度，短的子页
+                // （比如"升降 Key"）被用户嫌"非常矮"。
+                // ⚠️ 2026-10-19 用户看到成品后指正：第一版写成**固定 60% 高**，结果短子页
+                // **底下空出一大片**，布局很怪。改为**内容自适应 + 下限 + 上限**：
+                //   · 下限 [MENU_MIN_HEIGHT]：短子页不再"非常矮"；
+                //   · 上限 60% 屏高：长子页到顶就**在面板内滚动**，不撑破屏幕。
+                // 高度由内容决定 ⇒ 不会再有"底部一大片空白"。
+                val screenHDp = androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp.dp
                 Column(
                     Modifier
                         .imePadding()
-                        .fillMaxHeight(MENU_HEIGHT_FRACTION),
+                        .heightIn(min = MENU_MIN_HEIGHT, max = screenHDp * MENU_MAX_HEIGHT_FRACTION),
                 ) {
                     Column(
                         Modifier
-                            .fillMaxSize()
                             .verticalScroll(rememberScrollState()),
                     ) { PlayerMenuSheetContent(vm) }
                 }
@@ -1482,8 +1486,18 @@ private fun BoxScope.TrackMenuSheet(vm: MainViewModel, onEditTrack: (Long) -> Un
 // 内容(与 QueueSheet 同模式),手势/返回只作用菜单弹层、不动播放页。
 // 子页跳转(timer/speed→root)仍在内容内用 vm.pMenuView 切换。
 
-/** P2-D：播放页菜单面板的**统一高度**（占可用高度比例）—— 封顶屏幕高度 60%。 */
-private const val MENU_HEIGHT_FRACTION = 0.6f
+/**
+ * P2-D：播放页菜单面板的**高度规则**。
+ *
+ * ⚠️ 2026-10-19 用户看到成品后指正："页面元素与空白的布局和比例不管就直接抬高很影响界面观感的"。
+ * 第一版把面板写成**固定 60% 高**，短子页（比如"升降 Key"）底下就空出一大片。
+ * 改成：**内容自适应** + 下限 [MENU_MIN_HEIGHT]（短子页不至于"非常矮"）
+ * + 上限 60% 屏高 [MENU_MAX_HEIGHT_FRACTION]（长子页到顶后在面板内滚动）。
+ */
+private val MENU_MIN_HEIGHT = 268.dp
+
+/** 面板高度上限（占屏幕高度比例）—— 用户定 60%。 */
+private const val MENU_MAX_HEIGHT_FRACTION = 0.6f
 
 /**
  * P2-D：面板内容**底部留白** —— 用户要求"任何可点击控件不得位于屏幕底部内（导航栏高度 + 72dp）"。
@@ -3252,7 +3266,6 @@ private fun KeyShiftRow(vm: MainViewModel, c: com.shiyin.music.ui.theme.OrganicC
 private fun KaraokeMixPanel(vm: MainViewModel) {
     val c = LocalOrganic.current
     val selected = vm.karaokeMixIndex
-    val track = vm.trackById(vm.player.currentId)
 
     Column(Modifier.fillMaxWidth()) {
         // 返回行（与睡眠/速度子页同款：只用图标，不用文字）
@@ -3268,25 +3281,27 @@ private fun KaraokeMixPanel(vm: MainViewModel) {
             Spacer(Modifier.weight(1f))
         }
 
-        // P2-D（用户 2026-10-18）：三档滑块改成**图标卡** —— "上面要做一个相对应的图样"。
-        // 顺序仍是 **人声 — 原曲（中立位）— 伴奏**。
-        // ⚠️ 状态**不用文字/秒数/百分比**：三种视觉全靠图标与底色（见 [KaraokeModeVisual]），
-        //    状态源就是 `vm.karaokeState` 那一个（它由音频线程的 KaraokeAccompState 驱动）。
-        Row(
-            Modifier.fillMaxWidth().padding(horizontal = 4.dp),
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            KARAOKE_MODE_LABELS.forEachIndexed { i, label ->
-                KaraokeModeCard(
-                    label = label,
-                    track = track,
-                    index = i,
-                    visual = com.shiyin.music.ui.components.karaokeModeVisual(vm.karaokeState, selected, i),
-                    modifier = Modifier.weight(1f),
-                    onClick = { vm.selectKaraokeMix(i) },
-                )
+        // P2-D（用户 2026-10-18 提出、10-19 更正）：**保留原来的三档滑块**，在它**上面**加一排
+        // 与三档一一对齐的**图样**（原话："我让你在原来基础上加上图样，没让你集合起来"）。
+        // 图样：人声 = 带声波的人头剪影、原曲 = **唱片**、伴奏 = 音符。
+        // ⚠️ 状态**不用文字/秒数/百分比**：灰 / 图标边缘转圈 / 橙色（见 [KaraokeModeVisual]）。
+        Row(Modifier.fillMaxWidth().padding(horizontal = 3.dp, vertical = 4.dp)) {
+            KARAOKE_MODE_LABELS.forEachIndexed { i, _ ->
+                Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
+                    KaraokeModeGlyph(
+                        index = i,
+                        visual = com.shiyin.music.ui.components.karaokeModeVisual(vm.karaokeState, selected, i),
+                    )
+                }
             }
         }
+        Spacer(Modifier.height(8.dp))
+        // 原来的三档滑块（保留 —— 它同时是操作控件）
+        ThreeStopSegmentedControl(
+            labels = KARAOKE_MODE_LABELS,
+            selectedIndex = selected,
+            onSelect = { vm.selectKaraokeMix(it) },
+        )
     }
 }
 
@@ -3296,65 +3311,48 @@ private val KARAOKE_MODE_LABELS = listOf("人声", "原曲", "伴奏")
 /** P2-D：模式卡视觉（枚举类本身不能当值用，故用 typealias 少写一截包名）。 */
 private typealias KModeVisual = com.shiyin.music.ui.components.KaraokeModeVisual
 
-/** P2-D：模式卡高度 —— 原先只有 38dp 的滑块条，用户要求"抬高抬高一倍"。 */
-private val KARAOKE_CARD_HEIGHT = 104.dp
+/** 图样的外框；转圈那道弧沿着它的边缘走。 */
+private val KARAOKE_GLYPH_BOX = 42.dp
 
 /**
- * P2-D：**一张模式卡**（人声 / 原曲 / 伴奏）。
+ * P2-D：**三档的图样**（画在三档滑块的**正上方**，与每一档一一对齐）。
  *
- * 图标：原曲 = **当前专辑封面原样**（不加滤镜/叠加，统一圆角）；人声 = 带声波的人头剪影；
- * 伴奏 = 音符。状态见 [com.shiyin.music.ui.components.KaraokeModeVisual]：
- *  - OFF：灰底灰图标；
- *  - COMPUTING：图标**边缘转圈**（复用旋转弧的做法）；
- *  - READY：图标和底变橙 + 一下短暂 settle（放大 6% 再回落）。
+ * 人声 = 带声波的人头剪影（用户明确"**不是麦克风**"）；
+ * 原曲 = **唱片图标**（用户 2026-10-19 更正："原曲也不要显示一个封面，而是唱片图标"）；
+ * 伴奏 = 音符。
+ *
+ * 状态见 [com.shiyin.music.ui.components.KaraokeModeVisual]：
+ * 未选中 → 灰；选中未出声 → **图标边缘转圈**；出声 → 橙色 + 一下短暂 settle。
  */
 @Composable
-private fun KaraokeModeCard(
-    label: String,
-    track: com.shiyin.music.data.Track?,
-    index: Int,
-    visual: com.shiyin.music.ui.components.KaraokeModeVisual,
-    modifier: Modifier = Modifier,
-    onClick: () -> Unit,
-) {
+private fun KaraokeModeGlyph(index: Int, visual: KModeVisual) {
     val c = LocalOrganic.current
     val ready = visual == KModeVisual.READY
-    val bg = if (ready) c.accent else c.n200
-    val fg = if (ready) Color.White else c.n500
+    val tint = if (ready) c.accent else c.n500
 
     // "完成 = …并有短暂 settle"：只在**进入**完成态那一下动，稳态不动。
     val settle = androidx.compose.animation.core.Animatable(1f)
     androidx.compose.runtime.LaunchedEffect(ready) {
         if (ready) {
-            settle.snapTo(1.06f)
+            settle.snapTo(1.08f)
             settle.animateTo(1f, androidx.compose.animation.core.tween(180))
         } else {
             settle.snapTo(1f)
         }
     }
 
-    Column(
-        modifier
-            .height(KARAOKE_CARD_HEIGHT)
-            .graphicsLayer { scaleX = settle.value; scaleY = settle.value }
-            .clip(RoundedCornerShape(16.dp))
-            .background(bg)
-            .clickable(onClick = onClick),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center,
+    Box(
+        Modifier
+            .size(KARAOKE_GLYPH_BOX)
+            .graphicsLayer { scaleX = settle.value; scaleY = settle.value },
+        contentAlignment = Alignment.Center,
     ) {
-        Box(Modifier.size(40.dp), contentAlignment = Alignment.Center) {
-            when {
-                // 原曲 = 当前专辑封面，**原样**（不叠色、不加遮罩），统一圆角
-                index == com.shiyin.music.ui.components.KARAOKE_ORIGINAL_INDEX && track != null ->
-                    CoverArt(track, 36.dp, RoundedCornerShape(10.dp), fontSize = 14)
-                index == 0 -> HeadWaveIcon(30.dp, fg)
-                else -> OIcon(Lucide.Music, 30.dp, fg)
-            }
-            if (visual == KModeVisual.COMPUTING) KaraokeSpinRing(44.dp, c.accent)
+        when (index) {
+            0 -> HeadWaveIcon(28.dp, tint)
+            com.shiyin.music.ui.components.KARAOKE_ORIGINAL_INDEX -> OIcon(Lucide.Disc, 28.dp, tint)
+            else -> OIcon(Lucide.Music, 28.dp, tint)
         }
-        Spacer(Modifier.height(8.dp))
-        Text(label, style = body(13f, FontWeight.SemiBold, fg))
+        if (visual == KModeVisual.COMPUTING) KaraokeSpinRing(KARAOKE_GLYPH_BOX, c.accent)
     }
 }
 

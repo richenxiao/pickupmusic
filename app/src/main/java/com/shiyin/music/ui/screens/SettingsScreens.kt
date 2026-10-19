@@ -1871,10 +1871,11 @@ private fun DefaultModelButton(isDefault: Boolean, onClick: () -> Unit) {
     val c = LocalOrganic.current
     Text(
         if (isDefault) "默认" else "设为默认",
-        style = body(12.5f, FontWeight.SemiBold, if (isDefault) c.surface else c.n600),
+        style = body(12.5f, FontWeight.SemiBold, if (isDefault) c.bg else c.n600),
         modifier = Modifier
             .clip(RoundedCornerShape(10.dp))
             .background(if (isDefault) c.accent else c.n100)
+            .border(1.dp, if (isDefault) androidx.compose.ui.graphics.Color.Transparent else c.n400, RoundedCornerShape(10.dp))
             .then(if (isDefault) Modifier else Modifier.clickable { onClick() })
             .padding(horizontal = 12.dp, vertical = 7.dp),
     )
@@ -1921,6 +1922,7 @@ private fun RetentionPresetDropdown(currentMb: Int, onPick: (Int) -> Unit) {
                 .padding(start = 8.dp)
                 .clip(RoundedCornerShape(10.dp))
                 .background(c.n100)
+                .border(1.dp, c.n400, RoundedCornerShape(10.dp))
                 .clickable { open = true }
                 .padding(horizontal = 10.dp, vertical = 9.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -1942,15 +1944,28 @@ private fun RetentionPresetDropdown(currentMb: Int, onPick: (Int) -> Unit) {
     }
 }
 
-/** 可选项的小胶囊。 */
+/**
+ * **可选项胶囊**（下载渠道等"三选一"）。
+ *
+ * ⚠️ 2026-10-19 用户指出"单选框主题适配没做"。真因：未选中态原本用 `n100` 填底，
+ * 而**深色主题下 `n100`(#2E2B25) 与卡片底 `surface`(#2B2620) 几乎同色** ⇒ 胶囊边界看不见，
+ * 看着就像一堆散落的文字。改成：
+ *  · 未选中 = `n100` 底 **+ `n400` 描边**（描边在两套主题下都与卡片底有明显对比）；
+ *  · 选中 = 实心 accent，文字用 `c.bg`（与原生三档滑块/播放主键同一个"实心橙底上的文字"惯例）。
+ */
 @Composable
 private fun KaraokeChip(label: String, selected: Boolean, c: com.shiyin.music.ui.theme.OrganicColors, onClick: () -> Unit) {
     Text(
         label,
-        style = body(12f, FontWeight.SemiBold, if (selected) c.surface else c.n600),
+        style = body(12f, FontWeight.SemiBold, if (selected) c.bg else c.n600),
         modifier = Modifier
             .clip(RoundedCornerShape(10.dp))
             .background(if (selected) c.accent else c.n100)
+            .border(
+                1.dp,
+                if (selected) androidx.compose.ui.graphics.Color.Transparent else c.n400,
+                RoundedCornerShape(10.dp),
+            )
             .clickable { onClick() }
             .padding(horizontal = 11.dp, vertical = 7.dp),
     )
