@@ -2131,11 +2131,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** 显示层覆盖链（别名 / 专辑覆盖 / 专辑级 / 单曲级）—— 物理、拆分、容器三类曲目共用。 */
     private fun applyDisplayOverrides(t: Track): Track {
         var r = t
-        val a = aliases[t.artist]
-        val resolved = if (a != null) a else t.artist
-        // v3.0: split multi-artist strings into display format
-        val split = com.shiyin.music.data.MediaScanner.splitArtists(resolved)
-        r = r.copy(artist = split.joinToString(", "))
+        // ⚠️ 2026-10-19 用户报的 bug："专辑是 AAA/bbb 的专辑，我合并 bbb→BBB 就不会有任何反应"。
+        // 原来这里是 `aliases[t.artist]` —— **拿整串去查别名表**，而别名表的键是**单个歌手名**
+        // （合并对话框里选的是"bbb"），复合串永远查不到 ⇒ 合并等于没做。判定抽到
+        // [com.shiyin.music.data.artist.ArtistAliasResolver] 里，有单测钉住。
+        r = r.copy(
+            artist = com.shiyin.music.data.artist.ArtistAliasResolver.resolve(t.artist, aliases),
+        )
         val ov = albumOverrides[t.id]
         if (ov != null) r = r.copy(album = ov.albumName)
         // v4.3: album-level manual edits — same name/artist for the whole album
