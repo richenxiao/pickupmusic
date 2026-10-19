@@ -399,13 +399,20 @@ fun AppRoot(vm: MainViewModel) {
             ) {
                 Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
                     Row(
-                        // ⚠️ 2026-10-19 用户："拾音和 PickUpMusic **底部没对齐**" —— 原来是
-                        // CenterVertically（小字浮在大字的中腰上）。改成 Bottom：两行**底边齐平**。
+                        // ⚠️ 2026-10-19 用户两轮修正：
+                        //  ① "拾音和 PickUpMusic **底部没对齐**" —— 原来 CenterVertically（小字浮在大字中腰）。
+                        //  ② "要**贴在一起**，且大小颜色也要**严格一致**，现在还是差点意思"
+                        //     —— 原来 6dp 间距 + `n500` 暖灰（比标题暗一大截），看着像两个不相干的词。
+                        // 现在：底边齐平、间距收到 3dp、英文用接近标题的亮色 + Medium，合成一个整体标识。
                         verticalAlignment = Alignment.Bottom,
                         modifier = Modifier.height(com.shiyin.music.ui.components.TopBarHeight),
                     ) {
-                        Text("拾音", style = heading(24))
-                        Text("PickUpMusic", style = body(13f, FontWeight.Normal, c.n500), modifier = Modifier.padding(start = 6.dp))
+                        Text("拾音", style = heading(26))
+                        Text(
+                            "PickUpMusic",
+                            style = body(14f, FontWeight.Medium, c.text.copy(alpha = 0.78f)),
+                            modifier = Modifier.padding(start = 3.dp, bottom = 3.dp),
+                        )
                     }
                     // v4: sidebar restructured — 5 items, no file-management here.
                     // v1.3.x: Agent 提到"设置"前面(AI 是高频入口,不该排在最后),

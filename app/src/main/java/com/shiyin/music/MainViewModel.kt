@@ -50,7 +50,7 @@ import java.util.Locale
 
 enum class Tab { Home, Search, Library }
 enum class ObStage { Perm, Scan, Done }
-enum class FilesView { Root, Clean, Trash, Folders, FolderContent, Ignored, Devices, About, Merges, ImageSources, ArtistManage, LyricsBook, LyricsSources, CloudBackup, PlaySettings, KaraokeSettings, Equalizer, Logs, DataManage, FilesManage, Artists }
+enum class FilesView { Root, Clean, Trash, Folders, FolderContent, Ignored, Devices, About, Merges, ImageSources, ArtistManage, HiddenArtists, LyricsBook, LyricsSources, CloudBackup, PlaySettings, KaraokeSettings, Equalizer, Logs, DataManage, FilesManage, Artists }
 enum class LyState { Idle, Searching, Failed }
 enum class LyricsKind { Embedded, Sidecar, Online, Imported }
 
@@ -2706,7 +2706,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val all = artistsMap().entries.toList()
         if (!_hideFeatureArtists.value) return all
         // P2-B：**逐歌手例外表** —— 用户点名"不隐藏"的那几个从隐藏集合里减掉
-        val hidden = com.shiyin.music.data.artist.ArtistRole.featureOnlyArtists(lib()) - _visibleFeatureArtists.value
+        val hidden = com.shiyin.music.data.artist.FeatureArtistFilter.hiddenSet(
+            com.shiyin.music.data.artist.ArtistRole.featureOnlyArtists(lib()),
+            master = _hideFeatureArtists.value,
+            exceptions = _visibleFeatureArtists.value,
+        )
         return if (hidden.isEmpty()) all else all.filter { it.key !in hidden }
     }
 
@@ -2728,6 +2732,28 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** 切换某个客串歌手的显隐；立即生效（内存态）+ 异步落盘。 */
     fun setFeatureArtistVisible(name: String, visible: Boolean) {
         val next = if (visible) _visibleFeatureArtists.value + name else _visibleFeatureArtists.value - name
+        _visibleFeatureArtists.value = next
+        viewModelScope.launch { settingsStore.setVisibleFeatureArtists(next) }
+    }
+
+    // ── 用户 2026-10-19 改口径：开关按"**隐藏**"表达，且与总开关联动 ─────────────
+    /**
+     * 这位客串歌手**现在会被隐藏吗**。
+     *
+     * 用户要的关系（原话）："关闭了隐藏客串歌手，那所有的也跟着关闭；打开了，所有跟着打开，
+     * 用户就很清楚的知道是什么关系。然后就可以关掉特定的一些他不想隐藏的歌手"。
+     * 所以：总开关关 → 全部显示（开关都关）；总开关开 → 全部隐藏，除非被点名放行。
+     */
+    fun featureArtistHidden(name: String): Boolean =
+        com.shiyin.music.data.artist.FeatureArtistFilter.hidden(
+            name, master = _hideFeatureArtists.value, exceptions = _visibleFeatureArtists.value,
+        )
+
+    /** 拨某一位的开关。[hidden] = 要隐藏它。 */
+    fun setFeatureArtistHidden(name: String, hidden: Boolean) {
+        val next = com.shiyin.music.data.artist.FeatureArtistFilter.toggleException(
+            _visibleFeatureArtists.value, name, hidden,
+        )
         _visibleFeatureArtists.value = next
         viewModelScope.launch { settingsStore.setVisibleFeatureArtists(next) }
     }
@@ -6191,6 +6217,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** v1.5.0 A62：切换后需要让歌手栏缓存失效，故清 artistsSig。 */
     fun setHideFeatureArtists(v: Boolean) {
         _hideFeatureArtists.value = v
+        // 用户 2026-10-19："打开了，所有跟着打开" —— 总开关**打开时清空放行名单**，
+        // 于是每一位的开关都回到"隐藏"，用户接下来要做的就是**关掉他不想隐藏的那几位**。
+        if (v && _visibleFeatureArtists.value.isNotEmpty()) {
+            _visibleFeatureArtists.value = emptySet()
+            viewModelScope.launch { settingsStore.setVisibleFeatureArtists(emptySet()) }
+        }
         artistsSig = ""
         viewModelScope.launch { settingsStore.setHideFeatureArtists(v) }
     }
