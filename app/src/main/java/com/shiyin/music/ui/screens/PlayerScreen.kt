@@ -91,6 +91,13 @@ import com.shiyin.music.ui.theme.LocalOrganic
 import androidx.media3.common.Player as XPlayer
 import kotlinx.coroutines.launch
 
+/**
+ * 顶栏**浮层**给滚动内容留的避让高度 = 按钮 40dp + 上边 6dp。
+ *
+ * 留着它是为了"首屏观感与改动前逐像素一致"；上滚之后内容会从浮层**后面**经过（不被切）。
+ */
+private val PLAYER_TOPBAR_BLOCK = 46.dp
+
 @Composable
 fun PlayerScreen(vm: MainViewModel) {
     val c = LocalOrganic.current
@@ -143,7 +150,16 @@ fun PlayerScreen(vm: MainViewModel) {
     // Column scrolls — matching the v5.1 structure.
     val scrollState = rememberScrollState()
 
-    Column(
+    // ⚠️ 2026-10-19 用户："播放页元素向上时候，顶部会对专辑元素**截断**……我希望两侧的按钮是
+    // **固定的**，它的专辑元素在上面也能显示，而不是像现在有一个**界限**，过来就会遮蔽元素"。
+    //
+    // 原来是一个 Column：顶栏 Row 与滚动区是**兄弟** —— 滚动区被裁在顶栏下沿，封面上滚到那里
+    // 就被硬生生切掉（截图里人的头没了就是这么来的）。
+    //
+    // 现在换成 Box：**滚动内容铺满整块**，顶栏作为**浮层**画在它上面（按钮自带 surface 圆底，
+    // 压在封面上照样看得清）。于是封面可以一直滚到状态栏下沿，而不是撞到一条看不见的墙上。
+    // 首屏位置没变：内容上留 顶栏(40) + 6 的避让，封面自身再留 16 —— 与改动前逐像素一致。
+    Box(
         Modifier
             .fillMaxSize()
             // v1.3.x morph P2(§3.3-5):morph 展开/收起期间播放页内容淡出
@@ -159,48 +175,13 @@ fun PlayerScreen(vm: MainViewModel) {
             // 背景空白带；padding 只把内容从系统栏移开，不产生单独覆盖层。
             .statusBarsPadding()
             .navigationBarsPadding()
-            .padding(horizontal = 24.dp)
-            // v1.3.x 头行收紧:18→6——状态栏 inset 之外还留一截空白,用户反馈
-            // "整体往上提一点,更紧凑一些"。只动这一处:专辑封面等其余组件
-            // 位置不改(第一轮误改封面 padding 后按用户要求精确回滚 16/22)。
-            // 头行 Row fillMaxWidth 无独立左右 padding,左右边缘天然与外层
-            // 24dp 的内容区对齐。
-            .padding(top = 6.dp),
+            .padding(horizontal = 24.dp),
     ) {
-        // top bar — back / spacer / menu. v5.2 Bug6: no drag-handle strip
-        // above this row; the row itself is also the visual top of the sheet
-        // (the ModalBottomSheet dragHandle=null slot is empty).
-        Row(
-            Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Box(
-                Modifier
-                    .size(40.dp)
-                    .clip(CircleShape)
-                    .background(c.surface)
-                    .clickable { vm.playerOpen = false; vm.sleepMenu = false },
-                contentAlignment = Alignment.Center,
-            ) { OIcon(Lucide.ChevronDown, 19.dp, c.text) }
-            Text(
-                "·",
-                style = body(12.5f, FontWeight.Normal, c.n400).copy(letterSpacing = 1.5.sp),
-                modifier = Modifier.weight(1f),
-                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-            )
-            Box(
-                Modifier
-                    .size(40.dp)
-                    .clip(CircleShape)
-                    .background(c.surface)
-                    .clickable { vm.pMenuView = "root" },
-                contentAlignment = Alignment.Center,
-            ) { OIcon(Lucide.MoreVertical, 18.dp, c.text) }
-        }
-
         Column(
             Modifier
-                .weight(1f)
+                .fillMaxSize()
+                // 给浮层顶栏让位（顶栏 40dp + 上边 6dp）——首屏观感与改动前一致
+                .padding(top = PLAYER_TOPBAR_BLOCK)
                 .verticalScroll(scrollState),
         ) {
             // cover — fill width, no background decoration
@@ -773,6 +754,36 @@ private fun LyricsPeekCard(vm: MainViewModel, artBg: Color, artFg: Color, dimC: 
                     }
                 }
             }
+        }
+
+        // 顶栏**浮层**（见函数开头的说明）：固定在顶部、画在滚动内容**之上**，
+        // 于是封面上滚时是从它**后面**经过，而不是被一条硬边界切掉。
+        Row(
+            Modifier.fillMaxWidth().padding(top = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(
+                Modifier
+                    .size(40.dp)
+                    .clip(CircleShape)
+                    .background(c.surface)
+                    .clickable { vm.playerOpen = false; vm.sleepMenu = false },
+                contentAlignment = Alignment.Center,
+            ) { OIcon(Lucide.ChevronDown, 19.dp, c.text) }
+            Text(
+                "·",
+                style = body(12.5f, FontWeight.Normal, c.n400).copy(letterSpacing = 1.5.sp),
+                modifier = Modifier.weight(1f),
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+            )
+            Box(
+                Modifier
+                    .size(40.dp)
+                    .clip(CircleShape)
+                    .background(c.surface)
+                    .clickable { vm.pMenuView = "root" },
+                contentAlignment = Alignment.Center,
+            ) { OIcon(Lucide.MoreVertical, 18.dp, c.text) }
         }
     }
 }
