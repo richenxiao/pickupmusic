@@ -631,6 +631,36 @@ object KaraokeMixControl {
      */
     @Volatile
     var realSource: AccompanimentSource? = null
+        /**
+         * ⚠️ **挂上非空源就自动武装**（见 [armToken]）。
+         *
+         * 放在 setter 里而不是让每个调用点自己调 `arm()`：调用点有五处（面板快路径、
+         * 分离就绪回调、`seed` 调试命令…），漏掉任何一处都会变成"伴奏永远不出声"。
+         */
+        set(value) {
+            if (value != null) arm()
+            field = value
+        }
+
+    /**
+     * **伴奏源的"武装令牌"**（2026-10-19 用户报的 BUG：换曲时漏出上一首开头 ~0.5 秒）。
+     *
+     * 成因：`realSource` 是 **app 线程**写的，而换曲时**音频线程已经先跑新条目的前几个块**了 ——
+     * `onTrackStarted` 还没来得及把它清掉，那几块就会按"新条目的第 0 帧"去读**上一首**的缓存
+     * ⇒ 直接听到上一首的开头，像卡了一下。
+     *
+     * 修法：把"这个源还能不能用"变成**音频线程自己说了算** ——
+     * app 每次挂上/重挂伴奏源就 [arm]（令牌 +1）；处理器一见**条目切换**就立刻解除武装。
+     * 于是"换曲后读到上一首缓存"这件事在时间上**不可能**发生，与主线程快慢无关。
+     */
+    @Volatile
+    var armToken: Int = 0
+        private set
+
+    /** 重新武装伴奏源（换曲后若是**同一首重播**，缓存目录仍有效，需要重新武装）。 */
+    fun arm() {
+        armToken++
+    }
 
     fun coeffOf(m: Int): FloatArray = when (m) {
         MODE_ORIGINAL -> floatArrayOf(1f, 0f)
@@ -650,6 +680,39 @@ object KaraokeMixControl {
         // 减一个独立纯音 = 加一份**反相**纯音，反相只差 180° 相位，**听起来还是同一个音**。
         SRC_TONE -> "占位=220Hz 纯音 ⇒ 原曲档=歌 / 伴奏档=纯音 / 人声档=歌+反相纯音（听着仍有纯音，正常）"
         else -> "占位=静音 ⇒ 伴奏档无声 / 人声档=原曲"
+    }
+}
+
+/**
+ * **伴奏源的武装仲裁**（纯逻辑，可 JVM 单测）—— 是用户 2026-10-19 报的那个 BUG 的修法核心。
+ *
+ * 规则只有两句：
+ *  1. app 挂上/重挂伴奏源（令牌变了）⇒ **武装**；
+ *  2. 音频线程看到**条目切换** ⇒ **立刻解除武装**，直到 app 再次挂源。
+ *
+ * 为什么不能在 app 线程"换曲时清掉源"就算完：换曲那一刻音频线程**已经在跑新条目的块**了，
+ * 主线程晚几毫秒，那几毫秒就会按新条目的第 0 帧去读上一首的缓存（用户听到约 0.5 秒的上一首开头）。
+ * 把判定挪到音频线程，这个窗口在时间上就不存在了。
+ */
+class MixArming {
+
+    private var lastToken: Int = 0
+
+    /** 当前伴奏源是否可用。**只在音频线程读写。** */
+    var armed: Boolean = false
+        private set
+
+    /** 音频线程每块调一次：app 挂过新源（令牌变了）就武装。 */
+    fun onControl(token: Int) {
+        if (token != lastToken) {
+            lastToken = token
+            armed = true
+        }
+    }
+
+    /** 音频线程：条目切换（换下一首 / 列表续播）—— 立刻弃用旧源。 */
+    fun onItemChange() {
+        armed = false
     }
 }
 
@@ -966,7 +1029,17 @@ class KaraokeMixProcessor(
      * sink 报来**新的渲染器偏移**（µs）。换条目时它**先于该条目第一个 buffer** 到达
      * （`DecoderAudioRenderer.drainOutputBuffer`：`:519` 早于 `:501`）⇒ 拿它当权威即可。
      */
-    fun onSinkOffset(us: Long) = reanchor.onSinkOffset(us)
+    /** 伴奏源武装仲裁（见 [MixArming]）。**只在音频线程读写。** */
+    private val arming = MixArming()
+
+    fun onSinkOffset(us: Long) {
+        val before = reanchor.itemChangeCount
+        reanchor.onSinkOffset(us)
+        // **条目切换 ⇒ 立刻弃用当前伴奏源**（用户 2026-10-19 报的"换曲时漏出上一首开头"）。
+        // 在这里做（而不是等 app 的 onTrackStarted）是因为**音频线程已经在跑新条目的块了**，
+        // 主线程晚几毫秒，那几毫秒就会拿新条目的第 0 帧去读上一首的缓存。
+        if (reanchor.itemChangeCount != before) arming.onItemChange()
+    }
 
     /** sink 报来 pts 不连续（换条目 / seek 预滚动丢弃）。 */
     fun onSinkDiscontinuity() = reanchor.onDiscontinuity()
@@ -1216,8 +1289,12 @@ class KaraokeMixProcessor(
             lastMixMode = mode
         }
 
-        // 真伴奏（块 3）优先；没有就退回占位源（调试用）。
-        val src = KaraokeMixControl.realSource ?: sourceOf(KaraokeMixControl.sourceKind)
+        // 真伴奏（块 3）优先 —— 但**必须"武装"过才用**：条目一切换，音频线程就解除武装
+        // （见 [MixArming]），等 app 重新挂源。解除武装期间退回占位源（默认 = 原曲本身），
+        // 于是"换曲后按新条目的第 0 帧读到上一首缓存"在时间上不可能发生。
+        arming.onControl(KaraokeMixControl.armToken)
+        val real = KaraokeMixControl.realSource
+        val src = (if (arming.armed) real else null) ?: sourceOf(KaraokeMixControl.sourceKind)
         val ready = src.readAbs(startFrame, inputSampleRate, mixSrc, mixAcc, frames)
 
         // P1-1：把"伴奏**是否真的生效**"报给 UI —— 按钮的完成态以这个为准，

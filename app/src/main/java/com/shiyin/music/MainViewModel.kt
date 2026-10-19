@@ -5024,6 +5024,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             ) {
                 stopKaraoke()
             }
+        } else if (com.shiyin.music.playback.KaraokeMixControl.realSource != null) {
+            // **同一首重播**（单曲循环）：条目确实切换了 —— 音频线程已经**解除武装**（那是修
+            // "换曲漏上一首开头"的关键），但缓存目录仍属于这一首 ⇒ 必须**重新武装**，
+            // 否则伴奏会被无声地停掉，用户以为伴唱坏了。
+            com.shiyin.music.playback.KaraokeMixControl.arm()
         }
         // v2: 恢复全局播放速度设置
         player.setPlaybackSpeed(playbackSpeed, retroSpeedMode)

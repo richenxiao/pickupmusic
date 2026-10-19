@@ -70,11 +70,18 @@ class KaraokeGaplessReanchorTest {
 
     private fun fmt(rate: Int) = AudioProcessor.AudioFormat(rate, 2, C.ENCODING_PCM_16BIT)
 
-    /** 换条目：按源码顺序 —— 先 discontinuity，再新偏移（`handleBuffer` 在其后）。 */
+    /**
+     * 换条目：按源码顺序 —— 先 discontinuity，再新偏移（`handleBuffer` 在其后）。
+     *
+     * ⚠️ 2026-10-19：条目切换会**解除伴奏源的武装**（修"换曲时漏出上一首开头"）。
+     * 这里模拟 app 在 `onTrackStarted` 里的动作：**同一首重播**时缓存目录仍有效 ⇒ 重新武装。
+     * "不重新武装会怎样"由 [换条目后不重新挂源_第二条绝不能再读上一首的缓存] 单独钉住。
+     */
     private fun changeItem(p: KaraokeMixProcessor, newOffsetUs: Long) {
         p.onSinkDiscontinuity()
         KaraokeBufferAnchor.setOutputOffset(newOffsetUs)
         p.onSinkOffset(newOffsetUs)
+        KaraokeMixControl.arm()
     }
 
     // ── 主用例 ──────────────────────────────────────────────────────────────
@@ -99,6 +106,36 @@ class KaraokeGaplessReanchorTest {
         assertEquals("第 2 条若沿用旧偏移，这里会变成 1323000（=30s 处）", listOf(0L, 1024L, 0L, 1024L), asked)
         assertEquals(1, p.reanchor.itemChangeCount)
         assertEquals("换条目不该被算成『重锚』", 0, p.realignCount)
+    }
+
+    @Test
+    fun `换条目后不重新挂源_第二条绝不能再读上一首的缓存`() {
+        // **用户 2026-10-19 报的 BUG 的回归测试**：
+        // 开着伴奏听完 A、系统进到 B 时，音频线程**已经在跑 B 的前几个块**了 ——
+        // 那一刻 realSource 还指向 A，而帧号已经重置成"新条目的第 0 帧"
+        // ⇒ 播出的是 A 的开头（用户听到约 0.5 秒，像卡了一下）。
+        // 修法：条目一切换，**音频线程立刻**解除武装，与主线程快慢无关。
+        armFakeAccompaniment()
+        val p = proc()
+        p.configure(fmt(44100))
+        p.onSinkOffset(epochUs)
+        feed(p, 1024, epochUs + us(0))
+        feed(p, 1024, epochUs + us(1024))
+        assertEquals("第 1 条正常取伴奏", listOf(0L, 1024L), asked)
+
+        // 换条目，但**故意不重新挂源**（模拟主线程还没跑到 onTrackStarted）
+        val off2 = epochUs + 30_000_000L
+        p.onSinkDiscontinuity()
+        KaraokeBufferAnchor.setOutputOffset(off2)
+        p.onSinkOffset(off2)
+        feed(p, 1024, off2 + us(0))
+        feed(p, 1024, off2 + us(1024))
+
+        assertEquals(
+            "B 的前几个块绝不能再读 A 的缓存（否则就是那 0.5 秒漏音）",
+            listOf(0L, 1024L),
+            asked,
+        )
     }
 
     @Test
