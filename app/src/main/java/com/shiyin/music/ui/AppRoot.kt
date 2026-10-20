@@ -1498,6 +1498,17 @@ private const val BRAND_EN_SP = 15.5f
 private val BRAND_GAP = 2.dp
 
 /**
+ * 副标题「PickUpMusic」的不透明度（用户 2026-10-20「修改1」）。
+ *
+ * 用户原话："「拾音」和「PickUpMusic」不是平级，英文是副标题…白色 alpha 0.78，
+ * **比「拾音」淡一点点，不要灰很多，但肉眼要有区分度**"。
+ *
+ * 叠在深色抽屉底 `#2B2620` 上时白字实际亮度 ≈ 208/255 —— 落在用户给的 205–215 区间内。
+ * ⚠️ 浅色主题下抽屉底是 `#EBDDC5`，同样叠法会到 ≈250/255（超出区间）——见提交说明。
+ */
+private const val BRAND_EN_ALPHA = 0.78f
+
+/**
  * 侧边栏品牌区：「拾音」为对齐**视觉底边**而上提的量。
  *
  * 汉字笔画底边天然比拉丁基线低约 0.1em —— 26sp 下约 2.6dp。
@@ -1547,7 +1558,8 @@ private fun BrandMark() {
         fontFamily = FontFamily.Default,
         fontWeight = FontWeight.SemiBold,
         fontSize = BRAND_EN_SP.sp,
-        color = Color.White,
+        // 副标题比标题淡一点点（用户 2026-10-20 修改1）—— 只改颜色，字号/字重/间距/基线全不动。
+        color = Color.White.copy(alpha = BRAND_EN_ALPHA),
     )
     // 量宽用**与渲染完全相同的一份 style**（同一 fontScale / density），
     // 量出来的比例才可以直接套回渲染字号上。
