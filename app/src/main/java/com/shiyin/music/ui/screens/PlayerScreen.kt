@@ -169,20 +169,22 @@ fun PlayerScreen(vm: MainViewModel) {
                 val mp = vm.morph.progress.value
                 alpha = 1f - 0.7f * ((mp / LyricsMorphSpec.PLAYER_DIM_END).coerceIn(0f, 1f))
             }
-            .background(c.bg)
-            // v5.2: sheet 的 contentWindowInsets 已置零，系统栏由这里处理。background 在前
-            // →背景连续填充到屏幕边缘（含状态栏/导航栏区域），不再有 sheet 单独留的底部
-            // 背景空白带；padding 只把内容从系统栏移开，不产生单独覆盖层。
-            .statusBarsPadding()
-            .navigationBarsPadding()
-            .padding(horizontal = 24.dp),
+            .background(c.bg),
     ) {
         Column(
             Modifier
                 .fillMaxSize()
-                // 给浮层顶栏让位（顶栏 40dp + 上边 6dp）——首屏观感与改动前一致
-                .padding(top = PLAYER_TOPBAR_BLOCK)
-                .verticalScroll(scrollState),
+                // ⚠️ 顺序要紧（用户 2026-10-20）：
+                //  ① **先 verticalScroll**，再把 insets / 左右留白 / 顶部避让**放进滚动内容里**
+                //     —— 它们会随内容一起滚走，所以封面能从按钮后面一路滑出屏幕顶端，
+                //     中间没有被 padding 造成的"硬边界"；
+                //  ② 背景仍由外层 Box 铺满全屏（含状态栏/导航栏区域），不会露出空白带。
+                //  ③ navigationBarsPadding 按用户要求**随内容滚**，不固定在外面。
+                .verticalScroll(scrollState)
+                .statusBarsPadding()
+                .navigationBarsPadding()
+                .padding(horizontal = 24.dp)
+                .padding(top = PLAYER_TOPBAR_BLOCK),
         ) {
             // cover — fill width, no background decoration
             // v3.0: removed the square aspectRatio container + ContentScale.Fit
@@ -563,6 +565,39 @@ fun PlayerScreen(vm: MainViewModel) {
 
             LyricsPeekCard(vm, artBg, artFg, dimC, btnBg)
         }
+
+        // ⚠️ 顶栏是**外层 Box 的最后一个子项**（后绘制 = 叠在滚动内容之上），**不在滚动容器里**。
+        // 2026-10-19 我把它错插进了下面 `LyricsPeekCard` 的内部 —— 于是播放页顶栏整个不见了、
+        // 两个按钮跑到歌词卡片底部。用户截图确认后修正到此处。
+        // 位置/大小/样式与原版一字不改；insets 与留白按用户 2026-10-20 要求写在这里
+        // （外层 Box 已不再承担这些 padding）。
+        Row(
+            Modifier.fillMaxWidth().statusBarsPadding().padding(horizontal = 24.dp).padding(top = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(
+                Modifier
+                    .size(40.dp)
+                    .clip(CircleShape)
+                    .background(c.surface)
+                    .clickable { vm.playerOpen = false; vm.sleepMenu = false },
+                contentAlignment = Alignment.Center,
+            ) { OIcon(Lucide.ChevronDown, 19.dp, c.text) }
+            Text(
+                "·",
+                style = body(12.5f, FontWeight.Normal, c.n400).copy(letterSpacing = 1.5.sp),
+                modifier = Modifier.weight(1f),
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+            )
+            Box(
+                Modifier
+                    .size(40.dp)
+                    .clip(CircleShape)
+                    .background(c.surface)
+                    .clickable { vm.pMenuView = "root" },
+                contentAlignment = Alignment.Center,
+            ) { OIcon(Lucide.MoreVertical, 18.dp, c.text) }
+        }
     }
 }
 
@@ -754,36 +789,6 @@ private fun LyricsPeekCard(vm: MainViewModel, artBg: Color, artFg: Color, dimC: 
                     }
                 }
             }
-        }
-
-        // 顶栏**浮层**（见函数开头的说明）：固定在顶部、画在滚动内容**之上**，
-        // 于是封面上滚时是从它**后面**经过，而不是被一条硬边界切掉。
-        Row(
-            Modifier.fillMaxWidth().padding(top = 6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Box(
-                Modifier
-                    .size(40.dp)
-                    .clip(CircleShape)
-                    .background(c.surface)
-                    .clickable { vm.playerOpen = false; vm.sleepMenu = false },
-                contentAlignment = Alignment.Center,
-            ) { OIcon(Lucide.ChevronDown, 19.dp, c.text) }
-            Text(
-                "·",
-                style = body(12.5f, FontWeight.Normal, c.n400).copy(letterSpacing = 1.5.sp),
-                modifier = Modifier.weight(1f),
-                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-            )
-            Box(
-                Modifier
-                    .size(40.dp)
-                    .clip(CircleShape)
-                    .background(c.surface)
-                    .clickable { vm.pMenuView = "root" },
-                contentAlignment = Alignment.Center,
-            ) { OIcon(Lucide.MoreVertical, 18.dp, c.text) }
         }
     }
 }

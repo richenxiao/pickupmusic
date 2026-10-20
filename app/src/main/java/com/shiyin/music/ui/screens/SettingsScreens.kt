@@ -1735,26 +1735,20 @@ private fun KaraokeSettingsScreen(vm: MainViewModel, scrollStates: MutableMap<St
                 .padding(horizontal = 16.dp, vertical = 6.dp),
         ) {
             // ── 保存策略：**两行独立上限**（用户 2026-10-18 重构）──────────────────
+            // 2026-10-20 用户：**删掉下面那行小字**（"两项同时生效…"整段不要）。
             Column(Modifier.fillMaxWidth().padding(vertical = 12.dp)) {
                 Text("保存策略", style = body(13.5f, FontWeight.SemiBold, c.text))
-                Text(
-                    "两项同时生效，谁先到上限就先淘汰最久没用的；留空 = 这一项不限制",
-                    style = body(11f, FontWeight.Normal, c.n500),
-                    modifier = Modifier.padding(top = 4.dp),
-                )
                 // 第 1 行：按曲目 / 第 2 行：按大小
-                // ⚠️ 2026-10-19 用户："下拉框和单选框是**一体**的，在框的**右侧**"
-                //   + "输入框要在**右侧**，不要那么大，与字体行平齐" ⇒ 标签在左、控件在右，
-                //   数字 + 单位 + 预设同在一个框里。
+                // 2026-10-20 用户改的标签：保存 → **最多保存曲目**；最多占用 → **最多占用空间**。
                 RetentionRow(
-                    label = "保存",
+                    label = "最多保存曲目",
                     value = vm.stemRetentionCount,
                     unit = "首",
                     onCommit = { vm.setStemRetentionLimits(it, vm.stemRetentionMb) },
                     presets = null,
                 )
                 RetentionRow(
-                    label = "最多占用",
+                    label = "最多占用空间",
                     value = vm.stemRetentionMb,
                     unit = "MB",
                     onCommit = { vm.setStemRetentionLimits(vm.stemRetentionCount, it) },
@@ -1793,11 +1787,16 @@ private fun KaraokeSettingsScreen(vm: MainViewModel, scrollStates: MutableMap<St
                     )
                 },
                 confirmButton = {
+                    // 2026-10-20 用户："删除提醒的弹出选择【删除】也没有做醒目红色字体"
+                    // —— `DialogAction` 默认走 secondary 灰；标成 emphasized 并把强调色换成危险红。
                     DialogActionsRow(
                         listOf(
                             DialogAction("取消") { pendingDelete = null },
-                            DialogAction("删除") { vm.deleteKaraokeModel(m.id); pendingDelete = null },
+                            DialogAction("删除", emphasized = true) {
+                                vm.deleteKaraokeModel(m.id); pendingDelete = null
+                            },
                         ),
+                        emphasizedColor = DANGER_RED,
                     )
                 },
             )
@@ -1819,8 +1818,11 @@ private fun KaraokeSettingsScreen(vm: MainViewModel, scrollStates: MutableMap<St
                     DialogActionsRow(
                         listOf(
                             DialogAction("取消") { pendingClear = false },
-                            DialogAction("清空") { vm.clearStemCache(); pendingClear = false },
+                            DialogAction("清空", emphasized = true) {
+                                vm.clearStemCache(); pendingClear = false
+                            },
                         ),
+                        emphasizedColor = DANGER_RED,
                     )
                 },
             )
@@ -1833,10 +1835,12 @@ private fun KaraokeSettingsScreen(vm: MainViewModel, scrollStates: MutableMap<St
 private fun KaraokeBadge(text: String, c: com.shiyin.music.ui.theme.OrganicColors) {
     Text(
         text,
-        style = body(10.5f, FontWeight.SemiBold, c.n600),
+        style = body(10.5f, FontWeight.SemiBold, c.n700),
         modifier = Modifier
             .clip(RoundedCornerShape(7.dp))
-            .background(c.n100)
+            // 2026-10-20 用户："浅色模式下很多按钮铭牌**全是纯白色**" —— n100 在浅色下是近白
+            // （#F9F4ED）贴在奶油色卡片上等于没有底；换 n300（暖灰）两套主题都成立。
+            .background(c.n300)
             .padding(horizontal = 6.dp, vertical = 3.dp),
     )
 }
@@ -1846,9 +1850,11 @@ private fun KaraokeBadge(text: String, c: com.shiyin.music.ui.theme.OrganicColor
  *
  * ⚠️ 2026-10-19 修正：原来用 `c.a700`，而主题里的 `a700` 是**橙色系** ——
  * 深色主题下更是浅橘 `#FFC6A5`，看着像"次要操作"，一点都不像危险。
- * 这里用一个两套主题通用的真红。
+ *
+ * ⚠️ 2026-10-20 用户反馈："按钮的红色又**太过头**了，亮的和主题不搭" ——
+ * 从 `#D2453A`（正红）调成**砖红** `#A94A38`：饱和度与明度都收进暖色系，与 accent `#C67139` 同族。
  */
-private val DANGER_RED = androidx.compose.ui.graphics.Color(0xFFD2453A)
+private val DANGER_RED = androidx.compose.ui.graphics.Color(0xFFA94A38)
 
 /** 伴唱页的小操作按钮（文字按钮）。[danger]=删除类，用**红**以示警惕。 */
 @Composable
@@ -1869,7 +1875,7 @@ private fun KaraokeAction(
         style = body(12.5f, FontWeight.SemiBold, fg),
         modifier = Modifier
             .clip(RoundedCornerShape(10.dp))
-            .background(if (danger && enabled) DANGER_RED.copy(alpha = 0.13f) else c.n100)
+            .background(if (danger && enabled) DANGER_RED.copy(alpha = 0.13f) else c.n300)
             .then(if (enabled) Modifier.clickable { onClick() } else Modifier)
             .padding(horizontal = 12.dp, vertical = 7.dp),
     )
@@ -1888,7 +1894,7 @@ private fun DefaultModelButton(isDefault: Boolean, onClick: () -> Unit) {
         style = body(12.5f, FontWeight.SemiBold, if (isDefault) c.bg else c.n600),
         modifier = Modifier
             .clip(RoundedCornerShape(10.dp))
-            .background(if (isDefault) c.accent else c.n100)
+            .background(if (isDefault) c.accent else c.n300)
             .border(1.dp, if (isDefault) androidx.compose.ui.graphics.Color.Transparent else c.n400, RoundedCornerShape(10.dp))
             .then(if (isDefault) Modifier else Modifier.clickable { onClick() })
             .padding(horizontal = 12.dp, vertical = 7.dp),
@@ -1917,7 +1923,9 @@ private fun RetentionRow(
         Row(
             Modifier
                 .clip(RoundedCornerShape(10.dp))
-                .background(c.n100)
+                // 2026-10-20 用户："浅色模式下很多按钮铭牌全是纯白色的，和主题不符"
+                // —— n100 在浅色下是近白（#F9F4ED），换成 n300（暖灰），两套主题都与卡片底分得开。
+                .background(c.n300)
                 .border(1.dp, c.n400, RoundedCornerShape(10.dp))
                 .height(36.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -1925,7 +1933,6 @@ private fun RetentionRow(
             RetentionNumberField(value, unit, onCommit)
             if (presets != null) {
                 Box(Modifier.width(1.dp).fillMaxHeight().background(c.n400))
-                // 选预设 = 直接把那个值填进去（与手填等价）
                 RetentionPresetDropdown(value, presets, onPick = onCommit)
             }
         }
@@ -1985,17 +1992,13 @@ private fun RetentionPresetDropdown(currentMb: Int, presets: List<Pair<Int, Stri
     val c = LocalOrganic.current
     var open by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
     Box {
-        Row(
-            Modifier.fillMaxHeight().clickable { open = true }.padding(horizontal = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                presets.firstOrNull { it.first == currentMb }?.second ?: "预设",
-                style = body(12f, FontWeight.SemiBold, c.n600),
-                maxLines = 1,
-            )
-            OIcon(Lucide.ChevronDown, 14.dp, c.n600)
-        }
+        // 2026-10-20 用户："下拉框**不要**加一个'预设'，而是（点击/手写填入的区域）
+        //   +（▾，**最右边的一小块**，下拉选预设）" ⇒ 触发区只剩一个小箭头，
+        //   左边整块都是可以手写填入的输入区。
+        Box(
+            Modifier.fillMaxHeight().clickable { open = true }.padding(horizontal = 8.dp),
+            contentAlignment = Alignment.Center,
+        ) { OIcon(Lucide.ChevronDown, 15.dp, c.n700) }
         androidx.compose.material3.DropdownMenu(
             expanded = open,
             onDismissRequest = { open = false },
@@ -2027,7 +2030,7 @@ private fun KaraokeChip(label: String, selected: Boolean, c: com.shiyin.music.ui
         style = body(12f, FontWeight.SemiBold, if (selected) c.bg else c.n600),
         modifier = Modifier
             .clip(RoundedCornerShape(10.dp))
-            .background(if (selected) c.accent else c.n100)
+            .background(if (selected) c.accent else c.n300)
             .border(
                 1.dp,
                 if (selected) androidx.compose.ui.graphics.Color.Transparent else c.n400,

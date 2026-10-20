@@ -42,6 +42,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -398,21 +399,32 @@ fun AppRoot(vm: MainViewModel) {
                     .padding(top = com.shiyin.music.ui.components.TopBarTop),
             ) {
                 Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                    Row(
-                        // ⚠️ 2026-10-19 用户两轮修正：
-                        //  ① "拾音和 PickUpMusic **底部没对齐**" —— 原来 CenterVertically（小字浮在大字中腰）。
-                        //  ② "要**贴在一起**，且大小颜色也要**严格一致**，现在还是差点意思"
-                        //     —— 原来 6dp 间距 + `n500` 暖灰（比标题暗一大截），看着像两个不相干的词。
-                        // 现在：底边齐平、间距收到 3dp、英文用接近标题的亮色 + Medium，合成一个整体标识。
-                        verticalAlignment = Alignment.Bottom,
-                        modifier = Modifier.height(com.shiyin.music.ui.components.TopBarHeight),
+                    // 品牌标识（用户 2026-10-20 定稿）：一行，「拾音」+「PickUpMusic」，**基线对齐**。
+                    //  · 「拾音」**不用 heading()** —— 那是 Caprasimo，**没有中文字形**、字重不可控；
+                    //    改用 Figtree 的 body(26f, Bold, 纯白)。
+                    //  · 英文 Figtree SemiBold 纯白 15.5sp（≈「拾音」的 0.6 倍），间距 7dp。
+                    //  · Row 套在一层**固定高度**的 Box 里居中：`alignByBaseline` 的子项**不参与**
+                    //    Row 的垂直对齐，直接写 Row 会让整组文字贴顶。
+                    //  · 高度仍用 TopBarHeight(40dp)、外层 spacedBy(16dp) 不动 ⇒ 该区域高度与
+                    //    下面各项的位置都不变。
+                    Box(
+                        Modifier.height(com.shiyin.music.ui.components.TopBarHeight),
+                        contentAlignment = Alignment.CenterStart,
                     ) {
-                        Text("拾音", style = heading(26))
-                        Text(
-                            "PickUpMusic",
-                            style = body(14f, FontWeight.Medium, c.text.copy(alpha = 0.78f)),
-                            modifier = Modifier.padding(start = 3.dp, bottom = 3.dp),
-                        )
+                        Row {
+                            Text(
+                                "拾音",
+                                style = body(26f, FontWeight.Bold, Color.White),
+                                // 汉字笔画底边天然比拉丁基线低约 0.1em（26sp ≈ 2.6dp）
+                                // ⇒ 上提 BRAND_CN_LIFT 让**视觉底边**与英文对齐（不是代码基线）。
+                                modifier = Modifier.offset(y = -BRAND_CN_LIFT).alignByBaseline(),
+                            )
+                            Text(
+                                "PickUpMusic",
+                                style = body(15.5f, FontWeight.SemiBold, Color.White),
+                                modifier = Modifier.padding(start = 3.dp).alignByBaseline(),
+                            )
+                        }
                     }
                     // v4: sidebar restructured — 5 items, no file-management here.
                     // v1.3.x: Agent 提到"设置"前面(AI 是高频入口,不该排在最后),
@@ -1494,6 +1506,15 @@ private fun BoxScope.TrackMenuSheet(vm: MainViewModel, onEditTrack: (Long) -> Un
 // v1.3.3: 外层 SheetOverlay 已移除——由 AppRoot 的独立 ModalBottomSheet 包裹本
 // 内容(与 QueueSheet 同模式),手势/返回只作用菜单弹层、不动播放页。
 // 子页跳转(timer/speed→root)仍在内容内用 vm.pMenuView 切换。
+
+/**
+ * 侧边栏品牌区：「拾音」为对齐**视觉底边**而上提的量。
+ *
+ * 汉字笔画底边天然比拉丁基线低约 0.1em —— 26sp 下约 2.6dp。
+ * 验收标准是"「拾音」笔画最低点与 PickUpMusic 字母底边同一水平线（≤1px）"，
+ * 所以这里是**上提**而不是下压。
+ */
+private val BRAND_CN_LIFT = 2.6.dp
 
 /**
  * P2-D：播放页菜单面板的**高度规则**。
