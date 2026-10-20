@@ -2459,6 +2459,18 @@ private fun ArtistManageScreen(vm: MainViewModel, scrollStates: MutableMap<Strin
  * ⚠️ 2026-10-19 用户："三个项被你缩小太多了，保留之前的大小" —— 所以这里**不再自己写行布局**，
  * 直接用全 App 统一的 [SettingsRowScaffold]（卡片 + 行 = 与"歌手合并/写真源"原来一模一样的高度）。
  * 变的是"上面不再有小标题"，不是"行变小了"。
+ *
+ * ⚠️ **2026-10-20 修：左右内边距漏了**。用户："三项的图标位置贴近边界，几乎超出界限，
+ * 没有参考其他页面。"
+ *
+ * 根因（读代码得出，非推测）：[SettingsRowScaffold] **自身不带左右内边距** —— 它的排版只有
+ * `padding(vertical = 13.dp)` + `heightIn(min = 56.dp)`，横向留白一律由**父卡片**提供。
+ *  · 参照页（设置主页的入口行 `CardEntryRow`）：卡片 `padding(horizontal = 16.dp, vertical = 6.dp)`
+ *    ⇒ 页面 `padding(horizontal = 20.dp)` + 卡片 `16.dp` = 图标左边界 **x = 36dp**
+ *  · 本页原来只有 `padding(vertical = 6.dp)` ⇒ 图标左边界 **x = 20dp**，比参照页少 16dp
+ *    —— 正是"贴近边界"的成因。
+ *
+ * ⇒ 补上 `horizontal = 16.dp`，与参照页逐像素对齐（图标 36dp / 标题 68dp）。
  */
 @Composable
 private fun ArtistManageButton(
@@ -2473,7 +2485,7 @@ private fun ArtistManageButton(
             .shadowSm(RoundedCornerShape(28.dp))
             .clip(RoundedCornerShape(28.dp))
             .background(c.surface)
-            .padding(vertical = 6.dp),
+            .padding(horizontal = 16.dp, vertical = 6.dp),
     ) {
         SettingsRowScaffold(
             title = label,
