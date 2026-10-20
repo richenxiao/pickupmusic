@@ -57,6 +57,16 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
     /** Kept in sync with the DataStore setting by the ViewModel. */
     var gaplessEnabled: Boolean = true
 
+    // ── 升降 Key 卡死取证：被动看门狗（用户 2026-10-20「修改0」）────────────────────
+    // 默认关闭 ⇒ 关闭时 `stallWatchdogEnabled == false`，ticker 里那两行判断各是一次
+    // 布尔读 + 短路，**不抓栈、不落盘、不改播放行为**。
+    // 开启路径：MainViewModel 的 karaoke-cmd 通道（`watchdog 1`）。
+    private val keyStall = KeyStallWatch { android.os.SystemClock.elapsedRealtime() }
+    var stallWatchdogEnabled: Boolean = false
+    /** 抓到的证据落盘目录（App 外部私有目录，adb 可 pull）。null = 只打 logcat。 */
+    var stallDumpDir: java.io.File? = null
+    private var stallDumpSeq = 0
+
     private var sleepJob: Job? = null
     private var gapJob: Job? = null
     /** v5.2 Bug9: fade-out coroutine for sleep-timer expiry. */
@@ -321,6 +331,50 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
         if (virtualDurationMs > 0L) (framePositionMs() - virtualStartMs).coerceAtLeast(0L)
         else framePositionMs()
 
+    /**
+     * 把卡死证据抓下来（用户 2026-10-20「修改0」step 3）。
+     *
+     * - **logcat**：tag `PickUpDiag`，按 3000 字符切片 —— logcat 单条上限约 4KB，
+     *   整份一次性塞进去会被**静默截断**，那就等于没抓到。
+     * - **落盘**：App 外部私有目录（`stallDumpDir`，adb pull 可取），文件名带序号，
+     *   一个窗口一份，便于多次运行直接 diff。
+     *
+     * `Thread.getAllStackTraces()` 会短暂 STW，所以只在**已经判定卡死**时执行一次，
+     * 正常播放路径上不会被调用。
+     *
+     * 这里包 try/catch 只为保住**取证**本身（抓栈/写文件失败不能把播放带崩），
+     * 失败一律**写进 logcat**、绝不静默；它不会掩盖卡死，卡死已由上位判据认定。
+     */
+    private fun dumpKeyStall(pos: Long, playbackState: Int, playWhenReady: Boolean) {
+        val seq = stallDumpSeq++
+        val header = "Key 变化后位置 ${KeyStallWatch.STALL_MS}ms 不前进 —— " +
+            "key=${KeyShift.label(keyStall.halfSteps)}(halfSteps=${keyStall.halfSteps}) " +
+            "pos=$pos playbackState=$playbackState playWhenReady=$playWhenReady " +
+            "speed=$lastSpeed retro=$lastRetroMode " +
+            "karaokeMode=${KaraokeMixControl.mode} mixSourceKind=${KaraokeMixControl.sourceKind} " +
+            "currentId=$currentId"
+        val dump = try {
+            KeyStallWatch.formatThreadDump(header, Thread.getAllStackTraces())
+        } catch (t: Throwable) {
+            "$header\n[抓栈失败] ${t.javaClass.simpleName}: ${t.message}"
+        }
+        android.util.Log.w("PickUpDiag", "======== 卡死取证 #$seq ========")
+        dump.chunked(3000).forEach { android.util.Log.w("PickUpDiag", it) }
+        try {
+            val dir = stallDumpDir
+            if (dir == null) {
+                android.util.Log.w("PickUpDiag", "（未设置落盘目录，仅 logcat）")
+            } else {
+                if (!dir.isDirectory) dir.mkdirs()
+                val f = java.io.File(dir, "watchdog-stall-$seq.txt")
+                f.writeText(dump)
+                android.util.Log.w("PickUpDiag", "已落盘 ${f.absolutePath} (${dump.length} 字符)")
+            }
+        } catch (t: Throwable) {
+            android.util.Log.w("PickUpDiag", "落盘失败: ${t.javaClass.simpleName}: ${t.message}")
+        }
+    }
+
     private var tickerStarted = false
     private fun startTicker() {
         if (tickerStarted) return
@@ -343,6 +397,14 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
                         )
                     }
                     positionMs = newPos
+                    // 升降 Key 卡死取证（用户 2026-10-20 修改0）：Key 变化后位置 >2 秒不前进
+                    // ⇒ 抓**全部**线程栈。**只诊断，不做任何自愈动作**（用户明令不许用
+                    // 超时/吞异常/重试掩盖）。关闭时这里是一次布尔短路，零影响。
+                    if (stallWatchdogEnabled &&
+                        keyStall.tick(newPos, c.playWhenReady, c.playbackState == Player.STATE_READY)
+                    ) {
+                        dumpKeyStall(newPos, c.playbackState, c.playWhenReady)
+                    }
                     // v1.3.10 A23(《罪の香り》1:37 静音、位置 1:37↔1:40 循环)**封存**时留下的
                     // 最后一件零风险的事:把"引擎自认为在播、实际没输出"这个判据留成**纯日志**。
                     //
@@ -1246,6 +1308,8 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
     /** v1.5.0 伴唱 §8：设置升降 Key（**半音步数**，+1 步 = +0.5 半音）。只改音高，速度不动。 */
     fun setKeyShift(halfSteps: Int) {
         keyShiftHalfSteps = KeyShift.clamp(halfSteps)
+        // 取证：**在真正改参数之前**起观测窗口，这样"切换那一刻"起就盯着位置。
+        if (stallWatchdogEnabled) keyStall.arm(keyShiftHalfSteps)
         applyPlaybackParameters()
     }
 

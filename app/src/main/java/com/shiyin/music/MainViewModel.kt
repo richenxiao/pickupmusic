@@ -1536,6 +1536,27 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             // 闸门 2：**瞬时淡化开关**（0 = 不做 300ms 系数插值，直接跳到目标档）。
             // 用来把"残差是淡化本身"和"残差是别的东西"分开：同一次实验只改这一个变量。
             "ramp" -> com.shiyin.music.playback.KaraokeMixControl.rampMs = p[1].toInt()
+            // ── 升降 Key 卡死取证（用户 2026-10-20「修改0」）──────────────────────────
+            // `watchdog 1` 开启被动看门狗：此后**每次 Key 变化**起，若播放位置 >2 秒不前进，
+            // 就抓 `Thread.getAllStackTraces()` 全量线程栈 → logcat(tag PickUpDiag) + 落盘。
+            // `watchdog 0` 关闭 ⇒ 回到零影响（ticker 里只剩一次布尔短路）。
+            "watchdog" -> {
+                val on = p.getOrNull(1)?.toIntOrNull() ?: 0
+                player.stallWatchdogEnabled = on != 0
+                if (on != 0) {
+                    player.stallDumpDir = getApplication<Application>().getExternalFilesDir(null)
+                }
+                appendProbeLog("[看门狗] ${if (on != 0) "开启" else "关闭"}")
+            }
+            // 走**同一条通道**切 Key（参数=半音步数，±12=±6 半音）。脚本据此跑 200+ 次切换。
+            "key" -> {
+                changeKeyShift(p.getOrNull(1)?.toIntOrNull() ?: 0)
+                appendProbeLog(
+                    "[Key] ${com.shiyin.music.playback.KeyShift.label(keyShift)} halfSteps=$keyShift",
+                )
+            }
+            // 位置快照 —— 脚本据此判定"切换后 1 秒内播放位置是否恢复前进"。
+            "pos" -> appendProbeLog("[pos] ${player.positionMs} playing=${player.isPlaying} key=$keyShift")
             "probe" -> com.shiyin.music.playback.KaraokeAudioSpike.setProbeMode(getApplication(), p[1].toInt())
             "capture" -> player.spikeCaptureFromStart()
             /** 从**非零位置**起采集（块 3 闸门：随机拖动后仍要零拍）。 */
