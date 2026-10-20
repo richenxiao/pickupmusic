@@ -169,7 +169,12 @@ fun PlayerScreen(vm: MainViewModel) {
                 val mp = vm.morph.progress.value
                 alpha = 1f - 0.7f * ((mp / LyricsMorphSpec.PLAYER_DIM_END).coerceIn(0f, 1f))
             }
-            .background(c.bg),
+            .background(c.bg)
+            // ⚠️ 2026-10-20 用户："我没有要求改歌词卡片……不必须的还原成基线的样子"。
+            // **底部**导航栏留白放回滚动容器**之外**（= 基线位置）：它跟"封面滑到屏幕顶"
+            // 这个叠放目标无关（那件事只跟**顶部**有关），不属于"叠放必需"，故还原。
+            // 写在 `.background` **之后** ⇒ 背景仍铺到屏幕最底，只有内容被让开。
+            .navigationBarsPadding(),
     ) {
         Column(
             Modifier
@@ -179,10 +184,10 @@ fun PlayerScreen(vm: MainViewModel) {
                 //     —— 它们会随内容一起滚走，所以封面能从按钮后面一路滑出屏幕顶端，
                 //     中间没有被 padding 造成的"硬边界"；
                 //  ② 背景仍由外层 Box 铺满全屏（含状态栏/导航栏区域），不会露出空白带。
-                //  ③ navigationBarsPadding 按用户要求**随内容滚**，不固定在外面。
+                //  ③ **顶部** statusBarsPadding 必须留在滚动内容里：放到外面的话视口被裁在
+                //     状态栏下沿，封面又撞上一条硬边界 —— 这一处是叠放所必需的。
                 .verticalScroll(scrollState)
                 .statusBarsPadding()
-                .navigationBarsPadding()
                 .padding(horizontal = 24.dp)
                 .padding(top = PLAYER_TOPBAR_BLOCK),
         ) {
@@ -569,8 +574,8 @@ fun PlayerScreen(vm: MainViewModel) {
         // ⚠️ 顶栏是**外层 Box 的最后一个子项**（后绘制 = 叠在滚动内容之上），**不在滚动容器里**。
         // 2026-10-19 我把它错插进了下面 `LyricsPeekCard` 的内部 —— 于是播放页顶栏整个不见了、
         // 两个按钮跑到歌词卡片底部。用户截图确认后修正到此处。
-        // 位置/大小/样式与原版一字不改；insets 与留白按用户 2026-10-20 要求写在这里
-        // （外层 Box 已不再承担这些 padding）。
+        // 位置/大小/样式与原版一字不改；insets 与留白自带（外层 Box 只额外承担了
+        // 底部导航栏让位，见上面的 .navigationBarsPadding）。
         Row(
             Modifier.fillMaxWidth().statusBarsPadding().padding(horizontal = 24.dp).padding(top = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
