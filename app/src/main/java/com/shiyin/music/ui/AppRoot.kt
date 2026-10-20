@@ -102,6 +102,10 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
@@ -399,33 +403,7 @@ fun AppRoot(vm: MainViewModel) {
                     .padding(top = com.shiyin.music.ui.components.TopBarTop),
             ) {
                 Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                    // 品牌标识（用户 2026-10-20 定稿）：一行，「拾音」+「PickUpMusic」，**基线对齐**。
-                    //  · 「拾音」**不用 heading()** —— 那是 Caprasimo，**没有中文字形**、字重不可控；
-                    //    改用 Figtree 的 body(26f, Bold, 纯白)。
-                    //  · 英文 Figtree SemiBold 纯白 15.5sp（≈「拾音」的 0.6 倍），间距 7dp。
-                    //  · Row 套在一层**固定高度**的 Box 里居中：`alignByBaseline` 的子项**不参与**
-                    //    Row 的垂直对齐，直接写 Row 会让整组文字贴顶。
-                    //  · 高度仍用 TopBarHeight(40dp)、外层 spacedBy(16dp) 不动 ⇒ 该区域高度与
-                    //    下面各项的位置都不变。
-                    Box(
-                        Modifier.height(com.shiyin.music.ui.components.TopBarHeight),
-                        contentAlignment = Alignment.CenterStart,
-                    ) {
-                        Row {
-                            Text(
-                                "拾音",
-                                style = body(26f, FontWeight.Bold, Color.White),
-                                // 汉字笔画底边天然比拉丁基线低约 0.1em（26sp ≈ 2.6dp）
-                                // ⇒ 上提 BRAND_CN_LIFT 让**视觉底边**与英文对齐（不是代码基线）。
-                                modifier = Modifier.offset(y = -BRAND_CN_LIFT).alignByBaseline(),
-                            )
-                            Text(
-                                "PickUpMusic",
-                                style = body(15.5f, FontWeight.SemiBold, Color.White),
-                                modifier = Modifier.padding(start = 3.dp).alignByBaseline(),
-                            )
-                        }
-                    }
+                    BrandMark()
                     // v4: sidebar restructured — 5 items, no file-management here.
                     // v1.3.x: Agent 提到"设置"前面(AI 是高频入口,不该排在最后),
                     // 图标 Sparkles(AI 语义)。条目间距 8→16dp(用户连续两轮要求加大)。
@@ -1507,14 +1485,107 @@ private fun BoxScope.TrackMenuSheet(vm: MainViewModel, onEditTrack: (Long) -> Un
 // 内容(与 QueueSheet 同模式),手势/返回只作用菜单弹层、不动播放页。
 // 子页跳转(timer/speed→root)仍在内容内用 vm.pMenuView 切换。
 
+private const val BRAND_CN = "拾音"
+private const val BRAND_EN = "PickUpMusic"
+
+/** 「拾音」字号（sp）。 */
+private const val BRAND_CN_SP = 26f
+
+/** 「PickUpMusic」字号（sp）—— 与 [BRAND_CN_SP] 固定维持 26 : 15.5 的比例。 */
+private const val BRAND_EN_SP = 15.5f
+
+/** 中英两段之间的间距。 */
+private val BRAND_GAP = 2.dp
+
 /**
  * 侧边栏品牌区：「拾音」为对齐**视觉底边**而上提的量。
  *
  * 汉字笔画底边天然比拉丁基线低约 0.1em —— 26sp 下约 2.6dp。
  * 验收标准是"「拾音」笔画最低点与 PickUpMusic 字母底边同一水平线（≤1px）"，
  * 所以这里是**上提**而不是下压。
+ *
+ * ⚠️ 这个值是**按 0.1em 估的**，尚未真机实测（2026-10-20 无可用设备）。整体缩放时同比缩小。
  */
 private val BRAND_CN_LIFT = 2.6.dp
+
+/**
+ * 品牌标识在给定可用宽度下允许的**整体缩放比**（纯函数，JVM 单测见 `BrandMarkFitTest`）。
+ *
+ * 恒 ≤ 1；可用宽度不足时按**同一比例**把两段一起缩小，所以 26 : 15.5 的字号比例保持不变。
+ * **不设缩放下限**：用户要求"低于下限也不许换行，继续缩小"，因此宽度多窄都只缩不折行。
+ *
+ * @param availPx 抽屉里留给品牌区的可用宽度（px）；≤ 0 视为无约束
+ * @param naturalPx 两段按原字号排版后的自然总宽（px）
+ */
+internal fun brandMarkScale(availPx: Int, naturalPx: Int): Float {
+    if (availPx <= 0 || naturalPx <= 0) return 1f
+    return if (naturalPx <= availPx) 1f else availPx.toFloat() / naturalPx
+}
+
+/**
+ * 侧边栏品牌标识：「拾音」+「PickUpMusic」，**永远单行**。
+ *
+ * - 两段都用 [FontFamily.Default]（用户 2026-10-20 指定：不用 `body()`/`heading()` 的自定义字体），
+ *   纯白；「拾音」Bold、「PickUpMusic」SemiBold。
+ * - **宽度适配**：先用 [rememberTextMeasurer] 量出两段的自然总宽，再用 [brandMarkScale] 求整体
+ *   缩放比 —— 装得下按原尺寸，装不下一起缩，**永不换行**（`maxLines = 1` + `softWrap = false`）。
+ * - 底边对齐用 `alignByBaseline()`，「拾音」再上提 [BRAND_CN_LIFT] 补偿汉字的视觉底边差。
+ * - 外层 `Box` 固定 [com.shiyin.music.ui.components.TopBarHeight] 高、`CenterStart`：
+ *   `alignByBaseline` 的子项**不参与** Row 的垂直对齐，直接写 Row 会让整组文字贴顶。
+ */
+@Composable
+private fun BrandMark() {
+    val measurer = rememberTextMeasurer()
+    val density = LocalDensity.current
+    val cnStyle = TextStyle(
+        fontFamily = FontFamily.Default,
+        fontWeight = FontWeight.Bold,
+        fontSize = BRAND_CN_SP.sp,
+        color = Color.White,
+    )
+    val enStyle = TextStyle(
+        fontFamily = FontFamily.Default,
+        fontWeight = FontWeight.SemiBold,
+        fontSize = BRAND_EN_SP.sp,
+        color = Color.White,
+    )
+    // 量宽用**与渲染完全相同的一份 style**（同一 fontScale / density），
+    // 量出来的比例才可以直接套回渲染字号上。
+    val gapPx = with(density) { BRAND_GAP.roundToPx() }
+    val naturalPx = measurer.measure(AnnotatedString(BRAND_CN), cnStyle, softWrap = false).size.width +
+        gapPx +
+        measurer.measure(AnnotatedString(BRAND_EN), enStyle, softWrap = false).size.width
+
+    BoxWithConstraints(
+        Modifier
+            .fillMaxWidth()
+            .height(com.shiyin.music.ui.components.TopBarHeight),
+        contentAlignment = Alignment.CenterStart,
+    ) {
+        val scale = brandMarkScale(
+            availPx = if (constraints.hasBoundedWidth) constraints.maxWidth else 0,
+            naturalPx = naturalPx,
+        )
+        Row {
+            Text(
+                BRAND_CN,
+                style = cnStyle.copy(fontSize = (BRAND_CN_SP * scale).sp),
+                maxLines = 1,
+                softWrap = false,
+                modifier = Modifier
+                    .offset(y = -(BRAND_CN_LIFT * scale))
+                    .alignByBaseline(),
+            )
+            Text(
+                BRAND_EN,
+                style = enStyle.copy(fontSize = (BRAND_EN_SP * scale).sp),
+                maxLines = 1,
+                softWrap = false,
+                modifier = Modifier.padding(start = BRAND_GAP).alignByBaseline(),
+            )
+        }
+    }
+}
 
 /**
  * P2-D：播放页菜单面板的**高度规则**。
