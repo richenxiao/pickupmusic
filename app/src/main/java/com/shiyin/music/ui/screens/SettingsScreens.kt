@@ -809,8 +809,10 @@ private fun SettingsRoot(vm: MainViewModel, scrollStates: MutableMap<String, Scr
             CardEntryRow(
                 // ⚠️ 图标不能撞：这一行原来用 `Users`，而里面「**歌手合并**」那个按钮也是 `Users`
                 // —— 用户 2026-10-19 直接指出"歌手管理的图标跟歌手合并一样，我说了不要雷同图标"。
-                // 换成 `Layers`（"统一的归纳功能"这个语义本身就说的是"多层收纳"）。
-                Lucide.Layers, c.n700, "歌手管理",
+                // 中间一度换成 `Layers`，但那是"多层收纳"，**不表达歌手**（用户 2026-10-20：
+                // "图标要表达歌手/艺人，伴唱已经占用了麦克风，歌手管理不要再用麦克风"）。
+                // 现在用**新增**的 `UsersRound`（一群歌手），与同页其余入口零重复。
+                Lucide.UsersRound, c.n700, "歌手管理",
                 null,
                 divider = false,
                 trailingText = null,
@@ -2443,9 +2445,9 @@ private fun ArtistManageScreen(vm: MainViewModel, scrollStates: MutableMap<Strin
 
         // 用户 2026-10-19：**三个大按钮**。上面那三行「隐藏客串歌手 / 歌手合并 / 写真源」
         // 小标题全部去掉 —— 它们本来就是同一级的三个功能，各自点进去就行。
-        ArtistManageButton(Lucide.EyeOff, "隐藏客串歌手") { vm.navFilesTo(FilesView.HiddenArtists) }
-        ArtistManageButton(Lucide.Users, "歌手合并") { vm.navFilesTo(FilesView.Merges) }
-        ArtistManageButton(Lucide.Palette, "写真源") { vm.navFilesTo(FilesView.ImageSources) }
+        ArtistManageButton(Lucide.UserRoundX, "隐藏客串歌手") { vm.navFilesTo(FilesView.HiddenArtists) }
+        ArtistManageButton(Lucide.Merge, "歌手合并") { vm.navFilesTo(FilesView.Merges) }
+        ArtistManageButton(Lucide.Photo, "写真源") { vm.navFilesTo(FilesView.ImageSources) }
 
         Box(Modifier.height(114.dp))
     }
