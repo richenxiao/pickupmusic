@@ -1740,12 +1740,19 @@ private fun KaraokeSettingsScreen(vm: MainViewModel, scrollStates: MutableMap<St
                 Text("保存策略", style = body(13.5f, FontWeight.SemiBold, c.text))
                 // 第 1 行：按曲目 / 第 2 行：按大小
                 // 2026-10-20 用户改的标签：保存 → **最多保存曲目**；最多占用 → **最多占用空间**。
+                // 2026-10-20 用户："按曲目这行必须用同一套组件、同一种交互：数字输入框 + 预设下拉框。
+                // 不要自己另写一套。" ⇒ 复用同一个 RetentionRow，只是把 presets 从 null 换成列表。
+                // ⚠️ 预设值 0/5/10/20/50/100 是**我拟定的**（用户原话没给具体值）；
+                //    默认 10 与 `MainViewModel.stemRetentionCount` 的初值一致。
                 RetentionRow(
                     label = "最多保存曲目",
                     value = vm.stemRetentionCount,
                     unit = "首",
                     onCommit = { vm.setStemRetentionLimits(it, vm.stemRetentionMb) },
-                    presets = null,
+                    presets = listOf(
+                        0 to "不保留", 5 to "5 首", 10 to "10 首",
+                        20 to "20 首", 50 to "50 首", 100 to "100 首",
+                    ),
                 )
                 RetentionRow(
                     label = "最多占用空间",
@@ -1988,7 +1995,7 @@ private fun RetentionNumberField(value: Int, unit: String, onCommit: (Int) -> Un
  * 这条与项目里 `ArtistAlbumList` 的下拉框用法一致。
  */
 @Composable
-private fun RetentionPresetDropdown(currentMb: Int, presets: List<Pair<Int, String>>, onPick: (Int) -> Unit) {
+private fun RetentionPresetDropdown(current: Int, presets: List<Pair<Int, String>>, onPick: (Int) -> Unit) {
     val c = LocalOrganic.current
     var open by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
     Box {
