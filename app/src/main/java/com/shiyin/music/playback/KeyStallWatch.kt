@@ -1,5 +1,7 @@
 package com.shiyin.music.playback
 
+import androidx.media3.common.Player
+
 /**
  * 升降 Key 卡死取证 —— **被动看门狗**（用户 2026-10-20「修改0」P0）。
  *
@@ -48,15 +50,28 @@ class KeyStallWatch(private val now: () -> Long) {
      * 每个 tick（生产 :300ms）调一次。
      *
      * 判据（用户给的）：**位置超过 2 秒不前进**。
-     * 只在"引擎自认为该出声"时判定 —— `playWhenReady == false`（用户暂停）或引擎没
-     * READY 时，位置不动是**正常**的，此时把窗口重置而不是误报。
      *
+     * ⚠️ **2026-10-20 真机实测校正**：本类第一版只盯 `STATE_READY`，**会漏报真正的卡死** ——
+     * 卡住时 `dumpsys media_session` 报的是
+     * `state=PlaybackState {state=BUFFERING(6), position=43263, speed=0.0}`，
+     * 引擎停在 **BUFFERING**、根本没进 READY。旧的 `PlayerDiag` 看门狗
+     * （`PlayerController` 里 `looksStalled`，要求 `playbackState == STATE_READY`）
+     * 因此一直没打日志 —— 这就是"卡死却抓不到证据"的原因。
+     *
+     * ⇒ 现在只排除**本来就不该出声**的两种状态：`STATE_IDLE`（无媒体）与
+     * `STATE_ENDED`（放完了）。**READY 与 BUFFERING 都盯**。
+     * 用户暂停（`playWhenReady == false`）时位置不动是**正常**的，重置窗口而不误报。
+     *
+     * @param playbackState `Player.STATE_*`
      * @return `true` = 本拍判定卡死（**同一个窗口只报一次**），调用方去抓栈
      */
-    fun tick(positionMs: Long, playWhenReady: Boolean, ready: Boolean): Boolean {
+    fun tick(positionMs: Long, playWhenReady: Boolean, playbackState: Int): Boolean {
         if (!armed || fired) return false
-        if (!playWhenReady || !ready) {
-            // 暂停 / 未就绪 —— 位置不动是正常的，重置窗口，避免误报。
+        if (!playWhenReady ||
+            playbackState == Player.STATE_IDLE ||
+            playbackState == Player.STATE_ENDED
+        ) {
+            // 暂停 / 无媒体 / 已放完 —— 位置不动是正常的，重置窗口，避免误报。
             lastPos = -1L
             lastAdvanceAt = now()
             return false

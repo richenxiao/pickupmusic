@@ -345,11 +345,20 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
      * 这里包 try/catch 只为保住**取证**本身（抓栈/写文件失败不能把播放带崩），
      * 失败一律**写进 logcat**、绝不静默；它不会掩盖卡死，卡死已由上位判据认定。
      */
-    private fun dumpKeyStall(pos: Long, playbackState: Int, playWhenReady: Boolean) {
+    private fun dumpKeyStall(pos: Long, c: Player) {
         val seq = stallDumpSeq++
+        val stateName = when (c.playbackState) {
+            Player.STATE_IDLE -> "IDLE"
+            Player.STATE_BUFFERING -> "BUFFERING"
+            Player.STATE_READY -> "READY"
+            Player.STATE_ENDED -> "ENDED"
+            else -> "?${c.playbackState}"
+        }
         val header = "Key 变化后位置 ${KeyStallWatch.STALL_MS}ms 不前进 —— " +
             "key=${KeyShift.label(keyStall.halfSteps)}(halfSteps=${keyStall.halfSteps}) " +
-            "pos=$pos playbackState=$playbackState playWhenReady=$playWhenReady " +
+            "pos=$pos bufferedPos=${c.bufferedPosition} state=$stateName(${c.playbackState}) " +
+            "playWhenReady=${c.playWhenReady} isPlaying=${c.isPlaying} " +
+            "suppression=${c.playbackSuppressionReason} " +
             "speed=$lastSpeed retro=$lastRetroMode " +
             "karaokeMode=${KaraokeMixControl.mode} mixSourceKind=${KaraokeMixControl.sourceKind} " +
             "currentId=$currentId"
@@ -401,9 +410,9 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
                     // ⇒ 抓**全部**线程栈。**只诊断，不做任何自愈动作**（用户明令不许用
                     // 超时/吞异常/重试掩盖）。关闭时这里是一次布尔短路，零影响。
                     if (stallWatchdogEnabled &&
-                        keyStall.tick(newPos, c.playWhenReady, c.playbackState == Player.STATE_READY)
+                        keyStall.tick(newPos, c.playWhenReady, c.playbackState)
                     ) {
-                        dumpKeyStall(newPos, c.playbackState, c.playWhenReady)
+                        dumpKeyStall(newPos, c)
                     }
                     // v1.3.10 A23(《罪の香り》1:37 静音、位置 1:37↔1:40 循环)**封存**时留下的
                     // 最后一件零风险的事:把"引擎自认为在播、实际没输出"这个判据留成**纯日志**。

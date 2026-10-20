@@ -1,5 +1,6 @@
 package com.shiyin.music.playback
 
+import androidx.media3.common.Player
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -18,9 +19,14 @@ class KeyStallWatchTest {
     private var clock = 0L
     private fun watch() = KeyStallWatch { clock }
 
-    private fun KeyStallWatch.tickAt(pos: Long, t: Long, playing: Boolean = true, ready: Boolean = true): Boolean {
+    private fun KeyStallWatch.tickAt(
+        pos: Long,
+        t: Long,
+        playing: Boolean = true,
+        state: Int = Player.STATE_READY,
+    ): Boolean {
         clock = t
-        return tick(pos, playWhenReady = playing, ready = ready)
+        return tick(pos, playWhenReady = playing, playbackState = state)
     }
 
     @Test
@@ -69,12 +75,30 @@ class KeyStallWatchTest {
         assertFalse(w.tickAt(5000, 10_000, playing = false))
     }
 
+    /**
+     * **2026-10-20 真机实测校正**：卡死时 `dumpsys media_session` 报的是
+     * `state=PlaybackState {state=BUFFERING(6), position=43263, speed=0.0}` ——
+     * 引擎停在 **BUFFERING**、根本没进 READY。第一版判据只盯 `STATE_READY`，
+     * 会**漏报真正的卡死**（旧的 `PlayerDiag` 看门狗因此一直没打日志）。
+     * 这条用例把实测语义钉死，防止回退。
+     */
     @Test
-    fun `引擎未就绪时位置不动属于正常_不许误报`() {
+    fun `BUFFERING 时位置不动必须判为卡死_实测就是这个状态`() {
         val w = watch()
         w.arm(-10)
-        assertFalse(w.tickAt(0, 0, ready = false))
-        assertFalse(w.tickAt(0, 10_000, ready = false))
+        assertFalse(w.tickAt(43263, 0, state = Player.STATE_BUFFERING))
+        assertTrue(w.tickAt(43263, 2000, state = Player.STATE_BUFFERING))
+    }
+
+    /** IDLE（无媒体）/ ENDED（放完）时位置本来就不该动 —— 不许误报。 */
+    @Test
+    fun `IDLE 与 ENDED 时位置不动不算卡死`() {
+        for (s in listOf(Player.STATE_IDLE, Player.STATE_ENDED)) {
+            val w = watch()
+            w.arm(-10)
+            assertFalse(w.tickAt(0, 0, state = s))
+            assertFalse("state=$s 不该误报", w.tickAt(0, 10_000, state = s))
+        }
     }
 
     @Test
