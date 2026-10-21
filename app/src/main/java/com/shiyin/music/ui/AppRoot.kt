@@ -2724,7 +2724,8 @@ private fun BoxScope.AlbumMenuSheet(vm: MainViewModel) {
                     vm.albumEditText = true
                 }
             }
-            SheetActionRow(Lucide.Settings, "修改专辑信息") {
+            // 2026-10-21 图标审查：原为 `Settings`（齿轮=设置，不是"改专辑信息"）→ `square-pen`。
+            SheetActionRow(Lucide.SquarePen, "修改专辑信息") {
                 vm.albumMenuOpen = false
                 // v1.2.2 diag: 确认对话框是否被打开、albumKey 长什么样(是 aid: 还是 album|artist)
                 android.util.Log.d("ArtistEdit", "dialog OPEN albumKey=${vm.albumKey}")
@@ -2734,7 +2735,8 @@ private fun BoxScope.AlbumMenuSheet(vm: MainViewModel) {
                 vm.albumMenuOpen = false
                 vm.albumCoverEdit = true
             }
-            SheetActionRow(Lucide.Users, "批量迁移歌曲") {
+            // 2026-10-21 图标审查：原为 `Users`（一群体人像，说的是"人"不是"搬家"）→ `folder-input`。
+            SheetActionRow(Lucide.FolderInput, "批量迁移歌曲") {
                 vm.albumMenuOpen = false
                 vm.batchMoveMode = true
                 vm.batchMoveSelected = emptySet()
@@ -2746,7 +2748,9 @@ private fun BoxScope.AlbumMenuSheet(vm: MainViewModel) {
                 val src = vm.splitSourceOfAlbum(vm.albumKey ?: "")
                 val already = vm.albumIsSplit(vm.albumKey ?: "")
                 SheetActionRow(
-                    if (already) Lucide.Pencil else Lucide.ListMusic,
+                    // 2026-10-21 图标审查：未拆分时原为 `ListMusic`（歌单，不是"拆"）→ `split`。
+                    // 已拆分态的 `Pencil`（编辑）保留 —— 那说的是"编辑"，本来就对。
+                    if (already) Lucide.Pencil else Lucide.Split,
                     if (already) "编辑拆分" else "专辑整轨拆分为单曲",
                 ) {
                     vm.albumMenuOpen = false
