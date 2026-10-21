@@ -24,10 +24,21 @@ class NewIconsParseTest {
 
     /** 逐个取用即触发 `by lazy`；path data 畸形会在这里抛出来。 */
     private fun all(): List<Pair<String, ImageVector>> = listOf(
+        // 歌手管理四件套（2026-10-20 审计）
         "UsersRound" to Lucide.UsersRound,
         "UserRoundX" to Lucide.UserRoundX,
         "Merge" to Lucide.Merge,
         "Photo" to Lucide.Photo,
+        // 图标审查阶段二（2026-10-21 用户逐项选定）
+        "MicVocal" to Lucide.MicVocal,
+        "CassetteTape" to Lucide.CassetteTape,
+        "SquarePen" to Lucide.SquarePen,
+        "FolderInput" to Lucide.FolderInput,
+        "Split" to Lucide.Split,
+        "UserRoundCog" to Lucide.UserRoundCog,
+        "BookText" to Lucide.BookText,
+        "ScanText" to Lucide.ScanText,
+        "Coffee" to Lucide.Coffee,
     )
 
     @Test
