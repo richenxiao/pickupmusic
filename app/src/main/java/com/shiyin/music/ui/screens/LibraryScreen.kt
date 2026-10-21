@@ -796,7 +796,8 @@ private fun PlaylistDetail(vm: MainViewModel, pid: String) {
             title = { Text(pl.name, style = body(15f, FontWeight.ExtraBold, c.text)) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    MenuAction("重命名歌单", Lucide.ListMusic) { vm.plMenuOpen = false; vm.plRenameFor = pid }
+                    // 2026-10-21 图标审查：原为 `ListMusic`（歌单架，不是"改名"）→ `square-pen`。
+                    MenuAction("重命名歌单", Lucide.SquarePen) { vm.plMenuOpen = false; vm.plRenameFor = pid }
                     MenuAction("更换封面", Lucide.Disc) { vm.plMenuOpen = false; vm.plCoverPickerFor = pid }
                     // v1.2.0 #6: 内置「我的喜欢」(p3)不可删
                     if (pid != "p3") {
