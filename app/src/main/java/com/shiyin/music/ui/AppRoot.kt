@@ -3430,25 +3430,33 @@ private fun KaraokeMixPanel(vm: MainViewModel) {
             Spacer(Modifier.weight(1f))
         }
 
-        // P2-D（用户 2026-10-19 参考图定稿）：三档做成**整块卡片** —— 图标与标签框属于**同一块**，
-        // 不再是"一个图样 + 一条滑块"两个分离的元素（用户："应该和对应的图像组成一个板块"）。
-        //  · 未选中 = 灰底；加载中 = 图标边缘转圈；**加载好了整块底变橙**
-        //    （用户："单单按钮变橙不醒目，用户感觉不到自己在哪一档"）。
-        //  · 不做文字/秒数/百分比。
-        Row(
-            Modifier.fillMaxWidth().padding(horizontal = 2.dp),
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            KARAOKE_MODE_LABELS.forEachIndexed { i, label ->
-                KaraokeModeBlock(
-                    label = label,
-                    index = i,
-                    visual = com.shiyin.music.ui.components.karaokeModeVisual(vm.karaokeState, selected, i),
-                    modifier = Modifier.weight(1f),
-                    onClick = { vm.selectKaraokeMix(i) },
-                )
-            }
+        // 2026-10-21 用户手绘定稿（对照页已确认）：上面一排**只放图标的方框**，
+        // 下面**设置页同款分段控件**显示**文字**。与「播放速度」子页同一个共享组件。
+        // 保留原语义：**只有真的出声了整块才变橙**（加载中/未选中时橙块用灰色）。
+        val visuals = KARAOKE_MODE_LABELS.indices.map {
+            com.shiyin.music.ui.components.karaokeModeVisual(vm.karaokeState, selected, it)
         }
+        com.shiyin.music.ui.components.IconBlockRow(
+            count = KARAOKE_MODE_LABELS.size,
+            selectedIndex = selected,
+            onSelect = { vm.selectKaraokeMix(it) },
+            blockColor = if (visuals.getOrNull(selected) == KModeVisual.READY) c.accent else c.n300,
+        ) { i, onBlock ->
+            val tint = if (onBlock) c.bg else c.n600
+            when (i) {
+                0 -> HeadWaveIcon(38.dp, tint)
+                com.shiyin.music.ui.components.KARAOKE_ORIGINAL_INDEX -> OIcon(Lucide.Disc, 38.dp, tint)
+                else -> OIcon(Lucide.AudioLines, 38.dp, tint)
+            }
+            // 选中未出声 = 图标边缘转圈（原样保留）
+            if (visuals.getOrNull(i) == KModeVisual.COMPUTING) KaraokeSpinRing(46.dp, c.accent)
+        }
+        Spacer(Modifier.height(14.dp))
+        ThreeStopSegmentedControl(
+            labels = KARAOKE_MODE_LABELS,
+            selectedIndex = selected,
+            onSelect = { vm.selectKaraokeMix(it) },
+        )
     }
 }
 
@@ -3457,85 +3465,6 @@ private val KARAOKE_MODE_LABELS = listOf("人声", "原曲", "伴奏")
 
 /** P2-D：模式卡视觉（枚举类本身不能当值用，故用 typealias 少写一截包名）。 */
 private typealias KModeVisual = com.shiyin.music.ui.components.KaraokeModeVisual
-
-/** 模式卡片的高度 —— 用户 2026-10-19："这一块元素的高度也能适当拉伸，不要留太多空白了"。 */
-private val KARAOKE_BLOCK_HEIGHT = 134.dp
-
-/**
- * P2-D：**一档的整块卡片**（图标 + 标签框合成一体，用户 2026-10-19 参考图）。
- *
- * 人声 = 带声波的人头剪影（用户明确"**不是麦克风**"）；
- * 原曲 = **唱片图标**（用户 2026-10-19："原曲也不要显示一个封面，而是唱片图标"）；
- * 伴奏 = 声波条（`audio-lines`；2026-10-21 图标审查前是音符 `Music`）。
- *
- * 状态见 [com.shiyin.music.ui.components.KaraokeModeVisual]：
- * 未选中 → 灰底；选中未出声 → **图标边缘转圈**；出声 → **整块底变橙**（用户要的就是这个
- * "一眼看出在哪一档"，光让按钮变橙不够醒目）+ 一下短暂 settle。
- */
-@Composable
-private fun KaraokeModeBlock(
-    label: String,
-    index: Int,
-    visual: KModeVisual,
-    modifier: Modifier = Modifier,
-    onClick: () -> Unit,
-) {
-    val c = LocalOrganic.current
-    val ready = visual == KModeVisual.READY
-    val bg = if (ready) c.accent else c.n200
-    val on = if (ready) c.bg else c.n500
-
-    // "完成 = …并有短暂 settle"：只在**进入**完成态那一下动，稳态不动。
-    val settle = androidx.compose.animation.core.Animatable(1f)
-    androidx.compose.runtime.LaunchedEffect(ready) {
-        if (ready) {
-            settle.snapTo(1.04f)
-            settle.animateTo(1f, androidx.compose.animation.core.tween(180))
-        } else {
-            settle.snapTo(1f)
-        }
-    }
-
-    Column(
-        modifier
-            .height(KARAOKE_BLOCK_HEIGHT)
-            .graphicsLayer { scaleX = settle.value; scaleY = settle.value }
-            .clip(RoundedCornerShape(18.dp))
-            .background(bg)
-            .clickable(onClick = onClick)
-            .padding(horizontal = 8.dp, vertical = 12.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
-            when (index) {
-                0 -> HeadWaveIcon(38.dp, on)
-                com.shiyin.music.ui.components.KARAOKE_ORIGINAL_INDEX -> OIcon(Lucide.Disc, 38.dp, on)
-                // 2026-10-21 图标审查：伴奏档原为 `Music`（音符），用户本轮选定改为 `audio-lines`。
-                // ⚠️ 注意：`Music` 原本是**更早一次基于你意见的定稿**（见上面 KARAOKE_MODE_BLOCK
-                //    的注释"伴奏 = 音符"），本次是**覆盖**它。若你当时的意思是"保持音符"，说一声我回退。
-                else -> OIcon(Lucide.AudioLines, 38.dp, on)
-            }
-            if (visual == KModeVisual.COMPUTING) KaraokeSpinRing(46.dp, c.accent)
-        }
-        // 标签框：与图标同属这一块（用户参考图里就是一个框，不是外面那个滑块条）
-        Box(
-            Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(10.dp))
-                .background(if (ready) c.bg.copy(alpha = 0.20f) else c.n100)
-                .border(
-                    1.dp,
-                    if (ready) androidx.compose.ui.graphics.Color.Transparent else c.n400,
-                    RoundedCornerShape(10.dp),
-                )
-                .padding(vertical = 6.dp),
-            contentAlignment = Alignment.Center,
-        ) {
-            Text(label, style = body(12.5f, FontWeight.SemiBold, on))
-        }
-    }
-}
 
 /**
  * P2-D：**带声波的人头剪影**（人声档）。
