@@ -417,6 +417,11 @@ private val keyPinnedLibItems = stringSetPreferencesKey("pinned_lib_items")
         p[keyLyricsDisabledSources] = if (enabled) cur - source else cur + source
     }
 
+    /** v1.5.1 ⑥: 清空全部被删除(禁用)的内置源 —— 「恢复官方源」一键。 */
+    suspend fun clearDisabledLyricsSources() = context.dataStore.edit { p ->
+        p.remove(keyLyricsDisabledSources)
+    }
+
     /** v1.3.10 A29: 保存自定义歌词源列表(JSON)。 */
     suspend fun setCustomLyricsSources(list: List<com.shiyin.music.data.lyrics.CustomLyricsSourceDef>) =
         context.dataStore.edit {

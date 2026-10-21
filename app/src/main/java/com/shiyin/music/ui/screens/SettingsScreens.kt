@@ -3897,12 +3897,70 @@ private fun LyricsSourcesScreen(vm: MainViewModel, scrollStates: MutableMap<Stri
                 .background(c.surface).padding(horizontal = 16.dp, vertical = 6.dp),
         ) {
             val builtins = com.shiyin.music.data.lyrics.LyricsFetcher.SOURCES
+            // 2026-10-21 ⑥（用户）："歌词源管理也要提供删除的功能，对官方提供的资源同时提供恢复的方法。
+            // 界面按钮要和谐不冲突。" ⇒ 每行右侧加**删除**圆钮（与下方自定义源的铅笔/垃圾桶同语言）；
+            // 删除 = 计入禁用集（与开关同一存储，持久化、全链路生效）。有删除项时出现一行「恢复官方源」。
+            var pendingDeleteBuiltin by remember { mutableStateOf<String?>(null) }
             builtins.forEachIndexed { i, src ->
-                // 2026-10-21 图标审查第 2 轮：原为 `Music`（音符，N 行全一样）→ 立方体（一批内置源）。
-                SettingRow(Lucide.Boxes, src, null, divider = i != builtins.lastIndex) {
-                    val on = src !in vm.lyricsDisabledSources
-                    OrganicSwitch(on) { vm.setLyricsSourceEnabled(src, !on) }
+                val deleted = src in vm.lyricsDisabledSources
+                SettingsRowScaffold(
+                    title = src,
+                    sub = if (deleted) "已删除" else null,
+                    subColor = if (deleted) c.a700 else null,
+                    // 2026-10-21 图标审查第 2 轮：原为 `Music`（音符，N 行全一样）→ 立方体（一批内置源）。
+                    leading = { OIcon(Lucide.Boxes, 19.dp, if (deleted) c.n400 else c.n700) },
+                    divider = i != builtins.lastIndex || vm.lyricsDisabledSources.isNotEmpty(),
+                    trailing = {
+                        Box(
+                            Modifier.size(34.dp).clip(CircleShape).clickableNoRipple { pendingDeleteBuiltin = src },
+                            contentAlignment = Alignment.Center,
+                        ) { OIcon(Lucide.Trash, 16.dp, c.n500) }
+                    },
+                )
+            }
+            // 「恢复官方源」：只在**确实删过**内置源时出现（没有删除项时不画空按钮）。
+            if (vm.lyricsDisabledSources.isNotEmpty()) {
+                Row(
+                    Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp))
+                        .clickableNoRipple { vm.restoreBuiltInLyricsSources() }
+                        .padding(vertical = 13.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(13.dp),
+                ) {
+                    Box(Modifier.size(19.dp), contentAlignment = Alignment.Center) {
+                        OIcon(Lucide.RotateCcw, 17.dp, c.accent)
+                    }
+                    Text(
+                        "恢复官方源（${vm.lyricsDisabledSources.size} 个已删除）",
+                        style = body(15f, FontWeight.SemiBold, c.accent),
+                    )
                 }
+            }
+            // 删除确认（与清空缓存/删除模型同一套 DialogAction 红色强调惯例）
+            pendingDeleteBuiltin?.let { name ->
+                androidx.compose.material3.AlertDialog(
+                    onDismissRequest = { pendingDeleteBuiltin = null },
+                    containerColor = c.surface,
+                    title = { Text("删除「$name」？", style = body(15f, FontWeight.ExtraBold, c.text)) },
+                    text = {
+                        Text(
+                            "删除后不再参与自动匹配，也不出现在「歌词来源」菜单里；可在下方「恢复官方源」一键恢复。",
+                            style = body(13f, FontWeight.Normal, c.n600).copy(lineHeight = 19.sp),
+                        )
+                    },
+                    confirmButton = {
+                        DialogActionsRow(
+                            listOf(
+                                DialogAction("取消") { pendingDeleteBuiltin = null },
+                                DialogAction("删除", emphasized = true) {
+                                    vm.setLyricsSourceEnabled(name, false)
+                                    pendingDeleteBuiltin = null
+                                },
+                            ),
+                            emphasizedColor = DANGER_RED,
+                        )
+                    },
+                )
             }
         }
         SectionLabel("自定义歌词源")

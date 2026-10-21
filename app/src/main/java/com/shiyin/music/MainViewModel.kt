@@ -683,6 +683,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch { settingsStore.setLyricsSourceEnabled(source, enabled) }
     }
 
+    /**
+     * v1.5.1 ⑥（用户 2026-10-21）:「恢复官方源」—— 一键清空全部被删除(禁用)的内置源。
+     * 只动内置源的屏蔽集，**不碰**用户自定义源。
+     */
+    fun restoreBuiltInLyricsSources() {
+        lyricsDisabledSources = emptySet()
+        pushLyricsSourceConfig()
+        viewModelScope.launch { settingsStore.clearDisabledLyricsSources() }
+    }
+
     /** v1.3.10 A29:新增/更新一个自定义歌词源(同 id 覆盖)。 */
     fun saveCustomLyricsSource(def: com.shiyin.music.data.lyrics.CustomLyricsSourceDef) {
         val list = customLyricsSources.filterNot { it.id == def.id } + def
