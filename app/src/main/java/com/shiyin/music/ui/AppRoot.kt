@@ -3441,7 +3441,7 @@ private val KARAOKE_BLOCK_HEIGHT = 134.dp
  *
  * 人声 = 带声波的人头剪影（用户明确"**不是麦克风**"）；
  * 原曲 = **唱片图标**（用户 2026-10-19："原曲也不要显示一个封面，而是唱片图标"）；
- * 伴奏 = 音符。
+ * 伴奏 = 声波条（`audio-lines`；2026-10-21 图标审查前是音符 `Music`）。
  *
  * 状态见 [com.shiyin.music.ui.components.KaraokeModeVisual]：
  * 未选中 → 灰底；选中未出声 → **图标边缘转圈**；出声 → **整块底变橙**（用户要的就是这个
@@ -3486,7 +3486,10 @@ private fun KaraokeModeBlock(
             when (index) {
                 0 -> HeadWaveIcon(38.dp, on)
                 com.shiyin.music.ui.components.KARAOKE_ORIGINAL_INDEX -> OIcon(Lucide.Disc, 38.dp, on)
-                else -> OIcon(Lucide.Music, 38.dp, on)
+                // 2026-10-21 图标审查：伴奏档原为 `Music`（音符），用户本轮选定改为 `audio-lines`。
+                // ⚠️ 注意：`Music` 原本是**更早一次基于你意见的定稿**（见上面 KARAOKE_MODE_BLOCK
+                //    的注释"伴奏 = 音符"），本次是**覆盖**它。若你当时的意思是"保持音符"，说一声我回退。
+                else -> OIcon(Lucide.AudioLines, 38.dp, on)
             }
             if (visual == KModeVisual.COMPUTING) KaraokeSpinRing(46.dp, c.accent)
         }
