@@ -2542,7 +2542,9 @@ private fun HiddenArtistsScreen(vm: MainViewModel, scrollStates: MutableMap<Stri
                 .background(c.surface)
                 .padding(horizontal = 16.dp, vertical = 6.dp),
         ) {
-            SettingRow(Lucide.EyeOff, "隐藏客串歌手", null, divider = false) {
+            // 2026-10-21 图标审查：原为 `EyeOff`（闭眼＝「隐藏」通用语义）→ `user-round-x`，
+            // 与歌手管理页/歌手栏目那两处**统一**（同一功能三处曾用三个不同图标）。
+            SettingRow(Lucide.UserRoundX, "隐藏客串歌手", null, divider = false) {
                 OrganicSwitch(vm.hideFeatureArtists) { vm.setHideFeatureArtists(!vm.hideFeatureArtists) }
             }
             // 逐个列出；开关 = "隐藏这位"。**不写任何解释**（用户要求）。
