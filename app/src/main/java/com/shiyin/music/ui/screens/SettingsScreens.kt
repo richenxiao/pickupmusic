@@ -1533,7 +1533,8 @@ private fun LyricsBookScreen(vm: MainViewModel, scrollStates: MutableMap<String,
                 OrganicSwitch(vm.translateErrorToast) { vm.setTranslateErrorToast(!vm.translateErrorToast) }
             }
             // v1.5.0 A56: 制作人行（作词/作曲/编曲/XX 演奏 等）跳过翻译。默认开。
-            SettingRow(Lucide.User, "歌词制作人行略过翻译", null, divider = false) {
+            // 2026-10-21 图标审查第 2 轮：原为 `User`（人像，与"跳过翻译"无关）→ 快进（跳过）。
+            SettingRow(Lucide.SkipForwardOutline, "歌词制作人行略过翻译", null, divider = false) {
                 OrganicSwitch(vm.skipCreditsTranslation) { vm.setSkipCreditsTranslation(!vm.skipCreditsTranslation) }
             }
         }
@@ -3893,7 +3894,8 @@ private fun LyricsSourcesScreen(vm: MainViewModel, scrollStates: MutableMap<Stri
         ) {
             val builtins = com.shiyin.music.data.lyrics.LyricsFetcher.SOURCES
             builtins.forEachIndexed { i, src ->
-                SettingRow(Lucide.Music, src, null, divider = i != builtins.lastIndex) {
+                // 2026-10-21 图标审查第 2 轮：原为 `Music`（音符，N 行全一样）→ 立方体（一批内置源）。
+                SettingRow(Lucide.Boxes, src, null, divider = i != builtins.lastIndex) {
                     val on = src !in vm.lyricsDisabledSources
                     OrganicSwitch(on) { vm.setLyricsSourceEnabled(src, !on) }
                 }
@@ -3908,7 +3910,8 @@ private fun LyricsSourcesScreen(vm: MainViewModel, scrollStates: MutableMap<Stri
                 SettingsRowScaffold(
                     title = def.name,
                     sub = def.searchUrl,
-                    leading = { OIcon(Lucide.Music, 19.dp, c.n700) },
+                    // 2026-10-21 图标审查第 2 轮：原为 `Music`（与上面「内置源」撞）→ 文件+齿轮（可自己配）。
+                    leading = { OIcon(Lucide.FileCog, 19.dp, c.n700) },
                     divider = true,
                     trailing = {
                         Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
