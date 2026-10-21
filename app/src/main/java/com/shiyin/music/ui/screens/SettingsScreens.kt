@@ -799,7 +799,8 @@ private fun SettingsRoot(vm: MainViewModel, scrollStates: MutableMap<String, Scr
             // v1.3.x 图标审计:歌词本入口用 Library(书本=歌词本,未占用);振假名默认
             // 行保留 Captions(注音语义),两处不再撞图标。
             CardEntryRow(
-                Lucide.Library, c.n700, "歌词本",
+                // 2026-10-21 图标审查：原为 `Library`（书架）→ `book-text`（翻开的书）。
+                Lucide.BookText, c.n700, "歌词本",
                 null,
                 divider = true,
             ) { vm.navFilesTo(FilesView.LyricsBook) }
