@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  LrcShare 品牌标（歌词源 · 内置源行用）
+  2026-10-21 ⑤：改为 Lucide 风格描边图标（24×24, strokeWidth 2.75, round cap/join, 无填色），
+  与设置页其他 Lucide 图标视觉统一。strokeColor 仅占位，实际颜色由 OIcon(tint=...) 跟随行文字色。
+  字形 "LRC" 按参考图三角排列：L 居上、R 左下、C 右下。
+  修复要点：上一版 L 画反了（竖在右、脚向左，被识成 _| ）；本版 L 竖在左、脚向右——正向 L。
+  本版去掉参考图的黑底，只保留中心三角 + 三字母。
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <!-- 三角轮廓（顶点朝上） -->
+    <path
+        android:strokeColor="#201E1D"
+        android:strokeWidth="2.75"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M12,3 L21,20 L3,20 Z" />
+    <!-- L：居上方。竖在左、底横向右 -->
+    <path
+        android:strokeColor="#201E1D"
+        android:strokeWidth="2.75"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M10,7 V11 H13" />
+    <!-- R：左下。竖 + 上半圆 bowl（凸向右）+ 斜腿 -->
+    <path
+        android:strokeColor="#201E1D"
+        android:strokeWidth="2.75"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M7,13 V19 M7,13 H8.5 A1.5,1.5 0 0 1 8.5,16 H7 M7.5,16 L9.5,19" />
+    <!-- C：右下。右侧开口半圆弧（凸向左，开口朝右） -->
+    <path
+        android:strokeColor="#201E1D"
+        android:strokeWidth="2.75"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M16,13 A3.2,3.2 0 0 0 16,19" />
+</vector>

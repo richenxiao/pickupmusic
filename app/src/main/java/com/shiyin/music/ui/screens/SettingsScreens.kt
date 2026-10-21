@@ -3897,6 +3897,16 @@ private fun LyricsSourcesScreen(vm: MainViewModel, scrollStates: MutableMap<Stri
                 .background(c.surface).padding(horizontal = 16.dp, vertical = 6.dp),
         ) {
             val builtins = com.shiyin.music.data.lyrics.LyricsFetcher.SOURCES
+            // 2026-10-21 ⑤（用户）：内置源行改用**品牌标**（res/drawable/ic_lyrics_*.xml）。
+            // 网易云用官方 SVG、保留品牌原色（Color.Unspecified，不随主题染色）；
+            // LRCLIB / LrcShare 没有官方矢量，按 Lucide 风格重绘为描边图标，随行文字色染色（与 Boxes 一致）。
+            // 名字→图的映射集中在这里，加新源只改这一处。
+            val brandIconColorful = setOf("网易云音乐")
+            val brandIcon: Map<String, Int> = mapOf(
+                "LRCLIB" to com.shiyin.music.R.drawable.ic_lyrics_lrclib,
+                "网易云音乐" to com.shiyin.music.R.drawable.ic_lyrics_netease,
+                "LrcShare" to com.shiyin.music.R.drawable.ic_lyrics_lrcshare,
+            )
             // 2026-10-21 ⑥（用户）："歌词源管理也要提供删除的功能，对官方提供的资源同时提供恢复的方法。
             // 界面按钮要和谐不冲突。" ⇒ 每行右侧加**删除**圆钮（与下方自定义源的铅笔/垃圾桶同语言）；
             // 删除 = 计入禁用集（与开关同一存储，持久化、全链路生效）。有删除项时出现一行「恢复官方源」。
@@ -3907,8 +3917,17 @@ private fun LyricsSourcesScreen(vm: MainViewModel, scrollStates: MutableMap<Stri
                     title = src,
                     sub = if (deleted) "已删除" else null,
                     subColor = if (deleted) c.a700 else null,
-                    // 2026-10-21 图标审查第 2 轮：原为 `Music`（音符，N 行全一样）→ 立方体（一批内置源）。
-                    leading = { OIcon(Lucide.Boxes, 19.dp, if (deleted) c.n400 else c.n700) },
+                    leading = {
+                        val res = brandIcon[src]
+                        if (res != null) {
+                            // 官方品牌标（网易云）保留原色；自绘描边标（LRCLIB/LrcShare）随行文字色
+                            val tint = if (src in brandIconColorful) Color.Unspecified
+                                else if (deleted) c.n400 else c.n700
+                            OIcon(painterResource(res), 19.dp, tint)
+                        } else {
+                            OIcon(Lucide.Boxes, 19.dp, if (deleted) c.n400 else c.n700)
+                        }
+                    },
                     divider = i != builtins.lastIndex || vm.lyricsDisabledSources.isNotEmpty(),
                     trailing = {
                         Box(
