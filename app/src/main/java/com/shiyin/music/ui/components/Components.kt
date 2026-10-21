@@ -1476,6 +1476,71 @@ fun DialogActionsRow(
 }
 
 
+// ── v1.5.1: 「上面一排只放图标的方框」—— 用户 2026-10-21 手绘定稿 ──────────────
+/**
+ * **一排只放图标的方框**，选中的那档底下是一层**滑过去的橙色块**。
+ *
+ * 与 [ThreeStopSegmentedControl] 配成一对：上面看图标、下面看文字（用户定："上面仅图标，
+ * 下面三滑块显示文字"）。两者**档数不必相同也无需相等**——本组件只认 `count`。
+ *
+ * 视觉规格照用户手绘：
+ *  · 方框是**空心描边**（`n300` 2dp），圆角与下面分段控件同一档（12dp）；
+ *  · 橙色块是**单独一层**、画在方框**之下**，靠 `translationX` 滑过去（不是闪），
+ *    且**上下各溢出 3dp**（用 offset + 加高实现，负数 padding 不合法）；
+ *  · 溢出所以圆角要大 2dp，否则露直角。
+ *
+ * @param blockColor 滑动块的颜色。默认 accent；伴唱用它表达"只有真的出声了才变橙"
+ *                   （加载中传灰），保留原来那套语义。
+ * @param content 每档画什么。第二个参数 = 该档是否正踩着橙块，调用方据此选图标颜色。
+ */
+@Composable
+fun IconBlockRow(
+    count: Int,
+    selectedIndex: Int,
+    onSelect: (Int) -> Unit,
+    modifier: Modifier = Modifier,
+    height: Dp = 116.dp,
+    radius: Dp = 12.dp,
+    blockColor: Color = LocalOrganic.current.accent,
+    content: @Composable (index: Int, onBlock: Boolean) -> Unit,
+) {
+    val c = LocalOrganic.current
+    BoxWithConstraints(modifier.fillMaxWidth().height(height)) {
+        val gap = 14.dp
+        val segW = (maxWidth - gap * (count - 1)) / count
+        val segPx = with(LocalDensity.current) { (segW + gap).toPx() }
+        val thumb = remember { Animatable(0f) }
+        // 190ms、无回弹 —— 与设置页分段控件 tween(190) 同一手感
+        LaunchedEffect(selectedIndex, segPx) { thumb.animateTo(selectedIndex * segPx, tween(190)) }
+
+        // ① 橙块层（在方框之下；溢出 3dp 靠 offset + 加高）
+        Box(
+            Modifier
+                .graphicsLayer { translationX = thumb.value }
+                .width(segW)
+                .height(height + 6.dp)
+                .offset(y = (-3).dp)
+                .clip(RoundedCornerShape(radius + 2.dp))
+                .background(blockColor),
+        )
+        // ② 方框层（空心描边 + 内容；透明底所以能看见下面的橙块）
+        Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(gap)) {
+            for (i in 0 until count) {
+                val onBlock = i == selectedIndex
+                Box(
+                    Modifier
+                        .weight(1f)
+                        .fillMaxHeight()
+                        .clip(RoundedCornerShape(radius))
+                        .border(2.dp, c.n300, RoundedCornerShape(radius))
+                        .clickableNoRipple { onSelect(i) },
+                    contentAlignment = Alignment.Center,
+                ) { content(i, onBlock) }
+            }
+        }
+    }
+}
+
 // ── v1.5.0: 三档离散选择控件（设置页「翻译按钮显示」与播放页「分轨」共用同一实现）──
 // 原在 SettingsScreens.kt 内私有；伴唱分轨面板要复用，故上移到公共组件。
 /**

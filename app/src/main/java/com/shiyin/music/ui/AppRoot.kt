@@ -1937,27 +1937,48 @@ private fun PlayerMenuSheetContent(vm: MainViewModel) {
                                 inputError = true
                             }
                         }
-                        androidx.compose.material3.OutlinedTextField(
-                            value = inputText,
-                            onValueChange = { raw ->
-                                inputText = raw.filter { it.isDigit() || it == '.' }
-                                inputError = false
-                            },
-                            placeholder = { Text("自定义", style = body(11f, FontWeight.Normal, c.n400)) },
-                            singleLine = true,
-                            isError = inputError,
-                            textStyle = body(12.5f, FontWeight.Normal, if (inputError) c.a700 else c.text),
-                            keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
-                                keyboardType = androidx.compose.ui.text.input.KeyboardType.Decimal,
-                                imeAction = androidx.compose.ui.text.input.ImeAction.Done,
-                            ),
-                            keyboardActions = androidx.compose.foundation.text.KeyboardActions(
-                                onDone = { applyInput() },
-                            ),
-                            modifier = Modifier
+                        // ⚠️ 2026-10-21 修：这里原来用 `OutlinedTextField` 并硬压 `.height(36.dp)`。
+                        // M3 的 `OutlinedTextField` **内部最小高度是 56dp**（label/placeholder 要给
+                        // 浮动标签留位），被压到 36dp 后内容区被裁 —— 用户实测"内容一直没显示完整，
+                        // 永远只显示一半"。改用 `BasicTextField`（与设置页「最多保留曲目」那行同一写法），
+                        // 高度完全由外层 Box 决定；文字用 Box 的 CenterStart 垂直居中。
+                        Box(
+                            Modifier
                                 .width(64.dp)
-                                .height(36.dp),
-                        )
+                                .height(36.dp)
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(c.n100)
+                                .border(1.dp, if (inputError) c.a700 else c.n400, RoundedCornerShape(8.dp))
+                                .padding(horizontal = 9.dp),
+                            contentAlignment = Alignment.CenterStart,
+                        ) {
+                            androidx.compose.foundation.text.BasicTextField(
+                                value = inputText,
+                                onValueChange = { raw ->
+                                    inputText = raw.filter { it.isDigit() || it == '.' }
+                                    inputError = false
+                                },
+                                singleLine = true,
+                                textStyle = body(12.5f, FontWeight.Normal, if (inputError) c.a700 else c.text),
+                                cursorBrush = androidx.compose.ui.graphics.SolidColor(c.accent),
+                                keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                                    keyboardType = androidx.compose.ui.text.input.KeyboardType.Decimal,
+                                    imeAction = androidx.compose.ui.text.input.ImeAction.Done,
+                                ),
+                                keyboardActions = androidx.compose.foundation.text.KeyboardActions(
+                                    onDone = { applyInput() },
+                                ),
+                                modifier = Modifier.fillMaxWidth(),
+                                decorationBox = { inner ->
+                                    Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterStart) {
+                                        if (inputText.isEmpty()) {
+                                            Text("自定义", style = body(11f, FontWeight.Normal, c.n400), maxLines = 1)
+                                        }
+                                        inner()
+                                    }
+                                },
+                            )
+                        }
                         Text(
                             "应用",
                             style = body(12.5f, FontWeight.Bold, c.accent),
@@ -1967,32 +1988,36 @@ private fun PlayerMenuSheetContent(vm: MainViewModel) {
                                 .padding(horizontal = 8.dp, vertical = 8.dp),
                         )
                     }
-                    Row(
-                        Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(c.n100)
-                            .clickable { vm.setRetroMode(!vm.retroSpeedMode) }
-                            .padding(horizontal = 14.dp, vertical = 13.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        OIcon(if (vm.retroSpeedMode) Lucide.CassetteTape else Lucide.Gauge, 18.dp, c.text)
-                        // 2026-10-21 图标审查：复古档原为 `Disc`（唱片，读不出"磁带复古"），
-                        // 用户选定换成 `cassette-tape`。现代档仍是 `Gauge`。
-                        // ⚠️ 这会让本页「播放速度」那行也是 `Gauge` ⇒ **新引入一处同页重复**，
-                        //    已如实报告，等用户定夺是否把现代档换成 `zap`。
-                        Column(Modifier.weight(1f).padding(start = 10.dp)) {
-                            Text(
-                                if (vm.retroSpeedMode) "复古模式" else "现代模式",
-                                style = body(14f, FontWeight.ExtraBold, c.text),
-                            )
-                            Text(
-                                if (vm.retroSpeedMode) "音调随速度变化（磁带效果）" else "变速不变调（播客效果）",
-                                style = body(11f, FontWeight.Normal, c.n500),
-                            )
-                        }
-                        OIcon(Lucide.Settings, 16.dp, c.n400)
+                    // 2026-10-21 用户手绘定稿（对照页 docs/slider-mockup.html 已确认）：
+                    //   上面一排**只放图标的方框**（磁带 / 播客）+ 下面**设置页同款分段控件**（文字）
+                    //   + 控件下一行**随选项变化的说明**。
+                    // 顺带解掉之前那处同页重复：播放速度行 = Gauge，而现代档原本也是 Gauge；
+                    // 现在现代档是 podcast，不再撞。
+                    val retroIdx = if (vm.retroSpeedMode) 0 else 1
+                    com.shiyin.music.ui.components.IconBlockRow(
+                        count = 2,
+                        selectedIndex = retroIdx,
+                        onSelect = { vm.setRetroMode(it == 0) },
+                        modifier = Modifier.padding(top = 6.dp),
+                    ) { i, onBlock ->
+                        OIcon(
+                            if (i == 0) Lucide.CassetteTape else Lucide.Podcast,
+                            32.dp,
+                            if (onBlock) c.bg else c.n600,
+                        )
                     }
+                    Spacer(Modifier.height(14.dp))
+                    ThreeStopSegmentedControl(
+                        labels = listOf("复古模式", "现代模式"),
+                        selectedIndex = retroIdx,
+                        onSelect = { vm.setRetroMode(it == 0) },
+                    )
+                    Text(
+                        if (vm.retroSpeedMode) "复古：变速的同时音调跟着变，像磁带"
+                        else "现代：变速但不变调",
+                        style = body(12f, FontWeight.Normal, c.n500),
+                        modifier = Modifier.fillMaxWidth().padding(top = 9.dp, start = 2.dp),
+                    )
                     // v1.5.0：升降 Key **已移到它自己的子页**（用户 2026-10-14 要求独立），
                     // 这里不再重复放一份。
                 }
