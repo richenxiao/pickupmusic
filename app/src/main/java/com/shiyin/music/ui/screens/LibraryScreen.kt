@@ -1835,7 +1835,9 @@ private fun ArtistActionBar(vm: MainViewModel, name: String, tracks: List<Track>
                     text = {
                         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                             MenuAction("选择写真", Lucide.User) { menuOpen = false; vm.openArtistPhotoPicker(name) }
-                            MenuAction("管理归属", Lucide.Users) { menuOpen = false; vm.artistMerge = !vm.artistMerge }
+                            // 2026-10-21 图标审查：原为 `Users`（一群体人像，说的是"人"）→
+                            // `user-round-cog`（人像+齿轮＝"管理这一位"）。
+                            MenuAction("管理归属", Lucide.UserRoundCog) { menuOpen = false; vm.artistMerge = !vm.artistMerge }
                         }
                     },
                     confirmButton = {},
