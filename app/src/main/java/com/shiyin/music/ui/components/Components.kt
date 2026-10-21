@@ -1513,14 +1513,16 @@ fun IconBlockRow(
         // 190ms、无回弹 —— 与设置页分段控件 tween(190) 同一手感
         LaunchedEffect(selectedIndex, segPx) { thumb.animateTo(selectedIndex * segPx, tween(190)) }
 
-        // ① 橙块层（在方框之下；溢出 3dp 靠 offset + 加高）
+        // ① 橙块层（在方框之下）
+        // ⚠️ 2026-10-21 修：原来想做"上下各溢出 3dp"，用 `height+6dp` + `offset(y=-3dp)`，
+        // 但实际布局里**没居中** —— 用户实测"头上超边框、下面留一道缝没填满"。
+        // 现在**不溢出**，橙块与方框严丝合缝（同尺寸、同圆角）。
         Box(
             Modifier
                 .graphicsLayer { translationX = thumb.value }
                 .width(segW)
-                .height(height + 6.dp)
-                .offset(y = (-3).dp)
-                .clip(RoundedCornerShape(radius + 2.dp))
+                .fillMaxHeight()
+                .clip(RoundedCornerShape(radius))
                 .background(blockColor),
         )
         // ② 方框层（空心描边 + 内容；透明底所以能看见下面的橙块）

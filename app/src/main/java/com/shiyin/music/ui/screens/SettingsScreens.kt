@@ -1520,7 +1520,11 @@ private fun LyricsBookScreen(vm: MainViewModel, scrollStates: MutableMap<String,
             // v1.3.10:「翻译按钮显示」三档(不显示/外文较多时显示/检测到外文就显示)。
             // 按用户定稿:标题 + 副标题 + 下方**三段式离散滑动**控件——不是三个按钮堆叠。
             TranslateButtonModeRow(vm)
-            SettingRow(Lucide.Languages, "外语歌自动翻译", null, divider = true) {
+            // 2026-10-21 用户："设置中外语自动翻译和默认显示译文的图标一样，给他们做点区分，
+            // 建议更改自动翻译的，现在**没有体现出自动的特点**"
+            // ⇒ 自动翻译改 `Sparkles`（✨＝自动/智能；项目里 0 引用、不新增图标），
+            //    「默认显示译文」保留 `Languages`（＝译文用哪种语言）。
+            SettingRow(Lucide.Sparkles, "外语歌自动翻译", null, divider = true) {
                 OrganicSwitch(vm.translateAutoForeign) { vm.setTranslateAutoForeign(!vm.translateAutoForeign) }
             }
             // 2026-10-21 图标审查：原为 `Captions`（字幕），与上面「自动匹配歌词」**撞图标**

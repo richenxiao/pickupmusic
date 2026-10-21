@@ -71,6 +71,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.runtime.Composable
@@ -1645,9 +1646,10 @@ private fun PlayerMenuSheetContent(vm: MainViewModel) {
                     },
                 ) { vm.pMenuView = "timer" }
                 SheetActionRow(
-                    // 2026-10-21 图标审查：原为 Compose 的 `Icons.Filled.Speed`（**填充**风格，
-                    // 全站仅 3 处非描边）。用户选定换成描边同族的 `gauge`。
-                    Lucide.Gauge, "播放速度",
+                    // 2026-10-21 用户："播放页编辑中播放速度选项**改回原来的图标**"
+                    // ⇒ 从 `Lucide.Gauge` 换回 Compose 的 `Icons.Filled.Speed`。
+                    // （之前是为了统一描边风格才换的 gauge，用户明确否掉，以用户为准。）
+                    Icons.Filled.Speed, "播放速度",
                     trailing = {
                         val spd = if (vm.playbackSpeed == 1.0f) "正常" else "%.2f×".format(vm.playbackSpeed)
                         Text(spd, style = body(12.5f, FontWeight.SemiBold, c.n500))
@@ -2014,8 +2016,10 @@ private fun PlayerMenuSheetContent(vm: MainViewModel) {
                         onSelect = { vm.setRetroMode(it == 0) },
                     )
                     Text(
-                        if (vm.retroSpeedMode) "复古：变速的同时音调跟着变，像磁带"
-                        else "现代：变速但不变调",
+                        // 2026-10-21 用户："下方的小字不需要前面附上【XX：】—— 选谁就显示该选择的
+                        // 特点，一目了然，不要画蛇添足。"（上面那格已经写着模式名了）
+                        if (vm.retroSpeedMode) "变速的同时音调跟着变，像磁带"
+                        else "变速但不变调",
                         style = body(12f, FontWeight.Normal, c.n500),
                         modifier = Modifier.fillMaxWidth().padding(top = 9.dp, start = 2.dp),
                     )
