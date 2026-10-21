@@ -1657,7 +1657,8 @@ private fun PlayerMenuSheetContent(vm: MainViewModel) {
                 // v1.5.0 用户 2026-10-14：**升降 Key 独立成一项**（原先挤在"播放速度"子页里，
                 // 用户明确指出它该有自己的入口 —— 它是独立的播放控制，不是速度的一个附属）。
                 SheetActionRow(
-                    Lucide.SlidersBold, "升降 Key",
+                    // 2026-10-21 图标审查第 2 轮：原为 `SlidersBold`（滑块，读起来像 EQ/设置）→ 谱号。
+                    Lucide.ClefTreble, "升降 Key",
                     trailing = {
                         Text(
                             com.shiyin.music.playback.KeyShift.label(vm.keyShift),
