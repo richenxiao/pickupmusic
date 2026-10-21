@@ -2894,7 +2894,8 @@ private fun AboutScreen(vm: MainViewModel) {
                 Column(Modifier.weight(1f)) {
                     Text("御晨晓", style = body(15f, FontWeight.ExtraBold, c.text))
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                        OIcon(Lucide.Heart, 14.dp, c.a700)
+                        // 2026-10-21 图标审查：原为 `Heart`（心），改为 `coffee` —— 字面就是“喝杯咖啡”。
+                        OIcon(Lucide.Coffee, 14.dp, c.a700)
                         Text("请开发者喝杯咖啡吧", style = body(12.5f, FontWeight.Bold, c.a700))
                     }
                 }
