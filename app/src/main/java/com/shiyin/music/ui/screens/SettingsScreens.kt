@@ -1409,13 +1409,16 @@ private fun LyricsBookScreen(vm: MainViewModel, scrollStates: MutableMap<String,
             // 单行布局:图标与文字同行居中,不再错位。
             // 名字已自证——"无歌词时自动在线获取，确认后保存到本地"那行小字既不完整
             // 也不必要（用户点名它"长长一段根本显示不完"）。
-            SettingRow(Lucide.Captions, "自动匹配歌词", null, divider = true) {
+            // 2026-10-21 图标审查：原为 `Captions`（字幕），与本页「默认显示译文」**撞图标**
+            // ⇒ 换 `scan-text`（扫描框+文字＝"扫描匹配歌词"）。
+            SettingRow(Lucide.ScanText, "自动匹配歌词", null, divider = true) {
                 OrganicSwitch(vm.autoMatch) { vm.setAutoMatch(!vm.autoMatch) }
             }
             // v1.3.10 需求 A29:歌词源管理入口(用户指定位置:就在「自动匹配歌词」下面)
             SettingsRowScaffold(
                 title = "歌词源管理",
-                leading = { OIcon(Lucide.ListMusic, 19.dp, c.n700) },
+                // 2026-10-21 图标审查：原为 `ListMusic`（歌单架，不是"源"）→ `database`（数据源）。
+                leading = { OIcon(Lucide.Database, 19.dp, c.n700) },
                 divider = true,
                 trailing = { OIcon(Lucide.ChevronRight, 16.dp, c.n400) },
                 onClick = { vm.navFilesTo(FilesView.LyricsSources) },
@@ -1488,8 +1491,12 @@ private fun LyricsBookScreen(vm: MainViewModel, scrollStates: MutableMap<String,
             }
             // v1.5.0 伴唱总开关（规格 §10）。默认开；关闭后歌词页不显示麦克风入口，
             // 设备慢的用户可彻底关掉。
-            // 图标用音符，不用那个残缺的麦克风（用户 2026-10-17 指出）
-            SettingRow(Lucide.Music, "启用伴唱功能", null, divider = true) {
+            // ⚠️⚠️ 这里**推翻了 2026-10-17 的一次定稿**：原来写着"图标用音符，**不用那个残缺的
+            //   麦克风**（用户指出）"。本轮图标审查里用户对这一行选了 `mic-vocal`。
+            //   判断：当时反对的是 `Lucide.Mic` **那个图形的形状**（后来歌词页的麦克风按钮
+            //   是照样图手绘的 `DesignMicIcon`），不是反对"话筒"这个语义；`mic-vocal` 是另一张图。
+            //   若理解错、或你看过觉得不该出现话筒，说一声单独回退这一行（本行改动独立成提交）。
+            SettingRow(Lucide.MicVocal, "启用伴唱功能", null, divider = true) {
                 OrganicSwitch(vm.karaokeEnabled) { vm.setKaraokeEnabled(!vm.karaokeEnabled) }
             }
             // A73（用户 2026-10-15）：分轨默认模型。**只有 9482 内置**（A57），其余两项
@@ -1516,7 +1523,9 @@ private fun LyricsBookScreen(vm: MainViewModel, scrollStates: MutableMap<String,
             SettingRow(Lucide.Languages, "外语歌自动翻译", null, divider = true) {
                 OrganicSwitch(vm.translateAutoForeign) { vm.setTranslateAutoForeign(!vm.translateAutoForeign) }
             }
-            SettingRow(Lucide.Captions, "默认显示译文", null, divider = true) {
+            // 2026-10-21 图标审查：原为 `Captions`（字幕），与上面「自动匹配歌词」**撞图标**
+            // ⇒ 换 `languages`（语言，＝"译文用哪种语言"）。
+            SettingRow(Lucide.Languages, "默认显示译文", null, divider = true) {
                 OrganicSwitch(vm.translateDefaultShow) { vm.setTranslateDefaultShow(!vm.translateDefaultShow) }
             }
             // A36: 失败提示默认关——用户嫌"翻译失败"toast 太频繁,想安静时就不弹。
