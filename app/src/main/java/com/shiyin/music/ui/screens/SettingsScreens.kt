@@ -1591,7 +1591,8 @@ private fun PlaySettingsScreen(vm: MainViewModel, scrollStates: MutableMap<Strin
             // 2026-10-17：伴唱的"正式设置"入口（模型下载/选择/默认/删除 + 缓存策略）。
             // 歌词本那边只留一个麦克风按钮，配置一律收进这里。
             CardEntryRow(
-                Lucide.Music, c.n700, "伴唱", null,
+                // 2026-10-21 图标审查：原为 `Music`（音符）→ `mic-vocal`（话筒），与“伴唱”语义一致。
+                Lucide.MicVocal, c.n700, "伴唱", null,
                 divider = false,
             ) { vm.navFilesTo(FilesView.KaraokeSettings) }
         }
