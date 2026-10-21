@@ -798,7 +798,9 @@ private fun PlaylistDetail(vm: MainViewModel, pid: String) {
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     // 2026-10-21 图标审查：原为 `ListMusic`（歌单架，不是"改名"）→ `square-pen`。
                     MenuAction("重命名歌单", Lucide.SquarePen) { vm.plMenuOpen = false; vm.plRenameFor = pid }
-                    MenuAction("更换封面", Lucide.Disc) { vm.plMenuOpen = false; vm.plCoverPickerFor = pid }
+                    // 2026-10-21 图标审查第 2 轮：原为 `Disc`（唱片，不是"换图"）→ 相片。
+                    // 注：这就是用户选的 Lucide `image`（`Lucide.Photo` 存的就是它的 path）。
+                    MenuAction("更换封面", Lucide.Photo) { vm.plMenuOpen = false; vm.plCoverPickerFor = pid }
                     // v1.2.0 #6: 内置「我的喜欢」(p3)不可删
                     if (pid != "p3") {
                         MenuAction("删除歌单", Lucide.Trash, tint = c.a700) { vm.plMenuOpen = false; vm.plDeleteFor = pid }
@@ -1834,7 +1836,8 @@ private fun ArtistActionBar(vm: MainViewModel, name: String, tracks: List<Track>
                     title = { Text("更多操作", style = body(15f, FontWeight.ExtraBold, c.text)) },
                     text = {
                         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            MenuAction("选择写真", Lucide.User) { menuOpen = false; vm.openArtistPhotoPicker(name) }
+                            // 2026-10-21 图标审查第 2 轮：原为 `User`（人像）→ 人像+放大镜（找图）。
+                            MenuAction("选择写真", Lucide.UserRoundSearch) { menuOpen = false; vm.openArtistPhotoPicker(name) }
                             // 2026-10-21 图标审查：原为 `Users`（一群体人像，说的是"人"）→
                             // `user-round-cog`（人像+齿轮＝"管理这一位"）。
                             MenuAction("管理归属", Lucide.UserRoundCog) { menuOpen = false; vm.artistMerge = !vm.artistMerge }
