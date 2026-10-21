@@ -39,6 +39,13 @@ class NewIconsParseTest {
         "BookText" to Lucide.BookText,
         "ScanText" to Lucide.ScanText,
         "Coffee" to Lucide.Coffee,
+        // 图标审查阶段二 · 第 2 轮（2026-10-21 第二轮对照页选定）
+        "Podcast" to Lucide.Podcast,
+        "ClefTreble" to Lucide.ClefTreble,
+        "UserRoundSearch" to Lucide.UserRoundSearch,
+        "SkipForwardOutline" to Lucide.SkipForwardOutline,
+        "Boxes" to Lucide.Boxes,
+        "FileCog" to Lucide.FileCog,
     )
 
     @Test
