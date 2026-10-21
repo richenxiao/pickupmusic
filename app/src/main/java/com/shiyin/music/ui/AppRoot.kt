@@ -71,7 +71,6 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.runtime.Composable
@@ -1646,7 +1645,9 @@ private fun PlayerMenuSheetContent(vm: MainViewModel) {
                     },
                 ) { vm.pMenuView = "timer" }
                 SheetActionRow(
-                    Icons.Filled.Speed, "播放速度",
+                    // 2026-10-21 图标审查：原为 Compose 的 `Icons.Filled.Speed`（**填充**风格，
+                    // 全站仅 3 处非描边）。用户选定换成描边同族的 `gauge`。
+                    Lucide.Gauge, "播放速度",
                     trailing = {
                         val spd = if (vm.playbackSpeed == 1.0f) "正常" else "%.2f×".format(vm.playbackSpeed)
                         Text(spd, style = body(12.5f, FontWeight.SemiBold, c.n500))
@@ -1669,7 +1670,9 @@ private fun PlayerMenuSheetContent(vm: MainViewModel) {
                 // 未开启伴唱功能时整行隐藏（与歌词页入口的隐藏条件一致）。
                 if (vm.karaokeEnabled) {
                     SheetActionRow(
-                        Lucide.Music, "伴唱",
+                        // 2026-10-21 图标审查：原为 `Music`（音符，读不出"卡拉OK/人声"，
+                        // 且 5 处伴唱入口全用它）。用户选定换成话筒语义的 `mic-vocal`。
+                        Lucide.MicVocal, "伴唱",
                         trailing = {
                             if (vm.karaokeState != com.shiyin.music.ui.components.KaraokeButtonState.Idle) {
                                 Text(
@@ -1973,7 +1976,11 @@ private fun PlayerMenuSheetContent(vm: MainViewModel) {
                             .padding(horizontal = 14.dp, vertical = 13.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        OIcon(if (vm.retroSpeedMode) Lucide.Disc else Lucide.Gauge, 18.dp, c.text)
+                        OIcon(if (vm.retroSpeedMode) Lucide.CassetteTape else Lucide.Gauge, 18.dp, c.text)
+                        // 2026-10-21 图标审查：复古档原为 `Disc`（唱片，读不出"磁带复古"），
+                        // 用户选定换成 `cassette-tape`。现代档仍是 `Gauge`。
+                        // ⚠️ 这会让本页「播放速度」那行也是 `Gauge` ⇒ **新引入一处同页重复**，
+                        //    已如实报告，等用户定夺是否把现代档换成 `zap`。
                         Column(Modifier.weight(1f).padding(start = 10.dp)) {
                             Text(
                                 if (vm.retroSpeedMode) "复古模式" else "现代模式",
