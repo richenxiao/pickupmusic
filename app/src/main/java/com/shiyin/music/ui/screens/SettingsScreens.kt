@@ -4234,7 +4234,10 @@ private fun ArtistsScreen(vm: MainViewModel, scrollStates: MutableMap<String, Sc
                 .padding(horizontal = 16.dp, vertical = 6.dp),
         ) {
             SettingRow(
-                Lucide.User, "隐藏客串歌手", null, divider = false,
+                // 2026-10-21 图标审查：同一功能「隐藏客串歌手」此前**三处三图标**
+                // （这里 `User` / 歌手管理页 `UserRoundX` / 隐藏客串歌手页 `EyeOff`）——
+                // 用户选定 `user-round-x`，本提交把三处统一。
+                Lucide.UserRoundX, "隐藏客串歌手", null, divider = false,
             ) {
                 OrganicSwitch(vm.hideFeatureArtists) { vm.setHideFeatureArtists(!vm.hideFeatureArtists) }
             }
