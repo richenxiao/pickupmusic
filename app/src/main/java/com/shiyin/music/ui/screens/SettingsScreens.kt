@@ -3897,11 +3897,9 @@ private fun LyricsSourcesScreen(vm: MainViewModel, scrollStates: MutableMap<Stri
                 .background(c.surface).padding(horizontal = 16.dp, vertical = 6.dp),
         ) {
             val builtins = com.shiyin.music.data.lyrics.LyricsFetcher.SOURCES
-            // 2026-10-21 ⑤（用户）：内置源行改用**品牌标**（res/drawable/ic_lyrics_*.xml）。
-            // 网易云用官方 SVG、保留品牌原色（Color.Unspecified，不随主题染色）；
-            // LRCLIB / LrcShare 没有官方矢量，按 Lucide 风格重绘为描边图标，随行文字色染色（与 Boxes 一致）。
+            // 2026-10-22 ⑤（用户）：内置源行用**品牌标**（res/drawable/ic_lyrics_*.xml）。
+            // 三个均为官方/用户提供的原色 SVG 转 VectorDrawable，保留品牌色、不随主题染色（Color.Unspecified）。
             // 名字→图的映射集中在这里，加新源只改这一处。
-            val brandIconColorful = setOf("网易云音乐")
             val brandIcon: Map<String, Int> = mapOf(
                 "LRCLIB" to com.shiyin.music.R.drawable.ic_lyrics_lrclib,
                 "网易云音乐" to com.shiyin.music.R.drawable.ic_lyrics_netease,
@@ -3920,10 +3918,7 @@ private fun LyricsSourcesScreen(vm: MainViewModel, scrollStates: MutableMap<Stri
                     leading = {
                         val res = brandIcon[src]
                         if (res != null) {
-                            // 官方品牌标（网易云）保留原色；自绘描边标（LRCLIB/LrcShare）随行文字色
-                            val tint = if (src in brandIconColorful) Color.Unspecified
-                                else if (deleted) c.n400 else c.n700
-                            OIcon(painterResource(res), 19.dp, tint)
+                            OIcon(painterResource(res), 19.dp, Color.Unspecified)
                         } else {
                             OIcon(Lucide.Boxes, 19.dp, if (deleted) c.n400 else c.n700)
                         }

@@ -1,42 +1,20 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
   LRCLIB 品牌标（歌词源 · 内置源行用）
-  2026-10-21 ⑤：改为 Lucide 风格描边图标（24×24, strokeWidth 2.75, round cap/join, 无填色），
-  与设置页其他 Lucide 图标视觉统一。strokeColor 仅占位，实际颜色由 OIcon(tint=...) 跟随行文字色。
-  字形 "LRC"：L=竖+底横（左竖、脚向右）；R=竖+上半圆+斜腿；C=右侧开口半圆弧（凸向左）。
-  修复要点：上一版 L 画成纯竖条被识成 I、字母过小；本版 L 带明确底横、字母整体放大。
+  来源：用户 2026-10-22 提供的手工 SVG，经 Douglas-Peucker 平滑修复精度。
+  按用户要求去掉 #312E81 背景，只保留中心图标：#000042 圆角方块 + 白色 "LRC/LIB" 字母；
+  视口裁剪到方块本身（175×175 满幅，与网易云满幅色块一致）。
 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="24dp"
     android:height="24dp"
-    android:viewportWidth="24"
-    android:viewportHeight="24">
-    <!-- 圆角方框（library 容器轮廓） -->
+    android:viewportWidth="175"
+    android:viewportHeight="175">
     <path
-        android:strokeColor="#201E1D"
-        android:strokeWidth="2.75"
-        android:strokeLineCap="round"
-        android:strokeLineJoin="round"
-        android:pathData="M5,3 H19 A2,2 0 0 1 21,5 V19 A2,2 0 0 1 19,21 H5 A2,2 0 0 1 3,19 V5 A2,2 0 0 1 5,3 Z" />
-    <!-- L：竖 + 底横（脚向右） -->
+        android:fillColor="#000042"
+        android:pathData="M36,0 h103 a36,36 0 0 1 36,36 v103 a36,36 0 0 1 -36,36 h-103 a36,36 0 0 1 -36,-36 v-103 a36,36 0 0 1 36,-36 z" />
     <path
-        android:strokeColor="#201E1D"
-        android:strokeWidth="2.75"
-        android:strokeLineCap="round"
-        android:strokeLineJoin="round"
-        android:pathData="M5,7 V17 H9" />
-    <!-- R：竖 + 上半圆 bowl（凸向右）+ 斜腿 -->
-    <path
-        android:strokeColor="#201E1D"
-        android:strokeWidth="2.75"
-        android:strokeLineCap="round"
-        android:strokeLineJoin="round"
-        android:pathData="M10.5,7 V17 M10.5,7 H12 A2,2 0 0 1 12,11 H10.5 M11.5,11 L13.5,17" />
-    <!-- C：右侧开口半圆弧（凸向左，开口朝右） -->
-    <path
-        android:strokeColor="#201E1D"
-        android:strokeWidth="2.75"
-        android:strokeLineCap="round"
-        android:strokeLineJoin="round"
-        android:pathData="M18,9 A3.2,3.2 0 0 0 18,15" />
+        android:fillColor="#FEFEFE"
+        android:fillType="evenOdd"
+        android:pathData="M109.2,98L108,99.2L108,139.5L109.2,140.8L130.5,139.8L133.5,138.8L138.8,132.5L138.8,124.2L133.8,118.5L137.8,112.5L137.8,106.2L133.5,100L126.5,98Z M116.8,122.2L125.5,121.8L130,125.2L130,130.5L128.5,132L126.5,133L116.8,132.5Z M116.8,106.2L125.5,105.8L129,108.2L129,112.5L127.5,114L125.5,115L116.8,114.5Z M81.2,98L81,140.5L88.5,140.8L89.8,139.5L89.8,99.2L88.5,98Z M40.2,98L39,99.2L39,140.5L64.5,140.8L64.5,132L47.8,131.5L47.8,99.2L46.5,98Z M71.2,31L71,71.5L72.2,72.8L79.8,72.5L79.8,57.2L81.2,55.8L85.5,55.8L87,57.2L94,72.5L102.5,72.8L102.8,70.2L94.8,55.5L100.8,49.5L101.8,40.2L99.8,35.2L92.5,31Z M79.8,39.2L81.2,37.8L88.5,37.8L93,41.2L93,45.5L90.5,48L81.2,49L79.8,47.5Z M39.2,31L39,72.5L64.5,72.8L64.5,65L49.2,65L47.8,63.5L47.8,31.2Z M122.2,30L115.2,33L112,36.2L109,42.2L108,56.5L111,66.5L116.2,71.8L123.2,73.8L133.5,71.8L136.5,69.8L139.8,64.5L139.8,61.2L132.2,60L128.5,65L124.2,66L121.2,65L117.8,60.5L116.8,47.2L118.8,41.2L122.2,37.8L129.5,38.8L132.2,43.8L139.8,41.5L136.8,34.2L128.5,30Z" />
 </vector>
