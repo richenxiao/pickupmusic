@@ -2731,29 +2731,43 @@ private fun MergesScreen(vm: MainViewModel) {
                 )
             }
         } else {
+            // 2026-10-22 用户要求按**目标名分组**展示（原先是平铺的 "A → B"）：
+            //   周杰伦
+            //      — JAYCHOU      (撤销)
+            //      — JAY CHOU     (撤销)
+            // 每个别名各自一个"撤销"，撤销互不影响。
+            val grouped = vm.aliases.entries.groupBy({ it.value }, { it.key })
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                for ((from, to) in vm.aliases) {
-                    Row(
+                for ((target, froms) in grouped) {
+                    Column(
                         Modifier
                             .fillMaxWidth()
                             .clip(RoundedCornerShape(16.dp))
                             .background(c.surface)
                             .padding(horizontal = 16.dp, vertical = 12.dp),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
-                        Text(
-                            "$from → $to",
-                            style = body(14f, FontWeight.SemiBold, c.text),
-                            modifier = Modifier.weight(1f),
-                            maxLines = 1, overflow = TextOverflow.Ellipsis,
-                        )
-                        PillButton(
-                            "撤销",
-                            onClick = { vm.unmergeArtist(from) },
-                            bg = null, textColor = c.text, borderColor = c.divider,
-                            fontSize = 12.5f, padH = 14.dp, padV = 7.dp,
-                        )
+                        Text(target, style = body(15f, FontWeight.ExtraBold, c.text))
+                        for (from in froms.sorted()) {
+                            Row(
+                                Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(
+                                    "— $from",
+                                    style = body(13.5f, FontWeight.Normal, c.n600),
+                                    modifier = Modifier.weight(1f).padding(start = 10.dp),
+                                    maxLines = 1, overflow = TextOverflow.Ellipsis,
+                                )
+                                PillButton(
+                                    "撤销",
+                                    onClick = { vm.unmergeArtist(from) },
+                                    bg = null, textColor = c.text, borderColor = c.divider,
+                                    fontSize = 12.5f, padH = 14.dp, padV = 7.dp,
+                                )
+                            }
+                        }
                     }
                 }
             }
