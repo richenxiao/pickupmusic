@@ -138,13 +138,50 @@ object LyricsFetcher {
             pickLyric(JSONObject(body))?.let { return it }
         }
         // Search fallback with duration tolerance.
-        val body = http("https://lrclib.net/api/search?track_name=${enc(title)}&artist_name=${enc(artist)}") ?: return null
+        searchLrclib(title, artist, durationSec, requireArtistMatch = false)?.let { return it }
+        // 2026-10-22（用户报「new note 识别不到歌词」）：LRCLIB **带 artist 过滤**时
+        // 简繁对不上就 0 条（库里歌手是繁体「陳嫺靜」，本地 tag 是简体「陈娴静」——
+        // 实测同一首歌带过滤 0 条、去掉过滤 7 条且首条 duration 与本地完全一致）。
+        // 兜底：去掉 artist 过滤再搜一次，本地用 FuzzySearch.normalize（繁→简）
+        // 归一后比对歌手，时长仍按 ±DURATION_TOLERANCE_SEC 把关。
+        return searchLrclib(title, artist, durationSec, requireArtistMatch = true, dropArtistFilter = true)
+    }
+
+    /**
+     * LRCLIB 搜索 + 打分。
+     * @param requireArtistMatch 结果侧歌手是否必须命中（本地归一后双向包含）。
+     *   [dropArtistFilter]=true 时必开 —— 服务端不再帮我们过滤，必须本地把关，
+     *   否则同名异曲会被选中。
+     * @param dropArtistFilter 请求里**不带** artist_name。
+     */
+    private fun searchLrclib(
+        title: String,
+        artist: String,
+        durationSec: Long,
+        requireArtistMatch: Boolean,
+        dropArtistFilter: Boolean = false,
+    ): String? {
+        val url = if (dropArtistFilter)
+            "https://lrclib.net/api/search?track_name=${enc(title)}"
+        else
+            "https://lrclib.net/api/search?track_name=${enc(title)}&artist_name=${enc(artist)}"
+        val body = http(url) ?: return null
         val arr = JSONArray(body)
+        val artistKey = if (requireArtistMatch)
+            com.shiyin.music.data.search.FuzzySearch.normalize(artist) else ""
         var best: String? = null
         var bestScore = Long.MAX_VALUE
         for (i in 0 until arr.length()) {
             val o = arr.getJSONObject(i)
             val lyric = pickLyric(o) ?: continue
+            if (requireArtistMatch && artistKey.isNotBlank()) {
+                // FuzzySearch.normalize 做全角→半角 + 繁→简 + 去空格 + 小写
+                val retArtist = com.shiyin.music.data.search.FuzzySearch
+                    .normalize(o.optString("artistName"))
+                val hit = retArtist.isNotBlank() &&
+                    (retArtist.contains(artistKey) || artistKey.contains(retArtist))
+                if (!hit) continue
+            }
             val d = o.optLong("duration", -1)
             val diff = if (d >= 0 && durationSec > 0) abs(d - durationSec) else Long.MAX_VALUE / 2
             val syncedBonus = if (o.optString("syncedLyrics").isNotBlank() && o.optString("syncedLyrics") != "null") 0 else 1000
@@ -156,7 +193,7 @@ object LyricsFetcher {
         }
         if (best == null && arr.length() > 0) {
             // No duration-close hit: accept the top result only if we had no duration info.
-            if (durationSec <= 0) best = pickLyric(arr.getJSONObject(0))
+            if (durationSec <= 0 && !requireArtistMatch) best = pickLyric(arr.getJSONObject(0))
         }
         return best
     }

@@ -562,6 +562,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             com.shiyin.music.playback.KaraokeMixControl.realSource =
                 com.shiyin.music.playback.StemCacheAccompaniment(stemCache, readyDir)
             com.shiyin.music.playback.KaraokeMixControl.mode = target
+            // ⚠️ 快路径必须置 Loading（用户 2026-10-22 报的 BUG）：状态机 onReady 只认
+            // Loading→Active。此前漏了这步，按钮停在 Idle，100ms 轮询等"处理器真的出声"
+            // 到了以后 M.onReady(Idle)=Idle ⇒ 状态永远不动 —— 耳朵已在放伴奏，
+            // 歌词页麦克风/伴唱面板却一直转圈；且取消一次后再点（Idle 快路径）永远点不亮。
+            // 置 Loading 后：轮询 onReady(Loading)=Active，与首次分离路径同一状态链。
+            // 已是 Active（同档再点/跨档切）就不动 —— 耳朵里一直在出声，闪一下 Loading 反而是假的。
+            if (karaokeState == com.shiyin.music.ui.components.KaraokeButtonState.Idle) {
+                karaokeState = com.shiyin.music.ui.components.KaraokeButtonState.Loading
+            }
             // P1-1：**先不点亮按钮** —— 等处理器真的读到伴奏（下一次读缓存）再切完成态
             karaokeAwaitingAudible = true
             karaokeStatus = ""
@@ -5621,8 +5630,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      *
      * 落库仍复用 [saveAlbumCover]，保证写入逻辑只有一份、不会写歪。
      */
-    fun setAlbumCoverFromFile(albumId: Long, contentUri: android.net.Uri) {
-        if (albumId <= 0) return
+    fun setAlbumCoverFromFile(albumId: Long, contentUri: android.net.Uri, albumKey: String? = null) {
+        if (albumId == 0L) return
         viewModelScope.launch {
             val fileUri: String? = withContext(Dispatchers.IO) {
                 runCatching {
@@ -5641,13 +5650,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 showToast("封面保存失败", null)
                 return@launch
             }
-            saveAlbumCover(albumId, fileUri)
+            saveAlbumCover(albumId, fileUri, albumKey)
         }
     }
 
     /** Pin a custom cover for an album (uri string from the photo picker). */
-    fun saveAlbumCover(albumId: Long, coverUri: String) {
-        if (albumId <= 0) return
+    fun saveAlbumCover(albumId: Long, coverUri: String, albumKey: String? = null) {
+        if (albumId == 0L) return
         viewModelScope.launch(Dispatchers.IO) {
             // fresh read — don't trust the Flow snapshot, see saveAlbumInfo
             val cur = dao.albumInfoOverride(albumId)
@@ -5662,13 +5671,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 )
             )
         }
-        com.shiyin.music.ui.components.ArtCache.invalidateAlbum(getApplication<android.app.Application>(), albumId)
+        invalidateCoverCaches(albumId, albumKey)
         showToast("专辑封面已更新", null)
     }
 
     /** Clear a pinned cover; the album falls back to embedded/online art. */
-    fun clearAlbumCover(albumId: Long) {
-        if (albumId <= 0) return
+    fun clearAlbumCover(albumId: Long, albumKey: String? = null) {
+        if (albumId == 0L) return
         viewModelScope.launch(Dispatchers.IO) {
             val cur = dao.albumInfoOverride(albumId)
             dao.upsertAlbumInfoOverride(
@@ -5683,8 +5692,26 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             )
             dao.deleteArtCacheForAlbum(albumId)
         }
-        com.shiyin.music.ui.components.ArtCache.invalidateAlbum(getApplication<android.app.Application>(), albumId)
+        invalidateCoverCaches(albumId, albumKey)
         showToast("已恢复默认封面", null)
+    }
+
+    /**
+     * 封面变更后的缓存失效。
+     *
+     * 正 id（真实 albumId）：按专辑清内存+磁盘。
+     * 负 id（name-keyed 专辑的合成 id，见 overrideIdForAlbumKey）：这类曲目的封面
+     * 缓存是**曲目级**的，必须按该专辑下的曲目逐条清 —— 否则磁盘命中会继续返回旧图。
+     */
+    private fun invalidateCoverCaches(albumId: Long, albumKey: String?) {
+        val ctx = getApplication<android.app.Application>()
+        if (albumId < 0 && albumKey != null) {
+            com.shiyin.music.ui.components.ArtCache.invalidateTracks(
+                ctx, albumOrder(albumKey).map { it.id },
+            )
+        } else {
+            com.shiyin.music.ui.components.ArtCache.invalidateAlbum(ctx, albumId)
+        }
     }
 
     /** Save single-track display edits (title/artist/note). Blank keeps the scanned value. */

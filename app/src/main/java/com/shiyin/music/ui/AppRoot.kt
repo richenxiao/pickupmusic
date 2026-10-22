@@ -2941,7 +2941,22 @@ private fun AlbumEditDialogs(vm: MainViewModel, trackEditFor: Long?, onTrackEdit
     val albumId = vm.albumKey?.removePrefix("aid:")?.toLongOrNull()
     // v1.2.2: 改支持所有专辑(含无共享 albumId 的合集)——不要求 albumId 非空,
     // 合集(albumKey 形如 "$album|$artist")也能改歌手。albumId 可能为 null。
-    val effAlbumId = albumId ?: 0L
+    // 2026-10-22：name-keyed 专辑的**封面**覆盖也要能用 —— 走合成负 id
+    // （overrideIdForAlbumKey，读写两侧同一函数）。此前 effAlbumId=0，
+    // 三个封面入口全都静默 return，用户看到"换封面一点反应都没有"。
+    val effAlbumId = albumId?.takeIf { it > 0 }
+        ?: com.shiyin.music.data.overrideIdForAlbumKey(vm.albumKey ?: "")
+    // ⚠️ 选图 launcher **必须注册在条件块之外**（2026-10-22 用户报"本地图片换封面没反应"）：
+    // 原实现声明在 `if (vm.albumCoverEdit)` 里，而「选相册」按钮先 albumCoverEdit=false
+    // 再 picker.launch() —— 对话框先销毁、launcher 随之注销，选图结果回调**永远不回来**。
+    // 注册在 AlbumEditDialogs 的稳定作用域里，对话框关掉也不影响回调送达。
+    val coverPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        if (uri != null && effAlbumId != 0L) {
+            // v22: 先落盘再存 file://（系统给 content:// 的读权限只到重启为止）
+            vm.setAlbumCoverFromFile(effAlbumId, uri, vm.albumKey)
+            vm.albumCoverEdit = false
+        }
+    }
     if (vm.albumKey != null) {
         // v4.3: 修改专辑信息 (album name / artist → album_info_override)
         if (vm.albumEditInfo) {
@@ -3077,16 +3092,8 @@ private fun AlbumEditDialogs(vm: MainViewModel, trackEditFor: Long?, onTrackEdit
         // handles both, so pinning a remote candidate needs no new storage path.
         if (vm.albumCoverEdit) {
             val first = vm.albumOrder(vm.albumKey!!).firstOrNull()
-            val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
-                if (uri != null) {
-                    // v22: 改走"先落盘再存 file://"——原来直接存 picker 的 content:// URI，
-                    // 而系统给它的读权限只到**设备重启**为止（官方 Photo Picker 文档），
-                    // 于是重启后封面会裂。落盘后重启/清缓存都不受影响，也便于进备份。
-                    // 注意：只读取相册里那一张图 + 在 app 私有目录写副本，不动原图、不碰音乐文件。
-                    vm.setAlbumCoverFromFile(effAlbumId, uri)
-                    vm.albumCoverEdit = false
-                }
-            }
+            // launcher 已上移到 AlbumEditDialogs 顶部（见上方注释），这里直接用。
+            val picker = coverPicker
             // Fetch iTunes candidates once per dialog open (keyed on the album's
             // first track id — stable across recompositions while dialog is open).
             var candidates by remember(first?.id) { mutableStateOf<List<ArtCache.Candidate>>(emptyList()) }
@@ -3134,7 +3141,7 @@ private fun AlbumEditDialogs(vm: MainViewModel, trackEditFor: Long?, onTrackEdit
                                     ) {
                                         candidates.forEach { cand ->
                                             CandidateCover(cand) {
-                                                vm.saveAlbumCover(effAlbumId, cand.artUrl)
+                                                vm.saveAlbumCover(effAlbumId, cand.artUrl, vm.albumKey)
                                                 vm.albumCoverEdit = false
                                             }
                                         }
@@ -3161,7 +3168,7 @@ private fun AlbumEditDialogs(vm: MainViewModel, trackEditFor: Long?, onTrackEdit
                                     ),
                                 )
                                 androidx.compose.material3.TextButton(onClick = {
-                                    if (linkUrl.isNotBlank()) { vm.saveAlbumCover(effAlbumId, linkUrl.trim()); vm.albumCoverEdit = false }
+                                    if (linkUrl.isNotBlank()) { vm.saveAlbumCover(effAlbumId, linkUrl.trim(), vm.albumKey); vm.albumCoverEdit = false }
                                 }) { Text("保存", style = body(14f, FontWeight.Bold, c.accent)) }
                             }
                         }
@@ -3178,7 +3185,7 @@ private fun AlbumEditDialogs(vm: MainViewModel, trackEditFor: Long?, onTrackEdit
                         },
                         DialogAction("恢复默认") {
                             vm.albumCoverEdit = false
-                            vm.clearAlbumCover(effAlbumId)
+                            vm.clearAlbumCover(effAlbumId, vm.albumKey)
                         },
                         DialogAction("取消") { vm.albumCoverEdit = false },
                     )

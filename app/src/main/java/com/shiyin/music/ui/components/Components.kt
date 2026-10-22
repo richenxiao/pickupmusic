@@ -289,11 +289,18 @@ object ArtCache {
      *  on a background dispatcher; returns null on any error so callers fall
      *  through to embedded art. */
     private suspend fun albumCoverUri(context: Context, track: Track): android.net.Uri? {
-        if (track.albumId <= 0) return null
+        // 2026-10-22：name-keyed 专辑（无 MediaStore albumId）也支持封面覆盖 ——
+        // 用与写入侧同一份合成 id（见 overrideIdForAlbumKey）。此前 albumId<=0
+        // 直接 return null，用户换封面后永远读不到。
+        val overrideId = if (track.albumId > 0) track.albumId
+            else com.shiyin.music.data.overrideIdForAlbumKey(
+                com.shiyin.music.data.albumKeyOf(track.album, track.artist, track.albumId),
+            )
+        if (overrideId == 0L) return null
         return withContext(Dispatchers.IO) {
             try {
                 val ov = com.shiyin.music.data.db.AppDatabase.get(context).dao()
-                    .albumInfoOverride(track.albumId)
+                    .albumInfoOverride(overrideId)
                 ov?.coverUri?.takeIf { it.isNotBlank() }?.let { android.net.Uri.parse(it) }
             } catch (_: Exception) { null }
         }
@@ -378,7 +385,7 @@ object ArtCache {
      *  picks up a freshly edited cover (or freshly edited album name → new
      *  iTunes match). Call after a cover change or album-info edit + rematch. */
     fun invalidateAlbum(albumId: Long) {
-        if (albumId <= 0) return
+        if (albumId == 0L) return
         synchronized(this) {
             val artId = albumId.toString()
             val keys = cache.snapshot().keys.filter { it.startsWith("$artId@") }
@@ -386,6 +393,36 @@ object ArtCache {
             misses.remove(artId)
             synchronized(colorCache) { colorCache.remove(albumId) }
         }
+        // 2026-10-22：缓存清了还必须让**正在显示**的封面重新取图。取封面的
+        // produceState 把 coverRevision 放进 key —— 只清缓存不 bump 的话
+        // composition 不重跑，页面会继续显示旧位图（用户报"换封面没反应"）。
+        coverRevision++
+    }
+
+    /**
+     * 封面内容版本号。任何封面变更（专辑级或曲目级）后 +1；`rememberAlbumArtState`
+     * 把它作为 produceState 的 key，从而强制在页面上立刻重新取图。
+     */
+    var coverRevision by mutableStateOf(0)
+        private set
+
+    /**
+     * name-keyed 专辑（无 albumId）改封面后的失效：这类曲目的内存/磁盘缓存都是
+     * **曲目级**（artId = -trackId，见 fetchBmp 的 useTrackKey 判定），
+     * 按专辑 id 清不到，必须按曲目逐条清。
+     */
+    fun invalidateTracks(context: Context, trackIds: List<Long>) {
+        if (trackIds.isEmpty()) return
+        synchronized(this) {
+            for (id in trackIds) {
+                val artId = (-id).toString()
+                val keys = cache.snapshot().keys.filter { it.startsWith("$artId@") }
+                for (k in keys) cache.remove(k)
+                misses.remove(artId)
+            }
+        }
+        trackIds.forEach { diskCache.deleteTrack(context, it) }
+        coverRevision++
     }
 
     /** v1.2.2: 同 invalidateAlbum 并一并删除该专辑的本地持久化封面文件(album key),
@@ -426,6 +463,7 @@ object ArtCache {
             colorPending.clear()
         }
         diskCache.clear(context)
+        coverRevision++
     }
 
     /**
@@ -451,7 +489,14 @@ object ArtCache {
         if (overrideType.equals("Single", ignoreCase = true)) {
             return loadPerTrackCover(context, track, px)
         }
-        val candidates = fetchITunesCandidates(track, multiRegion = false)
+        var candidates = fetchITunesCandidates(track, multiRegion = false)
+        if (candidates.isEmpty()) {
+            // 2026-10-22（用户报长专辑名识别不到封面；实测「如果每天都可以 happy happy
+            // 誰想要sad:)) – 一起去度假」用 entity=album 即使精确查询也 0 命中，
+            // 而 entity=song「歌名+歌手」能命中同一张专辑）⇒ album 实体空结果时
+            // 用 song 实体兜底，取它自带的 artwork（就是专辑封面）。
+            candidates = fetchITunesCandidates(track, limit = 8, includeSongs = true, multiRegion = false)
+        }
         if (candidates.isEmpty()) return null
         val best = pickBestCoverCandidate(track.album, candidates)
         val bmp = downloadBitmap(context, best.artUrl, px) ?: return null
@@ -561,7 +606,9 @@ object ArtCache {
         offset: Int = 0,
         multiRegion: Boolean = false,
     ): List<Candidate> {
-        if (track.album == com.shiyin.music.data.NO_ALBUM || track.albumId <= 0) return emptyList()
+        // 2026-10-22：去掉 albumId<=0 的早退 —— name-keyed 专辑（无 MediaStore
+        // albumId）同样需要识别封面；查询只需要专辑名/歌手/歌名，与 albumId 无关。
+        if (track.album == com.shiyin.music.data.NO_ALBUM) return emptyList()
         return withContext(Dispatchers.IO) {
             val client = okhttp3.OkHttpClient.Builder()
                 .connectTimeout(8, java.util.concurrent.TimeUnit.SECONDS)
@@ -578,7 +625,9 @@ object ArtCache {
             val cjkText = hasCjk(track.album) || hasCjk(track.artist) || hasCjk(track.title)
             val countries = when {
                 !multiRegion && cjkText && (hasKana(track.album) || hasKana(track.artist) || hasKana(track.title)) -> listOf("JP")
-                !multiRegion && cjkText -> listOf("CN", "JP")
+                // 2026-10-22：加 TW —— 繁体中文（台/港）专辑在 CN 区搜不到、
+                // JP 区又未必有；此前 auto 路径只有 CN/JP，繁体专辑自动封面命中率低。
+                !multiRegion && cjkText -> listOf("CN", "TW", "JP")
                 !multiRegion -> listOf("US")
                 cjkText -> listOf("JP", "CN", "TW", "HK", "US")
                 else -> listOf("US", "GB")
@@ -790,10 +839,14 @@ internal fun rememberAlbumArtState(
     // "同一专辑也闪一下"。改成 artId 后，同专辑切歌完全不重启、位图原样复用。
     // (albumId<=0 的孤立单曲仍按 track.id 区分，行为不变。)
     val artId = track?.let { if (it.albumId > 0) it.albumId else -it.id }
+    // 2026-10-22：订阅封面版本号 —— 换封面后 invalidate 只清了缓存，composition
+    // 不会自己重跑；把 revision 作为 produceState 的 key 才能让页面立刻重新取图。
+    val coverRev = ArtCache.coverRevision
     val state = produceState<AlbumArtState>(
         AlbumArtState(initial, initial != null),
         artId,
         coverScope,
+        coverRev,
     ) {
         value = AlbumArtState(
             track?.let { ArtCache.load(context, it, px, coverScope)?.asImageBitmap() },

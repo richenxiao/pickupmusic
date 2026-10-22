@@ -64,4 +64,38 @@ class NewIconsParseTest {
             assertEquals("$name defaultHeight(dp)", 24f, v.defaultHeight.value, 0f)
         }
     }
+
+    /**
+     * 每条 path **必须真的解析出绘制节点**。
+     *
+     * 2026-10-22 用户报「加速子页现代模式图标显示不全」：官方 lucide 的弧形是紧凑写法
+     * `a6 6 0 00-3-5.197`（两个 flag 连写、flag 紧跟负号），Compose 的 PathParser
+     * 会**静默丢弃整条弧**（JVM 实测：解析结果只剩一个 MoveTo，不抛异常）——
+     * 于是"构造成功"测试全绿、真机上四道电波却全没画出来。
+     * 这里逐条断言 pathData ≥ 2 个节点（MoveTo + 至少一条绘制命令），把这种
+     * "解析成功但什么都没画"的情况钉死。
+     */
+    @Test
+    fun `每条 path 都必须解析出至少一个绘制节点（防紧凑弧标志被静默丢弃）`() {
+        for ((name, v) in all()) {
+            var paths = 0
+            fun walk(nodes: Iterable<androidx.compose.ui.graphics.vector.VectorNode>) {
+                for (n in nodes) {
+                    when (n) {
+                        is androidx.compose.ui.graphics.vector.VectorPath -> {
+                            paths++
+                            assertTrue(
+                                "$name 的某条 path 只解析出 ${n.pathData.size} 个节点 —— " +
+                                    "弧可能因紧凑 flag 写法被静默丢弃：${n.pathData.take(4)}",
+                                n.pathData.size >= 2,
+                            )
+                        }
+                        is androidx.compose.ui.graphics.vector.VectorGroup -> walk(n)
+                    }
+                }
+            }
+            walk(v.root)
+            assertTrue("$name 没有任何 path", paths > 0)
+        }
+    }
 }

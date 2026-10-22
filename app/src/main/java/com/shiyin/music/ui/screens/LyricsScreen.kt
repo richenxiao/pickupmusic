@@ -496,9 +496,17 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
                 listState.animateScrollToItem(vm.tapSyncCurrentLine, scrollOffset = -(viewport / 2 - 60))
             }
         }
+        // v1.5.0 单曲循环重启（用户 2026-10-22 报）：循环进入下一轮时 track.id 不变
+        // （媒体项没换，上面的 LaunchedEffect(track.id) 不会跑），activeI 从末行跳回 -1
+        // （前奏无焦点）——旧代码 `if (activeI >= 0)` 直接跳过，列表整段前奏停在上一轮
+        // 的末尾，直到第一句唱响才跳回开头。修复：盯住「有焦点→无焦点」这个**边沿**
+        // （循环重启 / seek 到首行之前都会走到），无动画回顶。
+        // ⚠️ 只在边沿触发：未打轴歌词 activeI 恒 -1 永远不进这个分支；用户手动浏览
+        // （activeI 不变，effect 不重跑）也不打扰。
+        var prevActiveI by remember { androidx.compose.runtime.mutableIntStateOf(-1) }
         LaunchedEffect(activeI, trVisible) {
-            if (!interactive) return@LaunchedEffect
-            if (vm.morph.progress.value in 0.001f..0.949f) return@LaunchedEffect
+            if (!interactive) { prevActiveI = activeI; return@LaunchedEffect }
+            if (vm.morph.progress.value in 0.001f..0.949f) { prevActiveI = activeI; return@LaunchedEffect }
             if (activeI >= 0) {
                 val info = listState.layoutInfo
                 val viewport = info.viewportSize.height
@@ -514,7 +522,10 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
                 } else {
                     listState.animateScrollToItem(activeI, scrollOffset = -(viewport / 2 - 60))
                 }
+            } else if (prevActiveI >= 0) {
+                listState.scrollToItem(0)
             }
+            prevActiveI = activeI
         }
         // v1.3.x 渐隐遮罩第三稿(实机打回两轮后定稿):上一稿把 DstIn+drawWithContent
         // 挪到外层 Box 却没带 Offscreen 离屏隔离——DstIn 失去隔离边界后把页面背景
