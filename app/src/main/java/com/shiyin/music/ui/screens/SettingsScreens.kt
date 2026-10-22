@@ -2350,8 +2350,20 @@ private fun SettingRowGlyph(
     SettingsRowScaffold(
         title = title,
         leading = {
-            Box(Modifier.size(19.dp), contentAlignment = Alignment.Center) {
-                Text(glyph, style = body(17f, FontWeight.ExtraBold, c.n700))
+            // 2026-10-22 用户："默认开启振假名的平假名 A 显示不全（底部）修复他"。
+            // 原因：19dp 方框 + 17sp 的 CJK 字形，行框上下还带着字体的额外 ascent/descent
+            // ⇒ 底部被裁。按歌词本那枚「あ」的同款做法：Trim.Both 剥掉额外量，
+            // 并把方框加高到 22dp、字号略收，保证整个假名完整可见且与图标行等高。
+            Box(Modifier.size(22.dp), contentAlignment = Alignment.Center) {
+                Text(
+                    glyph,
+                    style = body(16f, FontWeight.ExtraBold, c.n700).copy(
+                        lineHeightStyle = androidx.compose.ui.text.style.LineHeightStyle(
+                            alignment = androidx.compose.ui.text.style.LineHeightStyle.Alignment.Center,
+                            trim = androidx.compose.ui.text.style.LineHeightStyle.Trim.Both,
+                        ),
+                    ),
+                )
             }
         },
         trailing = trailing,
