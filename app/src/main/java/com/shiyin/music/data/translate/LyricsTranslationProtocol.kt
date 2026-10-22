@@ -136,7 +136,20 @@ object LyricsTranslationProtocol {
         return intArrayOf(kana, hangul, cjk, latin)
     }
 
-    fun classifyLanguage(lines: List<String>): SongLanguage {
+    /**
+     * 语言判定只应看**歌词正文**——制作人行（作词/录音室/工程师名单，常整段英文）
+     * 不算歌词。2026-10-22 用户实测：中文歌片尾附长英文制作名单 ⇒ 旧实现把
+     * `latin > cjk` 判成欧美歌 ⇒ 翻译按钮出现 + 自动翻译触发，随后又提示
+     * "中英混排不需要翻译"（自相矛盾）。这里先剔除制作人行再统计。
+     *
+     * ⚠️ 只影响"是不是外语歌"的判定；`contentEntries` 的"欧美歌里跳过纯中文行"
+     * 仍用**原始**分类（双语对照 LRC 需要它），见 [classifyRaw]。
+     */
+    fun classifyLanguage(lines: List<String>): SongLanguage =
+        classifyRaw(lines.filterNot { LyricsCredits.isCreditLine(it) })
+
+    /** 原始全量分类（含制作人行）——给 contentEntries 的"双语对照"过滤用。 */
+    private fun classifyRaw(lines: List<String>): SongLanguage {
         val (kana, hangul, cjk, latin) = charCounts(lines)
         return when {
             kana > 0 && kana * 4 >= cjk -> SongLanguage.Japanese
@@ -158,7 +171,8 @@ object LyricsTranslationProtocol {
      * 数字/标点不算外文(只认字母与假名/谚文)。
      */
     fun hasAnyForeign(lines: List<String>): Boolean {
-        val (kana, hangul, _, latin) = charCounts(lines)
+        // 同样只看正文：制作人名单里的英文不算"这首歌有外文"（2026-10-22）。
+        val (kana, hangul, _, latin) = charCounts(lines.filterNot { LyricsCredits.isCreditLine(it) })
         return kana > 0 || hangul > 0 || latin > 0
     }
 
@@ -204,7 +218,9 @@ object LyricsTranslationProtocol {
         lines: List<String>,
         skipCredits: Boolean = true,
     ): List<LyricsTranslationEntry> {
-        val skipUserLines = classifyLanguage(lines) == SongLanguage.Latin
+        // 双语对照 LRC 的"跳过纯中文行"沿用**原始**分类（含制作人行），
+        // 保持既有语义不变；分类口径的修复只作用于 isForeign/hasAnyForeign。
+        val skipUserLines = classifyRaw(lines) == SongLanguage.Latin
         return lines.indices
             .filter { lines[it].isNotBlank() }
             .filter { !skipUserLines || !isUserLanguageLine(lines[it]) }

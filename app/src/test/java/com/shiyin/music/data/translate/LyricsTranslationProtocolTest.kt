@@ -256,4 +256,42 @@ class LyricsTranslationProtocolTest {
         // 上限 8192:超过会被 DeepSeek 等服务端 HTTP 400 拒绝
         assertEquals(8192, proto.suggestedMaxTokens(1000))
     }
+
+    /**
+     * 2026-10-22 用户实测：中文歌片尾附长英文制作名单 ⇒ 旧实现把 `latin > cjk`
+     * 判成欧美歌 ⇒ 翻译按钮出现 + 自动翻译触发，随后又提示"中英混排不需要翻译"。
+     * 语言判定必须**剔除制作人行**。用例取自张震岳《浪人的…》真实署名。
+     */
+    @Test
+    fun creditsDoNotMakeAChineseSongLookForeign() {
+        val lines = listOf(
+            "沙灘黃昏的色溫 即將入夜的時分",
+            "空氣不再悶沈沈 月亮從海平線慢吞吞",
+            "你依然還是沒出現 不是說要約",
+            "小屋裡歡樂氣氛 男男女女的笑聲",
+            "我心不在焉等著 期待明天的浪順順的",
+            "懷疑天氣預報 準不準",
+            "是我太認真 無法像你一樣 隨心所欲到處混",
+        ) + listOf(
+            "錄音師（鼓、低音吉他、吉他）Recording Engineer (Drums.Bass Guitar.Electric Guitar)：蔡周翰 Chou Han Tsay",
+            "錄音助理（鼓、低音吉他、吉他）Recording Assistants：于世政 Shih Cheng Yu、陳佳穎 Chia Ying Chen",
+            "錄音室（鼓、低音吉他、吉他）Recording Studio：享亮音樂國際有限公司 Lights Up Studio Taipei",
+            "混音工程師 Mixing Engineer：陳文駿 AJ Chen",
+            "混音工作室 Mixing Studio：強力錄音室 Mega Force Studio",
+            "母帶後期工程師 Mastering Engineer：林清智 Zachary Lin",
+            "母帶後期工作室 Mastering Studio：全區通行錄音室 All Access Studio",
+            "杜比全景聲混音師 Dolby Atmos Mixing Engineer｜高許畯 Xu-Jun Kao",
+            "導演 DIRECTOR｜體育老師/ZC",
+            "攝影師 DIRECTOR OF PHOTOGRAPHY | 蔡宜倫 EN TSAI",
+            "特別感謝 SPECIAL THANKS ｜",
+            "SP: Rock Music Publishing Co., Ltd.",
+            "© 2025 Rock Records Co., Ltd.",
+        )
+        assertEquals(
+            LyricsTranslationProtocol.SongLanguage.Chinese,
+            LyricsTranslationProtocol.classifyLanguage(lines),
+        )
+        assertFalse(proto.isForeign(lines))
+        assertFalse("制作人名单里的英文不算外文", proto.hasAnyForeign(lines))
+    }
 }

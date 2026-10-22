@@ -49,21 +49,55 @@ object FuzzySearch {
     /** 归一化结果：text 为归一化串，rawIndex[i] 为 text 第 i 个字符在原始串中的下标。 */
     internal class Norm(val text: String, val rawIndex: IntArray)
 
+    /**
+     * ICU 繁→简（Hant-Hans）兜底转换器。
+     *
+     * 2026-10-22 用户报「Wui229 / New notes 歌词识别不到」：手写单字表漏了生僻变体
+     * —— 歌手「陳嫺靜」的「嫺」不在表里 ⇒ 归一化后本地「陈娴静」对不上「陈嫺静」，
+     * 网易云候选因歌手闸门**全被拒**（真机日志：十条 `ah=false` 全灭，其中一条
+     * 歌名完全相等、时长差 0）。按既定拍板：手写表保留（快、覆盖常用字），
+     * 表里没有的 CJK 字再用 ICU（Hant-Hans 覆盖全部变体，如 嫺/嫻→娴）。
+     *
+     * · 单字转换，保证 Norm 的坐标映射成立（1 输入字符 → N 输出字符映射回同一下标）；
+     * · 结果按字缓存 —— 搜索归一化每次按键都要跑，不能每次都进 ICU；
+     * · Transliterator 非线程安全 ⇒ ThreadLocal；
+     * · JVM 单测环境没有 android.icu ⇒ runCatching 回退手写表（既有单测不受影响）。
+     */
+    private val icuHan: ThreadLocal<android.icu.text.Transliterator?> = ThreadLocal.withInitial {
+        runCatching { android.icu.text.Transliterator.getInstance("Hant-Hans") }.getOrNull()
+    }
+
+    /** 未命中手写表的 CJK 字 → ICU 简体结果。 */
+    private val icuCache = java.util.concurrent.ConcurrentHashMap<Char, String>()
+
+    /** 单字符转简体：手写表优先，未覆盖的 CJK 用 ICU，其余原样。 */
+    private fun toSimple(ch: Char): String {
+        TRAD_TO_SIMPLE[ch]?.let { return it.toString() }
+        val isCjk = ch.code in 0x3400..0x4DBF || ch.code in 0x4E00..0x9FFF ||
+            ch.code in 0xF900..0xFAFF
+        if (!isCjk) return ch.toString()
+        icuCache[ch]?.let { return it }
+        val t = runCatching { icuHan.get() }.getOrNull() ?: return ch.toString()
+        val out = runCatching { t.transliterate(ch.toString()) }.getOrNull()
+        val result = if (out.isNullOrEmpty()) ch.toString() else out
+        icuCache[ch] = result
+        return result
+    }
+
     internal fun norm(raw: String): Norm {
         val sb = StringBuilder(raw.length)
-        val map = IntArray(raw.length)
-        var k = 0
+        val map = ArrayList<Int>(raw.length)
         for (i in raw.indices) {
             val c = raw[i]
             if (c == ' ' || c == '\t' || c == '\u3000') continue // 去全部空格
-            var ch = if (c.code in 0xFF01..0xFF5E) (c.code - 0xFEE0).toChar() else c // 全角→半角
-            ch = TRAD_TO_SIMPLE[ch] ?: ch // 繁体→简体
-            ch = ch.lowercaseChar() // 小写（单字符 1:1，保持坐标映射）
-            map[k] = i
-            sb.append(ch)
-            k++
+            val ch = if (c.code in 0xFF01..0xFF5E) (c.code - 0xFEE0).toChar() else c // 全角→半角
+            // 繁体→简体（手写表 + ICU 兜底；可能输出多个字符，全部映射回同一原始下标）
+            for (oc in toSimple(ch)) {
+                map.add(i)
+                sb.append(oc.lowercaseChar())
+            }
         }
-        return Norm(sb.toString(), map.copyOf(k))
+        return Norm(sb.toString(), map.toIntArray())
     }
 
     /** 归一化后的公开版本（供外部比较/展示使用）。 */
