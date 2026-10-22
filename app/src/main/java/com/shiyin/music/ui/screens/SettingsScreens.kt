@@ -140,6 +140,9 @@ fun SettingsHost(
  *  - 操作归位:配置卡里只有输入框和「保存凭据」;「测试连接」「备份到云端」
  *    是操作卡的两个同级按钮;状态信息单独成行,不跟按钮挤。
  */
+/** 坚果云 WebDAV 固定地址（预设档位「坚果云」回填用）。 */
+private const val JIANGUO_WEBDAV = "https://dav.jianguoyun.com/dav/"
+
 @Composable
 private fun CloudBackupScreen(vm: MainViewModel, scrollStates: MutableMap<String, ScrollState>) {
     val c = LocalOrganic.current
@@ -156,15 +159,20 @@ private fun CloudBackupScreen(vm: MainViewModel, scrollStates: MutableMap<String
         }
     }
 
-    var url by remember { mutableStateOf("") }
+    var url by remember { mutableStateOf(JIANGUO_WEBDAV) }
     var user by remember { mutableStateOf("") }
     var pass by remember { mutableStateOf("") }
     var passVisible by remember { mutableStateOf(false) }
     var loaded by remember { mutableStateOf(false) }
+    // 2026-10-22 用户："云备份设置页中提供默认配置项，可选择坚果云 or 自定义"。
+    // 0=坚果云（地址固定，选中即回填）；1=自定义（自行填写任何 WebDAV 地址）。
+    var preset by remember { mutableStateOf(0) }
     // 凭据异步载入后回填输入框（只填一次，避免覆盖用户正在输入的内容）
     androidx.compose.runtime.LaunchedEffect(vm.webDavUrl, vm.webDavUser, vm.webDavPassword) {
         if (!loaded && (vm.webDavUrl.isNotEmpty() || vm.webDavUser.isNotEmpty())) {
-            url = vm.webDavUrl; user = vm.webDavUser; pass = vm.webDavPassword; loaded = true
+            url = vm.webDavUrl.ifBlank { JIANGUO_WEBDAV }
+            user = vm.webDavUser; pass = vm.webDavPassword; loaded = true
+            preset = if (vm.webDavUrl.isBlank() || vm.webDavUrl.contains("dav.jianguoyun.com")) 0 else 1
         }
     }
     val tfColors = OutlinedTextFieldDefaults.colors(
@@ -198,8 +206,23 @@ private fun CloudBackupScreen(vm: MainViewModel, scrollStates: MutableMap<String
                 .padding(horizontal = 16.dp, vertical = 14.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
+            // 2026-10-22：预设档位（坚果云 / 自定义）。选中坚果云即回填固定地址，
+            // 免去用户对照文档手抄；自定义则自由填写任何 WebDAV 地址。
+            ThreeStopSegmentedControl(
+                labels = listOf("坚果云", "自定义"),
+                selectedIndex = preset,
+                onSelect = {
+                    preset = it
+                    if (it == 0) url = JIANGUO_WEBDAV
+                    else if (url == JIANGUO_WEBDAV) url = ""
+                },
+            )
             OutlinedTextField(
-                value = url, onValueChange = { url = it },
+                value = url, onValueChange = {
+                    url = it
+                    // 手动改地址即视为自定义（避免"选了坚果云却填了别家地址"的显示矛盾）
+                    if (preset == 0 && it != JIANGUO_WEBDAV) preset = 1
+                },
                 label = { Text("服务器地址", style = body(12f, FontWeight.Normal, c.n600)) },
                 placeholder = { Text("例如 https://dav.jianguoyun.com/dav/", style = body(13f, FontWeight.Normal, c.n500)) },
                 singleLine = true, modifier = Modifier.fillMaxWidth(),
@@ -1524,12 +1547,13 @@ private fun LyricsBookScreen(vm: MainViewModel, scrollStates: MutableMap<String,
             // 建议更改自动翻译的，现在**没有体现出自动的特点**"
             // ⇒ 自动翻译改 `Sparkles`（✨＝自动/智能；项目里 0 引用、不新增图标），
             //    「默认显示译文」保留 `Languages`（＝译文用哪种语言）。
-            SettingRow(Lucide.Sparkles, "外语歌自动翻译", null, divider = true) {
+            // 2026-10-22 用户："外语歌自动翻译的图标还是与功能名字无关，重选一个"
+            // ⇒ `Languages`（语言/翻译＝功能本身）；「默认显示译文」改 `Eye`（显示/隐藏），
+            //   两条不再共用图标、各自语义直给。
+            SettingRow(Lucide.Languages, "外语歌自动翻译", null, divider = true) {
                 OrganicSwitch(vm.translateAutoForeign) { vm.setTranslateAutoForeign(!vm.translateAutoForeign) }
             }
-            // 2026-10-21 图标审查：原为 `Captions`（字幕），与上面「自动匹配歌词」**撞图标**
-            // ⇒ 换 `languages`（语言，＝"译文用哪种语言"）。
-            SettingRow(Lucide.Languages, "默认显示译文", null, divider = true) {
+            SettingRow(Lucide.Eye, "默认显示译文", null, divider = true) {
                 OrganicSwitch(vm.translateDefaultShow) { vm.setTranslateDefaultShow(!vm.translateDefaultShow) }
             }
             // A36: 失败提示默认关——用户嫌"翻译失败"toast 太频繁,想安静时就不弹。

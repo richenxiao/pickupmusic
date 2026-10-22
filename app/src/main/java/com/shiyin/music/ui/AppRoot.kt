@@ -1886,15 +1886,11 @@ private fun PlayerMenuSheetContent(vm: MainViewModel) {
                     Text(
                         speedDisplay,
                         style = heading(36, c.text),
-                        modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp),
-                        textAlign = TextAlign.Center,
-                    )
-                    Text(
-                        if (vm.retroSpeedMode) "复古模式 · 音调随速度变化" else "现代模式 · 音调不变",
-                        style = body(12f, FontWeight.Normal, c.n500),
                         modifier = Modifier.fillMaxWidth().padding(bottom = 18.dp),
                         textAlign = TextAlign.Center,
                     )
+                    // 2026-10-22 用户："加速子页速度下面的小字描述去掉"——模式说明只保留
+                    // 分段控件下方那一条，不再在速度数字下面重复一遍。
                     // 连续滑块，无 steps → 无刻度点；onValueChange 内 0.05 量化
                     var sliderVal by remember { mutableFloatStateOf(vm.playbackSpeed) }
                     androidx.compose.material3.Slider(
