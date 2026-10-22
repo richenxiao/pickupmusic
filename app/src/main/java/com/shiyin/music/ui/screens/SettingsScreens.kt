@@ -164,15 +164,20 @@ private fun CloudBackupScreen(vm: MainViewModel, scrollStates: MutableMap<String
     var pass by remember { mutableStateOf("") }
     var passVisible by remember { mutableStateOf(false) }
     var loaded by remember { mutableStateOf(false) }
-    // 2026-10-22 用户："云备份设置页中提供默认配置项，可选择坚果云 or 自定义"。
-    // 0=坚果云（地址固定，选中即回填）；1=自定义（自行填写任何 WebDAV 地址）。
-    var preset by remember { mutableStateOf(0) }
+    // 2026-10-22 用户："做成下拉单选框，默认选坚果云，也可新增自定义渠道"。 */
+    var selectedProfile by remember { mutableStateOf("坚果云") }
+    var showAddProfile by remember { mutableStateOf(false) }
     // 凭据异步载入后回填输入框（只填一次，避免覆盖用户正在输入的内容）
     androidx.compose.runtime.LaunchedEffect(vm.webDavUrl, vm.webDavUser, vm.webDavPassword) {
         if (!loaded && (vm.webDavUrl.isNotEmpty() || vm.webDavUser.isNotEmpty())) {
             url = vm.webDavUrl.ifBlank { JIANGUO_WEBDAV }
             user = vm.webDavUser; pass = vm.webDavPassword; loaded = true
-            preset = if (vm.webDavUrl.isBlank() || vm.webDavUrl.contains("dav.jianguoyun.com")) 0 else 1
+            selectedProfile = when {
+                vm.webDavProfiles.any { it.url == vm.webDavUrl } ->
+                    vm.webDavProfiles.first { it.url == vm.webDavUrl }.name
+                vm.webDavUrl.isBlank() || vm.webDavUrl.contains("dav.jianguoyun.com") -> "坚果云"
+                else -> "自定义"
+            }
         }
     }
     val tfColors = OutlinedTextFieldDefaults.colors(
@@ -206,23 +211,56 @@ private fun CloudBackupScreen(vm: MainViewModel, scrollStates: MutableMap<String
                 .padding(horizontal = 16.dp, vertical = 14.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            // 2026-10-22：预设档位（坚果云 / 自定义）。选中坚果云即回填固定地址，
-            // 免去用户对照文档手抄；自定义则自由填写任何 WebDAV 地址。
-            ThreeStopSegmentedControl(
-                labels = listOf("坚果云", "自定义"),
-                selectedIndex = preset,
-                onSelect = {
-                    preset = it
-                    if (it == 0) url = JIANGUO_WEBDAV
-                    else if (url == JIANGUO_WEBDAV) url = ""
-                },
-            )
+            // 2026-10-22（用户澄清需求）：**下拉单选框** —— 默认「坚果云」，另有用户
+            // 自己新增的渠道；末项「＋ 新增自定义…」打开表单填 名称/地址/账号/密码，
+            // 保存后下次下拉即可选到。
+            var dropOpen by remember { mutableStateOf(false) }
+            var showAddProfile by remember { mutableStateOf(false) }
+            Box(Modifier.fillMaxWidth()) {
+                Row(
+                    Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
+                        .background(c.n200).clickable { dropOpen = true }
+                        .padding(horizontal = 12.dp, vertical = 11.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        selectedProfile,
+                        style = body(13f, FontWeight.Normal, c.text),
+                        modifier = Modifier.weight(1f),
+                    )
+                    OIcon(Lucide.ChevronDown, 16.dp, c.n500)
+                }
+                androidx.compose.material3.DropdownMenu(
+                    expanded = dropOpen,
+                    onDismissRequest = { dropOpen = false },
+                    containerColor = c.surface,
+                ) {
+                    androidx.compose.material3.DropdownMenuItem(
+                        text = { Text("坚果云", style = body(13f, FontWeight.Normal, c.text)) },
+                        onClick = {
+                            selectedProfile = "坚果云"
+                            url = JIANGUO_WEBDAV
+                            dropOpen = false
+                        },
+                    )
+                    vm.webDavProfiles.forEach { prof ->
+                        androidx.compose.material3.DropdownMenuItem(
+                            text = { Text(prof.name, style = body(13f, FontWeight.Normal, c.text)) },
+                            onClick = {
+                                selectedProfile = prof.name
+                                url = prof.url; user = prof.user; pass = prof.password
+                                dropOpen = false
+                            },
+                        )
+                    }
+                    androidx.compose.material3.DropdownMenuItem(
+                        text = { Text("＋ 新增自定义…", style = body(13f, FontWeight.Normal, c.accent)) },
+                        onClick = { dropOpen = false; showAddProfile = true },
+                    )
+                }
+            }
             OutlinedTextField(
-                value = url, onValueChange = {
-                    url = it
-                    // 手动改地址即视为自定义（避免"选了坚果云却填了别家地址"的显示矛盾）
-                    if (preset == 0 && it != JIANGUO_WEBDAV) preset = 1
-                },
+                value = url, onValueChange = { url = it },
                 label = { Text("服务器地址", style = body(12f, FontWeight.Normal, c.n600)) },
                 placeholder = { Text("例如 https://dav.jianguoyun.com/dav/", style = body(13f, FontWeight.Normal, c.n500)) },
                 singleLine = true, modifier = Modifier.fillMaxWidth(),
@@ -350,6 +388,64 @@ private fun CloudBackupScreen(vm: MainViewModel, scrollStates: MutableMap<String
                         },
                         com.shiyin.music.ui.components.DialogAction("恢复", emphasized = true) {
                             vm.cloudConfirmRestore()
+                        },
+                    )
+                )
+            },
+        )
+    }
+
+    // 2026-10-22：新增自定义渠道表单（名称 / 服务器地址 / 账号 / 密码）。
+    // 保存后出现在上面的下拉单选框里；同名视为覆盖。
+    if (showAddProfile) {
+        var pName by remember { mutableStateOf("") }
+        var pUrl by remember { mutableStateOf("") }
+        var pUser by remember { mutableStateOf("") }
+        var pPass by remember { mutableStateOf("") }
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { showAddProfile = false },
+            containerColor = c.surface,
+            title = { Text("新增自定义渠道", style = body(15f, FontWeight.ExtraBold, c.text)) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    OutlinedTextField(
+                        value = pName, onValueChange = { pName = it },
+                        label = { Text("名称", style = body(12f, FontWeight.Normal, c.n600)) },
+                        singleLine = true, modifier = Modifier.fillMaxWidth(),
+                        textStyle = body(13f, FontWeight.Normal, c.text), colors = tfColors,
+                    )
+                    OutlinedTextField(
+                        value = pUrl, onValueChange = { pUrl = it },
+                        label = { Text("服务器地址", style = body(12f, FontWeight.Normal, c.n600)) },
+                        placeholder = { Text("https://…", style = body(13f, FontWeight.Normal, c.n500)) },
+                        singleLine = true, modifier = Modifier.fillMaxWidth(),
+                        textStyle = body(13f, FontWeight.Normal, c.text), colors = tfColors,
+                    )
+                    OutlinedTextField(
+                        value = pUser, onValueChange = { pUser = it },
+                        label = { Text("账号", style = body(12f, FontWeight.Normal, c.n600)) },
+                        singleLine = true, modifier = Modifier.fillMaxWidth(),
+                        textStyle = body(13f, FontWeight.Normal, c.text), colors = tfColors,
+                    )
+                    OutlinedTextField(
+                        value = pPass, onValueChange = { pPass = it },
+                        label = { Text("密码 / 应用密码", style = body(12f, FontWeight.Normal, c.n600)) },
+                        singleLine = true, modifier = Modifier.fillMaxWidth(),
+                        textStyle = body(13f, FontWeight.Normal, c.text), colors = tfColors,
+                    )
+                }
+            },
+            confirmButton = {
+                com.shiyin.music.ui.components.DialogActionsRow(
+                    listOf(
+                        com.shiyin.music.ui.components.DialogAction("取消") { showAddProfile = false },
+                        com.shiyin.music.ui.components.DialogAction("保存", emphasized = true) {
+                            vm.saveWebDavProfile(pName, pUrl, pUser, pPass)
+                            showAddProfile = false
+                            if (pName.isNotBlank()) {
+                                selectedProfile = pName.trim()
+                                url = pUrl.trim(); user = pUser.trim(); pass = pPass
+                            }
                         },
                     )
                 )

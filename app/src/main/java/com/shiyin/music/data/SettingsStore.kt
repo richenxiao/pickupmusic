@@ -15,6 +15,17 @@ import kotlinx.coroutines.flow.map
 
 private val Context.dataStore by preferencesDataStore(name = "settings")
 
+/**
+ * 自定义 WebDAV 渠道（云备份页「新增自定义」保存的一份配置）。
+ * 名称用于下拉单选框里显示，地址/账号/密码在选中该渠道时回填输入框。
+ */
+data class WebDavProfile(
+    val name: String,
+    val url: String,
+    val user: String,
+    val password: String,
+)
+
 class SettingsStore(private val context: Context) {
     private val keyDark = booleanPreferencesKey("dark_theme")
     /**
@@ -468,6 +479,44 @@ private val keyPinnedLibItems = stringSetPreferencesKey("pinned_lib_items")
             it[keyWebDavPassword] = password
         }
 
+    /**
+     * 自定义 WebDAV 渠道（2026-10-22 用户需求：云备份页做「下拉单选框」——
+     * 可选坚果云（默认）或自己新增的渠道；新增时填 名称 / 服务器地址 / 账号 / 密码）。
+     *
+     * ⚠️ 用 org.json **手动字面键名**读写（本项目 R8 反射禁令：Gson 反射绑定
+     * 在 release 包里会丢泛型）。
+     */
+    private val keyWebDavProfiles = stringPreferencesKey("webdav_profiles")
+
+    suspend fun webDavProfiles(): List<WebDavProfile> {
+        val raw = context.dataStore.data.first()[keyWebDavProfiles] ?: return emptyList()
+        return runCatching {
+            val arr = org.json.JSONArray(raw)
+            (0 until arr.length()).mapNotNull { i ->
+                val o = arr.optJSONObject(i) ?: return@mapNotNull null
+                val name = o.optString("name")
+                val url = o.optString("url")
+                if (name.isBlank() || url.isBlank()) return@mapNotNull null
+                WebDavProfile(name, url, o.optString("user"), o.optString("password"))
+            }
+        }.getOrDefault(emptyList())
+    }
+
+    suspend fun setWebDavProfiles(list: List<WebDavProfile>) = context.dataStore.edit { p ->
+        val arr = org.json.JSONArray()
+        list.forEach { prof ->
+            arr.put(
+                org.json.JSONObject().apply {
+                    put("name", prof.name)
+                    put("url", prof.url)
+                    put("user", prof.user)
+                    put("password", prof.password)
+                },
+            )
+        }
+        p[keyWebDavProfiles] = arr.toString()
+    }
+
     // ── v22: 设置随备份走 ────────────────────────────────────────────────────
     // 原来备份完全不含设置 —— 用户花最多时间配的 LLM 供应商 / API Key / 写真源
     // 换机后要从零再填一遍，这是最容易被忽略、但用户最痛的缺口。
@@ -539,6 +588,8 @@ private val keyPinnedLibItems = stringSetPreferencesKey("pinned_lib_items")
         "webdav_url" to SettingsValueCodec.STR,
         "webdav_user" to SettingsValueCodec.STR,
         "webdav_password" to SettingsValueCodec.STR,
+        // 自定义渠道列表（含各自账号密码）——同样是凭据，随备份走但计入秘密键。
+        "webdav_profiles" to SettingsValueCodec.STR,
     )
 
     /**
@@ -549,7 +600,7 @@ private val keyPinnedLibItems = stringSetPreferencesKey("pinned_lib_items")
     val BACKUP_SECRET_KEYS: Set<String> = setOf(
         "deepseek_api_key", "tavily_api_key", "fanart_api_key", "lastfm_api_key",
         "llm_providers", "llm_active_provider",
-        "webdav_url", "webdav_user", "webdav_password",
+        "webdav_url", "webdav_user", "webdav_password", "webdav_profiles",
     )
 
     /** 导出白名单设置（值已编码成"类型前缀 + 原文"，见 [SettingsValueCodec]）。 */
