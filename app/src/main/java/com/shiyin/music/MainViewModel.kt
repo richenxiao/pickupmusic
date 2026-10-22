@@ -981,6 +981,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      *  p==0 才返回,此时才卸载 overlay。中途被新拖拽打断时 snapTo 经 Animatable
      *  内部 mutex 取消 animateTo → 协程取消异常 → 本行不执行,overlay 存活。 */
     fun collapseLyrics(velocityPx: Float = 0f) {
+        // 诊断（2026-10-22 下拉误触取证）：记下是谁在什么位置触发的收起。
+        android.util.Log.i(
+            "PullGate",
+            "collapseLyrics(vel=$velocityPx) probe=${lyricsScrollProbe?.invoke() ?: "null"}",
+            Throwable("collapseLyrics caller"),
+        )
         viewModelScope.launch {
             morph.collapse(lyricsCardBounds, velocityPx)
             lyricsOn = false
@@ -1012,6 +1018,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      */
     @Volatile
     var lyricsAtTopNow: (() -> Boolean)? = null
+
+    /** 诊断（2026-10-22 下拉误触取证）：返回歌词列表此刻的位置摘要。 */
+    @Volatile
+    var lyricsScrollProbe: (() -> String)? = null
     /** 退出请求(左上角返回键/系统返回统一入口):走带动画的 collapse。 */
     fun requestLyricsExit() { collapseLyrics() }
     // v1.3.x bug① 修复:播放页"带动画退出"的请求回调。RootBackHandler 的
@@ -7316,7 +7326,35 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         appScope.launch {
             val (u, n, p) = settingsStore.webDavConfig()
             webDavUrl = u; webDavUser = n; webDavPassword = p
+            webDavProfiles = settingsStore.webDavProfiles()
         }
+    }
+
+    /** 自定义渠道列表（云备份页下拉单选框的候选项，坚果云之外的那些）。 */
+    var webDavProfiles by mutableStateOf<List<com.shiyin.music.data.WebDavProfile>>(emptyList())
+        private set
+
+    /**
+     * 新增/覆盖一个自定义渠道（2026-10-22 用户需求）。
+     * 同名视为覆盖（改配置不用先删）。
+     */
+    fun saveWebDavProfile(name: String, url: String, user: String, password: String) {
+        val n = name.trim(); val u = url.trim()
+        if (n.isEmpty() || u.isEmpty()) {
+            showToast("名称和服务器地址不能为空", null)
+            return
+        }
+        val next = webDavProfiles.filterNot { it.name == n } +
+            com.shiyin.music.data.WebDavProfile(n, u, user.trim(), password)
+        webDavProfiles = next
+        appScope.launch { settingsStore.setWebDavProfiles(next) }
+    }
+
+    /** 删除一个自定义渠道。 */
+    fun deleteWebDavProfile(name: String) {
+        val next = webDavProfiles.filterNot { it.name == name }
+        webDavProfiles = next
+        appScope.launch { settingsStore.setWebDavProfiles(next) }
     }
 
     fun saveWebDavConfig(url: String, user: String, password: String) {

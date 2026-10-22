@@ -114,8 +114,19 @@ fun LyricsMorphOverlay(vm: MainViewModel, morph: LyricsMorphState, interactive: 
                     // 不再用异步快照布尔 —— 旧实现快速滑动/长按拖动时可能拿到旧值，
                     // 用户报"在歌词中间/最后几句也能拖几次触发下拉"。
                     val downAtTop = vm.lyricsAtTopNow?.invoke() ?: vm.lyricsListAtTop
+                    android.util.Log.i(
+                        "PullGate",
+                        "DOWN atTop=$downAtTop hasClosure=${vm.lyricsAtTopNow != null} " +
+                            "probe=${vm.lyricsScrollProbe?.invoke() ?: "null"}",
+                    )
                     var dragging = false
                     var pullDown = false
+                    // 2026-10-22（用户："限制错误的范围连下拉都不允许"）：中段的
+                    // **长按拖动**整段吞掉 —— 既不做 morp 下拉、也不放行给下面的播放
+                    // 页 sheet（sheet 拖不动到底会回弹，用户看到的就是"能拉但退不出"
+                    // 的撕裂感）。判据：越过 slop 前已按住 ≥ longPress 阈值。
+                    // 为什么只吞长按拖动：普通（非长按）拖动要留给列表正常上下滚。
+                    var swallow = false
                     var lastY = down.position.y
                     while (true) {
                         val event = awaitPointerEvent(androidx.compose.ui.input.pointer.PointerEventPass.Initial)
@@ -130,7 +141,17 @@ fun LyricsMorphOverlay(vm: MainViewModel, morph: LyricsMorphState, interactive: 
                                     // 越过 slop 时再问一次：起手在顶、但手势过程中列表
                                     // 被跟行/惯性带离顶部 → 本次不当下拉处理（防误触）。
                                     val stillAtTop = vm.lyricsAtTopNow?.invoke() ?: downAtTop
-                                    if (downAtTop && stillAtTop) dragging = true
+                                    if (downAtTop && stillAtTop) {
+                                        dragging = true
+                                    } else {
+                                        val heldMs = change.uptimeMillis - down.uptimeMillis
+                                        swallow = heldMs >= viewConfiguration.longPressTimeoutMillis
+                                    }
+                                    android.util.Log.i(
+                                        "PullGate",
+                                        "SLOP dy=$dyRaw downAtTop=$downAtTop stillAtTop=$stillAtTop " +
+                                            "dragging=$dragging swallow=$swallow probe=${vm.lyricsScrollProbe?.invoke() ?: "null"}",
+                                    )
                                 }
                             }
                             lastY = change.position.y
@@ -138,6 +159,8 @@ fun LyricsMorphOverlay(vm: MainViewModel, morph: LyricsMorphState, interactive: 
                         if (dragging) {
                             morph.onDrag(change.position.y - lastY)
                             lastY = change.position.y
+                            change.consume()
+                        } else if (swallow) {
                             change.consume()
                         }
                         if (!event.changes.any { it.pressed }) {

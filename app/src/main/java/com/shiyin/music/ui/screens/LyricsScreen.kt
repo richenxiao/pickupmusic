@@ -522,6 +522,11 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
             if (vm.morph.progress.value in 0.001f..0.949f) { prevActiveI = activeI; return@LaunchedEffect }
             if (listIsDragged) { prevActiveI = activeI; return@LaunchedEffect }
             val wait = followPauseUntil - android.os.SystemClock.elapsedRealtime()
+            android.util.Log.i(
+                "LyricsFollow",
+                "触发 activeI=$activeI dragged=$listIsDragged wait=$wait " +
+                    "scrolling=${listState.isScrollInProgress}",
+            )
             if (wait > 0) kotlinx.coroutines.delay(wait)
             if (activeI >= 0) {
                 val info = listState.layoutInfo
@@ -562,6 +567,11 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
         // 快速滑动/长按拖动时可能拿旧值，导致"不在顶部也能拉下"的误触。
         androidx.compose.runtime.LaunchedEffect(listState) {
             vm.lyricsAtTopNow = { !listState.canScrollBackward }
+            vm.lyricsScrollProbe = {
+                "idx=${listState.firstVisibleItemIndex} off=${listState.firstVisibleItemScrollOffset}" +
+                    " canBack=${listState.canScrollBackward} scrolling=${listState.isScrollInProgress}" +
+                    " items=${listState.layoutInfo.totalItemsCount}"
+            }
         }
         // v1.3.x 第6轮反馈:下拉退出的**唯一起手判据**是"本手势按下那一刻列表是否在顶"。
         // 该判据由 LyricsMorphOverlay 的指针闸门独占实现(它在 awaitFirstDown 时读
