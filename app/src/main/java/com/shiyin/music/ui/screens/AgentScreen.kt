@@ -382,9 +382,10 @@ fun AgentScreen(vm: MainViewModel) {
                             contentDescription = null,
                             // v1.3.9: 40→56dp。参考 Claude 欢迎页层级:Logo 是点睛,
                             // 视觉主体让位给大字号问候语。
-                            modifier = Modifier.size(56.dp),
+                            // 2026-10-23 用户："LOGO 可以调的大一点" ⇒ 56 → 76dp。
+                            modifier = Modifier.size(76.dp),
                         )
-                        Spacer(Modifier.height(20.dp))
+                        Spacer(Modifier.height(22.dp))
                         // v1.3.13:问候语改为打字机呈现(用户规格)。
                         // 文案**显式分成 1-2 行**渲染,不再靠自动折行——断点由文案决定,
                         // 不随机型宽度乱跳;每行短到能独占一行,颜文字只落在行尾且整组不拆。
@@ -1567,15 +1568,25 @@ private fun TypewriterGreeting(
                     }
                 } ?: GREETING_SIZES.last()
             }
+            // 2026-10-23 用户："欢迎语视觉上不对齐，改得自然些"。
+            // 原来 textAlign=Center + fillMaxWidth ⇒ **每一行各自居中**：第二行短，看起来就"错位"。
+            // 现在把文本框收到**最长行**的宽度、整体左对齐（块本身仍由外层居中）——
+            // 两行左缘对齐，是这类问候语最自然的排法。
+            val style = probe.copy(fontSize = size.sp, lineHeight = 34.sp)
+            val widestPx = remember(lines, size, availPx) {
+                lines.maxOf { measurer.measure(AnnotatedString(it), style = style).size.width }
+            }
             Text(
                 text = shownText,
-                style = probe.copy(fontSize = size.sp, lineHeight = 34.sp),
-                textAlign = TextAlign.Center,
+                style = style,
+                textAlign = TextAlign.Start,
                 softWrap = false,
-                modifier = Modifier.fillMaxWidth().clearAndSetSemantics {
-                    // TalkBack 一次读完整句,不要跟着打字机一个字一个字念
-                    contentDescription = lines.joinToString(" ")
-                },
+                modifier = Modifier
+                    .width(with(LocalDensity.current) { widestPx.toDp() })
+                    .clearAndSetSemantics {
+                        // TalkBack 一次读完整句,不要跟着打字机一个字一个字念
+                        contentDescription = lines.joinToString(" ")
+                    },
             )
         }
     }

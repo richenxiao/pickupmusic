@@ -256,7 +256,19 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      * 完成后变六边形」。**分离引擎尚未接入**，现在只会 Idle <-> Loading；Active 由引擎回写。
      */
     var karaokeState by mutableStateOf(com.shiyin.music.ui.components.KaraokeButtonState.Idle); private set
+    /**
+     * 歌词本「あ」振假名的**手动选择**（2026-10-23 用户："需要记忆 —— 我关掉之后，
+     * 下次展开不要又按设置默认打开，直到我手动打开或切歌为止"）。
+     * 只对**当前这首**有效：`track.id` 与它匹配才用 [furiganaOverrideOn]，换曲即作废
+     * （见 onTrackStarted）。
+     */
+    var furiganaOverrideTrackId: Long = -1L; private set
+    var furiganaOverrideOn: Boolean = false; private set
 
+    fun rememberFuriganaChoice(trackId: Long, on: Boolean) {
+        furiganaOverrideTrackId = trackId
+        furiganaOverrideOn = on
+    }
     /**
      * v1.5.0 伴唱面板：三档混音选择（**0 = 人声 / 1 = 原曲（默认）/ 2 = 伴奏**）。
      *
@@ -981,12 +993,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      *  p==0 才返回,此时才卸载 overlay。中途被新拖拽打断时 snapTo 经 Animatable
      *  内部 mutex 取消 animateTo → 协程取消异常 → 本行不执行,overlay 存活。 */
     fun collapseLyrics(velocityPx: Float = 0f) {
-        // 诊断（2026-10-22 下拉误触取证）：记下是谁在什么位置触发的收起。
-        android.util.Log.i(
-            "PullGate",
-            "collapseLyrics(vel=$velocityPx) probe=${lyricsScrollProbe?.invoke() ?: "null"}",
-            Throwable("collapseLyrics caller"),
-        )
         viewModelScope.launch {
             morph.collapse(lyricsCardBounds, velocityPx)
             lyricsOn = false
@@ -1018,23 +1024,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      */
     @Volatile
     var lyricsAtTopNow: (() -> Boolean)? = null
-
-    /** 同上，但**不要求"当前不在滚动"**（兜底守卫用，见 LyricsMorphOverlay）。 */
-    @Volatile
-    var lyricsAtTopRaw: (() -> Boolean)? = null
-
-    /**
-     * 列表**进入"稳定停在顶部"**的时刻（elapsedRealtime；0 = 当前不在稳定顶部）。
-     *
-     * 2026-10-22 用户实测：下滑带惯性刚冲到顶部、紧接着长按往上拖，会被当成"想退出"。
-     * 闸门据此要求"顶部稳定 ≥ [LyricsPullGateMinStableMs] 才允许下拉"。
-     */
-    @Volatile
-    var lyricsAtTopSince: Long = 0L
-
-    /** 诊断（2026-10-22 下拉误触取证）：返回歌词列表此刻的位置摘要。 */
-    @Volatile
-    var lyricsScrollProbe: (() -> String)? = null
     /** 退出请求(左上角返回键/系统返回统一入口):走带动画的 collapse。 */
     fun requestLyricsExit() { collapseLyrics() }
     // v1.3.x bug① 修复:播放页"带动画退出"的请求回调。RootBackHandler 的
@@ -5139,6 +5128,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         if (id != lastKeyShiftTrackId) {
             lastKeyShiftTrackId = id
             if (keyShift != 0) keyShift = 0
+            // 2026-10-23：换曲即作废"振假名手动选择"（用户口径：记忆持续到切歌为止）。
+            furiganaOverrideTrackId = -1L
         }
         // A71（用户 2026-10-15）：**真换曲**时把伴唱复位。不复位的话处理器仍按绝对帧号
         // 读**上一首**的缓存目录 ⇒ 自动续播时听到上一首的伴奏，界面也停在 Active。
@@ -6939,31 +6930,39 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             "matchOnline: title=${track.title} | artist=${track.artist} | album=${track.album} | dur=${track.durationSec}s | fromSource=$sourceIndex",
         )
         val sources = LyricsFetcher.activeSources()
-        // Bug4a: try sources in order, preferring any that yields timestamped
-        // lyrics (LRC). Plain-text results are accepted only as a last resort
-        // (no other source produced anything) — same logic for the auto
-        // `thenNextSource` path and the explicit source-pick path.
+        // 2026-10-23 用户："研究歌词匹配流程，提高匹配速度 —— 能不能多线程查找？多端都
+        // 返回时选匹配度更高的；只有一条返回时也比一个个走快。"
+        // ⇒ 自动级联（thenNextSource）时**并发拉所有启用源**；显式选源时只拉那一个。
+        // 结果仍按**源顺序**优先取"带时间轴的"，回退纯文本 —— 与旧语义一致（顺序=优先级），
+        // 只是把串行等待变成并行等待（总耗时 ≈ 最慢的那个源，而不是各家之和）。
+        val toTry: List<String> = if (thenNextSource) {
+            sources.indices.map { sources[(sourceIndex + it) % sources.size] }
+        } else {
+            listOf(sources[sourceIndex % sources.size])
+        }
+        val results: List<Pair<String, String?>> = kotlinx.coroutines.coroutineScope {
+            val scope = this
+            toTry.map { src ->
+                scope.async(kotlinx.coroutines.Dispatchers.IO) {
+                    val raw = runCatching {
+                        LyricsFetcher.fetch(src, track.title, track.artist, track.album, track.durationSec)
+                    }.getOrNull()
+                    android.util.Log.i("Lyrics", "源 $src 返回 ${raw?.length ?: 0} 字（并发）")
+                    src to raw
+                }
+            }.awaitAll()
+        }
         var syncedFound: Pair<String, String>? = null
         var plainFound: Pair<String, String>? = null
-        var i = sourceIndex
-        var attempts = 0
-        val maxAttempts = if (thenNextSource) sources.size else 1
-        while (attempts < maxAttempts) {
-            val src = sources[i % sources.size]
-            val raw = LyricsFetcher.fetch(src, track.title, track.artist, track.album, track.durationSec)
-            android.util.Log.i("Lyrics", "源 $src 返回 ${raw?.length ?: 0} 字")
-            if (raw != null) {
-                val parsed = LrcParser.parse(raw)
-                if (!parsed.isEmpty) {
-                    if (parsed.synced) {
-                        syncedFound = src to raw
-                        break
-                    } else if (plainFound == null) {
-                        plainFound = src to raw
-                    }
-                }
+        for ((src, raw) in results) {
+            if (raw == null) continue
+            val parsed = LrcParser.parse(raw)
+            if (parsed.isEmpty) continue
+            if (parsed.synced) {
+                if (syncedFound == null) syncedFound = src to raw   // 源顺序 = 优先级
+            } else if (plainFound == null) {
+                plainFound = src to raw
             }
-            i++; attempts++
         }
         var found: Pair<String, String>? = syncedFound ?: plainFound
         // v1.3.x: 旧 v2.0 DeepSeek 兜底已下线——硬编码的 deepseek-chat 模型名 2026-07 停用,

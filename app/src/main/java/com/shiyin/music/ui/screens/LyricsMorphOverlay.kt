@@ -30,14 +30,6 @@ import com.shiyin.music.ui.components.LyricsMorphState
 import kotlinx.coroutines.launch
 
 /**
- * 允许下拉退出前，「歌词列表稳定停在顶部」所需的时长（毫秒）。
- *
- * 用户 2026-10-22 实测：往下滑（带惯性冲到顶）后**立刻**长按往上拖，会被当成想退出。
- * 要求顶部稳定 ≥ 此值，把"刚到顶的余势"和"用户确实想退出"分开。
- */
-private const val PULL_MIN_STABLE_MS = 400L
-
-/**
  * v2 架构收敛后的 morph overlay(状态收敛 commit 1 + 内容解耦 commit 2)。
  *
  * 状态(状态收敛):progress(VM 常驻 Animatable)是唯一连续真源;lyricsOn 是
@@ -143,11 +135,6 @@ fun LyricsMorphOverlay(vm: MainViewModel, morph: LyricsMorphState, interactive: 
                                     // 被跟行/惯性带离顶部 → 本次不当下拉处理（防误触）。
                                     val stillAtTop = vm.lyricsAtTopNow?.invoke() ?: downAtTop
                                     if (downAtTop && stillAtTop) dragging = true
-                                    android.util.Log.i(
-                                        "PullGate",
-                                        "SLOP dy=$dyRaw downAtTop=$downAtTop stillAtTop=$stillAtTop " +
-                                            "dragging=$dragging probe=${vm.lyricsScrollProbe?.invoke() ?: "null"}",
-                                    )
                                 }
                             }
                             lastY = change.position.y

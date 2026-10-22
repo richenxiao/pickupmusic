@@ -1386,44 +1386,86 @@ private fun MiniPlayer(vm: MainViewModel, track: Track) {
 @Composable
 private fun BottomNav(vm: MainViewModel) {
     val c = LocalOrganic.current
-    Row(
+    // 2026-10-23 用户："给首页/搜索/音乐库加入滑块的视觉动画，美观一点"。
+    // 做法：底下一个**会滑动的胶囊高亮**跟着当前 tab 走（260ms FastOutSlowIn），
+    // 当前项图标/文字再做一点轻微放大 —— 切换时是"滑过去"而不是"跳过去"。
+    val items = listOf(
+        Triple(Tab.Home, Lucide.Home, "首页"),
+        Triple(Tab.Search, Lucide.Search, "搜索"),
+        Triple(Tab.Library, Lucide.Library, "音乐库"),
+    )
+    val activeIndex = if (vm.settingsOpen) -1 else items.indexOfFirst { it.first == vm.tab }
+    BoxWithConstraints(
         Modifier
             .fillMaxWidth()
             .background(c.surface)
             .padding(start = 6.dp, end = 6.dp, top = 8.dp, bottom = 6.dp),
-        horizontalArrangement = Arrangement.spacedBy(2.dp),
     ) {
-        val items = listOf(
-            Triple(Tab.Home, Lucide.Home, "首页"),
-            Triple(Tab.Search, Lucide.Search, "搜索"),
-            Triple(Tab.Library, Lucide.Library, "音乐库"),
-        )
-        for ((tab, icon, label) in items) {
-            val active = vm.tab == tab && !vm.settingsOpen
-            val tint = if (active) c.a700 else c.n500
-            Column(
+        val gap = 2.dp
+        val gapPx = with(LocalDensity.current) { gap.toPx() }
+        val itemW = (maxWidth - gap * (items.size - 1)) / items.size
+        val itemWpx = with(LocalDensity.current) { itemW.toPx() } + gapPx
+        val slide = remember { androidx.compose.animation.core.Animatable(0f) }
+        androidx.compose.runtime.LaunchedEffect(activeIndex, itemWpx) {
+            if (activeIndex >= 0) {
+                slide.animateTo(
+                    activeIndex * itemWpx,
+                    androidx.compose.animation.core.tween(
+                        260,
+                        easing = androidx.compose.animation.core.FastOutSlowInEasing,
+                    ),
+                )
+            }
+        }
+        if (activeIndex >= 0) {
+            Box(
                 Modifier
-                    .weight(1f)
+                    .graphicsLayer { translationX = slide.value }
+                    .width(itemW)
+                    .height(48.dp)
                     .clip(RoundedCornerShape(14.dp))
-                    .clickable {
-                        // v1.2.0 #6 修复：从歌手/专辑等下钻页点底部导航应回该 tab 根，
-                        // 不能只切 tab（artistKey/albumKey 仍在 → 歌手页不退 → "没反应"）。
-                        vm.tab = tab
-                        vm.settingsOpen = false
-                        // v1.3.3 返回恢复:用户主动切 tab → 作废记录的下钻来源 tab,
-                        // 且主动离开歌手页也要清其快照(不残留)。
-                        vm.discardPrevTab()
-                        vm.clearArtistUiState()
-                        vm.artistKey = null
-                        vm.albumKey = null
-                        vm.plId = null
-                    }
-                    .padding(vertical = 5.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(3.dp),
-            ) {
-                OIcon(icon, 21.dp, tint)
-                Text(label, style = body(10.5f, FontWeight.Bold, tint))
+                    .background(c.a700.copy(alpha = 0.13f)),
+            )
+        }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(gap)) {
+            for ((i, item) in items.withIndex()) {
+                val (tab, icon, label) = item
+                val active = i == activeIndex
+                val tint = if (active) c.a700 else c.n500
+                val scale by androidx.compose.animation.core.animateFloatAsState(
+                    targetValue = if (active) 1.08f else 1f,
+                    animationSpec = androidx.compose.animation.core.tween(220),
+                    label = "navScale",
+                )
+                Column(
+                    Modifier
+                        .weight(1f)
+                        .height(48.dp)
+                        .clip(RoundedCornerShape(14.dp))
+                        .clickable {
+                            // v1.2.0 #6 修复：从歌手/专辑等下钻页点底部导航应回该 tab 根，
+                            // 不能只切 tab（artistKey/albumKey 仍在 → 歌手页不退 → "没反应"）。
+                            vm.tab = tab
+                            vm.settingsOpen = false
+                            // v1.3.3 返回恢复:用户主动切 tab → 作废记录的下钻来源 tab,
+                            // 且主动离开歌手页也要清其快照(不残留)。
+                            vm.discardPrevTab()
+                            vm.clearArtistUiState()
+                            vm.artistKey = null
+                            vm.albumKey = null
+                            vm.plId = null
+                        }
+                        .graphicsLayer {
+                            scaleX = scale
+                            scaleY = scale
+                        },
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center,
+                ) {
+                    OIcon(icon, 21.dp, tint)
+                    Spacer(Modifier.height(3.dp))
+                    Text(label, style = body(10.5f, FontWeight.Bold, tint))
+                }
             }
         }
     }

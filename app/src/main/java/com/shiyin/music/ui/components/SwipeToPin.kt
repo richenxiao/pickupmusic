@@ -154,25 +154,37 @@ fun SwipeToPin(
                                 // 旧实现只在"纵向占优"时才 break，所以先小幅度斜一下、之后横着拉，
                                 // 仍会被判成横向 —— 这就是"斜着滑还是会触发"的来源。
                                 var decided = false
+                                // 2026-10-23 用户："除了少部分能滑动固定，其他滑动都没反应了"。
+                                // 根因：原来**一过 slop 就落锤** —— 而向下滑时手指通常先产生
+                                // 小的 dy（重力弧线），dx 还没长起来就被判成纵向、整条手势作废。
+                                // 现在改成**等方向明确才落锤**（三条判据任一命中才决定）：
+                                //  ① 明显横（|dx| > slop 且 |dx| ≥ 2.75|dy|）→ 横向固定；
+                                //  ② 明显纵（|dy| > slop 且 |dy| ≥ 2.75|dx|）→ 锁纵向；
+                                //  ③ 位移已经不小（> 2.5×slop）仍分不出方向 → 按滚动处理。
+                                // 既不再"斜着也触发"（判据 ① 未松），也不再"大多数点不动"。
                                 while (true) {
                                     val event = awaitPointerEvent()
                                     val ch = event.changes.firstOrNull { it.id == down.id } ?: break
                                     val dx = ch.position.x - down.position.x
                                     val dy = ch.position.y - down.position.y
-                                    if (!dragging && !decided && (abs(dx) > slop || abs(dy) > slop)) {
-                                        // 一过 slop 就落锤：横向 ⇒ 进入拖动；否则 ⇒ **整条手势锁纵向**
-                                        decided = true
-                                        if (SwipePin.isHorizontalIntent(dx, dy, slop)) {
+                                    if (!dragging && !decided) {
+                                        val ax = abs(dx); val ay = abs(dy)
+                                        val horiz = SwipePin.isHorizontalIntent(dx, dy, slop)
+                                        val vert = ay > slop && ay >= ax * SwipePin.LOCK_ASPECT
+                                        val ambiguous = (ax > slop * 2.5f || ay > slop * 2.5f)
+                                        if (horiz) {
+                                            decided = true
                                             dragging = true
                                             baseAtStart = curPinned
                                             cancelFade.floatValue = 1f   // 上一次取消的淡出别影响到这次
                                             releaseJob?.cancel()         // 新拖动接管，停掉上次回弹
                                             releaseJob = null
-                                        } else {
+                                        } else if (vert || ambiguous) {
+                                            decided = true
                                             break
                                         }
-                                        SwipePinLog.decided(dx, dy, slop, dragging)
                                     }
+                                    SwipePinLog.decided(dx, dy, slop, dragging)
                                     if (dragging) {
                                         ch.consume()           // 锁定横向：列表不再纵向滚动
                                         // 直接赋值（非挂起）：严格跟手、零延迟、无协程竞争

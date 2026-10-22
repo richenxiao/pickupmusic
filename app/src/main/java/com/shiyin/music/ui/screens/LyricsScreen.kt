@@ -198,7 +198,15 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
     val foreignLyrics = remember(lines, vm.translateButtonMode) {
         vm.shouldShowTranslateButton(lines.map { it.text })
     }
-    var furiganaOn by remember(track.id) { mutableStateOf(hasKana && vm.furiganaDefaultOn) }
+    // 2026-10-23 用户："展开的歌词本下方按钮需要有记忆 —— 比如一首歌里有两个假名被误
+    // 判成日语歌、振假名全开，我关掉之后，下次展开又按设置默认打开了；那就不要再默认
+    // 打开，直到我手动打开或切歌为止。" ⇒ 手动选择记在 VM（按 track.id），切歌即清。
+    var furiganaOn by remember(track.id) {
+        mutableStateOf(
+            if (vm.furiganaOverrideTrackId == track.id) vm.furiganaOverrideOn
+            else (hasKana && vm.furiganaDefaultOn),
+        )
+    }
     // V1.1: 跑准确率流水线（Song Override>纠错表>JMdict>Kuromoji>No Reading）。
     // key 含 furiganaRevision，保存/删除 Song Override 后 bump 即重算该曲。
     val segmentsByLine by produceState<List<List<RubySegment>>?>(initialValue = null, ly, vm.furiganaRevision) {
@@ -522,11 +530,6 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
             if (vm.morph.progress.value in 0.001f..0.949f) { prevActiveI = activeI; return@LaunchedEffect }
             if (listIsDragged) { prevActiveI = activeI; return@LaunchedEffect }
             val wait = followPauseUntil - android.os.SystemClock.elapsedRealtime()
-            android.util.Log.i(
-                "LyricsFollow",
-                "触发 activeI=$activeI dragged=$listIsDragged wait=$wait " +
-                    "scrolling=${listState.isScrollInProgress}",
-            )
             if (wait > 0) kotlinx.coroutines.delay(wait)
             if (activeI >= 0) {
                 val info = listState.layoutInfo
@@ -572,24 +575,6 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
             // 的那一瞬间被当成"用户想退出"。
             vm.lyricsAtTopNow = {
                 !listState.canScrollBackward && !listState.isScrollInProgress
-            }
-            // 兜底守卫用：**只判"列表是否在顶"**（不看是否正在滚动）——
-            // 中段一律不拦（拦了会把 LazyColumn 越过 touch-slop 前的起步位移吃掉，
-            // 用户就会觉得"有时候滑不动"，2026-10-22 实测）。
-            vm.lyricsAtTopRaw = { !listState.canScrollBackward }
-            vm.lyricsScrollProbe = {
-                "idx=${listState.firstVisibleItemIndex} off=${listState.firstVisibleItemScrollOffset}" +
-                    " canBack=${listState.canScrollBackward} scrolling=${listState.isScrollInProgress}" +
-                    " items=${listState.layoutInfo.totalItemsCount}"
-            }
-            // 记录"稳定停在顶部"的起始时刻（闸门用来要求顶部稳定 ≥400ms 才允许下拉，
-            // 否则"惯性刚到顶就往上拖"会被误判成想退出 —— 用户 2026-10-22 实测）。
-            // ⚠️ 这个 collect 永不返回，必须放在本块**最后**（否则后面几行赋值不会执行）。
-            androidx.compose.runtime.snapshotFlow {
-                !listState.canScrollBackward && !listState.isScrollInProgress
-            }.collect { atTop ->
-                vm.lyricsAtTopSince =
-                    if (atTop) android.os.SystemClock.elapsedRealtime() else 0L
             }
         }
         // v1.3.x 第6轮反馈:下拉退出的**唯一起手判据**是"本手势按下那一刻列表是否在顶"。
@@ -1161,7 +1146,10 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
                             .then(if (interactive) Modifier.clickable(
                                 interactionSource = kanaSrc,
                                 indication = null,
-                            ) { furiganaOn = !furiganaOn } else Modifier),
+                            ) {
+                                furiganaOn = !furiganaOn
+                                vm.rememberFuriganaChoice(track.id, furiganaOn)
+                            } else Modifier),
                         contentAlignment = Alignment.Center,
                     ) {
                         Text(

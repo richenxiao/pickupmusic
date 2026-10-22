@@ -167,6 +167,8 @@ private fun CloudBackupScreen(vm: MainViewModel, scrollStates: MutableMap<String
     // 2026-10-22 用户："做成下拉单选框，默认选坚果云，也可新增自定义渠道"。 */
     var selectedProfile by remember { mutableStateOf("坚果云") }
     var showAddProfile by remember { mutableStateOf(false) }
+    // 删除自定义渠道的目标（弹窗与下拉菜单都要用 ⇒ 提到函数级作用域）
+    var pendingDeleteProfile by remember { mutableStateOf<String?>(null) }
     // 凭据异步载入后回填输入框（只填一次，避免覆盖用户正在输入的内容）
     androidx.compose.runtime.LaunchedEffect(vm.webDavUrl, vm.webDavUser, vm.webDavPassword) {
         if (!loaded && (vm.webDavUrl.isNotEmpty() || vm.webDavUser.isNotEmpty())) {
@@ -241,6 +243,15 @@ private fun CloudBackupScreen(vm: MainViewModel, scrollStates: MutableMap<String
                     vm.webDavProfiles.forEach { prof ->
                         androidx.compose.material3.DropdownMenuItem(
                             text = { Text(prof.name, style = body(13f, FontWeight.Normal, c.text)) },
+                            trailingIcon = {
+                                // 2026-10-22 用户："云备份自己设置的渠道也要允许删除啊"
+                                // ⇒ 自定义渠道右侧加一个删除钮（点了走二次确认）。
+                                Box(
+                                    Modifier.size(32.dp).clip(CircleShape)
+                                        .clickableNoRipple { pendingDeleteProfile = prof.name },
+                                    contentAlignment = Alignment.Center,
+                                ) { OIcon(Lucide.Trash, 15.dp, c.n500) }
+                            },
                             onClick = {
                                 selectedProfile = prof.name
                                 url = prof.url; user = prof.user; pass = prof.password
@@ -374,32 +385,52 @@ private fun CloudBackupScreen(vm: MainViewModel, scrollStates: MutableMap<String
         // ── 云端备份列表 ────────────────────────────────────────────────
         if (vm.cloudFiles.isNotEmpty()) {
             SectionLabel("云端备份 · ${vm.cloudFiles.size} 个")
-            Column(
-                Modifier.fillMaxWidth().shadowSm(RoundedCornerShape(28.dp))
-                    .clip(RoundedCornerShape(28.dp)).background(c.surface)
-                    .padding(horizontal = 16.dp, vertical = 6.dp),
-            ) {
-                vm.cloudFiles.sortedByDescending { it.name }.forEachIndexed { idx, f ->
-                    Row(
-                        Modifier.fillMaxWidth()
-                            .clickable(enabled = !vm.cloudBusy) { vm.cloudRequestRestore(f.name) }
-                            .padding(vertical = 13.dp),
-                        verticalAlignment = Alignment.CenterVertically,
+            // 2026-10-23 用户："云端备份不要一起排列，而是按日期：2026年X月X日 → 下面挂
+            // 当天那几个备份" ⇒ 按**文件名里的日期**（pickupmusic-backup-YYYYMMDD-HHmmss）
+            // 分组，日期作小标题、当天文件缩进列出，各自一个「恢复」。
+            val dateOf: (com.shiyin.music.data.backup.WebDavXml.Entry) -> String = { e ->
+                val m = Regex("""(\d{4})(\d{2})(\d{2})""").find(e.name)
+                if (m != null) "${m.groupValues[1]}年${m.groupValues[2].trimStart('0')}月${m.groupValues[3].trimStart('0')}日"
+                else "更早"
+            }
+            val grouped = vm.cloudFiles
+                .sortedByDescending { it.name }
+                .groupBy(dateOf)
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                for ((date, files) in grouped) {
+                    Column(
+                        Modifier.fillMaxWidth().shadowSm(RoundedCornerShape(16.dp))
+                            .clip(RoundedCornerShape(16.dp)).background(c.surface)
+                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
-                        Column(Modifier.weight(1f)) {
-                            Text(f.name, style = body(13.5f, FontWeight.SemiBold, c.text),
-                                maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            if (f.size > 0) {
-                                Text(
-                                    "%.1f MB".format(f.size / 1024.0 / 1024.0),
-                                    style = body(11f, FontWeight.Normal, c.n500),
-                                )
+                        Text(date, style = body(14.5f, FontWeight.ExtraBold, c.text))
+                        for ((idx, f) in files.withIndex()) {
+                            Row(
+                                Modifier.fillMaxWidth()
+                                    .clickable(enabled = !vm.cloudBusy) { vm.cloudRequestRestore(f.name) }
+                                    .padding(start = 10.dp, top = 4.dp, bottom = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Column(Modifier.weight(1f)) {
+                                    Text(
+                                        "— ${f.name}",
+                                        style = body(13f, FontWeight.Normal, c.text),
+                                        maxLines = 1, overflow = TextOverflow.Ellipsis,
+                                    )
+                                    if (f.size > 0) {
+                                        Text(
+                                            "%.1f MB".format(f.size / 1024.0 / 1024.0),
+                                            style = body(11f, FontWeight.Normal, c.n500),
+                                        )
+                                    }
+                                }
+                                Text("恢复", style = body(12.5f, FontWeight.Bold, c.accent))
+                            }
+                            if (idx < files.lastIndex) {
+                                Box(Modifier.fillMaxWidth().height(1.dp).background(c.divider))
                             }
                         }
-                        Text("恢复", style = body(12.5f, FontWeight.Bold, c.accent))
-                    }
-                    if (idx < vm.cloudFiles.size - 1) {
-                        Box(Modifier.fillMaxWidth().height(1.dp).background(c.divider))
                     }
                 }
             }
@@ -441,6 +472,34 @@ private fun CloudBackupScreen(vm: MainViewModel, scrollStates: MutableMap<String
                             vm.cloudConfirmRestore()
                         },
                     )
+                )
+            },
+        )
+    }
+
+    // 删除自定义渠道（二次确认；只删这条渠道记录，不影响已保存的当前凭据）
+    pendingDeleteProfile?.let { name ->
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { pendingDeleteProfile = null },
+            containerColor = c.surface,
+            title = { Text("删除渠道", style = body(15f, FontWeight.ExtraBold, c.text)) },
+            text = {
+                Text(
+                    "将删除「$name」这条云备份渠道。当前已保存的账号密码不受影响。",
+                    style = body(12.5f, FontWeight.Normal, c.n700).copy(lineHeight = 19.sp),
+                )
+            },
+            confirmButton = {
+                com.shiyin.music.ui.components.DialogActionsRow(
+                    listOf(
+                        com.shiyin.music.ui.components.DialogAction("取消") { pendingDeleteProfile = null },
+                        com.shiyin.music.ui.components.DialogAction("删除", emphasized = true) {
+                            vm.deleteWebDavProfile(name)
+                            if (selectedProfile == name) selectedProfile = "坚果云"
+                            pendingDeleteProfile = null
+                        },
+                    ),
+                    emphasizedColor = DANGER_RED,
                 )
             },
         )
