@@ -21,6 +21,7 @@ import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import com.shiyin.music.MainViewModel
@@ -121,11 +122,12 @@ fun LyricsMorphOverlay(vm: MainViewModel, morph: LyricsMorphState, interactive: 
                     )
                     var dragging = false
                     var pullDown = false
-                    // 2026-10-22（用户："限制错误的范围连下拉都不允许"）：中段的
-                    // **长按拖动**整段吞掉 —— 既不做 morp 下拉、也不放行给下面的播放
-                    // 页 sheet（sheet 拖不动到底会回弹，用户看到的就是"能拉但退不出"
-                    // 的撕裂感）。判据：越过 slop 前已按住 ≥ longPress 阈值。
-                    // 为什么只吞长按拖动：普通（非长按）拖动要留给列表正常上下滚。
+                    // 中段**长按拖动**整段吞掉（用户 2026-10-22 验证有效）：长按时
+                    // LazyColumn 不参与滚动，delta 会全落到下面的播放页 sheet 上
+                    // （sheet 被拖但 Hidden 被否决 ⇒ "能拉动 + 回弹"）。
+                    // ⚠️ 只在"按住 ≥ 长按阈值"时吞：普通滚动（按下即动）不受影响 ——
+                    // 早先"无条件吞"会把列表越过 touch-slop 前的起步位移也吃掉，
+                    // 用户反馈"有时候滑不动"，已改回按长按判定。
                     var swallow = false
                     var lastY = down.position.y
                     while (true) {
@@ -144,8 +146,8 @@ fun LyricsMorphOverlay(vm: MainViewModel, morph: LyricsMorphState, interactive: 
                                     if (downAtTop && stillAtTop) {
                                         dragging = true
                                     } else {
-                                        val heldMs = change.uptimeMillis - down.uptimeMillis
-                                        swallow = heldMs >= viewConfiguration.longPressTimeoutMillis
+                                        swallow = change.uptimeMillis - down.uptimeMillis >=
+                                            viewConfiguration.longPressTimeoutMillis
                                     }
                                     android.util.Log.i(
                                         "PullGate",
@@ -183,6 +185,34 @@ fun LyricsMorphOverlay(vm: MainViewModel, morph: LyricsMorphState, interactive: 
                     }
                 }
             } else Modifier)
+            // 2026-10-22（用户："还是会触发、只是能回弹"）：兜底守卫 —— 歌词本打开时、
+            // **列表已在顶部**的情况下，把列表吃不掉的向下位移吞掉，不让它冒到下面的
+            // 播放页 ModalBottomSheet（sheet 被拖但 Hidden 被否决 ⇒ "能拉动 + 回弹"）。
+            //
+            // ⚠️ 只在"已在顶部"时吞（2026-10-22 实测修正）：中段如果也吞，会把
+            // LazyColumn 越过 touch-slop 前的**起步位移**吃掉 → 用户感觉"有时候滑不动"。
+            // Main pass 是**叶子→根**，列表先跑；列表能滚时位移已被它消费（isConsumed），
+            // 这里天然跳过，正常滚动完全不受影响。
+            .then(
+                if (interactive) Modifier.pointerInput(Unit) {
+                    awaitEachGesture {
+                        awaitFirstDown(
+                            requireUnconsumed = false,
+                            pass = androidx.compose.ui.input.pointer.PointerEventPass.Main,
+                        )
+                        while (true) {
+                            val e = awaitPointerEvent(androidx.compose.ui.input.pointer.PointerEventPass.Main)
+                            val ch = e.changes.firstOrNull() ?: break
+                            if (!ch.isConsumed && ch.positionChange().y > 0f &&
+                                vm.lyricsAtTopRaw?.invoke() == true
+                            ) {
+                                ch.consume()
+                            }
+                            if (!ch.pressed) break
+                        }
+                    }
+                } else Modifier,
+            )
     ) {
         // ── 窗口层:纯色圆角矩形,graphicsLayer 做几何形变 ──
         // 零内容:只承载 artBg 背景色块 + 圆角裁剪。文字永不进入此变换子树。

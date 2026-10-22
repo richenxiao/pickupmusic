@@ -1019,6 +1019,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     @Volatile
     var lyricsAtTopNow: (() -> Boolean)? = null
 
+    /** 同上，但**不要求"当前不在滚动"**（兜底守卫用，见 LyricsMorphOverlay）。 */
+    @Volatile
+    var lyricsAtTopRaw: (() -> Boolean)? = null
+
     /** 诊断（2026-10-22 下拉误触取证）：返回歌词列表此刻的位置摘要。 */
     @Volatile
     var lyricsScrollProbe: (() -> String)? = null

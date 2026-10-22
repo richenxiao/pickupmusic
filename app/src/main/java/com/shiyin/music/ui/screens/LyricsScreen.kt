@@ -566,7 +566,17 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
         // 2026-10-22：给下拉闸门一个**即时**判定 —— snapshotFlow 是异步写的，
         // 快速滑动/长按拖动时可能拿旧值，导致"不在顶部也能拉下"的误触。
         androidx.compose.runtime.LaunchedEffect(listState) {
-            vm.lyricsAtTopNow = { !listState.canScrollBackward }
+            // 2026-10-22（真机日志：下滑带惯性滑到顶部后紧接着长按拖动 → 仍能拉）：
+            // 「可下拉」的判据收紧为**稳定停在顶部** —— 列表正在滚动/惯性中
+            // （isScrollInProgress，含跟行动画与甩动惯性）一律不算，避免刚滑到顶
+            // 的那一瞬间被当成"用户想退出"。
+            vm.lyricsAtTopNow = {
+                !listState.canScrollBackward && !listState.isScrollInProgress
+            }
+            // 兜底守卫用：**只判"列表是否在顶"**（不看是否正在滚动）——
+            // 中段一律不拦（拦了会把 LazyColumn 越过 touch-slop 前的起步位移吃掉，
+            // 用户就会觉得"有时候滑不动"，2026-10-22 实测）。
+            vm.lyricsAtTopRaw = { !listState.canScrollBackward }
             vm.lyricsScrollProbe = {
                 "idx=${listState.firstVisibleItemIndex} off=${listState.firstVisibleItemScrollOffset}" +
                     " canBack=${listState.canScrollBackward} scrolling=${listState.isScrollInProgress}" +
