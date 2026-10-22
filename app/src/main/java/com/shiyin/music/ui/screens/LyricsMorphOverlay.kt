@@ -122,26 +122,12 @@ fun LyricsMorphOverlay(vm: MainViewModel, morph: LyricsMorphState, interactive: 
                     // 2026-10-22：手势当下**直接问**歌词列表（闭包读 LazyListState），
                     // 不再用异步快照布尔 —— 旧实现快速滑动/长按拖动时可能拿到旧值，
                     // 用户报"在歌词中间/最后几句也能拖几次触发下拉"。
-                    // 另加"顶部稳定 ≥400ms"：下滑带惯性刚冲到顶、紧接着往上拖，不算想退出。
-                    val stableSince = vm.lyricsAtTopSince
-                    val topStable = stableSince > 0L &&
-                        android.os.SystemClock.elapsedRealtime() - stableSince >= PULL_MIN_STABLE_MS
-                    val downAtTop = (vm.lyricsAtTopNow?.invoke() ?: vm.lyricsListAtTop) && topStable
-                    android.util.Log.i(
-                        "PullGate",
-                        "DOWN atTop=$downAtTop topNow=${vm.lyricsAtTopNow?.invoke()} " +
-                            "stableFor=${if (stableSince > 0) android.os.SystemClock.elapsedRealtime() - stableSince else -1}ms " +
-                            "probe=${vm.lyricsScrollProbe?.invoke() ?: "null"}",
-                    )
+                    // ⚠️ 不要求"顶部稳定 N 毫秒"（曾试过 400ms）：用户实测"一直往下滑
+                    // 到顶之后接着往下滑，应该就能拉"——加稳定期会让他必须停一下，
+                    // 手感发卡。回到"起手在顶即可拉"。
+                    val downAtTop = vm.lyricsAtTopNow?.invoke() ?: vm.lyricsListAtTop
                     var dragging = false
                     var pullDown = false
-                    // 中段**长按拖动**整段吞掉（用户 2026-10-22 验证有效）：长按时
-                    // LazyColumn 不参与滚动，delta 会全落到下面的播放页 sheet 上
-                    // （sheet 被拖但 Hidden 被否决 ⇒ "能拉动 + 回弹"）。
-                    // ⚠️ 只在"按住 ≥ 长按阈值"时吞：普通滚动（按下即动）不受影响 ——
-                    // 早先"无条件吞"会把列表越过 touch-slop 前的起步位移也吃掉，
-                    // 用户反馈"有时候滑不动"，已改回按长按判定。
-                    var swallow = false
                     var lastY = down.position.y
                     while (true) {
                         val event = awaitPointerEvent(androidx.compose.ui.input.pointer.PointerEventPass.Initial)
@@ -156,16 +142,11 @@ fun LyricsMorphOverlay(vm: MainViewModel, morph: LyricsMorphState, interactive: 
                                     // 越过 slop 时再问一次：起手在顶、但手势过程中列表
                                     // 被跟行/惯性带离顶部 → 本次不当下拉处理（防误触）。
                                     val stillAtTop = vm.lyricsAtTopNow?.invoke() ?: downAtTop
-                                    if (downAtTop && stillAtTop) {
-                                        dragging = true
-                                    } else {
-                                        swallow = change.uptimeMillis - down.uptimeMillis >=
-                                            viewConfiguration.longPressTimeoutMillis
-                                    }
+                                    if (downAtTop && stillAtTop) dragging = true
                                     android.util.Log.i(
                                         "PullGate",
                                         "SLOP dy=$dyRaw downAtTop=$downAtTop stillAtTop=$stillAtTop " +
-                                            "dragging=$dragging swallow=$swallow probe=${vm.lyricsScrollProbe?.invoke() ?: "null"}",
+                                            "dragging=$dragging probe=${vm.lyricsScrollProbe?.invoke() ?: "null"}",
                                     )
                                 }
                             }
@@ -174,8 +155,6 @@ fun LyricsMorphOverlay(vm: MainViewModel, morph: LyricsMorphState, interactive: 
                         if (dragging) {
                             morph.onDrag(change.position.y - lastY)
                             lastY = change.position.y
-                            change.consume()
-                        } else if (swallow) {
                             change.consume()
                         }
                         if (!event.changes.any { it.pressed }) {
@@ -198,14 +177,18 @@ fun LyricsMorphOverlay(vm: MainViewModel, morph: LyricsMorphState, interactive: 
                     }
                 }
             } else Modifier)
-            // 2026-10-22（用户："还是会触发、只是能回弹"）：兜底守卫 —— 歌词本打开时、
-            // **列表已在顶部**的情况下，把列表吃不掉的向下位移吞掉，不让它冒到下面的
-            // 播放页 ModalBottomSheet（sheet 被拖但 Hidden 被否决 ⇒ "能拉动 + 回弹"）。
+            // 2026-10-22 兜底守卫：**列表没有吃掉的向下位移**一旦超过 touch slop，
+            // 就在此吞掉 —— 不让它冒到下面的播放页 ModalBottomSheet（sheet 被拖、
+            // 退出被否决 ⇒ 整页"拉一部分又弹回去"；长按时 LazyColumn 根本不参与滚动，
+            // 位移全落到 sheet 上，这就是用户反复报的那条）。
             //
-            // ⚠️ 只在"已在顶部"时吞（2026-10-22 实测修正）：中段如果也吞，会把
-            // LazyColumn 越过 touch-slop 前的**起步位移**吃掉 → 用户感觉"有时候滑不动"。
-            // Main pass 是**叶子→根**，列表先跑；列表能滚时位移已被它消费（isConsumed），
-            // 这里天然跳过，正常滚动完全不受影响。
+            // ⚠️ 为什么必须带"超过 slop"这个条件（此前踩过两次）：
+            //  · 无条件吞 → 把列表越过 slop 前的**起步位移**也吃掉 → LazyColumn 的
+            //    拖拽起不来（"有时滑不动"）；
+            //  · 只在"已在顶部"吞 → 中段长按拖动照样穿透（用户 2026-10-22 复报）。
+            // 带 slop 后语义正好：列表正常滚动时它会在越过 slop 的那一刻消费掉位移
+            //（Main pass 叶子→根，列表先跑）⇒ 这里看到 isConsumed 就整段放行；
+            // 只有"列表压根没参与/吃不下"的手势才会被这里拦下。
             .then(
                 if (interactive) Modifier.pointerInput(Unit) {
                     awaitEachGesture {
@@ -213,14 +196,21 @@ fun LyricsMorphOverlay(vm: MainViewModel, morph: LyricsMorphState, interactive: 
                             requireUnconsumed = false,
                             pass = androidx.compose.ui.input.pointer.PointerEventPass.Main,
                         )
+                        var unconsumedDown = 0f
+                        var swallowing = false
                         while (true) {
                             val e = awaitPointerEvent(androidx.compose.ui.input.pointer.PointerEventPass.Main)
                             val ch = e.changes.firstOrNull() ?: break
-                            if (!ch.isConsumed && ch.positionChange().y > 0f &&
-                                vm.lyricsAtTopRaw?.invoke() == true
-                            ) {
-                                ch.consume()
+                            val dy = ch.positionChange().y
+                            if (ch.isConsumed) {
+                                // 列表在滚（或别处已消费）→ 本次手势完全交给它
+                                swallowing = false
+                                unconsumedDown = 0f
+                            } else if (dy > 0f) {
+                                unconsumedDown += dy
+                                if (unconsumedDown > viewConfiguration.touchSlop) swallowing = true
                             }
+                            if (swallowing && !ch.isConsumed && dy > 0f) ch.consume()
                             if (!ch.pressed) break
                         }
                     }
