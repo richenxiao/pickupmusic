@@ -86,6 +86,7 @@ private fun timeBucket(h: Int = Calendar.getInstance().get(Calendar.HOUR_OF_DAY)
 @Composable
 fun HomeScreen(vm: MainViewModel) {
     val c = LocalOrganic.current
+    val context = androidx.compose.ui.platform.LocalContext.current
     val lib = vm.lib()
     Column(
         Modifier
@@ -210,7 +211,29 @@ fun HomeScreen(vm: MainViewModel) {
             // 用 lib() 映射会让专辑播放从首页「最近播放」里消失。
             vm.recentIds.mapNotNull { vm.trackById(it) }
         }
-        if (recentEntries.isNotEmpty()) {
+        // 2026-10-22 用户："冷启动时首页是 空 → 无封面模块 → 有封面模块，有点卡顿；
+        // 想一进首页就是加载完成的界面"。
+        // 做法：① 曲库还没读出来（tracksRaw 为空）时先画**骨架**（同布局灰块），
+        //       不显示半成品；② 数据到了先**预载封面**（最多等 300ms，本地封面秒回、
+        //       网络封面不阻塞），封面就绪后一次性显示完整内容 —— 三段闪烁变成一次成型。
+        val coldStarting = vm.tracksRaw.isEmpty()
+        var coversReady by remember { mutableStateOf(false) }
+        androidx.compose.runtime.LaunchedEffect(coldStarting, recentEntries.take(8).map { it.id }) {
+            if (coldStarting) { coversReady = false; return@LaunchedEffect }
+            val items = recentEntries.take(8)
+            if (items.isEmpty()) { coversReady = true; return@LaunchedEffect }
+            coversReady = false
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                kotlinx.coroutines.withTimeoutOrNull(300) {
+                    items.forEach { t -> runCatching { com.shiyin.music.ui.components.ArtCache.load(context, t, 212) } }
+                }
+            }
+            coversReady = true
+        }
+        if (coldStarting || (recentEntries.isNotEmpty() && !coversReady)) {
+            HomeSectionSkeleton(if (coldStarting) "最近播放" else "最近播放")
+        }
+        if (recentEntries.isNotEmpty() && !coldStarting && coversReady) {
             // Group by albumKey, dedupe albums, preserve most-recent-play order
             val albumGroups = LinkedHashMap<String, MutableList<Track>>()
             val singles = ArrayList<Track>()
@@ -338,7 +361,30 @@ private fun DailyRecommendSection(vm: MainViewModel) {
             }
         }
     }
-    if (picks.isEmpty()) return
+    // 冷启动：与「最近播放」同一策略 —— 曲库未读出先给骨架，读出后先预载封面再显示，
+    // 避免"空 → 无封面 → 有封面"三段跳变（2026-10-22 用户反馈）。
+    var coversReady by remember { mutableStateOf(false) }
+    androidx.compose.runtime.LaunchedEffect(picks.map { it.first }) {
+        coversReady = false
+        if (picks.isNotEmpty()) {
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                kotlinx.coroutines.withTimeoutOrNull(300) {
+                    picks.forEach { (_, t) ->
+                        runCatching { com.shiyin.music.ui.components.ArtCache.load(context, t, 212) }
+                    }
+                }
+            }
+        }
+        coversReady = true
+    }
+    if (picks.isEmpty()) {
+        if (vm.tracksRaw.isEmpty()) HomeSectionSkeleton("每日推荐")
+        return
+    }
+    if (!coversReady) {
+        HomeSectionSkeleton("每日推荐")
+        return
+    }
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text("每日推荐", style = heading(20), modifier = Modifier.padding(horizontal = 20.dp))
         Row(
@@ -366,6 +412,40 @@ private fun DailyRecommendSection(vm: MainViewModel) {
                         style = body(11f, FontWeight.Normal, c.n600),
                         maxLines = 1, overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.offset(y = (-4).dp),
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * 冷启动骨架（2026-10-22 用户："首页 空 → 无封面 → 有封面，有点卡顿"）。
+ *
+ * 与真实卡片**同尺寸同排版**的灰块：曲库读出来之前先占位，读出来后封面也预载好了，
+ * 于是"一进首页就是加载完成的样子"，不再是三段跳变。
+ */
+@Composable
+private fun HomeSectionSkeleton(title: String) {
+    val c = LocalOrganic.current
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Text(title, style = heading(20), modifier = Modifier.padding(horizontal = 20.dp))
+        Row(
+            Modifier.padding(horizontal = 20.dp),
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            repeat(3) {
+                Column(Modifier.width(106.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                    Box(
+                        Modifier.size(106.dp).clip(RoundedCornerShape(8.dp)).background(c.n200),
+                    )
+                    Box(
+                        Modifier.height(12.dp).fillMaxWidth(0.85f)
+                            .clip(RoundedCornerShape(6.dp)).background(c.n200),
+                    )
+                    Box(
+                        Modifier.height(10.dp).fillMaxWidth(0.55f)
+                            .clip(RoundedCornerShape(5.dp)).background(c.n200),
                     )
                 }
             }
