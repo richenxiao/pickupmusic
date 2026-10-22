@@ -1089,7 +1089,13 @@ private fun DataManageScreen(vm: MainViewModel, scrollStates: MutableMap<String,
     // v1.5.0 A60：备份内容分类（二级：父类分组 + 子项开关），默认全选。
     var backupCats by remember { mutableStateOf(com.shiyin.music.data.db.BackupCategory.ALL) }
     var catSizes by remember { mutableStateOf<Map<String, Long>>(emptyMap()) }
-    LaunchedEffect(Unit) { catSizes = vm.backupCategorySizes() }
+    // 2026-10-22：本页「缓存」新增"伴唱缓存"一行 —— 顺手刷新它的占用读数
+    //（与播放-伴唱页同一份数据；那边进页也会刷）。
+    var pendingClearStems by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        catSizes = vm.backupCategorySizes()
+        vm.refreshKaraokeSettings()
+    }
     // v22: 最近一次导出的文件，用于「分享」
     var lastExport by remember { mutableStateOf<java.io.File?>(null) }
 
@@ -1165,7 +1171,7 @@ private fun DataManageScreen(vm: MainViewModel, scrollStates: MutableMap<String,
                 title = "识别缓存",
                 // v1.3.x:识别缓存用 Database(存储/数据库语义),与文件夹管理(Folder)去重
                 leading = { OIcon(Lucide.Database, 19.dp, c.n700) },
-                divider = false,
+                divider = true,
                 // 占用大小是"要不要清"的唯一判断依据，所以留——但走右侧尾注（与标题
                 // 同一行），不再占一整行副标题；"不含人工修正"那半句是自证型说明，删。
                 trailing = {
@@ -1185,6 +1191,60 @@ private fun DataManageScreen(vm: MainViewModel, scrollStates: MutableMap<String,
                                 .padding(horizontal = 12.dp, vertical = 7.dp),
                         ) { Text("清理缓存", style = body(12.5f, FontWeight.Bold, c.text)) }
                     }
+                },
+            )
+            // 2026-10-22 用户："数据管理中的缓存下面加入伴唱缓存的删除，不然用户可能
+            // 忘记了，因为伴唱的缓存在播放-伴唱那里" ⇒ 这里再放一个入口（同一份
+            // 体积读数与清空逻辑，点清空仍走二次确认）。
+            SettingsRowScaffold(
+                title = "伴唱缓存",
+                leading = { OIcon(Lucide.MicVocal, 19.dp, c.n700) },
+                divider = false,
+                trailing = {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        Text(
+                            com.shiyin.music.data.karaoke.MdxModel.humanSize(vm.stemCacheBytes),
+                            style = body(12.5f, FontWeight.Normal, c.n600),
+                        )
+                        Box(
+                            Modifier
+                                .clip(RoundedCornerShape(999.dp))
+                                .background(c.n200)
+                                .clickable(enabled = vm.stemCacheBytes > 0) { pendingClearStems = true }
+                                .padding(horizontal = 12.dp, vertical = 7.dp),
+                        ) { Text("清理", style = body(12.5f, FontWeight.Bold, c.text)) }
+                    }
+                },
+            )
+        }
+
+        // 清空伴唱缓存：与播放-伴唱页同一套二次确认（不可逆，防误触）
+        if (pendingClearStems) {
+            androidx.compose.material3.AlertDialog(
+                onDismissRequest = { pendingClearStems = false },
+                containerColor = c.surface,
+                title = { Text("清空伴奏缓存", style = body(15f, FontWeight.ExtraBold, c.text)) },
+                text = {
+                    Text(
+                        "将清空全部已分离好的伴奏（当前占用 " +
+                            "${com.shiyin.music.data.karaoke.MdxModel.humanSize(vm.stemCacheBytes)}）。" +
+                            "清空后再听需要重新分离。",
+                        style = body(12.5f, FontWeight.Normal, c.n700).copy(lineHeight = 19.sp),
+                    )
+                },
+                confirmButton = {
+                    DialogActionsRow(
+                        listOf(
+                            DialogAction("取消") { pendingClearStems = false },
+                            DialogAction("清空", emphasized = true) {
+                                vm.clearStemCache(); pendingClearStems = false
+                            },
+                        ),
+                        emphasizedColor = DANGER_RED,
+                    )
                 },
             )
         }
