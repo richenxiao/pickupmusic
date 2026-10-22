@@ -254,6 +254,9 @@ private fun CloudBackupScreen(vm: MainViewModel, scrollStates: MutableMap<String
                         text = { Text("＋ 新增自定义", style = body(13f, FontWeight.Normal, c.text)) },
                         onClick = {
                             namingNew = true; newName = ""
+                            // 用户 2026-10-22："自定义的时候不要默认填入坚果云的网站"
+                            // —— 只清掉坚果云的默认地址（用户自己填过的地址不动）。
+                            if (url == JIANGUO_WEBDAV) url = ""
                             dropOpen = false
                         },
                     )
