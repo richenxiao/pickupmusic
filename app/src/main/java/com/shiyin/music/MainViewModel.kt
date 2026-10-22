@@ -1023,6 +1023,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     @Volatile
     var lyricsAtTopRaw: (() -> Boolean)? = null
 
+    /**
+     * 列表**进入"稳定停在顶部"**的时刻（elapsedRealtime；0 = 当前不在稳定顶部）。
+     *
+     * 2026-10-22 用户实测：下滑带惯性刚冲到顶部、紧接着长按往上拖，会被当成"想退出"。
+     * 闸门据此要求"顶部稳定 ≥ [LyricsPullGateMinStableMs] 才允许下拉"。
+     */
+    @Volatile
+    var lyricsAtTopSince: Long = 0L
+
     /** 诊断（2026-10-22 下拉误触取证）：返回歌词列表此刻的位置摘要。 */
     @Volatile
     var lyricsScrollProbe: (() -> String)? = null

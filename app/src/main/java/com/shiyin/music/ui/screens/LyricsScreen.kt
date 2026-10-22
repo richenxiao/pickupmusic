@@ -582,6 +582,15 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
                     " canBack=${listState.canScrollBackward} scrolling=${listState.isScrollInProgress}" +
                     " items=${listState.layoutInfo.totalItemsCount}"
             }
+            // 记录"稳定停在顶部"的起始时刻（闸门用来要求顶部稳定 ≥400ms 才允许下拉，
+            // 否则"惯性刚到顶就往上拖"会被误判成想退出 —— 用户 2026-10-22 实测）。
+            // ⚠️ 这个 collect 永不返回，必须放在本块**最后**（否则后面几行赋值不会执行）。
+            androidx.compose.runtime.snapshotFlow {
+                !listState.canScrollBackward && !listState.isScrollInProgress
+            }.collect { atTop ->
+                vm.lyricsAtTopSince =
+                    if (atTop) android.os.SystemClock.elapsedRealtime() else 0L
+            }
         }
         // v1.3.x 第6轮反馈:下拉退出的**唯一起手判据**是"本手势按下那一刻列表是否在顶"。
         // 该判据由 LyricsMorphOverlay 的指针闸门独占实现(它在 awaitFirstDown 时读
