@@ -25,6 +25,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.interaction.collectIsDraggedAsState
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -504,9 +505,24 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
         // ⚠️ 只在边沿触发：未打轴歌词 activeI 恒 -1 永远不进这个分支；用户手动浏览
         // （activeI 不变，effect 不重跑）也不打扰。
         var prevActiveI by remember { androidx.compose.runtime.mutableIntStateOf(-1) }
-        LaunchedEffect(activeI, trVisible) {
+        // 2026-10-22 用户报「唱到下一句时整段歌词要跟行，滑动浏览会停住划不动」：
+        // 跟行用 animateScrollBy/animateScrollToItem，用户正在拖动时两者抢手势，
+        // 动画会把手指的滚动拽回去。修法：
+        //  · 手指一按下拖动（isDragged=true）就把跟行 effect **取消**（isDragged 进 key）；
+        //  · 松手后再静默 2.5 秒才恢复自动跟行（用户在看前面几句时不被拽走）。
+        val listIsDragged by listState.interactionSource.collectIsDraggedAsState()
+        var followPauseUntil by remember { androidx.compose.runtime.mutableLongStateOf(0L) }
+        androidx.compose.runtime.LaunchedEffect(listIsDragged) {
+            if (listIsDragged) {
+                followPauseUntil = android.os.SystemClock.elapsedRealtime() + 2500L
+            }
+        }
+        LaunchedEffect(activeI, trVisible, listIsDragged) {
             if (!interactive) { prevActiveI = activeI; return@LaunchedEffect }
             if (vm.morph.progress.value in 0.001f..0.949f) { prevActiveI = activeI; return@LaunchedEffect }
+            if (listIsDragged) { prevActiveI = activeI; return@LaunchedEffect }
+            val wait = followPauseUntil - android.os.SystemClock.elapsedRealtime()
+            if (wait > 0) kotlinx.coroutines.delay(wait)
             if (activeI >= 0) {
                 val info = listState.layoutInfo
                 val viewport = info.viewportSize.height
@@ -540,6 +556,12 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
         androidx.compose.runtime.LaunchedEffect(listState) {
             androidx.compose.runtime.snapshotFlow { !listState.canScrollBackward }
                 .collect { vm.lyricsListAtTop = it }
+            // （上面这条保留给其他读点；手势闸门改用下面这个**即时**闭包）
+        }
+        // 2026-10-22：给下拉闸门一个**即时**判定 —— snapshotFlow 是异步写的，
+        // 快速滑动/长按拖动时可能拿旧值，导致"不在顶部也能拉下"的误触。
+        androidx.compose.runtime.LaunchedEffect(listState) {
+            vm.lyricsAtTopNow = { !listState.canScrollBackward }
         }
         // v1.3.x 第6轮反馈:下拉退出的**唯一起手判据**是"本手势按下那一刻列表是否在顶"。
         // 该判据由 LyricsMorphOverlay 的指针闸门独占实现(它在 awaitFirstDown 时读

@@ -1002,6 +1002,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     var lyricsListTopPx: Float? = null
     var lyricsListBottomPx: Float? = null
     var lyricsListAtTop: Boolean = true
+    /**
+     * **即时**「歌词列表是否在顶」判定（2026-10-22）。
+     *
+     * 旧实现只靠 [lyricsListAtTop]（snapshotFlow 异步写）——用户报"在歌词中间
+     * 长按拖动几次也能触发下拉"。改用 LyricsScreen 挂上的闭包，手势线程里
+     * **当下直接问 LazyListState**，没有异步滞后、也不会拿着旧值误判。
+     * null = 歌词列表未挂载（此时回退 [lyricsListAtTop]）。
+     */
+    @Volatile
+    var lyricsAtTopNow: (() -> Boolean)? = null
     /** 退出请求(左上角返回键/系统返回统一入口):走带动画的 collapse。 */
     fun requestLyricsExit() { collapseLyrics() }
     // v1.3.x bug① 修复:播放页"带动画退出"的请求回调。RootBackHandler 的

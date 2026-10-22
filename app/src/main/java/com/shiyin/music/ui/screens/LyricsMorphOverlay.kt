@@ -110,7 +110,10 @@ fun LyricsMorphOverlay(vm: MainViewModel, morph: LyricsMorphState, interactive: 
                         requireUnconsumed = false,
                         pass = androidx.compose.ui.input.pointer.PointerEventPass.Initial,
                     )
-                    val downAtTop = vm.lyricsListAtTop
+                    // 2026-10-22：手势当下**直接问**歌词列表（闭包读 LazyListState），
+                    // 不再用异步快照布尔 —— 旧实现快速滑动/长按拖动时可能拿到旧值，
+                    // 用户报"在歌词中间/最后几句也能拖几次触发下拉"。
+                    val downAtTop = vm.lyricsAtTopNow?.invoke() ?: vm.lyricsListAtTop
                     var dragging = false
                     var pullDown = false
                     var lastY = down.position.y
@@ -124,7 +127,10 @@ fun LyricsMorphOverlay(vm: MainViewModel, morph: LyricsMorphState, interactive: 
                                 if (kotlin.math.abs(dyRaw) > viewConfiguration.touchSlop) {
                                     if (dyRaw <= 0f) break
                                     pullDown = true
-                                    if (downAtTop) dragging = true
+                                    // 越过 slop 时再问一次：起手在顶、但手势过程中列表
+                                    // 被跟行/惯性带离顶部 → 本次不当下拉处理（防误触）。
+                                    val stillAtTop = vm.lyricsAtTopNow?.invoke() ?: downAtTop
+                                    if (downAtTop && stillAtTop) dragging = true
                                 }
                             }
                             lastY = change.position.y
