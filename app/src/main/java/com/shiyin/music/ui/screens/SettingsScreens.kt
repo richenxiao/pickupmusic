@@ -735,11 +735,11 @@ private fun SettingsRowScaffold(
             .fillMaxWidth()
             // v1.3.10 需求 A20:整行点击去涟漪(用户不喜欢灰块反馈)
             .then(if (onClick != null) Modifier.clickableNoRipple(onClick = onClick) else Modifier)
-            // padding 在前、heightIn 在后：56dp 是"带开关行的实际高度"(开关 30dp +
-            // 上下 padding 各 13dp)。普通行只有一行标题(21dp)，原本只有 47dp、比开关
-            // 行矮——heightIn 把它抬到同一高度，内容垂直居中，行高节奏统一(第5项)。
-            .padding(vertical = 13.dp)
-            .heightIn(min = 56.dp),
+            // 2026-10-22 用户："设置项统一行高到约 64～68dp" —— 原 13dp 内边距 + 56dp 下限
+            // 实际约 82dp，单行入口（播放/数据管理）显得空、和"关于我们"（47dp）又不齐。
+            // 现在统一 10dp + 44dp 下限 ⇒ 总高 ≈64dp，全站设置行（含开关行、入口行）一致。
+            .padding(vertical = 10.dp)
+            .heightIn(min = 44.dp),
         horizontalArrangement = Arrangement.spacedBy(13.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -981,7 +981,9 @@ private fun SettingsRoot(vm: MainViewModel, scrollStates: MutableMap<String, Scr
                 .clip(RoundedCornerShape(28.dp))
                 .background(c.surface)
                 .clickable { vm.navFilesTo(FilesView.About) }
-                .padding(horizontal = 16.dp, vertical = 13.dp),
+                // 2026-10-22：与设置行统一高度（此前只有 47dp，比其它入口矮一截）。
+                .padding(horizontal = 16.dp, vertical = 10.dp)
+                .heightIn(min = 44.dp),
             horizontalArrangement = Arrangement.spacedBy(13.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {

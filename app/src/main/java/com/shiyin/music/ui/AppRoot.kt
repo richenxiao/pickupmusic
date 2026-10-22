@@ -1623,7 +1623,40 @@ private fun PlayerMenuSheetContent(vm: MainViewModel) {
     val c = LocalOrganic.current
     val track = vm.trackById(vm.player.currentId)
     if (track == null) return
-    Column(Modifier.navigationBarsPadding().padding(start = 10.dp, end = 10.dp, top = 16.dp, bottom = MENU_BOTTOM_SAFE_DP)) {
+    // 2026-10-22 用户："播放页编辑点进播放速度/升降 Key/伴唱等子页时，退出没有对应的
+    // 动画，很不自然，加一个自然的过渡动画"。
+    // 实现：按"层级深度"给内容加一次滑入 + 淡入 —— 进子页从右往左滑入，返回时从左往右
+    // 滑入，深度不变（同层切换）不动。比 AnimatedContent 包整棵分支树风险小得多：
+    // 分支逻辑一行不改，只在最外层 Column 上加一个 graphicsLayer。
+    val menuDepth = when (vm.pMenuView) {
+        null, "root" -> 0
+        "timer-custom" -> 2
+        else -> 1
+    }
+    val navShift = remember { androidx.compose.animation.core.Animatable(0f) }
+    var lastMenuDepth by remember { mutableIntStateOf(menuDepth) }
+    androidx.compose.runtime.LaunchedEffect(menuDepth) {
+        if (menuDepth != lastMenuDepth) {
+            val dir = if (menuDepth > lastMenuDepth) 1f else -1f
+            lastMenuDepth = menuDepth
+            navShift.snapTo(dir * 56f)
+            navShift.animateTo(
+                0f,
+                androidx.compose.animation.core.tween(
+                    220,
+                    easing = androidx.compose.animation.core.FastOutSlowInEasing,
+                ),
+            )
+        }
+    }
+    Column(
+        Modifier.navigationBarsPadding().padding(start = 10.dp, end = 10.dp, top = 16.dp, bottom = MENU_BOTTOM_SAFE_DP)
+            .graphicsLayer {
+                translationX = navShift.value
+                // 位移越大越透明（滑入过程淡入；静止时完全实心）
+                alpha = (1f - kotlin.math.abs(navShift.value) / 160f).coerceIn(0.35f, 1f)
+            },
+    ) {
             if (vm.pMenuView != "timer" && vm.pMenuView != "timer-custom" &&
                 vm.pMenuView != "speed" && vm.pMenuView != "key" && vm.pMenuView != "karaoke") {
                 SheetSongHeader(track)
