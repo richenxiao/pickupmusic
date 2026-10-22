@@ -211,35 +211,30 @@ private fun CloudBackupScreen(vm: MainViewModel, scrollStates: MutableMap<String
                 .padding(horizontal = 16.dp, vertical = 14.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            // 2026-10-22（用户澄清需求）：**下拉单选框** —— 默认「坚果云」，另有用户
-            // 自己新增的渠道；末项「＋ 新增自定义…」打开表单填 名称/地址/账号/密码，
-            // 保存后下次下拉即可选到。
+            // 2026-10-22（用户两轮澄清后的定稿）：渠道选择器做成**与输入框同规格的长条**
+            // （同高、同圆角边框），点开下拉选 坚果云 / 已保存的渠道 / 新增自定义。
+            // 选「新增自定义」→ 长条就地变成**渠道名称输入框**（下面的地址/账号/密码不动，
+            // 由「保存凭据」一并把这条渠道存下来）；反悔就再点右侧箭头、选回坚果云。
             var dropOpen by remember { mutableStateOf(false) }
-            var showAddProfile by remember { mutableStateOf(false) }
-            Box(Modifier.fillMaxWidth()) {
-                Row(
-                    Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
-                        .background(c.n200).clickable { dropOpen = true }
-                        .padding(horizontal = 12.dp, vertical = 11.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(
-                        selectedProfile,
-                        style = body(13f, FontWeight.Normal, c.text),
-                        modifier = Modifier.weight(1f),
-                    )
-                    OIcon(Lucide.ChevronDown, 16.dp, c.n500)
-                }
+            var namingNew by remember { mutableStateOf(false) }
+            var newName by remember { mutableStateOf("") }
+            val menuShape = RoundedCornerShape(4.dp)   // 与 OutlinedTextField 默认形状一致
+
+            @Composable
+            fun channelMenu() {
                 androidx.compose.material3.DropdownMenu(
                     expanded = dropOpen,
                     onDismissRequest = { dropOpen = false },
                     containerColor = c.surface,
+                    // 与长条同宽（下拉默认按内容宽度收窄，用户要求"跟这个长条一样长"）
+                    modifier = Modifier.fillMaxWidth(0.82f),
                 ) {
                     androidx.compose.material3.DropdownMenuItem(
                         text = { Text("坚果云", style = body(13f, FontWeight.Normal, c.text)) },
                         onClick = {
                             selectedProfile = "坚果云"
                             url = JIANGUO_WEBDAV
+                            namingNew = false; newName = ""
                             dropOpen = false
                         },
                     )
@@ -249,15 +244,55 @@ private fun CloudBackupScreen(vm: MainViewModel, scrollStates: MutableMap<String
                             onClick = {
                                 selectedProfile = prof.name
                                 url = prof.url; user = prof.user; pass = prof.password
+                                namingNew = false; newName = ""
                                 dropOpen = false
                             },
                         )
                     }
                     androidx.compose.material3.DropdownMenuItem(
-                        text = { Text("＋ 新增自定义…", style = body(13f, FontWeight.Normal, c.accent)) },
-                        onClick = { dropOpen = false; showAddProfile = true },
+                        // 用户："不需要省略号，同时也不需要加橙色，正常灰色就行"
+                        text = { Text("＋ 新增自定义", style = body(13f, FontWeight.Normal, c.text)) },
+                        onClick = {
+                            namingNew = true; newName = ""
+                            dropOpen = false
+                        },
                     )
                 }
+            }
+
+            Box(Modifier.fillMaxWidth()) {
+                if (namingNew) {
+                    OutlinedTextField(
+                        value = newName, onValueChange = { newName = it },
+                        label = { Text("渠道名称", style = body(12f, FontWeight.Normal, c.n600)) },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        textStyle = body(13f, FontWeight.Normal, c.text), colors = tfColors,
+                        trailingIcon = {
+                            Box(
+                                Modifier.size(36.dp).clip(CircleShape).clickable { dropOpen = true },
+                                contentAlignment = Alignment.Center,
+                            ) { OIcon(Lucide.ChevronDown, 18.dp, c.n500) }
+                        },
+                    )
+                } else {
+                    Row(
+                        Modifier.fillMaxWidth().height(56.dp)
+                            .clip(menuShape)
+                            .border(1.dp, c.n400, menuShape)
+                            .clickable { dropOpen = true }
+                            .padding(horizontal = 16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            selectedProfile,
+                            style = body(13f, FontWeight.Normal, c.text),
+                            modifier = Modifier.weight(1f),
+                        )
+                        OIcon(Lucide.ChevronDown, 18.dp, c.n500)
+                    }
+                }
+                channelMenu()
             }
             OutlinedTextField(
                 value = url, onValueChange = { url = it },
@@ -289,7 +324,20 @@ private fun CloudBackupScreen(vm: MainViewModel, scrollStates: MutableMap<String
             )
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                 PillButton(
-                    "保存凭据", onClick = { vm.saveWebDavConfig(url, user, pass) },
+                    "保存凭据",
+                    onClick = {
+                        // 正在新增渠道：把这条渠道（名称 + 当前地址/账号/密码）一并存下来
+                        if (namingNew) {
+                            if (newName.isBlank()) {
+                                vm.showToast("请先填写渠道名称", null)
+                            } else {
+                                vm.saveWebDavProfile(newName, url, user, pass)
+                                selectedProfile = newName.trim()
+                                namingNew = false
+                            }
+                        }
+                        vm.saveWebDavConfig(url, user, pass)
+                    },
                     bg = c.accent, textColor = Color.White,
                 )
             }
@@ -395,63 +443,8 @@ private fun CloudBackupScreen(vm: MainViewModel, scrollStates: MutableMap<String
         )
     }
 
-    // 2026-10-22：新增自定义渠道表单（名称 / 服务器地址 / 账号 / 密码）。
-    // 保存后出现在上面的下拉单选框里；同名视为覆盖。
-    if (showAddProfile) {
-        var pName by remember { mutableStateOf("") }
-        var pUrl by remember { mutableStateOf("") }
-        var pUser by remember { mutableStateOf("") }
-        var pPass by remember { mutableStateOf("") }
-        androidx.compose.material3.AlertDialog(
-            onDismissRequest = { showAddProfile = false },
-            containerColor = c.surface,
-            title = { Text("新增自定义渠道", style = body(15f, FontWeight.ExtraBold, c.text)) },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    OutlinedTextField(
-                        value = pName, onValueChange = { pName = it },
-                        label = { Text("名称", style = body(12f, FontWeight.Normal, c.n600)) },
-                        singleLine = true, modifier = Modifier.fillMaxWidth(),
-                        textStyle = body(13f, FontWeight.Normal, c.text), colors = tfColors,
-                    )
-                    OutlinedTextField(
-                        value = pUrl, onValueChange = { pUrl = it },
-                        label = { Text("服务器地址", style = body(12f, FontWeight.Normal, c.n600)) },
-                        placeholder = { Text("https://…", style = body(13f, FontWeight.Normal, c.n500)) },
-                        singleLine = true, modifier = Modifier.fillMaxWidth(),
-                        textStyle = body(13f, FontWeight.Normal, c.text), colors = tfColors,
-                    )
-                    OutlinedTextField(
-                        value = pUser, onValueChange = { pUser = it },
-                        label = { Text("账号", style = body(12f, FontWeight.Normal, c.n600)) },
-                        singleLine = true, modifier = Modifier.fillMaxWidth(),
-                        textStyle = body(13f, FontWeight.Normal, c.text), colors = tfColors,
-                    )
-                    OutlinedTextField(
-                        value = pPass, onValueChange = { pPass = it },
-                        label = { Text("密码 / 应用密码", style = body(12f, FontWeight.Normal, c.n600)) },
-                        singleLine = true, modifier = Modifier.fillMaxWidth(),
-                        textStyle = body(13f, FontWeight.Normal, c.text), colors = tfColors,
-                    )
-                }
-            },
-            confirmButton = {
-                com.shiyin.music.ui.components.DialogActionsRow(
-                    listOf(
-                        com.shiyin.music.ui.components.DialogAction("取消") { showAddProfile = false },
-                        com.shiyin.music.ui.components.DialogAction("保存", emphasized = true) {
-                            vm.saveWebDavProfile(pName, pUrl, pUser, pPass)
-                            showAddProfile = false
-                            if (pName.isNotBlank()) {
-                                selectedProfile = pName.trim()
-                                url = pUrl.trim(); user = pUser.trim(); pass = pPass
-                            }
-                        },
-                    )
-                )
-            },
-        )
-    }
+    // （「新增自定义」不再弹表单：在配置卡里就地填渠道名称 + 原有地址/账号/密码，
+    //   由「保存凭据」一并保存 —— 用户 2026-10-22 澄清的口径。）
 }
 
 /**
@@ -1542,7 +1535,9 @@ private fun LyricsBookScreen(vm: MainViewModel, scrollStates: MutableMap<String,
                 trailing = { OIcon(Lucide.ChevronRight, 16.dp, c.n400) },
                 onClick = { vm.navFilesTo(FilesView.LyricsSources) },
             )
-            SettingRowGlyph(glyph = "ア", "日语歌默认开振假名", divider = true) {
+            // 2026-10-22 用户："图标改为平假名的 A，与歌词本按钮保持一致"
+            // ⇒ "ア"（片假名）→ "あ"（平假名，与歌词本那枚「あ」按钮同字）。
+            SettingRowGlyph(glyph = "あ", "日语歌默认开振假名", divider = true) {
                 OrganicSwitch(vm.furiganaDefaultOn) { vm.setFuriganaDefaultOn(!vm.furiganaDefaultOn) }
             }
             SettingRow(Lucide.BadgeCheck, "日语歌自动校验振假名", null, divider = true) {
