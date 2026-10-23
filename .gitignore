@@ -88,3 +88,23 @@ tools/__pycache__/
 
 # P0 伴唱 Spike 本地产物（模型权重/参考音频），不入库
 .karaoke/
+
+# ─── 公开仓库准入（2026-10-24 发版前清理）：过程文件一律不入库 ───
+# 截图会话产物 / icon 审查草稿 / 临时脚本输出，仅本地保留
+.superpowers/
+docs/temp/
+docs/icon-audit*
+docs/brand-icons*
+docs/slider-mockup.html
+docs/svg-inspect.html
+tools/karaoke/__pycache__/
+**/__pycache__/
+tools/karaoke/_tmp_b64.txt
+
+# JS toolchain 清单（sharp 仅本地资源预处理用，visitor 不需要）
+package.json
+package-lock.json
+
+# README 未引用的截图（首页只挂 4 张；其余仅本地留存）
+docs/screenshots/lrcbook.jpg
+docs/screenshots/外语-日语-翻译-片假名显示.jpg
