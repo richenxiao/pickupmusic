@@ -1,0 +1,22 @@
+<!-- v1.5.0: 系统媒体控制卡「点赞」图标（已收藏 = 实心圆 + 勾）。
+     与应用内收藏按钮已收藏态同一视觉语言（accent 实心圆 + 反色勾）；
+     通知单色 tint 下"实心圆 + 反白勾 stroke"即等价。勾取自应用内
+     Lucide.CheckSmall 折线 M16.5 8.5 10.5 15 7.5 12（stroke 2.5 / round cap）。
+     走 CommandButton.setCustomIconResId——media3 的 legacy 桥
+     （PlaybackStateCompat.CustomAction）只认实体资源 id。
+     用户 2026-10-23："把点赞的样式换成我自己的 + 样式"。 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:pathData="M12,12 m-10,0 a10,10 0 1,0 20,0 a10,10 0 1,0 -20,0 Z"
+        android:fillColor="@android:color/white"/>
+    <path
+        android:pathData="M16.5,8.5 L10.5,15 L7.5,12"
+        android:strokeColor="#00000000"
+        android:strokeWidth="2.5"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"/>
+</vector>

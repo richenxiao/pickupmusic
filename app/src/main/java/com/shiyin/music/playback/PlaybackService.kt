@@ -66,6 +66,13 @@ class PlaybackService : MediaSessionService() {
     private val toggleFavCommand = SessionCommand(ACTION_TOGGLE_FAV, Bundle())
 
     /**
+     * v1.5.0: 当前曲目是否已收藏（系统媒体卡点赞按钮的反馈色真源）。
+     * null=尚未查过（按钮先按未收藏=空心展示，查到后纠正）。
+     * 只在主线程读写（服务 onCreate/onCustomCommand/onMediaItemTransition 都在主线程）。
+     */
+    private var currentFavState: Boolean? = null
+
+    /**
      * ⚠️ 单声道已**再次撤回**(2026-09-23)。
      *
      * v23 试过一次"安全版":官方 ChannelMixingAudioProcessor + 与 media3 默认实现
@@ -116,6 +123,14 @@ class PlaybackService : MediaSessionService() {
             .setMaxSeekToPreviousPositionMs(4000)
             .build()
         this.player = player
+        // v1.5.0: 切歌后心形按新曲的收藏状态重查重推（拆分切段不走这里——
+        // 同一 mediaId 段内切换不换歌，收藏状态不变）。
+        player.addListener(object : Player.Listener {
+            override fun onMediaItemTransition(mediaItem: androidx.media3.common.MediaItem?, reason: Int) {
+                currentFavState = null // 新歌状态未知，先按空心；refreshFavState 查库纠正
+                session?.let { refreshFavState(it) }
+            }
+        })
 
         val openApp = PendingIntent.getActivity(
             this, 0,
@@ -147,10 +162,19 @@ class PlaybackService : MediaSessionService() {
                         // v1.5.0: 自定义布局 = [点赞]。Android 13+ 系统媒体卡把它放进
                         // 播放/暂停键左侧的槽位（官方文档「媒体控制」槽位表：单个自定义
                         // 按钮占上一首与播放之间的位置），正好是用户要的"点赞在左边"。
-                        // 用 ICON_HEART_FILLED 内置图标常量——系统卡片按深浅色自动着色，
-                        // 不必自备 drawable。pre-13 兼容路径上它追加在动作列表尾部。
-                        .setCustomLayout(listOf(likeButton()))
+                        // 心形按收藏状态切实心/空心（用户 2026-10-23"没有反馈色"）——
+                        // 这里先用缓存状态立即给（null 按空心），onPostConnect 查库纠正，
+                        // 避免通知出现被 DB 查询拖慢。
+                        .setCustomLayout(listOf(likeButton(currentFavState == true)))
                         .build()
+                }
+
+                /** 连接握手完成后异步查库纠正心形状态（此时通知已可用，慢一点无感）。 */
+                override fun onPostConnect(
+                    session: MediaSession,
+                    controller: MediaSession.ControllerInfo,
+                ) {
+                    refreshFavState(session)
                 }
 
                 override fun onCustomCommand(
@@ -159,9 +183,13 @@ class PlaybackService : MediaSessionService() {
                     customCommand: SessionCommand,
                     args: Bundle,
                 ): ListenableFuture<SessionResult> {
-                    // v1.5.0 通知栏点赞:写 playlist_track(p3),与 App 内收藏同一张表。
+                    // v1.5.0 通知栏点赞:写 playlist_track(p3),与 App 内收藏同一张表;
+                    // 落库后翻转心形并推给所有已连接的系统媒体卡。
                     if (customCommand.customAction == ACTION_TOGGLE_FAV) {
-                        toggleFavInDb(session.player.currentMediaItem?.mediaId?.toLongOrNull())
+                        val mediaId = session.player.currentMediaItem?.mediaId?.toLongOrNull()
+                        toggleFavInDb(mediaId)
+                        currentFavState = currentFavState?.not() ?: (mediaId != null && isFavInDb(mediaId))
+                        broadcastLikeLayout(session)
                         return com.google.common.util.concurrent.Futures.immediateFuture(
                             SessionResult(SessionResult.RESULT_SUCCESS)
                         )
@@ -236,11 +264,27 @@ class PlaybackService : MediaSessionService() {
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = session
 
-    /** v1.5.0: 通知栏「点赞」按钮（见 onConnect 的 setCustomLayout 注释）。 */
-    private fun likeButton(): androidx.media3.session.CommandButton =
-        androidx.media3.session.CommandButton.Builder(androidx.media3.session.CommandButton.ICON_HEART_FILLED)
+    /**
+     * v1.5.0: 通知栏「点赞」按钮——未收藏=描边圆加号，已收藏=实心圆对勾
+     * （用户 2026-10-23："把点赞的样式换成我自己的 + 样式"——即应用内收藏
+     * 按钮同款视觉语言，见 FavMorph/Lucide.CirclePlus/CheckSmall）。
+     *
+     * ⚠️ 图标必须用 [androidx.media3.session.CommandButton.Builder.setCustomIconResId]
+     * 自备 drawable、不能用内置 ICON_HEART_FILLED 常量：字节码核实 media3 1.7.1 的
+     * legacy 桥（PlayerWrapper.createPlaybackStateCompat → PlaybackStateCompat
+     * .CustomAction）取的是 **iconResId 字段**——内置常量只写 icon 字段（经
+     * EXTRAS_KEY_COMMAND_BUTTON_ICON_COMPAT 提示标准媒体卡），iconResId=0 ⇒
+     * 从 PlaybackState 通道读按钮的界面（ColorOS 灵动岛、旧版通知）拿不到图标，
+     * 按钮整个渲染不出（用户实测灵动岛无点赞）。自备 res 两条通道都有效。
+     */
+    private fun likeButton(fav: Boolean): androidx.media3.session.CommandButton =
+        androidx.media3.session.CommandButton.Builder()
+            .setCustomIconResId(
+                if (fav) com.shiyin.music.R.drawable.ic_notif_fav_on
+                else com.shiyin.music.R.drawable.ic_notif_fav_off
+            )
             .setSessionCommand(toggleFavCommand)
-            .setDisplayName("喜欢这首歌")
+            .setDisplayName(if (fav) "取消喜欢" else "喜欢这首歌")
             .setEnabled(true)
             .build()
 
@@ -263,6 +307,36 @@ class PlaybackService : MediaSessionService() {
                 android.util.Log.w("PlaybackService", "通知栏点赞落库失败 mediaId=$mediaId", e)
             }
         }
+    }
+
+    /** 查当前曲目是否在 p3。DB 在 IO；调用方须持 [currentFavState] 的写意图。 */
+    private fun isFavInDb(mediaId: Long): Boolean = try {
+        kotlinx.coroutines.runBlocking(kotlinx.coroutines.Dispatchers.IO) {
+            com.shiyin.music.data.db.AppDatabase.get(applicationContext).dao().playlistHasTrack("p3", mediaId)
+        }
+    } catch (e: Exception) {
+        android.util.Log.w("PlaybackService", "查询收藏状态失败 mediaId=$mediaId", e)
+        false
+    }
+
+    /**
+     * 查库刷新 [currentFavState]；变化则把新布局推给所有已连接控制器。
+     * 在主线程跑 DB 查询（runBlocking+IO dispatcher）——onPostConnect/切歌都是
+     * 低频主线程回调，一次 EXISTS 查询毫秒级，无 ANR 风险；换协程回调反而要
+     * 处理时序（新歌已切、旧查询迟到覆盖新状态）。
+     */
+    private fun refreshFavState(session: MediaSession) {
+        val mediaId = session.player.currentMediaItem?.mediaId?.toLongOrNull() ?: return
+        val fav = isFavInDb(mediaId)
+        if (fav != currentFavState) {
+            currentFavState = fav
+            broadcastLikeLayout(session)
+        }
+    }
+
+    /** 把当前状态的心形布局推给所有已连接控制器（通知/锁屏/灵动岛各自收到）。 */
+    private fun broadcastLikeLayout(session: MediaSession) {
+        runCatching { session.setCustomLayout(listOf(likeButton(currentFavState == true))) }
     }
 
     /**
