@@ -1,7 +1,10 @@
-<!-- v1.5.0: 系统媒体控制卡「点赞」图标（已收藏 = 实心圆 + 勾）。
-     与应用内收藏按钮已收藏态同一视觉语言（accent 实心圆 + 反色勾）；
-     通知单色 tint 下"实心圆 + 反白勾 stroke"即等价。勾取自应用内
-     Lucide.CheckSmall 折线 M16.5 8.5 10.5 15 7.5 12（stroke 2.5 / round cap）。
+<!-- v1.5.0: 系统媒体控制卡「点赞」图标（已收藏 = 实心圆 + 对勾）。
+     ⚠️ 勾画成**不透明 fill**（按 stroke 2.5/round cap 精确围边的 ribbon 多边形，
+     勾中线 = 应用内 Lucide.CheckSmall 折线 M16.5 8.5 10.5 15 7.5 12）：
+     透明镂空在 ColorOS 直接原图渲染（不走 alpha 蒙版 tint）的通道上只透出
+     卡片底色——用户实测"点完+号是⚪里面没有✔"。圆底反白勾任何管线下可读。
+     勾色用纯黑（通知单色 tint 按 alpha 蒙版渲染时整图重着色，无碍；
+     不 tint 的原图渲染下黑勾在白圆底上即应用内"实心圆+反色勾"的等价物）。
      走 CommandButton.setCustomIconResId——media3 的 legacy 桥
      （PlaybackStateCompat.CustomAction）只认实体资源 id。
      用户 2026-10-23："把点赞的样式换成我自己的 + 样式"。 -->
@@ -10,13 +13,12 @@
     android:height="24dp"
     android:viewportWidth="24"
     android:viewportHeight="24">
+    <!-- 实心圆 r=10 -->
     <path
         android:pathData="M12,12 m-10,0 a10,10 0 1,0 20,0 a10,10 0 1,0 -20,0 Z"
         android:fillColor="@android:color/white"/>
+    <!-- 对勾 ribbon（fill 围边，端头/折角圆弧过渡，等价 stroke 2.5 round cap/join）-->
     <path
-        android:pathData="M16.5,8.5 L10.5,15 L7.5,12"
-        android:strokeColor="#00000000"
-        android:strokeWidth="2.5"
-        android:strokeLineCap="round"
-        android:strokeLineJoin="round"/>
+        android:fillColor="#FF000000"
+        android:pathData="M17.42,9.35 A1.25,1.25 0 0 0 15.58,7.65 L10.17,13.06 A1.25,1.25 0 0 1 8.38,13.12 L6.62,11.36 A1.25,1.25 0 1 0 4.86,13.12 L7.75,16.01 A1.25,1.25 0 0 0 9.54,15.95 L17.42,9.35 Z"/>
 </vector>
