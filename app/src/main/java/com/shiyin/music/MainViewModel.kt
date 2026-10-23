@@ -2232,6 +2232,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         if (sig == libSig) return libCache
         val trash = trashIds
         val splits = resolveSplitPlans()
+        // 迁移专辑改名修复（2026-10-23 用户实测：「干妹妹」迁进《秘密基地》后，
+        // 库里专辑格显示《滚石精选》）——迁入曲带着自己文件里的旧专辑名进组，
+        // 专辑格按组内第一首取名就被顶掉。用目标专辑的原生曲目投票出的显示名
+        // 回填迁入曲，库列表/详情页/播放栏三处一致。仅在有迁移记录时计算。
+        val nativeNames = com.shiyin.music.data.nativeAlbumNames(tracksRaw, trackAlbumMoves)
         val physical = ArrayList<Track>()
         val expanded = ArrayList<Track>()
         val containers = ArrayList<Track>()
@@ -2242,7 +2247,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             // cover keying) naturally uses the moved albumId.
             var r = t
             val movedAlbumId = trackAlbumMoves[t.id]?.takeIf { it > 0 && it != t.albumId }
-            if (movedAlbumId != null) r = r.copy(albumId = movedAlbumId)
+            if (movedAlbumId != null) {
+                r = r.copy(albumId = movedAlbumId)
+                nativeNames[movedAlbumId]?.let { r = r.copy(album = it) }
+            }
             physical += r
             val rows = splits[t.id]
             if (rows == null) {
@@ -5681,43 +5689,51 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** Pin a custom cover for an album (uri string from the photo picker). */
     fun saveAlbumCover(albumId: Long, coverUri: String, albumKey: String? = null) {
         if (albumId == 0L) return
-        viewModelScope.launch(Dispatchers.IO) {
-            // fresh read — don't trust the Flow snapshot, see saveAlbumInfo
-            val cur = dao.albumInfoOverride(albumId)
-            dao.upsertAlbumInfoOverride(
-                com.shiyin.music.data.db.AlbumInfoOverrideEntity(
-                    albumId = albumId,
-                    albumName = cur?.albumName ?: "",
-                    artistName = cur?.artistName ?: "",
-                    coverUri = coverUri,
-                    type = cur?.type ?: "",
-                    updatedAt = System.currentTimeMillis(),
+        viewModelScope.launch {
+            // ⚠️ 顺序要求（2026-10-23 外部复核发现）：**先写库、再失效缓存**。
+            // 反过来的话，invalidate 立刻 bump coverRevision → 屏幕上的取图 produceState
+            // 当场重跑，而 DB 写入还在 IO 队列里没提交 ⇒ 读到**旧图**、还会把它重新落盘，
+            // 新封面永远不出现（正是"换封面没反应"那一类）。
+            withContext(Dispatchers.IO) {
+                // fresh read — don't trust the Flow snapshot, see saveAlbumInfo
+                val cur = dao.albumInfoOverride(albumId)
+                dao.upsertAlbumInfoOverride(
+                    com.shiyin.music.data.db.AlbumInfoOverrideEntity(
+                        albumId = albumId,
+                        albumName = cur?.albumName ?: "",
+                        artistName = cur?.artistName ?: "",
+                        coverUri = coverUri,
+                        type = cur?.type ?: "",
+                        updatedAt = System.currentTimeMillis(),
+                    )
                 )
-            )
+            }
+            invalidateCoverCaches(albumId, albumKey)   // 主线程：库已提交，再让界面重取
+            showToast("专辑封面已更新", null)
         }
-        invalidateCoverCaches(albumId, albumKey)
-        showToast("专辑封面已更新", null)
     }
 
     /** Clear a pinned cover; the album falls back to embedded/online art. */
     fun clearAlbumCover(albumId: Long, albumKey: String? = null) {
         if (albumId == 0L) return
-        viewModelScope.launch(Dispatchers.IO) {
-            val cur = dao.albumInfoOverride(albumId)
-            dao.upsertAlbumInfoOverride(
-                com.shiyin.music.data.db.AlbumInfoOverrideEntity(
-                    albumId = albumId,
-                    albumName = cur?.albumName ?: "",
-                    artistName = cur?.artistName ?: "",
-                    coverUri = "",
-                    type = cur?.type ?: "",
-                    updatedAt = System.currentTimeMillis(),
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                val cur = dao.albumInfoOverride(albumId)
+                dao.upsertAlbumInfoOverride(
+                    com.shiyin.music.data.db.AlbumInfoOverrideEntity(
+                        albumId = albumId,
+                        albumName = cur?.albumName ?: "",
+                        artistName = cur?.artistName ?: "",
+                        coverUri = "",
+                        type = cur?.type ?: "",
+                        updatedAt = System.currentTimeMillis(),
+                    )
                 )
-            )
-            dao.deleteArtCacheForAlbum(albumId)
+                dao.deleteArtCacheForAlbum(albumId)
+            }
+            invalidateCoverCaches(albumId, albumKey)   // 同上：先提交、再失效
+            showToast("已恢复默认封面", null)
         }
-        invalidateCoverCaches(albumId, albumKey)
-        showToast("已恢复默认封面", null)
     }
 
     /**
@@ -6930,11 +6946,24 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             "matchOnline: title=${track.title} | artist=${track.artist} | album=${track.album} | dur=${track.durationSec}s | fromSource=$sourceIndex",
         )
         val sources = LyricsFetcher.activeSources()
+        // 2026-10-23 外部复核发现的边界：用户可以把所有源都关掉（设置 → 歌词源），
+        // 此时 sources 为空 → 下面的取模直接 ArithmeticException 崩溃。
+        if (sources.isEmpty()) {
+            lyState = LyState.Failed
+            lyFailReason = "没有启用任何歌词源，请到「设置 → 歌词源」里开启"
+            return
+        }
         // 2026-10-23 用户："研究歌词匹配流程，提高匹配速度 —— 能不能多线程查找？多端都
         // 返回时选匹配度更高的；只有一条返回时也比一个个走快。"
         // ⇒ 自动级联（thenNextSource）时**并发拉所有启用源**；显式选源时只拉那一个。
         // 结果仍按**源顺序**优先取"带时间轴的"，回退纯文本 —— 与旧语义一致（顺序=优先级），
         // 只是把串行等待变成并行等待（总耗时 ≈ 最慢的那个源，而不是各家之和）。
+        //
+        // ⚠️ 2026-10-23 外部复核发现："总耗时 ≈ 最慢的源"在**某个源卡住**时会退化成
+        // "等它超时"（旧参数是 8s 连接 + 8s 读，且自定义源的地址由用户填写，完全可能
+        // 挂着不回），比串行还糟，与提速目标相反。给每个源加**独立超时**：迟到的源
+        // 直接当"没返回"——它本来就只是候选之一。
+        val perSourceMs = 4000L
         val toTry: List<String> = if (thenNextSource) {
             sources.indices.map { sources[(sourceIndex + it) % sources.size] }
         } else {
@@ -6945,7 +6974,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             toTry.map { src ->
                 scope.async(kotlinx.coroutines.Dispatchers.IO) {
                     val raw = runCatching {
-                        LyricsFetcher.fetch(src, track.title, track.artist, track.album, track.durationSec)
+                        kotlinx.coroutines.withTimeoutOrNull(perSourceMs) {
+                            LyricsFetcher.fetch(src, track.title, track.artist, track.album, track.durationSec)
+                        }
                     }.getOrNull()
                     android.util.Log.i("Lyrics", "源 $src 返回 ${raw?.length ?: 0} 字（并发）")
                     src to raw

@@ -36,6 +36,29 @@ fun albumKeyOf(album: String, artist: String, albumId: Long = 0): String {
 }
 
 /**
+ * v1.5.0：各专辑的**原生显示名**（单曲迁移改名修复）。
+ *
+ * 单曲迁移只改 albumId、不改曲目自带的专辑名标签——迁入曲带着旧标签进组，
+ * 专辑格按组内第一首取名就可能被顶成迁入曲的旧专辑名（2026-10-23 用户实测：
+ * 「干妹妹」从《滚石精选》迁进张震岳《秘密基地》后，库里的专辑格显示《滚石精选》，
+ * 点进详情页（按曲目号排序取第一首）才是《秘密基地》）。
+ *
+ * 这里用**原生归属该 albumId、且未被迁走**的曲目投票取名（并列时先到先得），
+ * 作为该专辑的权威显示名；迁入曲的显示名改由它回填。整专被迁空的 albumId
+ * 没有原生曲目可投票，不出现在结果里（迁入曲保留自己的标签名）。
+ */
+fun nativeAlbumNames(tracks: List<Track>, moves: Map<Long, Long>): Map<Long, String> {
+    if (moves.isEmpty()) return emptyMap()
+    val counts = LinkedHashMap<Long, LinkedHashMap<String, Int>>()
+    for (t in tracks) {
+        if (t.albumId <= 0 || t.album.isBlank() || t.album == NO_ALBUM) continue
+        if (moves[t.id]?.let { it != t.albumId } == true) continue // 已迁出，不投票
+        counts.getOrPut(t.albumId) { LinkedHashMap() }.merge(t.album, 1, Int::plus)
+    }
+    return counts.mapValues { (_, m) -> m.maxByOrNull { it.value }!!.key }
+}
+
+/**
  * name-keyed 专辑（曲目没有 MediaStore albumId，key 形如 `"$album|$artist"`）的
  * **覆盖记录合成 id**。
  *
