@@ -127,7 +127,7 @@ class PlaybackService : MediaSessionService() {
         // 同一 mediaId 段内切换不换歌，收藏状态不变）。
         player.addListener(object : Player.Listener {
             override fun onMediaItemTransition(mediaItem: androidx.media3.common.MediaItem?, reason: Int) {
-                currentFavState = null // 新歌状态未知，先按空心；refreshFavState 查库纠正
+                currentFavState = null // 新歌状态未知，先按未收藏；refreshFavState 查库纠正
                 session?.let { refreshFavState(it) }
             }
         })
@@ -278,7 +278,7 @@ class PlaybackService : MediaSessionService() {
      * 按钮整个渲染不出（用户实测灵动岛无点赞）。自备 res 两条通道都有效。
      */
     private fun likeButton(fav: Boolean): androidx.media3.session.CommandButton =
-        androidx.media3.session.CommandButton.Builder()
+        androidx.media3.session.CommandButton.Builder(androidx.media3.session.CommandButton.ICON_UNDEFINED)
             .setCustomIconResId(
                 if (fav) com.shiyin.music.R.drawable.ic_notif_fav_on
                 else com.shiyin.music.R.drawable.ic_notif_fav_off
@@ -334,7 +334,7 @@ class PlaybackService : MediaSessionService() {
         }
     }
 
-    /** 把当前状态的心形布局推给所有已连接控制器（通知/锁屏/灵动岛各自收到）。 */
+    /** 把当前状态的点赞布局推给所有已连接控制器（通知/锁屏/灵动岛各自收到）。 */
     private fun broadcastLikeLayout(session: MediaSession) {
         runCatching { session.setCustomLayout(listOf(likeButton(currentFavState == true))) }
     }
