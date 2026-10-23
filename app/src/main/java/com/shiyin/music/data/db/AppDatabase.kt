@@ -525,6 +525,10 @@ interface ShiyinDao {
     @Query("DELETE FROM playlist_track WHERE playlistId = :playlistId AND mediaId = :mediaId")
     suspend fun removeFromPlaylist(playlistId: String, mediaId: Long)
 
+    /** v1.5.0: 通知栏点赞判断（服务进程无内存缓存，直接查表）。 */
+    @Query("SELECT EXISTS(SELECT 1 FROM playlist_track WHERE playlistId = :playlistId AND mediaId = :mediaId)")
+    suspend fun playlistHasTrack(playlistId: String, mediaId: Long): Boolean
+
     // ── v2.0 artist ──────────────────────────────────────────────────────
     @Query("SELECT * FROM artist")
     fun artistFlow(): Flow<List<ArtistEntity>>

@@ -18,6 +18,7 @@ import androidx.media3.session.SessionCommand
 import androidx.media3.session.SessionResult
 import com.google.common.util.concurrent.ListenableFuture
 import com.shiyin.music.MainActivity
+import kotlinx.coroutines.launch
 
 @OptIn(UnstableApi::class)
 class PlaybackService : MediaSessionService() {
@@ -50,10 +51,19 @@ class PlaybackService : MediaSessionService() {
         const val KEY_ALLOW_CONCURRENT = "allow_concurrent"
         const val KEY_EQUALIZER = "equalizer"
         const val KEY_EQ_BANDS = "eq_bands"
+
+        /**
+         * v1.5.0: 系统媒体控制卡（通知栏/锁屏/灵动岛）上的「点赞」按钮。
+         * 服务进程收命令后直接写 Room 的 playlist_track（p3 =「我的喜欢」）——
+         * 两个进程读同一个数据库文件，App 进程的 playlistTracksFlow 自动感知，
+         * 应用内收藏图标即时同步，无需任何进程间回调。
+         */
+        const val ACTION_TOGGLE_FAV = "com.shiyin.music.TOGGLE_FAV"
     }
 
     private val routeDeviceCommand = SessionCommand(ACTION_ROUTE_DEVICE, Bundle())
     private val audioSettingsCommand = SessionCommand(ACTION_AUDIO_SETTINGS, Bundle())
+    private val toggleFavCommand = SessionCommand(ACTION_TOGGLE_FAV, Bundle())
 
     /**
      * ⚠️ 单声道已**再次撤回**(2026-09-23)。
@@ -130,9 +140,16 @@ class PlaybackService : MediaSessionService() {
                     controller: MediaSession.ControllerInfo,
                 ): MediaSession.ConnectionResult {
                     val sessionCommands = MediaSession.ConnectionResult.DEFAULT_SESSION_COMMANDS
-                        .buildUpon().add(routeDeviceCommand).add(audioSettingsCommand).build()
+                        .buildUpon().add(routeDeviceCommand).add(audioSettingsCommand)
+                        .add(toggleFavCommand).build()
                     return MediaSession.ConnectionResult.AcceptedResultBuilder(session)
                         .setAvailableSessionCommands(sessionCommands)
+                        // v1.5.0: 自定义布局 = [点赞]。Android 13+ 系统媒体卡把它放进
+                        // 播放/暂停键左侧的槽位（官方文档「媒体控制」槽位表：单个自定义
+                        // 按钮占上一首与播放之间的位置），正好是用户要的"点赞在左边"。
+                        // 用 ICON_HEART_FILLED 内置图标常量——系统卡片按深浅色自动着色，
+                        // 不必自备 drawable。pre-13 兼容路径上它追加在动作列表尾部。
+                        .setCustomLayout(listOf(likeButton()))
                         .build()
                 }
 
@@ -142,6 +159,13 @@ class PlaybackService : MediaSessionService() {
                     customCommand: SessionCommand,
                     args: Bundle,
                 ): ListenableFuture<SessionResult> {
+                    // v1.5.0 通知栏点赞:写 playlist_track(p3),与 App 内收藏同一张表。
+                    if (customCommand.customAction == ACTION_TOGGLE_FAV) {
+                        toggleFavInDb(session.player.currentMediaItem?.mediaId?.toLongOrNull())
+                        return com.google.common.util.concurrent.Futures.immediateFuture(
+                            SessionResult(SessionResult.RESULT_SUCCESS)
+                        )
+                    }
                     // v1.3.x 播放设置下发:四个开关在服务进程生效(ExoPlayer 在这里)。
                     if (customCommand.customAction == ACTION_AUDIO_SETTINGS) {
                         applyAudioSettings(
@@ -211,6 +235,35 @@ class PlaybackService : MediaSessionService() {
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = session
+
+    /** v1.5.0: 通知栏「点赞」按钮（见 onConnect 的 setCustomLayout 注释）。 */
+    private fun likeButton(): androidx.media3.session.CommandButton =
+        androidx.media3.session.CommandButton.Builder(androidx.media3.session.CommandButton.ICON_HEART_FILLED)
+            .setSessionCommand(toggleFavCommand)
+            .setDisplayName("喜欢这首歌")
+            .setEnabled(true)
+            .build()
+
+    /**
+     * v1.5.0: 系统媒体卡的点赞落库。与 App 内收藏同一张 playlist_track 表、
+     * 同一个 p3 歌单 —— App 进程的 playlistTracksFlow 监听该表，写入后应用内
+     * 所有「已收藏」状态自动刷新。服务进程没有 Toast/协程作用域，用独立
+     * 协程在 IO 线程写；未在播（mediaId 解析不出）则忽略。
+     */
+    private fun toggleFavInDb(mediaId: Long?) {
+        if (mediaId == null || mediaId <= 0) return
+        val appContext = applicationContext
+        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+            try {
+                val dao = com.shiyin.music.data.db.AppDatabase.get(appContext).dao()
+                val exists = dao.playlistHasTrack("p3", mediaId)
+                if (exists) dao.removeFromPlaylist("p3", mediaId)
+                else dao.addToPlaylist(com.shiyin.music.data.db.PlaylistTrackEntity("p3", mediaId, System.currentTimeMillis()))
+            } catch (e: Exception) {
+                android.util.Log.w("PlaybackService", "通知栏点赞落库失败 mediaId=$mediaId", e)
+            }
+        }
+    }
 
     /**
      * v22: 拆分专辑内的上/下一首。返回 true = 已处理（调用方应否决默认命令）。
