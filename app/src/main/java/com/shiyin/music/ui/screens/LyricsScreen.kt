@@ -520,8 +520,16 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
         //  · 松手后再静默 2.5 秒才恢复自动跟行（用户在看前面几句时不被拽走）。
         val listIsDragged by listState.interactionSource.collectIsDraggedAsState()
         var followPauseUntil by remember { androidx.compose.runtime.mutableLongStateOf(0L) }
+        // 2026-10-23（外部复核发现）：静默期必须在**起手与抬手两个边沿**都重置。
+        // 只锚在起手的话，一次超过 2.5 秒的长拖动会在抬手时得到一个负数 wait，
+        // 跟行动画立刻把列表从用户看的位置拽走（"松手就被抢"）。
+        // wasDragged 保证首次组合（listIsDragged 初始 false）不会平白延迟第一次跟行。
+        var wasDragged by remember { androidx.compose.runtime.mutableStateOf(false) }
         androidx.compose.runtime.LaunchedEffect(listIsDragged) {
             if (listIsDragged) {
+                wasDragged = true
+                followPauseUntil = android.os.SystemClock.elapsedRealtime() + 2500L
+            } else if (wasDragged) {
                 followPauseUntil = android.os.SystemClock.elapsedRealtime() + 2500L
             }
         }
@@ -569,13 +577,14 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
         // 2026-10-22：给下拉闸门一个**即时**判定 —— snapshotFlow 是异步写的，
         // 快速滑动/长按拖动时可能拿旧值，导致"不在顶部也能拉下"的误触。
         androidx.compose.runtime.LaunchedEffect(listState) {
-            // 2026-10-22（真机日志：下滑带惯性滑到顶部后紧接着长按拖动 → 仍能拉）：
-            // 「可下拉」的判据收紧为**稳定停在顶部** —— 列表正在滚动/惯性中
-            // （isScrollInProgress，含跟行动画与甩动惯性）一律不算，避免刚滑到顶
-            // 的那一瞬间被当成"用户想退出"。
-            vm.lyricsAtTopNow = {
-                !listState.canScrollBackward && !listState.isScrollInProgress
-            }
+            // 2026-10-23（外部复核发现）：这里**不能**带 isScrollInProgress。
+            // 本列表自己刚开始被拖动时（正是越过 slop 的那一帧）以及每次跟行动画
+            // 运行期间它都是 true —— 而闸门恰好在越过 slop 时回来复查这个值，
+            // 于是读成"不在顶部"，本次下拉被静默否决，用户读作"有时能拉有时不能"。
+            // 判据只留 canScrollBackward：它表达"内容真的从顶部滚走了"，才是
+            // "起手在顶、中途被跟行带走"的真实信号。起手在顶即可拉
+            //（用户 2026-10-22 明确要求：滑到顶接着往下滑就应该能拉，不要加稳定期）。
+            vm.lyricsAtTopNow = { !listState.canScrollBackward }
         }
         // v1.3.x 第6轮反馈:下拉退出的**唯一起手判据**是"本手势按下那一刻列表是否在顶"。
         // 该判据由 LyricsMorphOverlay 的指针闸门独占实现(它在 awaitFirstDown 时读

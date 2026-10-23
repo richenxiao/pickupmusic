@@ -121,6 +121,20 @@ fun LyricsMorphOverlay(vm: MainViewModel, morph: LyricsMorphState, interactive: 
                     var dragging = false
                     var pullDown = false
                     var lastY = down.position.y
+                    // 2026-10-23 用户："滑动的时候小幅度的下拉会引起抖动，建议完全去掉"。
+                    // 根因：此前一旦越过系统 touchSlop（≈8dp）就立刻 1:1 跟手移动卡片——
+                    // 滚动歌词时手指带的微小向下分量蹭过阈值，卡片被拽下几十像素、松手又
+                    // 弹回，读作"抖动"。这里加**死区**：下拉位移须超过 [pullDeadzonePx]
+                    // 卡片才开始动；小于它**完全不移动卡片**（仅吃掉位移防穿透到播放页）。
+                    // 越过死区后按 (位移−死区) 跟手，从 0 平滑起算，无跳变。
+                    val pullDeadzonePx = viewConfiguration.touchSlop * 2.5f
+                    var prevEffective = 0f
+                    // 2026-10-23 用户："长按下拉还是能触发的，还能修吗？"
+                    // 长按后拖动是**另一个交互意图**（选中/想滚动），不该被当成退出下拉。
+                    // 判据：手指越过 slop 的时间点若离按下已超过系统长按阈值，本次按长按处理，
+                    // 永不进入下拉（位移仍由下面的 Main-pass 兜底守卫吃掉，不穿透到播放页）。
+                    // 正常下拉是"按下即快速下移"，远早于长按阈值，不受影响。
+                    val longPressTimeoutMs = viewConfiguration.longPressTimeoutMillis
                     while (true) {
                         val event = awaitPointerEvent(androidx.compose.ui.input.pointer.PointerEventPass.Initial)
                         val change = event.changes.firstOrNull() ?: break
@@ -131,16 +145,24 @@ fun LyricsMorphOverlay(vm: MainViewModel, morph: LyricsMorphState, interactive: 
                                 if (kotlin.math.abs(dyRaw) > viewConfiguration.touchSlop) {
                                     if (dyRaw <= 0f) break
                                     pullDown = true
+                                    // 长按后才动 → 不当下拉（用户明确报的残留触发路径）。
+                                    val heldTooLong =
+                                        change.uptimeMillis - down.uptimeMillis > longPressTimeoutMs
                                     // 越过 slop 时再问一次：起手在顶、但手势过程中列表
                                     // 被跟行/惯性带离顶部 → 本次不当下拉处理（防误触）。
                                     val stillAtTop = vm.lyricsAtTopNow?.invoke() ?: downAtTop
-                                    if (downAtTop && stillAtTop) dragging = true
+                                    if (downAtTop && stillAtTop && !heldTooLong) dragging = true
                                 }
                             }
                             lastY = change.position.y
                         }
                         if (dragging) {
-                            morph.onDrag(change.position.y - lastY)
+                            // 只把"越过死区的那一段"喂给 morph；死区内 prevEffective 恒 0，
+                            // delta 恒 0，卡片纹丝不动 → 小幅下拉零抖动。
+                            val effective = (dyRaw - pullDeadzonePx).coerceAtLeast(0f)
+                            val delta = effective - prevEffective
+                            prevEffective = effective
+                            if (delta != 0f) morph.onDrag(delta)
                             lastY = change.position.y
                             change.consume()
                         }
