@@ -53,10 +53,11 @@ class PlaybackService : MediaSessionService() {
         const val KEY_EQ_BANDS = "eq_bands"
 
         /**
-         * v1.5.0: 系统媒体控制卡（通知栏/锁屏/灵动岛）上的「点赞」按钮。
+         * v1.5.0: 系统媒体控制卡（控制中心/锁屏/通知栏）上的「点赞」按钮。
          * 服务进程收命令后直接写 Room 的 playlist_track（p3 =「我的喜欢」）——
          * 两个进程读同一个数据库文件，App 进程的 playlistTracksFlow 自动感知，
          * 应用内收藏图标即时同步，无需任何进程间回调。
+         * 灵动岛不渲染第三方自定义按钮（2026-10-24 实测，见 onCreate 结论注释）。
          */
         const val ACTION_TOGGLE_FAV = "com.shiyin.music.TOGGLE_FAV"
     }
@@ -139,13 +140,18 @@ class PlaybackService : MediaSessionService() {
         )
         session = MediaSession.Builder(this, player)
             .setSessionActivity(openApp)
-            // v1.5.0 灵动岛修复（用户 2026-10-23 三报"灵动岛没有点赞"）：布局必须在
-            // **构造期**给。字节码链路：Builder.setCustomLayout → MediaSessionImpl
-            // 构造即写 PlayerWrapper.customLayout → createPlaybackStateCompat 把它
-            // 发布成 PlaybackStateCompat.CustomAction（灵动岛/旧通知读的通道）。
-            // 此前只写在 onConnect 的 ConnectionResult 里——通知首次渲染可能早于
-            // 控制器连接握手完成，灵动岛拉到的 PlaybackState 还没有按钮。
-            // 构造期设置让会话存在的那一刻 PlaybackState 就带点赞按钮。
+            // v1.5.0: 点赞布局在**构造期**发布（官方入口）。字节码链路：Builder
+            // .setCustomLayout → MediaSessionImpl 构造即写 PlayerWrapper.customLayout
+            // → createPlaybackStateCompat 发布成 PlaybackStateCompat.CustomAction
+            //（控制中心/锁屏/通知读取的标准通道）。onConnect 的 ConnectionResult
+            // 只对已连接控制器生效，通知首次渲染可能早于握手完成——构造期设置让
+            // 会话存在那一刻 PlaybackState 就带按钮。
+            // ⚠️ 灵动岛结论（2026-10-24 用户实测收尾）：OnePlus PKG110 / Android 16
+            // (CN01) 上，第三方 App 的自定义按钮灵动岛一律不渲染（网易云、Spotify
+            // 等合作大厂才有，判断为厂商白名单或私有通道；dumpsys 证实我们的
+            // CustomAction 已在 PlaybackState 上、iconResId 指向真实资源，通道无
+            // 缺陷）。**不再尝试灵动岛，不集成 OPPO 私有 SDK**——点赞只服务
+            // 控制中心/锁屏/通知。此结论防止后续重复踩坑。
             .setCustomLayout(listOf(likeButton(currentFavState == true)))
             .setCallback(object : MediaSession.Callback {
                 /**
@@ -273,17 +279,17 @@ class PlaybackService : MediaSessionService() {
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = session
 
     /**
-     * v1.5.0: 通知栏「点赞」按钮——未收藏=描边圆加号，已收藏=实心圆对勾
-     * （用户 2026-10-23："把点赞的样式换成我自己的 + 样式"——即应用内收藏
-     * 按钮同款视觉语言，见 FavMorph/Lucide.CirclePlus/CheckSmall）。
+     * v1.5.0: 系统媒体卡「点赞」按钮——未赞=描边圆加号，已赞=实心圆勾（用户
+     * 2026-10-24 指定的 ic_like_add / ic_like_done 静态矢量，反馈色即「实心圆+
+     * 勾洞」与「描边圈+加号」的结构差异）。服务控制中心/锁屏/通知栏；灵动岛
+     * 不渲染第三方自定义按钮（实测，见 onCreate 构造期布局处的结论注释）。
      *
      * ⚠️ 图标必须用 [androidx.media3.session.CommandButton.Builder.setCustomIconResId]
      * 自备 drawable、不能用内置 ICON_HEART_FILLED 常量：字节码核实 media3 1.7.1 的
      * legacy 桥（PlayerWrapper.createPlaybackStateCompat → PlaybackStateCompat
      * .CustomAction）取的是 **iconResId 字段**——内置常量只写 icon 字段（经
      * EXTRAS_KEY_COMMAND_BUTTON_ICON_COMPAT 提示标准媒体卡），iconResId=0 ⇒
-     * 从 PlaybackState 通道读按钮的界面（ColorOS 灵动岛、旧版通知）拿不到图标，
-     * 按钮整个渲染不出（用户实测灵动岛无点赞）。自备 res 两条通道都有效。
+     * legacy 通道渲染不出图标。自备 res 两条通道都有效。
      */
     private fun likeButton(fav: Boolean): androidx.media3.session.CommandButton =
         androidx.media3.session.CommandButton.Builder(androidx.media3.session.CommandButton.ICON_UNDEFINED)
@@ -342,7 +348,7 @@ class PlaybackService : MediaSessionService() {
         }
     }
 
-    /** 把当前状态的点赞布局推给所有已连接控制器（通知/锁屏/灵动岛各自收到）。 */
+    /** 把当前状态的点赞布局推给所有已连接控制器（控制中心/锁屏/通知各自收到）。 */
     private fun broadcastLikeLayout(session: MediaSession) {
         runCatching { session.setCustomLayout(listOf(likeButton(currentFavState == true))) }
     }
