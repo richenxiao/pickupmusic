@@ -15,8 +15,8 @@ android {
         applicationId = "com.shiyin.music"
         minSdk = 31
         targetSdk = 36
-        versionCode = 10400
-        versionName = "1.4.0"
+        versionCode = 10500
+        versionName = "1.5.0"
         // v1.2.0 阶段一：instrumented test runner 显式用 androidx（不显式设时，
         // androidTest APK 经 R8 后 AGP 可能回退到系统框架 android.test.InstrumentationTestRunner
         // 致使 instrumentation 进程启动即崩）。

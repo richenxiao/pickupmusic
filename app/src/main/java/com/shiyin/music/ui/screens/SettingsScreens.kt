@@ -740,10 +740,22 @@ private fun SectionLabel(text: String, color: Color? = null) {
 }
 
 @Composable
-private fun SubPageHeader(title: String, help: Pair<String, String>? = null, onBack: () -> Unit) {
+private fun SubPageHeader(
+    title: String,
+    help: Pair<String, String>? = null,
+    badge: (@Composable () -> Unit)? = null,
+    onBack: () -> Unit,
+) {
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
         BackButton(onBack)
-        Text(title, style = heading(24), modifier = Modifier.weight(1f))
+        Row(
+            Modifier.weight(1f),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(title, style = heading(24))
+            badge?.invoke()
+        }
         if (help != null) HelpInfoButton(help.first, help.second)
     }
 }
@@ -786,6 +798,7 @@ private fun SettingsRowScaffold(
     leading: @Composable () -> Unit,
     trailing: @Composable () -> Unit = {},
     divider: Boolean = false,
+    badge: (@Composable () -> Unit)? = null,
     onClick: (() -> Unit)? = null,
 ) {
     val c = LocalOrganic.current
@@ -811,6 +824,7 @@ private fun SettingsRowScaffold(
             ) {
                 leading()
                 Text(title, style = body(15f, FontWeight.SemiBold, c.text))
+                badge?.invoke()
             }
             // 副标题只在这一行确实有短话要说时出现，且必须短到一行放得下(见设置页定稿)。
             if (sub != null) {
@@ -836,6 +850,7 @@ private fun CardEntryRow(
     sub: String?,
     divider: Boolean,
     trailingText: String? = null,
+    badge: (@Composable () -> Unit)? = null,
     onClick: () -> Unit,
 ) {
     val c = LocalOrganic.current
@@ -844,6 +859,7 @@ private fun CardEntryRow(
         sub = sub,
         leading = { OIcon(icon, 19.dp, iconTint) },
         divider = divider,
+        badge = badge,
         onClick = onClick,
         trailing = {
             // 尾注文字 + 箭头必须**横排**——骨架把 trailing 包进了一个 Box
@@ -1846,6 +1862,8 @@ private fun PlaySettingsScreen(vm: MainViewModel, scrollStates: MutableMap<Strin
                 // 2026-10-21 图标审查：原为 `Music`（音符）→ `mic-vocal`（话筒），与“伴唱”语义一致。
                 Lucide.MicVocal, c.n700, "伴唱", null,
                 divider = false,
+                // v1.5.0: 伴唱仍在打磨（卡死问题在查），标 BETA 管理预期。
+                badge = { com.shiyin.music.ui.components.BetaTag() },
             ) { vm.navFilesTo(FilesView.KaraokeSettings) }
         }
         Box(Modifier.height(114.dp))
@@ -1886,6 +1904,7 @@ private fun KaraokeSettingsScreen(vm: MainViewModel, scrollStates: MutableMap<St
                 "第一次拆某首歌要等一会儿（拆好的部分会存起来，同一首再听就很快）。\n\n" +
                 "模型决定效果：默认的 9482 最快；想要更干净的人声消除，可以下载 Inst_HQ_3。\n\n" +
                 "拆出来的伴奏占空间，下面的保存策略会自动清理旧的。",
+            badge = { com.shiyin.music.ui.components.BetaTag() },
         ) { vm.navFilesBack() }
 
         SectionLabel("模型")
@@ -3019,6 +3038,70 @@ private fun AboutScreen(vm: MainViewModel) {
                     val fixes: List<String> = emptyList(),
                 )
                 val versions = listOf(
+                    VerChange(
+                        version = "v1.5.0",
+                        newFeatures = listOf(
+                            VerGroup(
+                                "伴唱（BETA）",
+                                listOf(
+                                    "把人声与伴奏分开，三档切换：人声 / 原曲 / 伴奏",
+                                    "三种分离模型可选：9482 内置、速度最快；Inst_HQ_3 直接输出伴奏、保留更多高频；Voc_FT 另一套人声模型",
+                                    "模型可下载、可本地导入、可删除；分轨缓存可查看占用并清理",
+                                ),
+                            ),
+                            VerGroup(
+                                "封面",
+                                listOf("长方形封面不再被裁切，可按原始比例完整显示（设置 → 播放）"),
+                            ),
+                            VerGroup("右滑固定", listOf("常用专辑、歌手、歌单右滑置顶")),
+                            VerGroup(
+                                "播放控制",
+                                listOf(
+                                    "通知栏与锁屏播放卡新增收藏按钮，与 App 内同步",
+                                    "升降 Key（BETA）：最多 ±6 半音，点一下走 1 个半音、长按走 0.5",
+                                ),
+                            ),
+                            VerGroup("曲库整理", listOf("歌手管理：合并、隐藏客串歌手、写真源集中一处")),
+                            VerGroup("歌词", listOf("歌词源可开关、可删除，一键恢复官方源")),
+                            VerGroup("备份", listOf("备份覆盖全部用户数据，云端备份可按日期直接恢复")),
+                            VerGroup(
+                                "拾光 Agent",
+                                listOf(
+                                    "专辑曲序与发行日期更准确（接入 MusicBrainz）",
+                                    "新增记忆管理页",
+                                ),
+                            ),
+                        ),
+                        improvements = listOf(
+                            VerGroup(
+                                "文件扫描",
+                                listOf("重新扫描速度大幅提升：先出列表、再后台核对，且只核对音乐目录"),
+                            ),
+                            VerGroup("搜索", listOf("高亮更精准，精确标题优先")),
+                            VerGroup("播放页", listOf("进度条手感更顺，纵向滑动不再误触")),
+                            VerGroup("启动", listOf("首页骨架屏与封面预载，冷启动一次成型，不再闪空")),
+                            VerGroup("歌词", listOf("多源并行匹配，兼容繁简差异；制作人名单行自动跳过翻译")),
+                            VerGroup("翻译", listOf("失败自动重试，不再需要反复点")),
+                            VerGroup("设置", listOf("行高统一，视觉更整齐")),
+                        ),
+                        upgradeNotes = listOf(
+                            "伴唱与升降 Key 标记为 BETA：功能可用、仍在打磨。伴唱首次分离需要等待，" +
+                                "模型与伴奏缓存会占用存储，可在设置 → 播放 → 伴唱里管理。",
+                        ),
+                        fixes = listOf(
+                            "文件扫描：文件名带 (Remix) 等标注时，标题被吞掉",
+                            "曲库整理：单曲迁移到专辑后，库里显示的专辑名没跟着更新",
+                            "曲库整理：更换专辑封面没有反应",
+                            "曲库整理：专辑内部分歌曲的封面识别失败",
+                            "歌词：同专辑部分歌曲识别不到歌词",
+                            "歌词本：顶部下拉容易误触；单曲循环时歌词停在末尾；重进后当前行没有居中",
+                            "右滑固定：误触、抖动、卡住",
+                            "专辑：折叠时误伤同名不同版本",
+                            "伴唱：升降 Key 换曲漏声、伴奏串歌、取消后重算；导出伴奏 WAV 有噪声",
+                            "歌手：合并对复合艺人无效",
+                            "迷你播放条：切歌时封面闪烁",
+                        ),
+                    ),
                     VerChange(
                         version = "v1.4.0",
                         newFeatures = listOf(

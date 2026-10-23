@@ -1750,6 +1750,8 @@ private fun PlayerMenuSheetContent(vm: MainViewModel) {
                 SheetActionRow(
                     // 2026-10-21 图标审查第 2 轮：原为 `SlidersBold`（滑块，读起来像 EQ/设置）→ 谱号。
                     Lucide.ClefTreble, "升降 Key",
+                    // v1.5.0: BETA 铭牌 —— 变调仍受 Media3 Sonic 重采样限制（音质待改）。
+                    badge = { com.shiyin.music.ui.components.BetaTag() },
                     trailing = {
                         Text(
                             com.shiyin.music.playback.KeyShift.label(vm.keyShift),
@@ -1765,6 +1767,8 @@ private fun PlayerMenuSheetContent(vm: MainViewModel) {
                         // 2026-10-21 图标审查：原为 `Music`（音符，读不出"卡拉OK/人声"，
                         // 且 5 处伴唱入口全用它）。用户选定换成话筒语义的 `mic-vocal`。
                         Lucide.MicVocal, "伴唱",
+                        // v1.5.0: BETA 铭牌 —— 分离效果与稳定性仍在打磨。
+                        badge = { com.shiyin.music.ui.components.BetaTag() },
                         trailing = {
                             if (vm.karaokeState != com.shiyin.music.ui.components.KaraokeButtonState.Idle) {
                                 Text(
@@ -2119,6 +2123,10 @@ private fun PlayerMenuSheetContent(vm: MainViewModel) {
                             Modifier.size(34.dp).clip(CircleShape).clickable { vm.pMenuView = "root" },
                             contentAlignment = Alignment.Center,
                         ) { OIcon(Lucide.ChevronLeft, 20.dp, c.n500) }
+                        Text("升降 Key", style = body(15f, FontWeight.ExtraBold, c.text))
+                        Box(Modifier.size(6.dp))
+                        // v1.5.0: BETA 铭牌 —— 变调受 Media3 Sonic 重采样限制，音质仍在改。
+                        com.shiyin.music.ui.components.BetaTag()
                         Spacer(Modifier.weight(1f))
                     }
                     Text(
@@ -3524,6 +3532,8 @@ private fun KaraokeMixPanel(vm: MainViewModel) {
                 contentAlignment = Alignment.Center,
             ) { OIcon(Lucide.ChevronLeft, 20.dp, c.n500) }
             Text("伴唱", style = body(15f, FontWeight.ExtraBold, c.text))
+            Box(Modifier.size(6.dp))
+            com.shiyin.music.ui.components.BetaTag()
             Spacer(Modifier.weight(1f))
         }
 

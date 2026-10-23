@@ -49,6 +49,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.shiyin.music.data.Track
 import com.shiyin.music.ui.icons.Lucide
 import com.shiyin.music.ui.theme.LocalOrganic
@@ -212,12 +213,14 @@ fun SheetActionRow(
     label: String,
     tint: Color? = null,
     trailing: (@Composable () -> Unit)? = null,
+    badge: (@Composable () -> Unit)? = null,
     onClick: () -> Unit,
 ) = SheetActionRowImpl(
     icon = { OIcon(icon, 19.dp, tint ?: LocalOrganic.current.n700) },
     label = label,
     labelColor = tint ?: LocalOrganic.current.text,
     trailing = trailing,
+    badge = badge,
     onClick = onClick,
 )
 
@@ -234,6 +237,7 @@ fun SheetActionRow(
     label: String,
     tint: Color? = null,
     trailing: (@Composable () -> Unit)? = null,
+    badge: (@Composable () -> Unit)? = null,
     onClick: () -> Unit,
 ) = SheetActionRowImpl(
     icon = {
@@ -247,6 +251,7 @@ fun SheetActionRow(
     label = label,
     labelColor = tint ?: LocalOrganic.current.text,
     trailing = trailing,
+    badge = badge,
     onClick = onClick,
 )
 
@@ -256,6 +261,7 @@ private fun SheetActionRowImpl(
     label: String,
     labelColor: Color,
     trailing: (@Composable () -> Unit)?,
+    badge: (@Composable () -> Unit)? = null,
     onClick: () -> Unit,
 ) {
     Row(
@@ -268,8 +274,43 @@ private fun SheetActionRowImpl(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         icon()
-        Text(label, style = body(14.5f, FontWeight.SemiBold, labelColor), modifier = Modifier.weight(1f))
+        if (badge == null) {
+            Text(label, style = body(14.5f, FontWeight.SemiBold, labelColor), modifier = Modifier.weight(1f))
+        } else {
+            // 带铭牌：标签 + BETA 徽标同行左对齐（徽标紧贴名字，不随 trailing 右飘）
+            Row(
+                Modifier.weight(1f),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(label, style = body(14.5f, FontWeight.SemiBold, labelColor))
+                badge()
+            }
+        }
         trailing?.invoke()
+    }
+}
+
+/**
+ * v1.5.0: 「BETA」铭牌 —— 标在伴唱/升降 Key 这类**尚不成熟**的功能名旁。
+ *
+ * 用途是管理预期：功能可用但仍在打磨（伴唱卡死问题在查、升降 Key 音质受
+ * Sonic 变调器限制），先标出来比事后解释更诚实。样式跟随主题的柔和强调色，
+ * 不做高饱和大色块（铭牌要能被看见，但不该抢功能名的注意力）。
+ */
+@Composable
+fun BetaTag() {
+    val c = LocalOrganic.current
+    Box(
+        Modifier
+            .clip(RoundedCornerShape(4.dp))
+            .background(c.a200)
+            .padding(horizontal = 4.dp, vertical = 1.dp),
+    ) {
+        Text(
+            "BETA",
+            style = body(8.5f, FontWeight.ExtraBold, c.a700).copy(letterSpacing = 0.6.sp),
+        )
     }
 }
 
