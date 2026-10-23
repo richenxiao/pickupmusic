@@ -3084,10 +3084,6 @@ private fun AboutScreen(vm: MainViewModel) {
                             VerGroup("翻译", listOf("失败自动重试，不再需要反复点")),
                             VerGroup("设置", listOf("行高统一，视觉更整齐")),
                         ),
-                        upgradeNotes = listOf(
-                            "伴唱与升降 Key 标记为 BETA：功能可用、仍在打磨。伴唱首次分离需要等待，" +
-                                "模型与伴奏缓存会占用存储，可在设置 → 播放 → 伴唱里管理。",
-                        ),
                         fixes = listOf(
                             "文件扫描：文件名带 (Remix) 等标注时，标题被吞掉",
                             "曲库整理：单曲迁移到专辑后，库里显示的专辑名没跟着更新",
