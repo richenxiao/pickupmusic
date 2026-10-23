@@ -1823,6 +1823,11 @@ private fun PlaySettingsScreen(vm: MainViewModel, scrollStates: MutableMap<Strin
             SettingRow(Lucide.Volume2, "音量均衡", null, divider = true) {
                 OrganicSwitch(vm.volumeNormalize) { vm.setVolumeNormalize(!vm.volumeNormalize) }
             }
+            // v1.5.0: 非方形内嵌封面会被系统 loadThumbnail 裁成方图（如横版专辑）
+            // ——开启后大图按原始比例完整显示，不再裁两侧。
+            SettingRow(Lucide.Photo, "按原始比例显示封面", "关闭：统一方形；开启：长方形封面按原始比例完整显示", divider = true) {
+                OrganicSwitch(vm.coverOriginalRatio) { vm.setCoverOriginalRatio(!vm.coverOriginalRatio) }
+            }
             // 单声道**再次下线**(2026-09-23 实测):官方 ChannelMixingAudioProcessor +
             // 与 media3 默认实现逐行一致的 buildAudioSink 覆写,装机后依然"播不了"。
             // 两次实测同一结论——这条 ExoPlayer 管线上任何 buildAudioSink 覆写都会

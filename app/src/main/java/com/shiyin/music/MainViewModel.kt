@@ -221,6 +221,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         if (themeFollowSystem) darkTheme = systemIsDark()
     }
     var gapless by mutableStateOf(true); private set
+    /** v1.5.0: 「按原始比例显示封面」(设置·播放页;默认关=统一方形)。 */
+    var coverOriginalRatio by mutableStateOf(false); private set
     var autoMatch by mutableStateOf(true); private set
     var onboarded by mutableStateOf(false); private set
     /** v5.2 Bug2: true only after the first full scan *since install* has
@@ -1771,6 +1773,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 translateButtonMode = s.translateButtonMode
                 // v1.3.x 播放设置同步
                 volumeNormalize = s.volumeNormalize
+                coverOriginalRatio = s.coverOriginalRatio
                 monoAudio = s.monoAudio
                 allowConcurrentPlayback = s.allowConcurrentPlayback
                 equalizerOn = s.equalizerOn
@@ -6031,6 +6034,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
     fun setGapless(v: Boolean) = viewModelScope.launch { settingsStore.setGapless(v) }
+
+    /** v1.5.0: 「按原始比例显示封面」开关（设置·播放页）。 */
+    fun setCoverOriginalRatio(v: Boolean) = viewModelScope.launch { settingsStore.setCoverOriginalRatio(v) }
     fun setAutoMatch(v: Boolean) = viewModelScope.launch { settingsStore.setAutoMatch(v) }
     fun setAutoSaveRecognition(v: Boolean) = viewModelScope.launch { settingsStore.setAutoSaveRecognition(v) }
     fun setSpeed(v: Float) {

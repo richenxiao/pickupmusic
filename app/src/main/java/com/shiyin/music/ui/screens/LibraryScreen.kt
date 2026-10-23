@@ -92,6 +92,7 @@ import com.shiyin.music.Tab
 import com.shiyin.music.data.Track
 import com.shiyin.music.data.formatDuration
 import com.shiyin.music.ui.components.CoverArt
+import com.shiyin.music.ui.components.CoverRatio
 import com.shiyin.music.ui.components.SwipeToPin
 import com.shiyin.music.ui.components.clickableNoRipple
 import com.shiyin.music.ui.components.CoverArtMosaic
@@ -1034,23 +1035,42 @@ private fun AlbumDetail(vm: MainViewModel, key: String) {
             }
         }
         // 12: large centered cover (~75% width)
+        // v1.5.0 封面比例规则：开关关 → 方形槽 + 非方形图 Fit/主色填充（CoverArt 同规）；
+        // 开关开 → 按原始比例完整显示（钳 0.5~2.0），不再锁 1:1 裁两侧。
         item {
+            val art = rememberAlbumArt(first, 320.dp)
+            val ratio = CoverRatio.ratioOf(art?.width ?: 0, art?.height ?: 0)
+            val slotRatio = if (vm.coverOriginalRatio) CoverRatio.slotRatio(ratio) else 1f
             Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
                 Box(
                     Modifier
                         .fillMaxWidth(0.75f)
-                        .aspectRatio(1f)
+                        .then(
+                            if (slotRatio != null && slotRatio != 1f)
+                                Modifier.aspectRatio(slotRatio) else Modifier.aspectRatio(1f)
+                        )
                         .shadowLg(RoundedCornerShape(16.dp))
                         .clip(RoundedCornerShape(16.dp))
-                        .background(bg),
+                        .background(
+                            // 填充色：非方形图 Fit 时的留边底色 = 封面主色（取色结果，无则回退
+                            // 生成调色板 bg）。
+                            com.shiyin.music.ui.components.ArtCache.colorFor(first.albumId)
+                                ?.let { Color(it.first) } ?: bg
+                        ),
                     contentAlignment = Alignment.Center,
                 ) {
-                    val art = rememberAlbumArt(first, 320.dp)
                     if (art != null) {
+                        // 槽内贴合分支：开关关+非方形 → Fit（槽背景已主色填充）；开关开+比例被钳
+                        // → Fit；近似方形/未开开关的方形图 → Crop（原状）。
+                        val fit = !com.shiyin.music.ui.components.CoverRatio.shouldCropInSquare(
+                            com.shiyin.music.ui.components.CoverRatio.ratioOf(art.width, art.height)
+                        ) || (vm.coverOriginalRatio && ratio != null && slotRatio != ratio)
                         androidx.compose.foundation.Image(
                             art, null,
                             modifier = Modifier.fillMaxSize(),
-                            contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+                            contentScale = if (fit)
+                                androidx.compose.ui.layout.ContentScale.Fit
+                            else androidx.compose.ui.layout.ContentScale.Crop,
                         )
                     } else {
                         Box(

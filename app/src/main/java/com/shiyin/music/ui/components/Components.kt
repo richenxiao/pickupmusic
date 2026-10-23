@@ -1052,11 +1052,20 @@ fun CoverArt(
     val pendingFlip = transition == CoverTransition.FLIP && flipFrom == null &&
         lastArt != null && lastAlbumId != (track?.albumId ?: Long.MIN_VALUE)
     val shown = if (pendingFlip) lastArt else display
+    // v1.5.0 封面比例规则(规则 2):非方形内嵌图(被系统 loadThumbnail 裁过的横版
+    // 专辑等)在方形槽内改 Fit + 主色填充,不再 Crop 裁掉上下/左右。主色沿用现有
+    // 取色(ArtCache.colorFor,首次提取前回退生成调色板)——不新增取色逻辑。
+    val (dominantBg, _) = ArtCache.colorFor(track?.albumId ?: -1L)?.let {
+        Color(it.first) to Color(it.second)
+    } ?: coverPalette(track?.paletteIndex ?: 0)
+    val showFitPad = shown != null && !CoverRatio.shouldCropInSquare(
+        CoverRatio.ratioOf(shown.width, shown.height)
+    )
     Box(
         modifier = modifier
             .then(sizeMod)
             .clip(shape)
-            .background(if (shown != null) Color.Transparent else bg),
+            .background(if (shown != null) (if (showFitPad) dominantBg else Color.Transparent) else bg),
         contentAlignment = Alignment.Center,
     ) {
         if (shown != null) {
@@ -1073,18 +1082,21 @@ fun CoverArt(
                             cameraDistance = 12f * density
                             scaleX = if (flipRot.value > 90f) -1f else 1f
                         },
-                        contentScale = ContentScale.Crop,
+                        contentScale = if (showFitPad) ContentScale.Fit else ContentScale.Crop,
                     )
                 }
             } else {
                 // 旧封面垫底(淡出层):交叉淡化期间两层同时在场。
                 prevArt?.let { p ->
-                    Image(p, contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+                    Image(
+                        p, contentDescription = null, modifier = Modifier.fillMaxSize(),
+                        contentScale = if (showFitPad) ContentScale.Fit else ContentScale.Crop,
+                    )
                 }
                 Image(
                     shown, contentDescription = null,
                     modifier = Modifier.fillMaxSize().graphicsLayer { alpha = fadeAlpha.value },
-                    contentScale = ContentScale.Crop,
+                    contentScale = if (showFitPad) ContentScale.Fit else ContentScale.Crop,
                 )
             }
         } else {

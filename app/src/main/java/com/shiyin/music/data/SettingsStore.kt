@@ -138,6 +138,8 @@ private val keyPinnedLibItems = stringSetPreferencesKey("pinned_lib_items")
     private val keyMonoAudio = booleanPreferencesKey("mono_audio")
     /** 允许与其他应用同时播放。 */
     private val keyAllowConcurrent = booleanPreferencesKey("allow_concurrent_playback")
+    /** v1.5.0: 「按原始比例显示封面」(设置·播放页;默认关=统一方形)。 */
+    private val keyCoverOriginalRatio = booleanPreferencesKey("cover_original_ratio")
     /** 均衡器开关(5 段 EQ;具体曲线设置页内调)。 */
     private val keyEqualizerOn = booleanPreferencesKey("equalizer_on")
     /** 均衡器各频段增益(mB,逗号分隔;长度=段数)。 */
@@ -207,6 +209,8 @@ private val keyPinnedLibItems = stringSetPreferencesKey("pinned_lib_items")
         val equalizerOn: Boolean,
         /** 均衡器各频段增益(mB)。 */
         val equalizerBands: List<Int>,
+        /** v1.5.0: 「按原始比例显示封面」(默认 false=统一方形)。 */
+        val coverOriginalRatio: Boolean,
         /** v22: 检查更新状态(最近检查结果 + 已忽略版本)。 */
         val updateState: com.shiyin.music.data.update.UpdateState,
     )
@@ -263,6 +267,7 @@ private val keyPinnedLibItems = stringSetPreferencesKey("pinned_lib_items")
             volumeNormalize = p[keyVolumeNormalize] ?: false,
             monoAudio = p[keyMonoAudio] ?: false,
             allowConcurrentPlayback = p[keyAllowConcurrent] ?: false,
+            coverOriginalRatio = p[keyCoverOriginalRatio] ?: false,
             equalizerOn = p[keyEqualizerOn] ?: false,
             equalizerBands = (p[keyEqualizerBands] ?: "")
                 .split(",").mapNotNull { it.trim().toIntOrNull() }
@@ -339,6 +344,10 @@ private val keyPinnedLibItems = stringSetPreferencesKey("pinned_lib_items")
     suspend fun setTranslateErrorToast(v: Boolean) = context.dataStore.edit { it[keyTranslateErrorToast] = v }
     /** v1.5.0 伴唱总开关写入。 */
     suspend fun setKaraokeEnabled(v: Boolean) = context.dataStore.edit { it[keyKaraokeEnabled] = v }
+
+    /** v1.5.0: 「按原始比例显示封面」写入。 */
+    suspend fun setCoverOriginalRatio(v: Boolean) =
+        context.dataStore.edit { it[keyCoverOriginalRatio] = v }
 
     /**
      * 分轨默认模型写入（A73）。**未内置的模型直接退回默认**（A57：只有 9482 进包）——
