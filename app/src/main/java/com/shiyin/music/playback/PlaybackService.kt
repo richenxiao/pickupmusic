@@ -139,6 +139,14 @@ class PlaybackService : MediaSessionService() {
         )
         session = MediaSession.Builder(this, player)
             .setSessionActivity(openApp)
+            // v1.5.0 灵动岛修复（用户 2026-10-23 三报"灵动岛没有点赞"）：布局必须在
+            // **构造期**给。字节码链路：Builder.setCustomLayout → MediaSessionImpl
+            // 构造即写 PlayerWrapper.customLayout → createPlaybackStateCompat 把它
+            // 发布成 PlaybackStateCompat.CustomAction（灵动岛/旧通知读的通道）。
+            // 此前只写在 onConnect 的 ConnectionResult 里——通知首次渲染可能早于
+            // 控制器连接握手完成，灵动岛拉到的 PlaybackState 还没有按钮。
+            // 构造期设置让会话存在的那一刻 PlaybackState 就带点赞按钮。
+            .setCustomLayout(listOf(likeButton(currentFavState == true)))
             .setCallback(object : MediaSession.Callback {
                 /**
                  * v5.2 Bug1: accept incoming controllers and publish the
