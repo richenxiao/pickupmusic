@@ -218,10 +218,15 @@ fun HomeScreen(vm: MainViewModel) {
         //       网络封面不阻塞），封面就绪后一次性显示完整内容 —— 三段闪烁变成一次成型。
         val coldStarting = vm.tracksRaw.isEmpty()
         var coversReady by remember { mutableStateOf(false) }
+        // 2026-10-23（外部复核发现）：预载-再显示只该发生在**冷启动那一次**。
+        // 旧写法在 recentEntries 每次变化时都 coversReady=false → 听完一首歌回到首页，
+        // 整块「最近播放」又闪一次骨架（用户要的是"进来就是加载完成"，不是每次刷新都闪）。
+        var firstLoadDone by remember { mutableStateOf(false) }
         androidx.compose.runtime.LaunchedEffect(coldStarting, recentEntries.take(8).map { it.id }) {
             if (coldStarting) { coversReady = false; return@LaunchedEffect }
+            if (firstLoadDone) { coversReady = true; return@LaunchedEffect }
             val items = recentEntries.take(8)
-            if (items.isEmpty()) { coversReady = true; return@LaunchedEffect }
+            if (items.isEmpty()) { coversReady = true; firstLoadDone = true; return@LaunchedEffect }
             coversReady = false
             kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
                 kotlinx.coroutines.withTimeoutOrNull(300) {
@@ -229,9 +234,10 @@ fun HomeScreen(vm: MainViewModel) {
                 }
             }
             coversReady = true
+            firstLoadDone = true
         }
-        if (coldStarting || (recentEntries.isNotEmpty() && !coversReady)) {
-            HomeSectionSkeleton(if (coldStarting) "最近播放" else "最近播放")
+        if (coldStarting || (recentEntries.isNotEmpty() && !firstLoadDone && !coversReady)) {
+            HomeSectionSkeleton("最近播放")
         }
         if (recentEntries.isNotEmpty() && !coldStarting && coversReady) {
             // Group by albumKey, dedupe albums, preserve most-recent-play order
@@ -364,7 +370,10 @@ private fun DailyRecommendSection(vm: MainViewModel) {
     // 冷启动：与「最近播放」同一策略 —— 曲库未读出先给骨架，读出后先预载封面再显示，
     // 避免"空 → 无封面 → 有封面"三段跳变（2026-10-22 用户反馈）。
     var coversReady by remember { mutableStateOf(false) }
+    // 同「最近播放」：预载-再显示只在冷启动那一次，之后 picks 变化不再闪骨架。
+    var firstLoadDone by remember { mutableStateOf(false) }
     androidx.compose.runtime.LaunchedEffect(picks.map { it.first }) {
+        if (firstLoadDone) { coversReady = true; return@LaunchedEffect }
         coversReady = false
         if (picks.isNotEmpty()) {
             kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
@@ -376,12 +385,13 @@ private fun DailyRecommendSection(vm: MainViewModel) {
             }
         }
         coversReady = true
+        firstLoadDone = true
     }
     if (picks.isEmpty()) {
         if (vm.tracksRaw.isEmpty()) HomeSectionSkeleton("每日推荐")
         return
     }
-    if (!coversReady) {
+    if (!firstLoadDone && !coversReady) {
         HomeSectionSkeleton("每日推荐")
         return
     }

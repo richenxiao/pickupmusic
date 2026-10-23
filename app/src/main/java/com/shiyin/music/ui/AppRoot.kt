@@ -1442,7 +1442,14 @@ private fun BottomNav(vm: MainViewModel) {
                         .weight(1f)
                         .height(48.dp)
                         .clip(RoundedCornerShape(14.dp))
-                        .clickable {
+                        // 2026-10-23 用户：去掉触碰水波纹——浅色模式下太明显，
+                        // 手指一碰就亮一片、比滑动胶囊先反应，视觉上抢戏。
+                        .clickable(
+                            interactionSource = remember {
+                                androidx.compose.foundation.interaction.MutableInteractionSource()
+                            },
+                            indication = null,
+                        ) {
                             // v1.2.0 #6 修复：从歌手/专辑等下钻页点底部导航应回该 tab 根，
                             // 不能只切 tab（artistKey/albumKey 仍在 → 歌手页不退 → "没反应"）。
                             vm.tab = tab
@@ -1545,8 +1552,9 @@ private val BRAND_GAP = 2.dp
  * 用户原话："「拾音」和「PickUpMusic」不是平级，英文是副标题…白色 alpha 0.78，
  * **比「拾音」淡一点点，不要灰很多，但肉眼要有区分度**"。
  *
- * 叠在深色抽屉底 `#2B2620` 上时白字实际亮度 ≈ 208/255 —— 落在用户给的 205–215 区间内。
- * ⚠️ 浅色主题下抽屉底是 `#EBDDC5`，同样叠法会到 ≈250/255（超出区间）——见提交说明。
+ * 叠在深色抽屉底 `#2B2620` 上时，主题文字色（米白 #F2E9DA）按 0.78 透明度混出
+ * ≈208/255 —— 落在用户给的 205–215 区间内。浅色主题不走此 alpha：英文用 v1.4.0
+ * 发版的 c.n500 暖灰（#A19786），见 BrandMark（2026-10-23 用户拍板照抄 v1.4.0）。
  */
 private const val BRAND_EN_ALPHA = 0.78f
 
@@ -1588,20 +1596,28 @@ internal fun brandMarkScale(availPx: Int, naturalPx: Int): Float {
  */
 @Composable
 private fun BrandMark() {
+    val c = LocalOrganic.current
     val measurer = rememberTextMeasurer()
     val density = LocalDensity.current
+    // 2026-10-23 用户："浅色适配的品牌名太黑了，和旁边的主题色、按钮不搭配"，
+    // 并指路 v1.4.0 发版的成熟配色——**照抄它**：浅色下「拾音」= heading 默认文字色
+    // （#201E1D），「PickUpMusic」= c.n500 暖灰（#A19786，v1.4.0 原实现即如此）。
+    // 深色下维持已验收规格：两行同色（米白 c.text），英文 0.78 淡一档。
+    // （期间试过 a600 橙棕——用户明确不要主题橙，否掉。）
+    val cnColor = c.text
+    val enColor = if (c.isDark) c.text.copy(alpha = BRAND_EN_ALPHA) else c.n500
     val cnStyle = TextStyle(
         fontFamily = FontFamily.Default,
         fontWeight = FontWeight.Bold,
         fontSize = BRAND_CN_SP.sp,
-        color = Color.White,
+        color = cnColor,
     )
     val enStyle = TextStyle(
         fontFamily = FontFamily.Default,
         fontWeight = FontWeight.SemiBold,
         fontSize = BRAND_EN_SP.sp,
-        // 副标题比标题淡一点点（用户 2026-10-20 修改1）—— 只改颜色，字号/字重/间距/基线全不动。
-        color = Color.White.copy(alpha = BRAND_EN_ALPHA),
+        // 副标题比标题淡一点（用户 2026-10-20 修改1；v1.4.0 浅色即 n500）。
+        color = enColor,
     )
     // 量宽用**与渲染完全相同的一份 style**（同一 fontScale / density），
     // 量出来的比例才可以直接套回渲染字号上。

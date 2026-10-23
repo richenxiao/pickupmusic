@@ -1248,7 +1248,7 @@ private fun DataManageScreen(vm: MainViewModel, scrollStates: MutableMap<String,
                                 .background(c.n200)
                                 .clickable { vm.clearRecognitionCache() }
                                 .padding(horizontal = 12.dp, vertical = 7.dp),
-                        ) { Text("清理缓存", style = body(12.5f, FontWeight.Bold, c.text)) }
+                        ) { Text("清理", style = body(12.5f, FontWeight.Bold, c.text)) }
                     }
                 },
             )
@@ -1373,9 +1373,12 @@ private fun DataManageScreen(vm: MainViewModel, scrollStates: MutableMap<String,
                 for (group in com.shiyin.music.data.db.BackupGroup.entries) {
                     val items = com.shiyin.music.data.db.BackupCategory.entries.filter { it.group == group }
                     if (items.isEmpty()) continue
+                    // 2026-10-23 用户：分组栏名（曲库整理/歌词与注音/拾光 Agent…）用主题
+                    // 强调色，与下面的功能子项（c.text 主文字色）区分开——原来同用灰
+                    // 字（n600），栏名与子项在视觉上一片、分不出层级。
                     Text(
                         group.title,
-                        style = body(11.5f, FontWeight.SemiBold, c.n600),
+                        style = body(11.5f, FontWeight.ExtraBold, c.a700).copy(letterSpacing = 1.sp),
                         modifier = Modifier.padding(top = 8.dp, bottom = 2.dp),
                     )
                     for (cat in items) {
