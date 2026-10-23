@@ -208,7 +208,11 @@ object MediaScanner {
      * tracksRaw，跳过全量 [scan] 的逐行 Track 构造。只取 _ID/DATE_ADDED 两列、
      * 不构造 Track，比全量 scan 快得多（大库尤其明显）。
      *
-     * 返回 "count|maxDateAdded"；查不到返回 "0|0"。
+     * 前缀 `v2|` 是签名**格式版本**：2026-10-23 标题解析改为 TitleResolver（从文件名
+     * 补回 (Remix) 等版本注记），旧缓存存的还是被截断的标题——签名加一个版本前缀，
+     * 让升级后的首次启动因签名不匹配而强制重扫一次，把修正后的标题刷进缓存。
+     *
+     * 返回 "v2|count|maxDateAdded"；查不到返回 "v2|0|0"。
      */
     suspend fun signature(context: Context): String = withContext(Dispatchers.IO) {
         val resolver = context.contentResolver
@@ -220,7 +224,7 @@ object MediaScanner {
             count = c.count
             if (c.moveToFirst()) maxDate = c.getLong(c.getColumnIndexOrThrow(MediaStore.Audio.Media.DATE_ADDED))
         }
-        "$count|$maxDate"
+        "v2|$count|$maxDate"
     }
 
     suspend fun scan(
@@ -283,8 +287,10 @@ object MediaScanner {
                 out += Track(
                     id = id,
                     uri = ContentUris.withAppendedId(uri, id),
-                    title = c.getString(iTitle)?.takeIf { it.isNotBlank() }
-                        ?: data.substringAfterLast('/').substringBeforeLast('.').ifBlank { "未知音频" },
+                    // 2026-10-23：标题经 TitleResolver 调和——下载站常把版本注记
+                    // （(Remix)/(Live)）只写进文件名、标签里只留基础歌名，导致同歌多版本
+                    // 塌成同名。详见 TitleResolver。
+                    title = TitleResolver.resolveTitle(c.getString(iTitle), data),
                     artist = if (rawArtist.isNullOrBlank() || rawArtist == MediaStore.UNKNOWN_STRING) UNKNOWN_ARTIST else rawArtist,
                     album = if (rawAlbum.isNullOrBlank() || rawAlbum == MediaStore.UNKNOWN_STRING) NO_ALBUM else rawAlbum,
                     // MediaStore encodes CD track numbers as disc*1000+track.
