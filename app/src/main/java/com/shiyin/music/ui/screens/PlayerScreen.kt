@@ -77,7 +77,6 @@ import com.shiyin.music.LyState
 import com.shiyin.music.MainViewModel
 import com.shiyin.music.data.formatDuration
 import com.shiyin.music.ui.components.LyricsMorphSpec
-import com.shiyin.music.ui.components.ArtCache
 import com.shiyin.music.ui.components.CoverRatio
 import com.shiyin.music.ui.components.OIcon
 import com.shiyin.music.ui.components.body
@@ -197,34 +196,49 @@ fun PlayerScreen(vm: MainViewModel) {
             // v3.0: removed the square aspectRatio container + ContentScale.Fit
             // that left gaps showing the page bg behind the cover. Now the image
             // fills the width directly with no background behind it.
-            // v1.5.0 封面比例规则：非方形图（横版专辑被系统裁过的方图/原生长图）
-            //  · 开关关 → 方形槽 + Fit + 主色填充（与全 App 小封面同规，规则 2）；
-            //  · 开关开 → 按原始比例完整显示（钳 0.5~2.0，规则 3）。
+            // v1.5.0 封面比例（用户 2026-10-24 拍板）：播放页**恒定按原始比例**显示
+            //（钳 0.5~2.0，不依赖设置开关）——内嵌封面本身可能是横版/竖版，旧版
+            // FillWidth 会把它拉成"长长的"；极端比例超出钳制时用钳后槽 + Fit，
+            // 两侧补**固定黑/白**（随主题，用户明确不要取色填充——"取色反而不好看"）。
             val art = rememberAlbumArt(track, 480.dp)
             val artRatio = CoverRatio.ratioOf(art?.width ?: 0, art?.height ?: 0)
-            val slotRatio = if (vm.coverOriginalRatio) CoverRatio.slotRatio(artRatio) else 1f
+            val slotRatio = CoverRatio.slotRatio(artRatio)
+            val barColor = if (c.isDark) Color.Black else Color.White
             if (art != null) {
-                val padColor = ArtCache.colorFor(track.albumId)?.let { Color(it.first) } ?: artBg
-                val fit = !CoverRatio.shouldCropInSquare(artRatio) ||
-                    (vm.coverOriginalRatio && artRatio != null && slotRatio != artRatio)
+                val clamped = slotRatio != null && artRatio != null && slotRatio != artRatio
                 Box(
                     Modifier
                         .fillMaxWidth()
-                        .then(
-                            if (slotRatio != null && slotRatio != 1f)
-                                Modifier.aspectRatio(slotRatio) else Modifier
-                        )
-                        .padding(top = 16.dp, bottom = 22.dp)
-                        .shadowLg(RoundedCornerShape(16.dp))
-                        .clip(RoundedCornerShape(16.dp))
-                        .background(if (fit) padColor else Color.Transparent),
+                        .padding(top = 16.dp, bottom = 22.dp),
                     contentAlignment = Alignment.Center,
                 ) {
-                    Image(
-                        art, null,
-                        modifier = Modifier.fillMaxSize(),
-                        contentScale = if (fit) ContentScale.Fit else ContentScale.FillWidth,
-                    )
+                    if (clamped) {
+                        Box(
+                            Modifier
+                                .fillMaxWidth()
+                                .aspectRatio(slotRatio!!)
+                                .shadowLg(RoundedCornerShape(16.dp))
+                                .clip(RoundedCornerShape(16.dp))
+                                .background(barColor),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Image(
+                                art, null,
+                                modifier = Modifier.fillMaxSize(),
+                                contentScale = ContentScale.Fit,
+                            )
+                        }
+                    } else {
+                        Image(
+                            art, null,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .shadowLg(RoundedCornerShape(16.dp))
+                                .clip(RoundedCornerShape(16.dp))
+                                .clickable { vm.goAlbumOf(track.id, highlight = false) },
+                            contentScale = ContentScale.FillWidth,
+                        )
+                    }
                 }
             } else {
                 Box(

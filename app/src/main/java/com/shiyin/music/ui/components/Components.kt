@@ -1052,12 +1052,11 @@ fun CoverArt(
     val pendingFlip = transition == CoverTransition.FLIP && flipFrom == null &&
         lastArt != null && lastAlbumId != (track?.albumId ?: Long.MIN_VALUE)
     val shown = if (pendingFlip) lastArt else display
-    // v1.5.0 封面比例规则(规则 2):非方形内嵌图(被系统 loadThumbnail 裁过的横版
-    // 专辑等)在方形槽内改 Fit + 主色填充,不再 Crop 裁掉上下/左右。主色沿用现有
-    // 取色(ArtCache.colorFor,首次提取前回退生成调色板)——不新增取色逻辑。
-    val (dominantBg, _) = ArtCache.colorFor(track?.albumId ?: -1L)?.let {
-        Color(it.first) to Color(it.second)
-    } ?: coverPalette(track?.paletteIndex ?: 0)
+    // v1.5.0 封面比例规则(规则 2):非方形内嵌图(横版/特殊版式专辑)在方形槽内改
+    // Fit + **固定黑/白填充**(随主题;用户 2026-10-24 拍板"两边固定黑 or 白就行,
+    // 取色反而不好看"),不再 Crop 裁掉两侧。
+    val isDark = LocalOrganic.current.isDark
+    val barColor = if (isDark) Color.Black else Color.White
     val showFitPad = shown != null && !CoverRatio.shouldCropInSquare(
         CoverRatio.ratioOf(shown.width, shown.height)
     )
@@ -1065,7 +1064,7 @@ fun CoverArt(
         modifier = modifier
             .then(sizeMod)
             .clip(shape)
-            .background(if (shown != null) (if (showFitPad) dominantBg else Color.Transparent) else bg),
+            .background(if (shown != null) (if (showFitPad) barColor else Color.Transparent) else bg),
         contentAlignment = Alignment.Center,
     ) {
         if (shown != null) {

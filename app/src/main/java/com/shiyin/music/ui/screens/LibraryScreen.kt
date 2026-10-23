@@ -1035,12 +1035,15 @@ private fun AlbumDetail(vm: MainViewModel, key: String) {
             }
         }
         // 12: large centered cover (~75% width)
-        // v1.5.0 封面比例规则：开关关 → 方形槽 + 非方形图 Fit/主色填充（CoverArt 同规）；
+        // v1.5.0 封面比例（用户 2026-10-24 拍板）：开关关 → 方形槽 + 非方形图 Fit +
+        // **固定黑/白**填充（随主题；用户明确不要取色填充——"取色反而不好看"）；
         // 开关开 → 按原始比例完整显示（钳 0.5~2.0），不再锁 1:1 裁两侧。
         item {
             val art = rememberAlbumArt(first, 320.dp)
             val ratio = CoverRatio.ratioOf(art?.width ?: 0, art?.height ?: 0)
             val slotRatio = if (vm.coverOriginalRatio) CoverRatio.slotRatio(ratio) else 1f
+            // Fit 留边底色 = 固定黑（深色主题）/白（浅色主题），与唱片封套观感一致。
+            val barColor = if (c.isDark) Color.Black else Color.White
             Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
                 Box(
                     Modifier
@@ -1051,20 +1054,14 @@ private fun AlbumDetail(vm: MainViewModel, key: String) {
                         )
                         .shadowLg(RoundedCornerShape(16.dp))
                         .clip(RoundedCornerShape(16.dp))
-                        .background(
-                            // 填充色：非方形图 Fit 时的留边底色 = 封面主色（取色结果，无则回退
-                            // 生成调色板 bg）。
-                            com.shiyin.music.ui.components.ArtCache.colorFor(first.albumId)
-                                ?.let { Color(it.first) } ?: bg
-                        ),
+                        .background(barColor),
                     contentAlignment = Alignment.Center,
                 ) {
                     if (art != null) {
-                        // 槽内贴合分支：开关关+非方形 → Fit（槽背景已主色填充）；开关开+比例被钳
-                        // → Fit；近似方形/未开开关的方形图 → Crop（原状）。
-                        val fit = !com.shiyin.music.ui.components.CoverRatio.shouldCropInSquare(
-                            com.shiyin.music.ui.components.CoverRatio.ratioOf(art.width, art.height)
-                        ) || (vm.coverOriginalRatio && ratio != null && slotRatio != ratio)
+                        // 槽内贴合分支：非方形 → Fit（两侧露黑/白条）；近似方形 → Crop（原状）。
+                        val fit = !CoverRatio.shouldCropInSquare(
+                            CoverRatio.ratioOf(art.width, art.height)
+                        )
                         androidx.compose.foundation.Image(
                             art, null,
                             modifier = Modifier.fillMaxSize(),
