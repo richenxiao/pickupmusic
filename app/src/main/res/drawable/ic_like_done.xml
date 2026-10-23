@@ -1,0 +1,9 @@
+<!-- v1.5.0: 系统媒体控制卡「点赞」图标（已赞 = 实心圆 + 勾镂空洞，evenOdd）。
+     用户 2026-10-24 指定的最终规范：实心圆 r=10，勾为 Material Check 的 0.75 缩放
+     （粗细 ≈1.5，视觉中心接近圆心），「圆实心 + 勾是透明洞」结构——任何渲染通道
+     （标准 alpha 蒙版 tint / ColorOS 原图）下勾都透出底色，与实心圆形成最大对比。
+     走 CommandButton.setCustomIconResId——media3 legacy 桥的
+     PlaybackStateCompat.CustomAction 只认实体资源 id（字节码已核实）。 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="24dp" android:height="24dp" android:viewportWidth="24" android:viewportHeight="24">
+  <path android:fillColor="#FFFFFFFF" android:fillType="evenOdd" android:pathData="M12 2a10 10 0 1 0 0 20a10 10 0 1 0 0-20z M9.75 15.13L6.62 12l-1.07 1.06L9.75 17.25L18.75 8.25l-1.06-1.06z"/>
+</vector>

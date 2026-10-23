@@ -1,0 +1,8 @@
+<!-- v1.5.0: 系统媒体控制卡「点赞」图标（未赞 = 描边圆圈 + 加号）。
+     用户 2026-10-24 指定的最终规范（取证阶段交付物）：描边圆 r=9 + 半径/线宽合成外径 20，
+     加号 8-16 十字，stroke 2 / round cap，fill 透明（系统按透明度染色）。
+     走 CommandButton.setCustomIconResId——media3 legacy 桥的
+     PlaybackStateCompat.CustomAction 只认实体资源 id（字节码已核实）。 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="24dp" android:height="24dp" android:viewportWidth="24" android:viewportHeight="24">
+  <path android:strokeColor="#FFFFFFFF" android:strokeWidth="2" android:strokeLineCap="round" android:fillColor="#00000000" android:pathData="M12 3a9 9 0 1 0 0 18a9 9 0 1 0 0-18z M12 8v8 M8 12h8"/>
+</vector>

@@ -288,8 +288,8 @@ class PlaybackService : MediaSessionService() {
     private fun likeButton(fav: Boolean): androidx.media3.session.CommandButton =
         androidx.media3.session.CommandButton.Builder(androidx.media3.session.CommandButton.ICON_UNDEFINED)
             .setCustomIconResId(
-                if (fav) com.shiyin.music.R.drawable.ic_notif_fav_on
-                else com.shiyin.music.R.drawable.ic_notif_fav_off
+                if (fav) com.shiyin.music.R.drawable.ic_like_done
+                else com.shiyin.music.R.drawable.ic_like_add
             )
             .setSessionCommand(toggleFavCommand)
             .setDisplayName(if (fav) "取消喜欢" else "喜欢这首歌")
