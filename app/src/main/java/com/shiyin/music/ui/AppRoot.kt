@@ -1553,8 +1553,8 @@ private val BRAND_GAP = 2.dp
  * **比「拾音」淡一点点，不要灰很多，但肉眼要有区分度**"。
  *
  * 叠在深色抽屉底 `#2B2620` 上时，主题文字色（米白 #F2E9DA）按 0.78 透明度混出
- * ≈208/255 —— 落在用户给的 205–215 区间内。浅色主题不走此 alpha：英文用 v1.4.0
- * 发版的 c.n500 暖灰（#A19786），见 BrandMark（2026-10-23 用户拍板照抄 v1.4.0）。
+ * ≈208/255 —— 落在用户给的 205–215 区间内。浅色叠 #EBDDC5 混出软深棕灰——
+ * "黑但淡"，与「拾音」同色系（2026-10-23 用户定稿：两主题同配方）。
  */
 private const val BRAND_EN_ALPHA = 0.78f
 
@@ -1599,13 +1599,12 @@ private fun BrandMark() {
     val c = LocalOrganic.current
     val measurer = rememberTextMeasurer()
     val density = LocalDensity.current
-    // 2026-10-23 用户："浅色适配的品牌名太黑了，和旁边的主题色、按钮不搭配"，
-    // 并指路 v1.4.0 发版的成熟配色——**照抄它**：浅色下「拾音」= heading 默认文字色
-    // （#201E1D），「PickUpMusic」= c.n500 暖灰（#A19786，v1.4.0 原实现即如此）。
-    // 深色下维持已验收规格：两行同色（米白 c.text），英文 0.78 淡一档。
-    // （期间试过 a600 橙棕——用户明确不要主题橙，否掉。）
+    // 2026-10-23 用户定稿：两主题同一配方——两行**同色系**（都是主题文字色），
+    // 英文只淡一档（0.78）。浅色此前用 n500 暖灰，用户实测"一个全黑一个浅灰
+    // 很奇怪"，与「拾音」不搭；n500 与 v1.4.0 同款但那是 13sp 细体，现 15.5sp
+    // 粗体下色差被放大。文字色 0.78 叠米色底混出 ≈#4C4842 软深棕灰——"黑但淡"。
     val cnColor = c.text
-    val enColor = if (c.isDark) c.text.copy(alpha = BRAND_EN_ALPHA) else c.n500
+    val enColor = c.text.copy(alpha = BRAND_EN_ALPHA)
     val cnStyle = TextStyle(
         fontFamily = FontFamily.Default,
         fontWeight = FontWeight.Bold,
