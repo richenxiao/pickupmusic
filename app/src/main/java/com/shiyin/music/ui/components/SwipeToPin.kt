@@ -42,18 +42,18 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlin.math.abs
 
-// 用户 2026-10-15 规格定死的两个平色（**不随主题、不随拖动渐变**）：
+// 定稿规格定死的两个平色（**不随主题、不随拖动渐变**）：
 // 未固定=Spotify 绿，已固定=灰（表示"再拖一次取消固定"）。
 private val PinGreen = Color(0xFF1DB954)
 private val UnpinGray = Color(0xFF535353)
 
-/** 取消（松手未达阈值）时操作区淡出的时长。用户 2026-10-16 选的形态：**边缩边淡出**。 */
+/** 取消（松手未达阈值）时操作区淡出的时长。定稿 选的形态：**边缩边淡出**。 */
 private const val CANCEL_FADE_MS = 180
 
 /**
  * v1.5.0 右滑固定 / 取消固定 —— 可复用的列表条目包装（**手势/动画只有这一份实现**）。
  *
- * 规格真源：用户 2026-10-15 对官方录屏逐帧核对的规格（`固定.gif`）+ 2026-10-16 的四条更正。
+ * 规格真源：定稿 对官方录屏逐帧核对的规格（`固定.gif`）+ 2026-10-16 的四条更正。
  *
  * ### 观感（按规格 + 2026-10-16 更正）
  * · 行内容 `translationX` 严格跟手；横向过 touchSlop 即锁定并 `consume`（列表不再纵向滚动）。
@@ -100,7 +100,7 @@ fun SwipeToPin(
     val curPinned by rememberUpdatedState(pinned)
     val curOnPinnedChange by rememberUpdatedState(onPinnedChange)
 
-    // 操作区宽度 = **行自身宽度 × 45%**（用户 2026-10-16：旧规格的宽度还行）。
+    // 操作区宽度 = **行自身宽度 × 45%**（定稿：旧规格的宽度还行）。
     // 用 BoxWithConstraints 取"这一行的实际宽度"，比拿屏宽更贴边距。
     BoxWithConstraints(modifier) {
         val actionWidthPx = SwipePin.actionWidthPx(with(density) { maxWidth.toPx() })
@@ -125,7 +125,7 @@ fun SwipeToPin(
                     .fillMaxHeight()
                     .graphicsLayer {
                         val rp = reveal.floatValue.coerceAtLeast(0f)
-                        // "随露出宽度居中"（用户 2026-10-15 选定）：图标中心落在 rp/2
+                        // "随露出宽度居中"（定稿 选定）：图标中心落在 rp/2
                         translationX = (rp - iconPx) / 2f
                         alpha = if (rp > 0.5f) cancelFade.floatValue else 0f
                     },
@@ -148,7 +148,7 @@ fun SwipeToPin(
                                 // 一次手势**锁存起点状态**：无论松手前发生什么，只按这一个基准取反提交一次
                                 //（避免"反复提交/反复重排"，那正是灰绿交替闪烁的来源）。
                                 var baseAtStart: Boolean? = null
-                                // ⚠️ **方向只判一次**（用户 2026-10-18）：
+                                // ⚠️ **方向只判一次**（定稿）：
                                 // "触摸超过 slop 的那一刻，用累计位移判断方向……否则本次手势整个过程
                                 //  锁定为纵向，之后再横向移动也不得触发"。
                                 // 旧实现只在"纵向占优"时才 break，所以先小幅度斜一下、之后横着拉，
@@ -226,7 +226,7 @@ fun SwipeToPin(
 }
 
 /**
- * 列表行**第二行（类型行）开头**的「已固定」小图钉（用户 2026-10-16："图钉就是放在第二行的
+ * 列表行**第二行（类型行）开头**的「已固定」小图钉（定稿："图钉就是放在第二行的
  * 第一个位置"，如 `📌 专辑*周杰伦`）。绿色实心、15dp、右侧留 6dp。
  *
  * 由**行自己**调用：`SwipeToPin` 不画这个标记——它不知道行里的文字布局。
@@ -239,7 +239,7 @@ fun PinnedMark(modifier: Modifier = Modifier) {
 }
 
 /**
- * **图钉**（用户 2026-10-16 换成他提供的 SVG 图标）。
+ * **图钉**（定稿 换成他提供的 SVG 图标）。
  *
  * 走 **VectorDrawable**（`res/drawable/ic_pin_mark.xml`）：`pathData` 与用户给的 SVG
  * **逐字照搬**——手抄 60 多段曲线必错，而 VectorDrawable 用的就是同一套 SVG 路径语法，

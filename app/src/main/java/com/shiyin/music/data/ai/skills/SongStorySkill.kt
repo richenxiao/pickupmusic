@@ -19,11 +19,11 @@ import kotlinx.coroutines.withContext
  *    **规划多个搜索角度并发搜**(创作背景 / 歌词含义 / 幕后),再把资料**整理成一段
  *    连贯介绍**,而不是把几段搜索原文拼接回给用户。
  *
- * 三个角度是固定模板(用户 2026-09 拍板):零额外 LLM 往返,总耗时 = max(三个并发查询),
+ * 三个角度是固定模板(定稿):零额外 LLM 往返,总耗时 = max(三个并发查询),
  * 与 AgentService.fetchOfficialTrackOrder 的主/备并发同一模式。关键词按曲目语言切换
  * (中/日/英)——对日语曲目用中文关键词是搜不到东西的,这条 AgentService 已踩过。
  *
- * 资料不足时**明说没找到,不用模型自身知识编**(用户拍板)——与 album_sort /
+ * 资料不足时**明说没找到,不用模型自身知识编**(拍板)——与 album_sort /
  * track_rename 的诚实提示一致。
  */
 object SongStorySkill : AgentEngine.AgentSkill {
@@ -113,7 +113,7 @@ object SongStorySkill : AgentEngine.AgentSkill {
             LlmClient.clearLastError()  // 空资料是业务失败,别把上一轮残留的 LLM 错误显示成原因
             onStep("search", AgentEngine.StepStatus.FAILED)
             onStep("compose", AgentEngine.StepStatus.FAILED)
-            // 用户拍板:明说没找到,不用模型自身知识编
+            // 拍板:明说没找到,不用模型自身知识编
             return@withContext AgentEngine.SkillResult(
                 if (tavilyKey.isBlank())
                     "没有配置联网搜索,讲不了 $display 的背景故事(右上「设置」里可以填 Tavily Key)。"

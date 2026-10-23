@@ -3,7 +3,7 @@ package com.shiyin.music.data.karaoke
 /**
  * P0-B：**分离块的调度顺序**与**切换门槛**（纯逻辑，无 Android 依赖，可 JVM 单测）。
  *
- * ### 现场症状（用户 2026-10-18）
+ * ### 现场症状（定稿）
  * "切到伴奏之后又露出一两秒人声，然后又回到伴奏。"
  *
  * ### 成因（读码 + 模拟复现，见 `KaraokeChunkScheduleTest`）

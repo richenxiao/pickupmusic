@@ -92,7 +92,7 @@ fun SplitEditorScreen(vm: MainViewModel) {
                 else vm.splitCancel()
             }
             Text("专辑整轨拆分为单曲", style = heading(20), modifier = Modifier.weight(1f))
-            // v22 修补: 右上角加号键——编辑页随时补录漏粘贴的曲目(用户反馈:
+            // v22 修补: 右上角加号键——编辑页随时补录漏粘贴的曲目(实测反馈:
             // 漏了后面几首便导致后面不知道绑定哪些歌曲)。
             if (vm.splitEditStep == 1) {
                 Box(
@@ -129,7 +129,7 @@ private fun PasteStep(vm: MainViewModel) {
             onValueChange = { vm.splitPasteText = it },
             modifier = Modifier.fillMaxWidth().weight(1f),
             placeholder = {
-                // v22 修补:通用引导文案(用户反馈——原 placeholder 写死了某张专辑的
+                // v22 修补:通用引导文案(实测反馈——原 placeholder 写死了某张专辑的
                 // 真实曲名 intro/黑/自由式,读作"要填的就是这几首"。换成格式示例,
                 // 曲名用占位词,不暗示任何特定专辑)。
                 Text(
@@ -227,7 +227,7 @@ private fun TimelineStep(
 
         Spacer(Modifier.height(10.dp))
 
-        // v22 修补(用户反馈②): 曲目列表支持**长按拖拽排序**——复用专辑页的
+        // v22 修补(实测反馈②): 曲目列表支持**长按拖拽排序**——复用专辑页的
         // sh.calvin.reorderable 同一套库,行右侧 GripLines 手柄长按拖动。
         // 拆分顺序以编辑页为准(专辑页已禁排序),所以这里就是唯一的排序真源。
         val listState = androidx.compose.foundation.lazy.rememberLazyListState()
@@ -294,7 +294,7 @@ private fun TimelineStep(
  * 插旗的意义：整轨专辑没有现成分轨信息时，用户需要一眼看出"这条完整时间轴上哪些位置
  * 已经被标记为分割点、还有哪些曲目尚未标记"。
  *
- * v22 修补(用户反馈④): 拖动时**条加高 + 滑块放大**——细节控制(50 分钟整轨上
+ * v22 修补(实测反馈④): 拖动时**条加高 + 滑块放大**——细节控制(50 分钟整轨上
  * 3dp 的条几乎无法精细定位);用 animateFloatAsState 过渡(松手弹回),不是硬切。
  * 触区仍是整个条区域(打轴需要大触区,与播放页 6dp 精简条不同场景)。
  */
@@ -493,7 +493,7 @@ private fun SplitRow(
 }
 
 /**
- * v22 修补: 时间编辑弹窗重做(用户反馈⑤)。
+ * v22 修补: 时间编辑弹窗重做(实测反馈⑤)。
  *
  * 三种设时方式并存:
  *  1. **粘贴时间**——从别处拷来的 m:ss / h:mm:ss 直接粘进来(顶部粘贴框,自动解析预览);

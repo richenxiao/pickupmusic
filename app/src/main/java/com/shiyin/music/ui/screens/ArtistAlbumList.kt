@@ -48,7 +48,7 @@ import kotlinx.coroutines.launch
 /**
  * Full album list for an artist, with classification (Single/EP/Album).
  *
- * v1.3.3b 改版(用户定调):
+ * v1.3.3b 改版(定调):
  *  - 去掉「最新优先/最早优先」切换 → 改「编辑」按钮:编辑模式下手动拖拽排序 +
  *    「AI 排时间」按钮(联网取各专辑/EP/单曲发布时间,按时间先后排)。
  *  - 分类隔行已区分专辑/EP/单曲 → 行下不再标「XX类型 XX首」,改标 20XX(年份,
@@ -124,7 +124,7 @@ fun ArtistAlbumList(
     LazyColumn(
         // v1.3.6: 歌手页(ArtistDetail)整体不加 statusBarsPadding(写真铺 y=0),
         // 专辑栏作为其子页要在自己这层补——否则返回键顶到状态栏与系统时间挤
-        // (用户反馈的正是这个)。补齐后与专辑页(AppRoot 加过 statusBarsPadding
+        // (实测反馈的正是这个)。补齐后与专辑页(AppRoot 加过 statusBarsPadding
         // + contentPadding top 10dp)的顶部完全同构。
         modifier = Modifier.fillMaxSize().statusBarsPadding(),
         contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 10.dp, bottom = 130.dp),
@@ -138,7 +138,7 @@ fun ArtistAlbumList(
             ) {
                 BackButton(onBack)
                 Text(artistName, style = heading(24), modifier = Modifier.weight(1f))
-                // v1.3.5: ⋮ 点开弹菜单(用户定调"编辑应该是弹出选择,不是把功能
+                // v1.3.5: ⋮ 点开弹菜单(定调"编辑应该是弹出选择,不是把功能
                 // 放到下面")。三项:AI 排时间(联网取发布日期自动排序)、手动拖拽排序
                 // (进编辑模式,行首出拖拽手柄)、恢复自动排序(清手动序+日期重排)。
                 // 手动模式下按钮变 ✕ 收起编辑。
@@ -163,7 +163,7 @@ fun ArtistAlbumList(
                                 if (aiBusy) return@DropdownMenuItem
                                 aiBusy = true; aiStatus = null
                                 scope.launch {
-                                    // v1.5.0（2026-10-12 用户实测"点了没反应"）：原来没有 try/finally——
+                                    // v1.5.0（2026-10-12 真机实测"点了没反应"）：原来没有 try/finally——
                                     // 只要这一趟抛异常（网络超时/解析失败/DB 异常），`aiBusy = false` 就永远
                                     // 执行不到 → **标志永久卡 true → 这个菜单项从此点不动，且连报错都没有**。
                                     // 现在无论成败都复位，并把失败原因显示出来。
@@ -184,11 +184,11 @@ fun ArtistAlbumList(
                                         aiBusy = false
                                     }
                                     dragOrder = null
-                                    // v1.5.0 A59:用户反馈"点了经常没反应"——根因是**成功路径零反馈**:
+                                    // v1.5.0 A59:实测反馈"点了经常没反应"——根因是**成功路径零反馈**:
                                     // 原来 n>0 就把状态行清空,而"全部专辑都已有日期、直接重排"这条
                                     // 最常走的分支里,顺序往往本来就对 → 界面毫无变化,读起来就是"没反应"。
                                     // 现在成功也给一句明确结果,3 秒后自动收起(失败时保留,让用户看清原因)。
-                                    // v1.5.0（2026-10-12 用户实测"点了下方是空的"）：原来成功提示**3 秒后自动收起**，
+                                    // v1.5.0（2026-10-12 真机实测"点了下方是空的"）：原来成功提示**3 秒后自动收起**，
                                     // 用户看到时已经消失 → 读成"毫无反应"。改为**保留到下次操作**，并区分两种情形：
                                     // 有专辑本来就有日期时，它是"直接重排、没联网"，说清楚免得像没做事。
                                     aiStatus = when {

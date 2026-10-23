@@ -9,7 +9,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 /**
- * v1.3.3b Agent 技能④:歌曲名修正(用户定调"让模型能接管每一个功能"——单曲改名
+ * v1.3.3b Agent 技能④:歌曲名修正(定调"让模型能接管每一个功能"——单曲改名
  * 管道早已存在(saveTrackInfo,专辑页手动改名同路径),缺的只是这个技能)。
  *
  * 场景:文件元数据歌名识别有误(繁简写错/带多余注记/半角全角混乱/顺序颠倒)。
@@ -60,7 +60,7 @@ object TrackRenameSkill : AgentEngine.AgentSkill {
         // v1.3.6e: 直接改名路径——用户点名新歌名(new_title)时不再绕"联网比对官方
         // 曲目表"(那条链路拿不到用户点名的旧/新名,只能整专辑盲比,结果就是
         // "改不了名")。旧歌名有 → 点名专辑/当前专辑页内含匹配定位;没有 → 当前播放。
-        // v1.3.6f: fastPath 现在无条件带 rule(用户原话),directNew 才是点名直改的
+        // v1.3.6f: fastPath 现在无条件带 rule(需求原话),directNew 才是点名直改的
         // 信号——这里以 new_title 为准分流,rule 交给下面的规则路径理解。
         val directTitle = args["new_title"]?.trim()
         if (!directTitle.isNullOrBlank()) {
@@ -104,7 +104,7 @@ object TrackRenameSkill : AgentEngine.AgentSkill {
 
         // v1.3.6e: 批量规则路径——用户描述"怎么改"(去掉-歌手名后缀/繁转简/去编号…)
         // 而不是"改成什么"。流程 = 分析需求 → 列出每首歌的修改清单 → 写回 → 列出
-        // 全部改动供验收(用户定调:本质就是"分析需求→列方案与操作对象清单→调功能
+        // 全部改动供验收(定调:本质就是"分析需求→列方案与操作对象清单→调功能
         // 实现→验收"的过程)。目标专辑:点名专辑名 > 当前专辑页 > 报错引导。
         val rule = args["rule"]?.trim()
         if (!rule.isNullOrBlank()) {

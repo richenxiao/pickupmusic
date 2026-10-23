@@ -242,19 +242,19 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     var lastfmApiKey by mutableStateOf(""); private set
     var disabledImageSources by mutableStateOf<Set<String>>(emptySet()); private set
     /**
-     * v1.5.0 右滑固定（规格 docs/internal/v1.4.1-backlog.md §1）：被用户固定的音乐库条目 key。
+     * v1.5.0 右滑固定（右滑固定定稿规格）：被用户固定的音乐库条目 key。
      * key 形如 "pl:p3" / "album:<albumKey>" / "artist:<名字>" / "song:<trackId>"。
      * 消费方是 LibraryScreen 既有的「固定优先」排序（LibItem.pinned），不另造排序。
      */
     /**
      * v1.5.0 右滑固定：被用户固定的音乐库条目 key，**有序 —— index 0 = 最近固定**
-     * （用户 2026-10-15 规格："pinned 区置顶、后固定者在上"）。
+     * （定稿规格："pinned 区置顶、后固定者在上"）。
      * key 形如 "pl:p3" / "album:<albumKey>" / "artist:<名字>" / "song:<trackId>"。
      * 消费方是 LibraryScreen 的「固定优先」排序（经 [pinnedRank]），不另造排序。
      */
     var pinnedLibItems by mutableStateOf<List<String>>(emptyList()); private set
     /**
-     * v1.5.0 伴唱按钮的视觉状态。对应用户 2026-10-07 口述的「无底色 → 动画过渡到底色 →
+     * v1.5.0 伴唱按钮的视觉状态。按定稿口述的「无底色 → 动画过渡到底色 →
      * 完成后变六边形」。**分离引擎尚未接入**，现在只会 Idle <-> Loading；Active 由引擎回写。
      */
     var karaokeState by mutableStateOf(com.shiyin.music.ui.components.KaraokeButtonState.Idle); private set
@@ -274,13 +274,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /**
      * v1.5.0 伴唱面板：三档混音选择（**0 = 人声 / 1 = 原曲（默认）/ 2 = 伴奏**）。
      *
-     * A70（用户 2026-10-15 口述）改口径：**进面板默认就是「原曲」**；选「人声/伴奏」
+     * A70（定稿）改口径：**进面板默认就是「原曲」**；选「人声/伴奏」
      * **本身**就会起分离并把按钮变 Loading（**原曲继续唱着**），就绪后 300ms 淡入。
      * 旧版要先按一次「开启伴唱」、且未开启时档位滑块**根本不显示**——用户判定为
      * "完全没有用的步骤"，已删掉那一步。
      *
      * ⚠️ **顺序保持用户设计稿的「人声 — 原曲 — 伴奏」**（原曲居中＝中立位，左右各是一种
-     * 提取方向，像 EQ 的中间档）。用户 2026-10-15 明确纠正："我之前说的是 人声 — 原曲 — 伴奏"。
+     * 提取方向，像 EQ 的中间档）。定稿纠正："我之前说的是 人声 — 原曲 — 伴奏"。
      */
     var karaokeMixIndex by mutableStateOf(1); private set
 
@@ -354,7 +354,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** 加载期间用户改选的档位 —— 就绪后切到**最后一次**选的那个，而不是最初点的那个。 */
     private var karaokePendingMode = com.shiyin.music.playback.KaraokeMixControl.MODE_ACCOMP
 
-    /** A73（用户 2026-10-15）：分轨默认模型 id，设置页可改；默认 = 内置的 9482。
+    /** A73（定稿）：分轨默认模型 id，设置页可改；默认 = 内置的 9482。
      *  同样用私有 MutableState 后备 + 只读 getter —— 避免与 setKaraokeModelId() 撞 JVM 签名。 */
     private val _karaokeModelId = mutableStateOf(com.shiyin.music.data.karaoke.MdxModel.default().id)
     val karaokeModelId: String get() = _karaokeModelId.value
@@ -365,7 +365,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val changed = next != _karaokeModelId.value
         _karaokeModelId.value = next
         viewModelScope.launch { settingsStore.setKaraokeModelId(next) }
-        // ⚠️ 2026-10-19 用户实测："HQ3 加载半天出不来伴奏，切到 9482 之后还是很慢，最后才有伴奏"。
+        // ⚠️ 2026-10-19 真机实测："HQ3 加载半天出不来伴奏，切到 9482 之后还是很慢，最后才有伴奏"。
         // 真因：**在跑的那趟分离认的是起跑时那个模型** —— 换默认模型只改了"下一次用谁"，
         // 眼前这趟还在用 HQ3 慢慢算（`startKaraokeSeparation` 见 job 非空就直接 return）。
         // 所以换模型时**必须把在跑的那趟掐掉、按新模型重来**，否则"切换"对用户是假的。
@@ -387,7 +387,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         startKaraokeSeparation(t)
     }
 
-    // ── 设置 · 播放 · 伴唱页（2026-10-17 用户要求"正式版"）──────────────────────
+    // ── 设置 · 播放 · 伴唱页（2026-10-17 需求要求"正式版"）──────────────────────
     private val karaokeModelStore by lazy {
         com.shiyin.music.data.karaoke.KaraokeModelStore(getApplication())
     }
@@ -419,11 +419,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** 进伴唱设置页时刷新：模型安装状态 + 缓存占用 + 保留策略 + 下载渠道。 */
     fun refreshKaraokeSettings() {
         // ⚠️ **这里曾经调用 `importPushedModels()`（外部目录有文件就自动装上）—— 已删除**
-        // （用户 2026-10-18 报"删除模型删不掉，返回后仍显示已下载"）。
+        // （真机报障"删除模型删不掉，返回后仍显示已下载"）。
         //
         // 根因就是这个自动导入：外部目录里一旦有同名文件，**每次刷新都会把它装回来**，
         // 用户按删除 → 真删了 → 刷新时又被装回 ⇒ 看起来就是"删不掉"。
-        // 而且这功能本来就**不是用户要求的**（我为绕开慢网络自作主张加的）⇒ 整段删掉，
+        // 而且这功能本来就**不是需求要求的**（我为绕开慢网络自作主张加的）⇒ 整段删掉，
         // 不留"需要明确操作才导入"的变体：多一个入口就多一处"文件莫名其妙回来"的可能。
         // 追加 B：**引擎版本不匹配的缓存永远读不到** —— 别让它占空间、也别占"保留 N 首"的名额
         val purged = runCatching { stemCache.purgeStaleEngines() }.getOrDefault(0)
@@ -455,7 +455,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             com.shiyin.music.data.karaoke.StemRetention.Entry(it.keyDirName, it.bytes, it.lastAccess)
         }
         if (entries.isEmpty()) return
-        // P2-A（用户 2026-10-18）：**两个上限同时生效**（留空/0 = 该项不限）；
+        // P2-A（定稿）：**两个上限同时生效**（留空/0 = 该项不限）；
         // 旧的"二选一模式"不再参与判定（`RetentionMode` 字段保留只为兼容已存的值）。
         val victims = com.shiyin.music.data.karaoke.StemRetention.planEvictionBoth(
             entries,
@@ -523,7 +523,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * P2-A（用户 2026-10-18）：**两个上限独立设置**，0 = 该项不限制。
+     * P2-A（定稿）：**两个上限独立设置**，0 = 该项不限制。
      * `RetentionMode` 已不再参与判定（保留字段只为兼容已存的值），所以不再暴露 mode 参数。
      */
     fun setStemRetentionLimits(count: Int, mb: Int) {
@@ -576,7 +576,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             com.shiyin.music.playback.KaraokeMixControl.realSource =
                 com.shiyin.music.playback.StemCacheAccompaniment(stemCache, readyDir)
             com.shiyin.music.playback.KaraokeMixControl.mode = target
-            // ⚠️ 快路径必须置 Loading（用户 2026-10-22 报的 BUG）：状态机 onReady 只认
+            // ⚠️ 快路径必须置 Loading（真机报障的 BUG）：状态机 onReady 只认
             // Loading→Active。此前漏了这步，按钮停在 Idle，100ms 轮询等"处理器真的出声"
             // 到了以后 M.onReady(Idle)=Idle ⇒ 状态永远不动 —— 耳朵已在放伴奏，
             // 歌词页麦克风/伴唱面板却一直转圈；且取消一次后再点（Idle 快路径）永远点不亮。
@@ -707,7 +707,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * v1.5.1 ⑥（用户 2026-10-21）:「恢复官方源」—— 一键清空全部被删除(禁用)的内置源。
+     * v1.5.1 ⑥（定稿）:「恢复官方源」—— 一键清空全部被删除(禁用)的内置源。
      * 只动内置源的屏蔽集，**不碰**用户自定义源。
      */
     fun restoreBuiltInLyricsSources() {
@@ -754,7 +754,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val _hideFeatureArtists = mutableStateOf(true)
     val hideFeatureArtists: Boolean get() = _hideFeatureArtists.value
 
-    // ── v1.3.x 播放设置(设置·播放页,用户 2026-09-22 指定分组)──────────────────
+    // ── v1.3.x 播放设置(设置·播放页,分组定稿)──────────────────
     /** 音量均衡:平衡所有曲目的播放音量(响度归一,ExoPlayer setVolume 实现见 PlaybackService)。 */
     var volumeNormalize by mutableStateOf(false); private set
     /** 单声道音频:左右扬声器播放相同的音频。 */
@@ -898,7 +898,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      *
      * 之前 filesView 是扁平状态,系统/手势返回一律 `filesView = Root`(跳过中间
      * 层级),而页面返回按钮走各自写死的父级(均衡器→播放设置)——两条路径不一致,
-     * 三级页手势返回直接跳回设置根(用户实测)。
+     * 三级页手势返回直接跳回设置根(真机实测)。
      *
      * 现在 forward 一律 [navFilesTo](push),back 一律 [navFilesBack](pop),
      * 按钮返回与系统/手势返回共用同一个栈,逐级退出。栈在打开设置时清空
@@ -1019,7 +1019,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /**
      * **即时**「歌词列表是否在顶」判定（2026-10-22）。
      *
-     * 旧实现只靠 [lyricsListAtTop]（snapshotFlow 异步写）——用户报"在歌词中间
+     * 旧实现只靠 [lyricsListAtTop]（snapshotFlow 异步写）——真机报障"在歌词中间
      * 长按拖动几次也能触发下拉"。改用 LyricsScreen 挂上的闭包，手势线程里
      * **当下直接问 LazyListState**，没有异步滞后、也不会拿着旧值误判。
      * null = 歌词列表未挂载（此时回退 [lyricsListAtTop]）。
@@ -1385,7 +1385,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun tapSyncExit() {
-        // 中途退出保留已打轴结果(用户明确:"中途退出保留已打轴结果")
+        // 中途退出保留已打轴结果(需求方明确:"中途退出保留已打轴结果")
         // 第9项 L:涟漪的 pending 预览若还没提交,退出时丢弃——不留半完成的时间轴。
         calibPendingLines = null
         calibRippling = false
@@ -1579,7 +1579,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             // 闸门 2：**瞬时淡化开关**（0 = 不做 300ms 系数插值，直接跳到目标档）。
             // 用来把"残差是淡化本身"和"残差是别的东西"分开：同一次实验只改这一个变量。
             "ramp" -> com.shiyin.music.playback.KaraokeMixControl.rampMs = p[1].toInt()
-            // ── 升降 Key 卡死取证（用户 2026-10-20「修改0」）──────────────────────────
+            // ── 升降 Key 卡死取证（「修改0」取证）──────────────────────────
             // `watchdog 1` 开启被动看门狗：此后**每次 Key 变化**起，若播放位置 >2 秒不前进，
             // 就抓 `Thread.getAllStackTraces()` 全量线程栈 → logcat(tag PickUpDiag) + 落盘。
             // `watchdog 0` 关闭 ⇒ 回到零影响（ticker 里只剩一次布尔短路）。
@@ -2196,7 +2196,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** 显示层覆盖链（别名 / 专辑覆盖 / 专辑级 / 单曲级）—— 物理、拆分、容器三类曲目共用。 */
     private fun applyDisplayOverrides(t: Track): Track {
         var r = t
-        // ⚠️ 2026-10-19 用户报的 bug："专辑是 AAA/bbb 的专辑，我合并 bbb→BBB 就不会有任何反应"。
+        // ⚠️ 2026-10-19 真机报障的 bug："专辑是 AAA/bbb 的专辑，我合并 bbb→BBB 就不会有任何反应"。
         // 原来这里是 `aliases[t.artist]` —— **拿整串去查别名表**，而别名表的键是**单个歌手名**
         // （合并对话框里选的是"bbb"），复合串永远查不到 ⇒ 合并等于没做。判定抽到
         // [com.shiyin.music.data.artist.ArtistAliasResolver] 里，有单测钉住。
@@ -2235,8 +2235,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         if (sig == libSig) return libCache
         val trash = trashIds
         val splits = resolveSplitPlans()
-        // 迁移专辑改名修复（2026-10-23 用户实测：「干妹妹」迁进《秘密基地》后，
-        // 库里专辑格显示《滚石精选》）——迁入曲带着自己文件里的旧专辑名进组，
+        // 迁移专辑改名修复（真机实测：单曲迁进正式专辑后，库里专辑格显示成
+        // 迁入曲自带的旧合辑名）——迁入曲带着自己文件里的旧专辑名进组，
         // 专辑格按组内第一首取名就被顶掉。用目标专辑的原生曲目投票出的显示名
         // 回填迁入曲，库列表/详情页/播放栏三处一致。仅在有迁移记录时计算。
         val nativeNames = com.shiyin.music.data.nativeAlbumNames(tracksRaw, trackAlbumMoves)
@@ -2412,7 +2412,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         // v22 修补: 首次拆分(专辑还没有 split 方案)时容器曲目**从未进 libById**——
         // lib() 里 containers 只为已有拆分方案的文件构建。trackById 解析不到 →
         // loadQueue 从未被调用 → 编辑页播放键 toggle 的是空队列(静默无响应,
-        // 用户反馈"全长自己无法点击播放"的根因)。这里按需构建容器并补进 libById;
+        // 实测反馈"全长自己无法点击播放"的根因)。这里按需构建容器并补进 libById;
         // 保存后 split 方案存在,lib() 重建时容器自然进入。
         val container = trackById(com.shiyin.music.data.split.SplitIds.containerId(sourceMediaId))
             ?: physicalTracks().firstOrNull { it.id == sourceMediaId }?.let { src ->
@@ -2422,7 +2422,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             }
         container?.let {
             player.setShuffle(false)
-            // v22 修补:只装载队列**不自动播放**(用户反馈——进编辑页就自己响起来,
+            // v22 修补:只装载队列**不自动播放**(实测反馈——进编辑页就自己响起来,
             // 打断了"先看一眼曲目表"的预期)。让用户自己点播放键;加载停在暂停态,
             // 进度条/时长/插旗照常可读。
             player.loadQueue(listOf(it), it.id, null)
@@ -2477,7 +2477,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun splitRowLocked(ordinal: Int): Boolean = ordinal == 1
 
     /**
-     * v22 修补: 编辑页补录——漏粘贴的曲目在这里追加一行(用户反馈:50 分钟专辑漏了
+     * v22 修补: 编辑页补录——漏粘贴的曲目在这里追加一行(实测反馈:50 分钟专辑漏了
      * 后面几首,便导致后面不知道绑定哪些歌曲,应提供加号键)。
      * 新行序号 = 当前最大序号 + 1,起始时间未定(留给「设为当前时间」补)。
      */
@@ -2643,7 +2643,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /**
      * 是否显示「专辑整轨拆分为单曲」入口。
      *
-     * 条件（用户定调）：**专辑类型为「单曲」即可，不设时长门槛** —— 8 分钟的串烧、
+     * 条件（定调）：**专辑类型为「单曲」即可，不设时长门槛** —— 8 分钟的串烧、
      * 45 分钟的全长整轨专辑都能用（后者因为只有 1 个文件，本身就被分类为单曲）。
      * `classifyAlbum` 是手动覆盖优先，用户若把单文件专辑手动标成「专辑」会被误伤，
      * 因此再用**曲目数 == 1** 兜底。
@@ -2670,7 +2670,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /**
      * v22: 是否「专辑过渡曲」—— intro / outro / interlude 这类 ≤60 秒的短曲。
      *
-     * 用户定调：这类曲目**要计数**（[playCountFor] 照常返回真实次数），但
+     * 定调：这类曲目**要计数**（[playCountFor] 照常返回真实次数），但
      * **不作为热度评判标准** —— 它某种程度上不算「歌」，而是专辑的过渡。
      *
      * 判定纯派生（时长即可），不落库：用户改了拆分时间点后不会出现标记不同步。
@@ -2738,9 +2738,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             if (t.album == NO_ALBUM) continue
             m.getOrPut(albumKeyOf(t.album, t.artist, t.albumId)) { mutableListOf() }.add(t)
         }
-        // v1.5.0 修复（用户 2026-10-10）：原来按**标题**折叠会把"同一首歌的多个版本"整批
+        // v1.5.0 修复（定稿）：原来按**标题**折叠会把"同一首歌的多个版本"整批
         // 吃掉——下载器常把 TITLE 都写成基名（YOU / YOU（feat.UMI） / YOU-Instrumental 三个
-        // 文件的 TITLE 都是 "YOU"），于是整张 EP 只剩一首（用户实测）。改为只折叠**确为
+        // 文件的 TITLE 都是 "YOU"），于是整张 EP 只剩一首（真机实测）。改为只折叠**确为
         // 同一个文件**的条目（见 AlbumDedupe，有单测）。
         albumsCache = m.mapValues { (_, ts) ->
             com.shiyin.music.data.normalize.AlbumDedupe.dedupeSameFile(ts)
@@ -2774,7 +2774,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      *
      * 为什么单开一个访问器而不是在 [artistsMap] 里过滤：`artistsMap()` 还被
      * **搜索**（SearchScreen）和**歌手页内容**（LibraryScreen 的歌手详情、artistQueue）用，
-     * 在那里过滤会把搜索结果一起藏掉、并让被隐藏歌手的页面变空——用户明确要求
+     * 在那里过滤会把搜索结果一起藏掉、并让被隐藏歌手的页面变空——需求方明确要求
      * 「搜索不动、点进去照常能看」。所以过滤只作用在歌手栏这一处。
      */
     fun libraryArtistEntries(): List<Map.Entry<String, List<Track>>> {
@@ -2789,7 +2789,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         return if (hidden.isEmpty()) all else all.filter { it.key !in hidden }
     }
 
-    // ── P2-B（用户 2026-10-18）：客串歌手逐个开关 ──────────────────────────────
+    // ── P2-B（定稿）：客串歌手逐个开关 ──────────────────────────────
     /** 用户手动选择"不隐藏"的客串歌手（**例外表**，默认全隐藏）。 */
     private val _visibleFeatureArtists = mutableStateOf(emptySet<String>())
 
@@ -2811,7 +2811,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch { settingsStore.setVisibleFeatureArtists(next) }
     }
 
-    // ── 用户 2026-10-19 改口径：开关按"**隐藏**"表达，且与总开关联动 ─────────────
+    // ── 定稿 改口径：开关按"**隐藏**"表达，且与总开关联动 ─────────────
     /**
      * 这位客串歌手**现在会被隐藏吗**。
      *
@@ -3208,7 +3208,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /**
      * v1.3.10: 模型发起的「选择题」(clarify)的**独立状态**——非空时输入框上方显示专属卡片。
      *
-     * 刻意与 [agentSuggestions] 分开(用户 2026-09-28 定调):
+     * 刻意与 [agentSuggestions] 分开(定稿 定调):
      * - [agentSuggestions] = **专辑页入口建议**(产品预设文案,进来就摆着);
      * - [agentClarify] = **模型现场生成**的选择题(问题+选项都来自当前对话)。
      * 两者语义、生命周期、样式都不同;此前共用一个状态,正是"clarify 的选项看起来像
@@ -3249,7 +3249,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /**
      * 上一轮 [com.shiyin.music.data.ai.skills.DiscoverMusicSkill] 的槽位(场景/歌手/专辑)。
      *
-     * 为什么要有它:真机里「推荐方大同适合睡觉的歌」→ 用户补一句「方大同的」时,弱模型
+     * 为什么要有它:真机里「推荐某歌手适合睡觉的歌」→ 用户补一句「某歌手的」时,弱模型
      * 常常把场景丢掉,于是推荐变成"按热度排"。这里存住合并后的槽位,下轮既注入提示
      * (让模型自己接得上)又在技能里兜底继承(代码保底)。
      *
@@ -3260,14 +3260,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** 用户回合序号(推荐槽位的 TTL 按**回合**算,与按时间算的那条独立过期)。 */
     private var agentTurnIndex = 0
 
-    /** 本轮用户原话(推荐技能要在原话里兜底扫库内歌手名,见 resolveArtists)。 */
+    /** 本轮需求原话(推荐技能要在原话里兜底扫库内歌手名,见 resolveArtists)。 */
     private var agentTurnUserText = ""
 
     /**
      * v1.3.15:工具调用轨迹(「导出对话」用)。
      *
      * 为什么另记一份:技能调用与参数只打在 logcat 里,而真机 release 包的 logcat 被系统抑制
-     * (用户实测自定义 tag 打不出来)——深度排查时**看不到模型到底调了什么、带了什么参数、返回了什么**。
+     * (真机实测自定义 tag 打不出来)——深度排查时**看不到模型到底调了什么、带了什么参数、返回了什么**。
      * 跨轮保留(不每轮清空),只留最近 [toolTrailMax] 行,避免长会话无限增长。
      */
     private val agentToolTrail = ArrayDeque<String>()
@@ -3374,7 +3374,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      * 它看不到"Pretender 正在播放",也看不到"刚才那次播放已经成功",于是把用户的感想
      * 读成"再放一遍"。这里把两者都做成明确事实,再配一条"已完成,别重复"的指令。
      *
-     * v1.3.13 修正(用户实测):播放状态/上一轮动作**只在用户这条消息确实与播放相关时**
+     * v1.3.13 修正(真机实测):播放状态/上一轮动作**只在用户这条消息确实与播放相关时**
      * 才注入。闲聊、评价别的歌手、问与当前歌无关的问题,一律不带——模型从没问过"现在
      * 在放什么",这条信息就不该出现在语境里(否则"正在听 A"会被它错接成"B 的答案")。
      */
@@ -3408,7 +3408,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
         // ── v1.3.15:上一轮的推荐槽位 ─────────────────────────────────────────
-        // 真机缺陷:「推荐方大同适合睡觉的歌」→ 用户补一句「方大同的」,弱模型把"睡觉"丢了,
+        // 真机缺陷:「推荐某歌手适合睡觉的歌」→ 补一句「某歌手的」,弱模型把"睡觉"丢了,
         // 于是推荐退化成按热度排。这里把上一轮**合并后**的槽位贴给模型,让它自己接得上;
         // 技能里还有一层代码兜底继承(见 RecommendationPlan.mergeIntent),两层用同一 TTL。
         val rec = agentRecIntent
@@ -3454,7 +3454,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         if (!memoriesLoaded) refreshMemories()
     }
 
-    /** 用户要求拾光忘记某条(硬删除)。 */
+    /** 需求要求拾光忘记某条(硬删除)。 */
     fun forgetMemory(id: String) {
         viewModelScope.launch(Dispatchers.IO) {
             runCatching { memoryManager.forget(id) }
@@ -3532,7 +3532,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /**
      * v1.3.10 需求 A21(P2):**回合后记忆提取**。
      *
-     * 分工(用户定调):LLM 只负责**提名**"这句有没有长期价值";**入不入库、跟旧记忆什么关系**
+     * 分工(定调):LLM 只负责**提名**"这句有没有长期价值";**入不入库、跟旧记忆什么关系**
      * 全由确定性规则裁决([MemoryManager] → [MemoryRules])——弱模型不可靠,数据质量不能交给它。
      *
      * 为什么用"独立调用"而不是让主对话调工具:实测轻量模型不会稳定地二次调工具;而且这条链路
@@ -3754,7 +3754,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         agentMemoryFlow.reset()
         publishMemory()
         // v1.3.15:推荐槽位同理——"上一轮让你挑的睡觉的歌"属于那个会话,开了新对话就该忘掉
-        // (否则新对话第一句"方大同的"会莫名其妙接上上一段会话的场景)。
+        // (否则新对话第一句"某歌手的"会莫名其妙接上上一段会话的场景)。
         agentRecIntent = null
     }
 
@@ -3791,7 +3791,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun retryAgentMessage(agentIndex: Int) {
         if (agentRunning) return
         val userIdx = (agentIndex - 1 downTo 0).firstOrNull { agentMessages[it].role == "user" } ?: return
-        // v1.3.15:不再把原问句回填输入框(用户反馈:点【重试】后问句被塞进输入框,还得手动清掉)。
+        // v1.3.15:不再把原问句回填输入框(实测反馈:点【重试】后问句被塞进输入框,还得手动清掉)。
         // 重试只是"用同一句重发一遍":问句本来就在上方那条用户气泡里看得见,回填纯属噪音。
         // 仍需 agentEditFromIndex-覆盖语义:从该用户消息起替换后续内容,而不是追加。
         agentEditFromIndex = userIdx
@@ -4127,7 +4127,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                  *
                  * 真机 bug:原来每个中间回调都自己 `AgentMessage("agent", …, steps)` 重建消息,
                  * 只带其中一个字段 —— onThinking 丢正文、onContent 丢思考链、onSearch 两个都丢。
-                 * 于是联网搜索的多轮里,「思考中」被反复抹掉又出现(用户实测:"1s 又消失,反复 2-3 次"),
+                 * 于是联网搜索的多轮里,「思考中」被反复抹掉又出现(真机实测:"1s 又消失,反复 2-3 次"),
                  * 正文一旦开始流就把思考链整块抹掉。统一走这一个构造口,谁都不会被顺手丢掉。
                  */
                 fun liveAgentMsg(
@@ -4213,7 +4213,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     // 没保存成、也没命中 → 落回"未找到相关记忆"(仍然是同一条行)
                     agentMemoryFlow.nothingFound(); publishMemory()
                 }
-                // 保存失败必须让模型知道——否则它会说"好的我记住了"(假状态,用户明确禁止)
+                // 保存失败必须让模型知道——否则它会说"好的我记住了"(假状态,需求方明确禁止)
                 if (memorySaveFailed) {
                     memoryBlock = listOf(
                         memoryBlock,
@@ -4227,7 +4227,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 var webBlock = ""
                 if (fastPlan == null) {
                     // v1.4.0:「强制联网搜索」由 **tool_choice 强制模型调用联网工具**实现
-                    // （见 AgentTools.dispatch），不再拿用户原话直接去搜——那样绕过了模型
+                    // （见 AgentTools.dispatch），不再拿需求原话直接去搜——那样绕过了模型
                     // 对"该搜什么"的判断。这里只保留用户**明确要求联网**时的预搜。
                     val preQuery = com.shiyin.music.data.ai.WebSearchPolicy.explicitQuery(text)
                     preQuery?.let { q ->
@@ -4427,7 +4427,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 }
 
                 // ── v1.3.12:"要播放"却被路由成"查库" → 纠正一次 ───────────────────────
-                // 真机实测:「给我播放藤井风的 prema」被路由到 library_query,**罗列了 8 条检索结果**
+                // 真机实测:「给我播放某歌手的某歌」被路由到 library_query,**罗列了检索结果清单**
                 // 当回答(用户:"这显然不应该,我要求播放的是音乐")。库查询的 description 里其实
                 // 已经写了"想听就用 playback_control、不要用本工具",但**弱模型不照办** ——
                 // 所以这里用纯函数判据确定性地兜一次:工具面保持完整,只加一条贴着本条消息的说明,
@@ -4486,7 +4486,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
                 // 2a. 反问(第三态):模型不确定 → 不执行任何技能,把问题交还用户。
                 // v1.3.10: 走**专属选择卡片**(独立状态 agentClarify)——不再落一条 agent 气泡、
-                // 也不借用入口建议 chip(用户 2026-09-28 定调:三者是三个东西)。
+                // 也不借用入口建议 chip(定稿 定调:三者是三个东西)。
                 if (clarifyReq != null) {
                     android.util.Log.i(
                         "Agent",
@@ -4535,13 +4535,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     return@launch
                 }
                 // ── v1.3.12:播放执行的**确定性关卡** ──────────────────────────────────
-                // 分工(用户定调,一次纠正后的最终口径):
+                // 分工(定调,一次纠正后的最终口径):
                 //   · **模型照常判断、照常调工具** —— 工具面永远完整,判断权在它手里;
                 //   · 运行时只管**副作用**:① 名字既是单曲又是专辑时**不猜**,把选择交回用户
                 //     (用已有的 clarify 选择卡片);② 纯感想被当成播放命令时拦下;
                 //   · **幂等不在这一层** —— "同一首已经在放就别重启"是**技能**的职责(它知道
                 //     真实播放状态,由它说那句人话),这里不再替模型生成任何"回复文案";
-                //   · 需要用户拿主意时**追问**,不吐兜底句式(用户明确反感"无限兜底")。
+                //   · 需要用户拿主意时**追问**,不吐兜底句式(需求方明确反感"无限兜底")。
                 var execArgs = plan.args
                 if (skill.key in com.shiyin.music.data.ai.AgentEngine.PLAYBACK_EXEC_SKILLS) {
                     val guardTarget = plan.args["target"]?.takeIf { it.isNotBlank() }
@@ -4549,13 +4549,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
                     // ① 用户自己说清楚了(「我说的是单曲」/「放整张专辑」)→ 按他说的定死 scope,
                     //    **不再问一遍**(真机:用户已明说单曲,系统却还弹选择卡片 → 读起来像没在听)。
-                    //    模型没填 scope 时以**用户原话**为准(这是确定性判据,不指望弱模型转述)。
+                    //    模型没填 scope 时以**需求原话**为准(这是确定性判据,不指望弱模型转述)。
                     val userScope = com.shiyin.music.data.ai.PlaybackIntentGuard.userScope(text)
                     if (userScope != null) {
                         execArgs = execArgs + ("scope" to userScope)
                     } else if (plan.args["scope"].isNullOrBlank() && guardTarget != null) {
                         // ② 用户没说、名字又**既是单曲又是专辑** → 问用户,不猜。
-                        //    真机场景:「给我播放藤井风的 prema」库里既有单曲 prema 又有专辑 Prema,
+                        //    真机场景:「给我播放某歌手的某歌」库里既有同名单曲又有同名专辑,
                         //    代码(或模型)悄悄选一个,用户只能事后纠正。
                         val albumKey = agentCtx.findAlbum(guardTarget)
                         val exactTrack = agentCtx.searchTracks(guardTarget, 8)
@@ -4575,8 +4575,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                         }
                     }
 
-                    // ② 用户明确要求"重来" → 把 restart 注进参数。这是**补全信息**(技能看不到
-                    //    用户原话),不是否决模型:让它有能力区分"播放"与"从头再放"。
+                    // ② 需求方明确要求"重来" → 把 restart 注进参数。这是**补全信息**(技能看不到
+                    //    需求原话),不是否决模型:让它有能力区分"播放"与"从头再放"。
                     if (com.shiyin.music.data.ai.PlaybackIntentGuard.classify(text) ==
                         com.shiyin.music.data.ai.PlaybackIntentGuard.Intent.RESTART
                     ) {
@@ -4739,7 +4739,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 // 终态落钉:此后的中间态回调(迟到的 mainHandler.post)一律作废。
                 seal()
                 // v1.3.13:技能给了**可点选项**(如"你自己挑一首"的几首候选)→ 直接弹选择卡片。
-                // 用户定调:智能助手要让用户**少输入** —— 列了 A/B/C 还让人打字说歌名是很蠢的交互;
+                // 定调:智能助手要让用户**少输入** —— 列了 A/B/C 还让人打字说歌名是很蠢的交互;
                 // 点一下就把那首放上。复用既有 clarify 卡片(点选 → 发一条消息 → 正常链路执行)。
                 if (result.options.isNotEmpty()) {
                     android.util.Log.i("Agent", "技能 ${skill.key} 给了 ${result.options.size} 个可点选项")
@@ -4920,7 +4920,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         .map { g -> g.sortedBy { it.dateAdded } }
 
     /** v22: 拆分曲目同样排除在"短音频"之外 —— 拆出来的 intro/outro 是专辑的有机
-     *  组成，不是待清理的垃圾音频（用户明确：这类曲目要计数，只是不当热度标准）。 */
+     *  组成，不是待清理的垃圾音频（需求方明确：这类曲目要计数，只是不当热度标准）。 */
     fun shortTracks(): List<Track> = lib()
         .filterNot { com.shiyin.music.data.split.SplitIds.isSynthetic(it.id) }
         .filter { it.durationSec in 1..30 }
@@ -5142,7 +5142,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             // 2026-10-23：换曲即作废"振假名手动选择"（用户口径：记忆持续到切歌为止）。
             furiganaOverrideTrackId = -1L
         }
-        // A71（用户 2026-10-15）：**真换曲**时把伴唱复位。不复位的话处理器仍按绝对帧号
+        // A71（定稿）：**真换曲**时把伴唱复位。不复位的话处理器仍按绝对帧号
         // 读**上一首**的缓存目录 ⇒ 自动续播时听到上一首的伴奏，界面也停在 Active。
         // 判定同上去重口径：同一个 id（单曲循环重播）不复位——缓存目录与 epoch 偏移都还有效。
         if (id != lastKaraokeTrackId) {
@@ -5277,7 +5277,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      * v1.4.0: 用**给定列表**作播放队列（搜索页用：队列 = 搜索结果，不是整个音乐库）。
      *
      * 原来搜索页调 [play]，而 [play] 的队列是整库/筛选后的整库排序——于是搜一首歌放完，
-     * 下一首接到的是主列表里的下一首，跟搜索词八竿子打不着（用户实测反馈）。
+     * 下一首接到的是主列表里的下一首，跟搜索词八竿子打不着（真机实测反馈）。
      */
     fun playFromList(tracks: List<Track>, startId: Long) {
         if (tracks.isEmpty()) return
@@ -5342,7 +5342,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
         // v5.2 隐藏曲:整张播放默认跳过 hidden 曲。但若用户点的就是 hidden 的那首,
-        // 要让它响起来(用户明确点的才播)——用未过滤队列保证该曲在自己位置能播,
+        // 要让它响起来(需求方明确点的才播)——用未过滤队列保证该曲在自己位置能播,
         // 否则 playQueue 找不到 startId 会回落到第一首、播成别的曲。null startId
         // (专辑页"播放"按钮,无明确起点)仍走过滤队列。
         val all = albumOrder(key)
@@ -5385,7 +5385,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         // 不触发任何单曲切换，计一次「专辑被播放次数」。
         val start = startId?.takeIf { isSplitTrack(it) }
         if (start == null) return listOf(container) to container.id
-        // v22 修补(用户反馈⑥"播放列表只能一首"):单曲模式队列放**整组拆分单曲**
+        // v22 修补(实测反馈⑥"播放列表只能一首"):单曲模式队列放**整组拆分单曲**
         // (从点击那首起、按专辑页顺序到最后一首)——原实现只放一首,播放列表只见
         // 一条、插入队列的歌排在唯一 item 后面且 SplitCarry 无缝切换永不前进到
         // 下一个队列项。现在整组进队列:播放列表完整显示;插到队列的歌正常排队;
@@ -5437,7 +5437,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /**
      * v1.3.10 需求 A15:歌手页「热门」行点播——队列必须与**列表展示顺序一致**(热度降序)。
      *
-     * 旧行为(用户报的 bug):热门行点击走 [playArtist] → 队列是 [artistQueue](专辑曲序),
+     * 旧行为(真机报障的 bug):热门行点击走 [playArtist] → 队列是 [artistQueue](专辑曲序),
      * 于是"点了第 3 首热门,下一首却是专辑里的下一首"——听感就是"不按热门队列播放,乱来"。
      *
      * 排序口径与歌手页展示用**同一个表达式**(heatCountFor 降序),两边不会漂移;
@@ -5487,7 +5487,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     /** v5.2 隐藏曲 helper:把 [tracks] 中被用户在 track_info_override 标 hidden
      *  的曲过滤掉。Album 整张播、整库播放、随机播都要走这条路径。Single play (单
-     * 曲点击播放)不过滤 —— 用户明确点了一首曲,即使它是 hidden 也应该响起来,
+     * 曲点击播放)不过滤 —— 需求方明确点了一首曲,即使它是 hidden 也应该响起来,
      * 否则点击 row 没反应。 */
     private fun playbackFiltered(tracks: List<Track>): List<Track> =
         tracks.filterNot { t -> isHidden(t.id) }
@@ -5937,7 +5937,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      * 拆分单曲 / 完整专辑容器的 id 是 App 内部合成的，不对应任何 MediaStore 记录 ——
      * 拿它去 `ContentUris.withAppendedId` 会构造出不存在的 URI，轻则 MediaStore 抛异常，
      * 重则让系统删错文件。而且拆分曲目共享同一个物理文件，"删一首"在语义上就说不通：
-     * 曲目菜单已不提供该入口（用户定调：不给单曲级删除），这里再兜一道，返回实际
+     * 曲目菜单已不提供该入口（定调：不给单曲级删除），这里再兜一道，返回实际
      * 可操作的 id 集合。
      */
     private fun realMediaIdsOnly(ids: List<Long>): List<Long> {
@@ -6087,7 +6087,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private fun currentTrackForKaraoke(): Track? = player.currentId?.let { trackById(it) }
 
     /**
-     * **格式闸门（块 4｜用户 2026-10-14 定的可用版范围）**：只支持 **FLAC / MP3**。
+     * **格式闸门（块 4｜定稿 定的可用版范围）**：只支持 **FLAC / MP3**。
      * 返回 null = 可用；否则是**给用户看的原因**（按钮据此置灰并显示原因）。
      */
     fun karaokeGate(t: Track? = currentTrackForKaraoke()): String? {
@@ -6156,7 +6156,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun setLibItemPinned(itemKey: String, pinned: Boolean) {
         if (pinned == isLibItemPinned(itemKey)) return
         // 规则在 [com.shiyin.music.data.PinnedOrder.applyPin] 一处定义：
-        // **先固定者在上**（用户 2026-10-18 更正；旧版是"后固定者在上"）。
+        // **先固定者在上**（定稿更正；旧版是"后固定者在上"）。
         pinnedLibItems = com.shiyin.music.data.PinnedOrder.applyPin(pinnedLibItems, itemKey, pinned)
         viewModelScope.launch { settingsStore.setPinnedLibItem(itemKey, pinned) }
     }
@@ -6254,7 +6254,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun runSweep(count: Int, gapMs: Long, label: String) {
         // ⚠️ 必须在**当前曲目**坐标系里取范围与发 seek：
         //  - 拆分单曲的条目被裁剪过（时间轴从裁剪点起算），拿"整轨文件毫秒"去 seek 会算出负数
-        //    → 夹到段首 → 越界检查判"越界" → **跳到别的曲目**（用户 2026-10-13 实测踩到）。
+        //    → 夹到段首 → 越界检查判"越界" → **跳到别的曲目**（真机实测踩到）。
         //  - displayDurationMs 对拆分单曲 = 段长，对普通曲目 = 文件时长。
         val dur = player.displayDurationMs()
         if (dur <= 5000L) {
@@ -6281,7 +6281,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             }
             player.spikeSeekWithinTrack(ms)
             kotlinx.coroutines.delay(gapMs)
-            // 用户要求"暂停恢复"也要覆盖：每 1/3 处停一次再续。
+            // 需求要求"暂停恢复"也要覆盖：每 1/3 处停一次再续。
             if (i > 0 && i % (count / 3).coerceAtLeast(1) == 0 && i < count - 1) {
                 appendProbeLog("--- 暂停/恢复 @ 第 ${i + 1} 次请求后 ---")
                 player.spikePause()
@@ -6323,7 +6323,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** v1.5.0 A62：切换后需要让歌手栏缓存失效，故清 artistsSig。 */
     fun setHideFeatureArtists(v: Boolean) {
         _hideFeatureArtists.value = v
-        // 用户 2026-10-19："打开了，所有跟着打开" —— 总开关**打开时清空放行名单**，
+        // 定稿："打开了，所有跟着打开" —— 总开关**打开时清空放行名单**，
         // 于是每一位的开关都回到"隐藏"，用户接下来要做的就是**关掉他不想隐藏的那几位**。
         if (v && _visibleFeatureArtists.value.isNotEmpty()) {
             _visibleFeatureArtists.value = emptySet()
@@ -6426,7 +6426,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             android.util.Log.i("Agent", "albumDates[$artistName]: $s")
             android.os.Handler(android.os.Looper.getMainLooper()).post { onProgress(s) }
         }
-        // v1.3.6 修补:入口日志——用户反馈"点了没返回,连报错都没有"。加一条最先
+        // v1.3.6 修补:入口日志——实测反馈"点了没返回,连报错都没有"。加一条最先
         // 打的日志,确认函数被调用了、以及带了多少张专辑进来。之后每一步都有
         // progress 日志,看 logcat 能直接定位卡在哪一步。
         progress("开始:共 ${albums.size} 张专辑")
@@ -6443,7 +6443,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         // 已有日期的直接进最终排序。全部都有日期 → 零 LLM 调用直接重排。
         var existingDates = releaseDates()
         // ── v1.5.0（2026-10-12）：先试 MusicBrainz 的**原版首次发行年** ──────────────
-        // 用户实测：福居良《SCENERY》《Mellow Dream》被填成了**重制版**的日期，
+        // 真机实测：本地两张专辑被填成了**重制版**的日期，
         // 而它们是 1976/1977 的原版（"经典爵士，都是上个世纪的了"）。
         // MusicBrainz 的 release-group 代表"专辑本身"，first-release-date = 各版本里最早那次发行，
         // 与买的是哪一版无关 —— 实测 SCENERY=1976 / Mellow Dream=1977 ✓。
@@ -6784,7 +6784,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             }
             // v1.3.x 鉴权: 用户手动删除过歌词的歌不自动匹配(用户删了=这份匹配不对,
             // 再自动匹配回来是同样的错误歌词反复出现)。triedAuto 挡"本 session 已试过";
-            // manualDeletedLyrics 持久化挡"用户明确删除过"——后者优先级更高。
+            // manualDeletedLyrics 持久化挡"需求方明确删除过"——后者优先级更高。
             // ⚠️ 包含性判断必须在 synchronized **块内**执行:原写法
             // `id !in synchronized(x) { x }` 只是借锁取了集合引用,`in` 在锁外跑,
             // 与另一线程的 `synchronized(x){ x += mediaId }`(HashSet 扩容/rehash)
@@ -7037,8 +7037,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         currentLyrics = LoadedLyrics(targetId, content, parsed, name, LyricsKind.Imported, saved = false, offsetMs = 0)
         lyState = LyState.Idle
         // v1.3.10 需求 A28:**导入即保存**。
-        // 用户实测的数据丢失:手动导入一个专辑的歌词后没点"保存",播放下一首 → 导入的歌词全没了。
-        // 用户定调:"歌词这种获取了(导入或抓取),除非用户自己又删了,不然就要自动保存"——
+        // 真机实测的数据丢失:手动导入一个专辑的歌词后没点"保存",播放下一首 → 导入的歌词全没了。
+        // 定调:"歌词这种获取了(导入或抓取),除非用户自己又删了,不然就要自动保存"——
         // 人家费劲找来歌词文件/文字,不可能保证停在这一页点一下保存。
         // 落库用 autoSaved=0(与"手动确认保存"同级):清理识别缓存时**保留**用户自己的歌词。
         persistLyricsNow("导入即保存 · $name")
@@ -7088,7 +7088,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val newTime = (pos - cur.offsetMs).coerceAtLeast(0)
         lines[lineIdx] = com.shiyin.music.data.lyrics.LyricLine(newTime, lines[lineIdx].text)
         // v1.3.x Bug A 修复:**不排序**——原实现 sortedBy 把整列重排,activeI 变化
-        // 触发 animateScrollToItem 滚动到当前行(用户反馈"点击后歌词跳到末尾,
+        // 触发 animateScrollToItem 滚动到当前行(实测反馈"点击后歌词跳到末尾,
         // 焦点丢失,要手动滚回去再点下一句")。打轴时保持原索引顺序,UI 不重排,
         // 用户连续点下一句不用找回焦点。
         // v1.3.x Bug B 修复:**raw 同步更新**——原实现只改 parsed.lines 没改 raw,
@@ -7529,7 +7529,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         closeLyricsInstant()
         lyState = LyState.Idle
         triedAuto -= cur.mediaId
-        // v1.3.x 鉴权(用户反馈⑧):用户手动删除歌词 = "这份匹配不对"的明确信号——
+        // v1.3.x 鉴权(实测反馈⑧):用户手动删除歌词 = "这份匹配不对"的明确信号——
         // 记入持久化黑名单,**不再自动匹配**,待用户手动获取歌词资源(设置·歌词来源)。
         // 旧实现 `triedAuto -= mediaId` 反而把该曲放回自动匹配队列——用户删了又自动
         // 匹配回来,同样的错误歌词反复出现。
@@ -7586,7 +7586,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 .mapValues { (_, rows) -> rows.associate { it.charStart to (it.length to it.reading) } }
         } catch (_: Exception) { emptyMap() }
         return ly.parsed.lines.mapIndexed { idx, line ->
-            // v1.3.x 用户反馈:"作词：XXX 作曲：XXX"元数据行不该注音——人名注音
+            // v1.3.x 实测反馈:"作词：XXX 作曲：XXX"元数据行不该注音——人名注音
             // 经常错且无价值,词典/UtaTen/LLM 三层全部对它禁用(返回全 null 段)。
             if (isLyricsMetadataLine(line.text)) {
                 com.shiyin.music.data.lyrics.FuriganaTokenizer.toSegments(
@@ -7606,7 +7606,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * 歌词元数据行判定:"作词：XXX 作曲：XXX"这类非歌词正文行。用户定调不注音
+     * 歌词元数据行判定:"作词：XXX 作曲：XXX"这类非歌词正文行。定调不注音
      * (人名注音常错且无价值)。宽匹配中日英写法:作词/作詞/作曲/编曲/編曲/编词/
      * 作编曲/填词/填詞/歌词/作詞作曲 + :/：/。英文 lyric(s)/words/music by 也算。
      */
@@ -7648,7 +7648,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      *  完整重跑并发)。sheet 按钮 enabled=!running 只挡了手动路径,自动路径裸奔。 */
     private val furiganaRunning = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
     /** LLM 兜底触发门槛:应用 UtaTen 后仍空缺的段 ≥3 才值得一次 LLM 往返
-     *  (用户拍板默认 3,真机数据出来后再调;force 重新校验不受限)。 */
+     *  (拍板默认 3,真机数据出来后再调;force 重新校验不受限)。 */
     private val LLM_GAP_THRESHOLD = 3
     private fun negOk(key: String): Boolean {
         val until = furiganaNegCache[key] ?: return true
@@ -7698,7 +7698,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /**
      * 真取消：中止进行中的 LLM 调用并复位。
      *
-     * 三个调用点都是"用户明确不要这个结果"：① 进行中再点译按钮 = 取消；
+     * 三个调用点都是"需求方明确不要这个结果"：① 进行中再点译按钮 = 取消；
      * ② 删除歌词；③ 删除翻译缓存。这三处若只复位显示而不取消，
      * 任务跑完还会把刚被删掉的译文重新写回库里（复活孤儿行）。
      */
@@ -7887,13 +7887,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         // 守卫A 翻译进行中:LLM 任务不可打断(token 已花)。
         if (lyricsTranslation.running && lyricsTranslation.mediaId == ly.mediaId) return
         // 守卫B 同曲已有译文:hash 漂移(offset 微调等)不该把已保存的译文清掉再恢复
-        // (用户实测"翻译被吞了,几秒后又自己加载起来")。mediaId 必须匹配——切歌时
+        // (真机实测"翻译被吞了,几秒后又自己加载起来")。mediaId 必须匹配——切歌时
         // 旧曲译文挂到新曲是绝对不允许的,mediaId 不同照样清场+按新 hash 恢复。
         if (lyricsTranslation.hasData && lyricsTranslation.mediaId == ly.mediaId) return
         // 第7轮:中文歌(用户语言)**不恢复存量译文**。旧版本把"夹几句英语/夹一个「の」的
         // 中文歌"整首译过,库里可能存着这些译文;而语种判定改后「譯」按钮在中文歌上
         // 不再挂载(LyricsScreen),若照常恢复,用户会看到中文歌歌词本上挂着译文、
-        // 却**找不到任何关闭入口**(用户明确要求"翻译件不应该出现在繁体中文、简体中文
+        // 却**找不到任何关闭入口**(需求方明确要求"翻译件不应该出现在繁体中文、简体中文
         // 的歌词本上,帮我去掉")。这里只清显示状态、**不碰 DB**——译文是用户花 token
         // 换来的,留在库里,未来做多语言版本时可直接复用。
         if (!isForeignLyrics(ly.parsed.lines.map { it.text })) {
@@ -7901,7 +7901,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
         // 第6轮:**先读 DB 再清场**。原顺序 clear→suspend 读库,协程若在读库期间
-        // 被 LaunchedEffect 换 key 取消,译文停在"已清空未恢复"的空窗(用户实测
+        // 被 LaunchedEffect 换 key 取消,译文停在"已清空未恢复"的空窗(真机实测
         // "看着看着突然没了")。先读后清,取消只会发生在读库中(旧译文原样保留)。
         val row = withContext(Dispatchers.IO) {
             runCatching { dao.lyricsTranslation(ly.mediaId, hash) }.getOrNull()
@@ -7954,7 +7954,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      * LaunchedEffect。「恢复」要 await 一次读库(IO,几毫秒),而「自动翻译」只看
      * 内存状态 —— 它会抢在恢复完成前看到 hasData=false 并发起新翻译,随后恢复
      * 结果撞上"翻译进行中"守卫被丢弃。表现就是**明明库里有译文却重翻了一遍**
-     * (用户反馈"译好的内容退出后又要重新加载一遍",既慢又白烧 token)。
+     * (实测反馈"译好的内容退出后又要重新加载一遍",既慢又白烧 token)。
      * 合成后顺序确定：恢复完成 → 仍然没有译文 → 才自动翻译。
      */
     suspend fun enterLyricsTranslation(ly: LoadedLyrics, autoTranslate: Boolean) {
@@ -7981,7 +7981,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /**
      * "外语歌词"判定:委托给 LyricsTranslationProtocol.classifyLanguage——
      * 第7轮起按**字母占比**判(汉字占主体的歌=用户语言,不译),不再"有一个
-     * 外文字母就算外语"(中文歌夹几句英语被整首翻译,用户实测很难堪)。
+     * 外文字母就算外语"(中文歌夹几句英语被整首翻译,真机实测很难堪)。
      * 按钮显隐(LyricsScreen)与自动翻译共用此判定。多语言版本落地后按用户语言走。
      */
     fun isForeignLyrics(lines: List<String>): Boolean =
@@ -8008,7 +8008,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      */
     fun deleteTranslationCache() {
         val ly = currentLyrics ?: return
-        // 真取消：用户明确要删，进行中的任务跑完会把删掉的译文再写回来
+        // 真取消：需求方明确要删，进行中的任务跑完会把删掉的译文再写回来
         cancelLyricsTranslation()
         viewModelScope.launch {
             val hash = com.shiyin.music.data.furigana.LyricsHash.of(ly.raw)
@@ -8094,7 +8094,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     try {
                         val provider = com.shiyin.music.data.furigana.external.UtaTenProvider()
                         val occ = provider.resolve(track.title, track.artist, localLines)
-                        // 用户反馈:"作词：XXX 作曲：XXX"这类元数据行不该注音(人名经常
+                        // 实测反馈:"作词：XXX 作曲：XXX"这类元数据行不该注音(人名经常
                         // 注错且无价值)——UtaTen 回来的 occurrence 里元数据行整行剔除。
                         val occFiltered = occ!!.filter { !isLyricsMetadataLine(localLines.getOrNull(it.lineIndex)) }
                         val rows = occFiltered.map {
@@ -8161,7 +8161,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 } else if (segments == null) {
                     notes.add("LLM 兜底: 本地分词失败,跳过")
                 } else {
-                    // 用户反馈:"作词：XXX 作曲：XXX"元数据行不注音——收集空缺段时
+                    // 实测反馈:"作词：XXX 作曲：XXX"元数据行不注音——收集空缺段时
                     // 先按行过滤,元数据行的段不进 LLM(不给模型机会注人名)。
                     val gapsAll = com.shiyin.music.data.furigana.FuriganaLlmAssist.collectGaps(segments) {
                         furiganaJmdict.readings(it) ?: emptyList()
@@ -8170,7 +8170,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     if (gaps.isEmpty()) {
                         notes.add("无空缺段,LLM 跳过")
                     } else if (gaps.size < LLM_GAP_THRESHOLD && !force) {
-                        // 用户拍板:默认门槛 3——零星 1-2 个空缺段不值一次 LLM 往返
+                        // 拍板:默认门槛 3——零星 1-2 个空缺段不值一次 LLM 往返
                         // (用户可长按逐个改);force(手动重新校验)不受门槛限制。
                         notes.add("空缺段 ${gaps.size} 处未过门槛($LLM_GAP_THRESHOLD),跳过 LLM")
                     } else {
@@ -8347,7 +8347,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         // v1.3.3 返回恢复:tab 即将从非 Library 切到 Library → 记来源(仅第一次离开,
         // 连续下钻歌手→专辑时不清,返回层层恢复仍回原 tab)。
         if (tab != Tab.Library && prevTab == null) prevTab = tab
-        // v1.3.15:不再顺手把 libChip 设成 "pls" —— 用户反馈"点我的喜欢再退出,歌单筛选
+        // v1.3.15:不再顺手把 libChip 设成 "pls" —— 实测反馈"点我的喜欢再退出,歌单筛选
         // 被自动选中了"。歌单行在 chip==null 时本来就显示(见 LibraryScreen 的 chip==null
         // 分支),所以这里改选筛选既没必要、又会在退出后留下一个用户没选过的筛选态。
         plId = pid; tab = Tab.Library
@@ -8499,7 +8499,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         trackMenuFor = null
         // v1.3.x 误弹修复:原 showToast(...,id) 携带 changeTargetId——toast 右侧
         // 会出现「更改」按钮,点击会打开"保存到歌单"弹窗(SaveToPlaylistSheet)。
-        // 加队列后跳歌单选择毫无语义(用户报告"加到播放列表错误弹出也加入歌单
+        // 加队列后跳歌单选择毫无语义(真机报障告"加到播放列表错误弹出也加入歌单
         // 弹窗")。该按钮只该在收藏场景(误触后想改收藏目标)出现;加队列场景去掉。
         showToast("已加入播放队列", null)
     }
@@ -8579,7 +8579,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
  * Gson 通过 Unsafe 分配对象、**不执行构造器**——JSON 里缺失的字段会被置成 null
  * 打进 Kotlin 的非空属性(旧构建写的行、或后来新增的字段如 processHistory)。
  * UI 一旦读 `msg.processHistory.size` / `msg.text` 就 NPE 崩溃
- * (用户实测:点击历史对话闪退)。这里逐条补齐兜底值再交付 UI。
+ * (真机实测:点击历史对话闪退)。这里逐条补齐兜底值再交付 UI。
  *
  * 独立成顶层函数是为了能被 JVM 单测直接覆盖(不需要设备)。
  */

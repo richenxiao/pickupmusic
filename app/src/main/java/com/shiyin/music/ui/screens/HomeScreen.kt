@@ -157,7 +157,7 @@ fun HomeScreen(vm: MainViewModel) {
                 vm.tab = Tab.Library; vm.libChip = "songs"; vm.plId = null; vm.albumKey = null; vm.artistKey = null; vm.settingsOpen = false
             },
             Cut("⇄", "随机播放", p3.first, p3.second) { vm.playRandom() },
-            // v1.3.6: 清理建议 → 最近播放(用户定调;清理建议在设置里仍有入口)。
+            // v1.3.6: 清理建议 → 最近播放(定调;清理建议在设置里仍有入口)。
             // 「最近播放」= 播放历史/最近使用语义 → History(时钟+回溯箭头)。
             Cut("◷", "最近播放", c.a200, c.a800, Lucide.History) { vm.recentOpen = true; vm.settingsOpen = false },
         )
@@ -368,7 +368,7 @@ private fun DailyRecommendSection(vm: MainViewModel) {
         }
     }
     // 冷启动：与「最近播放」同一策略 —— 曲库未读出先给骨架，读出后先预载封面再显示，
-    // 避免"空 → 无封面 → 有封面"三段跳变（2026-10-22 用户反馈）。
+    // 避免"空 → 无封面 → 有封面"三段跳变（2026-10-22 实测反馈）。
     var coversReady by remember { mutableStateOf(false) }
     // 同「最近播放」：预载-再显示只在冷启动那一次，之后 picks 变化不再闪骨架。
     var firstLoadDone by remember { mutableStateOf(false) }

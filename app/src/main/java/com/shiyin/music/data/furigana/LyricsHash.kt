@@ -15,7 +15,7 @@ import java.security.MessageDigest
 object LyricsHash {
     /**
      * v1.3.x 打轴修复:打轴后 raw 里包含 [mm:ss.xx] 时间戳,导致 hash 变化,
-     * 翻译按旧 hash 存的恢复不到(用户反馈"翻译完退出后重新加载丢失")。
+     * 翻译按旧 hash 存的恢复不到(实测反馈"翻译完退出后重新加载丢失")。
      * 修复:hash 只基于歌词**文本内容**——剥掉行首 [mm:ss.xx] 时间戳,
      * 打轴不改文本内容 → hash 不变 → 翻译正常恢复。
      */

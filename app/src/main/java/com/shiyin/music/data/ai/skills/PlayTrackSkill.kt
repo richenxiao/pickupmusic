@@ -12,11 +12,11 @@ import kotlinx.coroutines.withContext
  * 工具返回值会进入消息流,弱模型(实测 sensenova-flash-lite 这类)不会稳定地串第二次
  * 工具调用,而是**把工具返回的文本当回答直接吐给用户**。所以返回值里一旦出现
  * `track_id=123`、"用 play_track(...) 播放"这类机器文本,用户就会在聊天里看到它们
- * (用户实测反馈:"把方法名和歌曲id都漏出来了")。
+ * (真机实测反馈:"把方法名和歌曲id都漏出来了")。
  * → 结论:工具参数与返回值只出现**人话**;id 这类内部标识留在工具内部,不进消息流。
  *
  * 名字解析走 [AgentLibrarySearch](FuzzySearch + 假名/罗马字 + 译名兜底),同样不需要
- * 用户说得多准。只操作播放状态,不碰音乐库内容。
+ * 使用场景得多准。只操作播放状态,不碰音乐库内容。
  */
 object PlayTrackSkill : AgentEngine.AgentSkill {
 

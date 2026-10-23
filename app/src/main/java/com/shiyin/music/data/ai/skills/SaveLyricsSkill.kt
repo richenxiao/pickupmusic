@@ -10,7 +10,7 @@ import kotlinx.coroutines.withContext
  *
  * 补的是"agent 被做成 workflow"的那个能力空洞:内置源(LRCLIB/网易云/LrcShare)搜不到时,
  * 模型本来可以用 web_search 去网上找,但**此前没有任何工具能把找到的歌词保存下来**——
- * 于是它只能回一句"内置源没有此资源"(用户实测:"死死限定住,那就是 workflow 不是 agent")。
+ * 于是它只能回一句"内置源没有此资源"(真机实测:"死死限定住,那就是 workflow 不是 agent")。
  * 有了这个出口,链路才成立:内置源 → 都没有 → web_search 上网找 → save_lyrics 落地 → 说明来源。
  *
  * 只写歌词,且可撤销(歌词本里能删除/换源)——符合"不可逆操作才排除在 Agent 之外"的约定。

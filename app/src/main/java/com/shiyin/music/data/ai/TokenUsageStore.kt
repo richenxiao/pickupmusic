@@ -41,7 +41,7 @@ data class UsageSnapshot(
  *
  * ⚠️ 消耗必须**每一处 LLM 调用都记**。v1.3.10 A19 发现振假名兜底层
  * (MainViewModel 的 furigana assist)调了 LlmClient 却从不 log —— 面板因此少算一块,
- * 这也是用户说的"准度不够"。新增任何 LLM 调用点都要在这里补一行。
+ * 这也是使用场景的"准度不够"。新增任何 LLM 调用点都要在这里补一行。
  */
 object TokenUsageStore {
 

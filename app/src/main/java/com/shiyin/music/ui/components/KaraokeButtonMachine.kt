@@ -13,7 +13,7 @@ package com.shiyin.music.ui.components
  *
  * 两个容易写错的地方，被下面两条约定钉住：
  * - **就绪回调可能晚于取消**：分离是异步的，用户在转圈时点了取消 ⇒ 必须**留在 Idle**，
- *   否则会突然把伴唱打开（用户明确取消了却被拉回去）。
+ *   否则会突然把伴唱打开（需求方明确取消了却被拉回去）。
  * - **Active 再点 = 回 Idle**（淡回原曲），不是"再加载一次"。
  */
 object KaraokeButtonMachine {
@@ -35,7 +35,7 @@ object KaraokeButtonMachine {
 const val KARAOKE_ORIGINAL_INDEX = 1
 
 /**
- * P2-D（用户 2026-10-18）：伴唱面板里**每一档卡片此刻该怎么画**（纯逻辑，可单测）。
+ * P2-D（定稿）：伴唱面板里**每一档卡片此刻该怎么画**（纯逻辑，可单测）。
  *
  * 状态源**只有一个**：[KaraokeButtonState] —— 它由音频线程的 `KaraokeAccompState` 上报驱动
  * （见 `MainViewModel` 的 100ms 轮询）。这里只把它翻译成"**这一张卡**"的视觉，

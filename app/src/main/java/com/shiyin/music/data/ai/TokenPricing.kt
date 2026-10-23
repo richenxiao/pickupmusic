@@ -54,7 +54,7 @@ object TokenPricing {
     /**
      * v1.3.10 A19: 该供应商是否有**登记过的**价表。
      * false = 走 [FALLBACK] 兜底价 —— 面板必须把这类成本标成"量级参考",
-     * 不能让用户以为自定义供应商的"约 ¥x"是算准的(用户反馈"准度不够")。
+     * 不能让用户以为自定义供应商的"约 ¥x"是算准的(实测反馈"准度不够")。
      */
     fun hasKnownRate(providerKey: String): Boolean =
         CNY.containsKey(providerKey) || USD.containsKey(providerKey)

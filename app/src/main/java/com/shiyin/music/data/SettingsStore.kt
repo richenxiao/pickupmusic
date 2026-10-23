@@ -64,7 +64,7 @@ class SettingsStore(private val context: Context) {
 /** v1.5.0 右滑固定：被用户固定的音乐库条目 key（"pl:p3" / "album:<key>" / "artist:<name>" / "song:<id>"）。 */
 private val keyPinnedLibItems = stringSetPreferencesKey("pinned_lib_items")
     /**
-     * **有序**固定列表（用户 2026-10-15 规格："pinned 区置顶、**后固定者在上**"）。
+     * **有序**固定列表（定稿规格："pinned 区置顶、**后固定者在上**"）。
      * Set 没有顺序，所以另存一条分隔字符串：index 0 = 最近固定。
      * [keyPinnedLibItems] 保留作**迁移兜底**（用户设备上已有旧数据）。
      */
@@ -117,7 +117,7 @@ private val keyPinnedLibItems = stringSetPreferencesKey("pinned_lib_items")
     private val keyTranslateErrorToast = booleanPreferencesKey("translate_error_toast")
     /** v1.5.0 伴唱:总开关(默认开)。关闭后隐藏歌词页麦克风入口,设备慢的用户可彻底关掉。 */
     private val keyKaraokeEnabled = booleanPreferencesKey("karaoke_enabled")
-    /** 分轨模型 id（A73，用户 2026-10-15）：默认 = 内置的那个（9482）。见 [MdxModel.default]。 */
+    /** 分轨模型 id（A73，定稿）：默认 = 内置的那个（9482）。见 [MdxModel.default]。 */
     private val keyKaraokeModelId = stringPreferencesKey("karaoke_model_id")
     // v1.5.0 伴唱缓存保留策略（设置·播放·伴唱页）。刻意**不并进 [Settings] 大对象** ——
     // 那需要同步改数据类/映射/默认值三处，而这三项只在伴唱设置页用，独立读写更小更稳。
@@ -131,7 +131,7 @@ private val keyPinnedLibItems = stringSetPreferencesKey("pinned_lib_items")
     // v1.5.0 A62：歌手栏是否隐藏"客串歌手"（只参与合作、无个人作品）。默认开。
     private val keyHideFeatureArtists = booleanPreferencesKey("hide_feature_artists")
 
-    // ── v1.3.x 播放设置(设置·播放页,用户 2026-09-22 指定分组)─────────────────
+    // ── v1.3.x 播放设置(设置·播放页,分组定稿)─────────────────
     /** 音量均衡:平衡所有曲目的播放音量(响度归一)。 */
     private val keyVolumeNormalize = booleanPreferencesKey("volume_normalize")
     /** 单声道音频:左右扬声器播放相同的音频。 */
@@ -313,12 +313,12 @@ private val keyPinnedLibItems = stringSetPreferencesKey("pinned_lib_items")
     }
 
     /**
-     * v1.5.0 右滑固定（规格 docs/internal/v1.4.1-backlog.md §1）：切换某条目的固定状态。
+     * v1.5.0 右滑固定（右滑固定定稿规格）：切换某条目的固定状态。
      * 固定状态本身由 LibraryScreen 的既有「固定优先」排序消费（LibItem.pinned）。
      */
     suspend fun setPinnedLibItem(itemKey: String, pinned: Boolean) = context.dataStore.edit { p ->
         val cur = readPinnedOrder(p)
-        // 规则在 [PinnedOrder.applyPin] 一处定义：**先固定者在上**（用户 2026-10-18 更正）。
+        // 规则在 [PinnedOrder.applyPin] 一处定义：**先固定者在上**（定稿更正）。
         p[keyPinnedOrder] = PinnedOrder.encode(PinnedOrder.applyPin(cur, itemKey, pinned))
     }
 
@@ -377,7 +377,7 @@ private val keyPinnedLibItems = stringSetPreferencesKey("pinned_lib_items")
     ) = context.dataStore.edit {
         it[keyStemRetentionMode] = mode.name
         it[keyStemRetentionCount] = count.coerceIn(1, 200)
-        // mb = 0 表示**不限制**（用户 2026-10-17 要的第四个预设），所以下限放到 0
+        // mb = 0 表示**不限制**（定稿 要的第四个预设），所以下限放到 0
         it[keyStemRetentionMb] = mb.coerceIn(0, 1_000_000)
     }
 
@@ -394,7 +394,7 @@ private val keyPinnedLibItems = stringSetPreferencesKey("pinned_lib_items")
     suspend fun setHideFeatureArtists(v: Boolean) = context.dataStore.edit { it[keyHideFeatureArtists] = v }
 
     /**
-     * P2-B（用户 2026-10-18）：用户**手动选择"不隐藏"**的客串歌手名。
+     * P2-B（定稿）：用户**手动选择"不隐藏"**的客串歌手名。
      *
      * 语义是"**例外表**"而不是"隐藏表"：默认全部按客串处理（隐藏），
      * 用户点名要留哪几个才进这个集合。这样新出现的客串歌手自动是隐藏的 ——
@@ -539,7 +539,7 @@ private val keyPinnedLibItems = stringSetPreferencesKey("pinned_lib_items")
      *  - `recent_ids` —— 最近播放的本地 mediaId，跨设备无意义
      *  - `update_state` —— 检查更新缓存，新机自己会查
      *  - `last_auto_snapshot_at` —— 本机运行态（自动快照节流）
-     *    （`webdav_*` 云盘凭据**已纳入**：用户 2026-10-11 要求换机免重填）
+     *    （`webdav_*` 云盘凭据**已纳入**：定稿 要求换机免重填）
      *
      * ⚠️ **为什么必须带期望类型**：DataStore 的 `Preferences.Key<T>` 的 equals
      * **只看名字**（`Key<String>("dark_theme") == Key<Boolean>("dark_theme")`）。
@@ -572,7 +572,7 @@ private val keyPinnedLibItems = stringSetPreferencesKey("pinned_lib_items")
         "memory_auto_extract" to SettingsValueCodec.BOOL,
         "memory_include_transient" to SettingsValueCodec.BOOL,
         "agent_diag_enabled" to SettingsValueCodec.BOOL,
-        // ── v1.5.0 A60：原来漏掉的用户配置（用户要求"除易重建项外全部要备"）──
+        // ── v1.5.0 A60：原来漏掉的用户配置（需求要求"除易重建项外全部要备"）──
         // 都是**用户手动设置/整理**的东西，换机后不想重填：曲库固定项、自定义歌词源、
         // 被停用的歌词源、播放相关开关、均衡器、翻译四项、伴唱开关、客串歌手开关。
         "pinned_lib_items" to SettingsValueCodec.STR_SET,
@@ -591,7 +591,7 @@ private val keyPinnedLibItems = stringSetPreferencesKey("pinned_lib_items")
         "allow_concurrent_playback" to SettingsValueCodec.BOOL,
         "equalizer_on" to SettingsValueCodec.BOOL,
         "equalizer_bands" to SettingsValueCodec.STR,
-        // 云备份凭据：用户 2026-10-11 明确要求进备份（换机免重填）。
+        // 云备份凭据：定稿 明确要求进备份（换机免重填）。
         // 沿用"本机为空才写"的既有保护（见 shouldWriteBackupValue），
         // 且恢复页会提示"备份包含密钥"。
         "webdav_url" to SettingsValueCodec.STR,

@@ -8,7 +8,7 @@ import com.shiyin.music.data.ai.LlmProviderConfig
 /**
  * v1.3.10: Agent 侧「在本地音乐库里找歌」的统一入口（库内检索 + 写法兜底）。
  *
- * 分层（用户定调:**存不存在只由本地库决定,模型不参与判断**）:
+ * 分层（定调:**存不存在只由本地库决定,模型不参与判断**）:
  *  1. 直接搜 —— [AgentEngine.SkillContext.searchTracks],内部走 FuzzySearch
  *     （全角→半角 / 繁→简 / 去空格 / 编辑距离容错）；
  *  2. 假名↔罗马字 —— FuzzySearch 内已兜（「カブトムシ」↔「kabutomushi」）；

@@ -461,7 +461,7 @@ private fun LibraryRoot(
                 SwipeToPin(
                     pinned = item.pinned,
                     onPinnedChange = { p -> vm.setLibItemPinned(item.key, p) },
-                    // 用户 2026-10-16「喜欢歌单取消默认固定」⇒ 它也能右滑固定/取消，不再永久固定
+                    // 定稿「喜欢歌单取消默认固定」⇒ 它也能右滑固定/取消，不再永久固定
                     enabled = item.key.isNotEmpty(),
                     modifier = Modifier.animateItem(placementSpec = androidx.compose.animation.core.tween(300, easing = androidx.compose.animation.core.LinearOutSlowInEasing)),
                 ) { MixedListRow(vm, item) }
@@ -581,8 +581,8 @@ private fun buildLibItems(vm: MainViewModel): List<LibItem> {
     } else list
     val pinned = sorted.filter { it.pinned }
     val rest = sorted.filterNot { it.pinned }
-    // pinned 区内部 **先固定者在上**（用户 2026-10-18 更正；旧规格是"后固定者在上"）。
-    // 用户 2026-10-16 另要求「喜欢歌单取消默认固定」⇒ 它不再有特权，与其它条目同一把尺子。
+    // pinned 区内部 **先固定者在上**（定稿更正；旧规格是"后固定者在上"）。
+    // 定稿 另要求「喜欢歌单取消默认固定」⇒ 它不再有特权，与其它条目同一把尺子。
     return pinned.sortedBy { vm.pinnedRank(it.key.ifEmpty { it.title }) } + rest
 }
 
@@ -673,7 +673,7 @@ private fun MixedListRow(vm: MainViewModel, item: LibItem) {
         }
         Column(Modifier.weight(1f)) {
             Text(item.title, style = body(15f, FontWeight.Bold, c.text), maxLines = 1, overflow = TextOverflow.Ellipsis)
-            // 用户 2026-10-16：图钉放**第二行（类型行）的第一个位置**，如 `📌 专辑*周杰伦`
+            // 定稿：图钉放**第二行（类型行）的第一个位置**，如 `📌 专辑*周杰伦`
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier.padding(top = 2.dp),
@@ -1011,7 +1011,7 @@ private fun AlbumDetail(vm: MainViewModel, key: String) {
         modifier = Modifier.fillMaxSize().clipToBounds(),
         // v1.3.3b: 专辑页顶部收紧——原共用 screenPadding(top=22)+spacedBy16,返回键和
         // 封面距状态栏过远,上方大片空白。专辑页专用 padding top=10 + spacedBy 12。
-        // v1.3.5: 顶部 46→10dp(用户反馈"上方还有一片空白行,显得不协调"——要的是
+        // v1.3.5: 顶部 46→10dp(实测反馈"上方还有一片空白行,显得不协调"——要的是
         // 收紧上抬,不是下移)。状态栏的空隙由 AppRoot 的 statusBarsPadding 提供,
         // 这里只留返回键与状态栏的小间距。
         contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 10.dp, bottom = 130.dp),
@@ -1035,8 +1035,8 @@ private fun AlbumDetail(vm: MainViewModel, key: String) {
             }
         }
         // 12: large centered cover (~75% width)
-        // v1.5.0 封面比例（用户 2026-10-24 拍板）：开关关 → 方形槽 + 非方形图 Fit +
-        // **固定黑/白**填充（随主题；用户明确不要取色填充——"取色反而不好看"）；
+        // v1.5.0 封面比例（拍板）：开关关 → 方形槽 + 非方形图 Fit +
+        // **固定黑/白**填充（随主题；需求方明确不要取色填充——"取色反而不好看"）；
         // 开关开 → 按原始比例完整显示（钳 0.5~2.0），不再锁 1:1 裁两侧。
         item {
             val art = rememberAlbumArt(first, 320.dp)
@@ -1118,7 +1118,7 @@ private fun AlbumDetail(vm: MainViewModel, key: String) {
         // v1.3.5: 歌手名与日期左对齐成一条线(此前日期居中、与专辑名/歌手名错位,
         // "没对齐很乱");LazyColumn 内容本身左对齐,去掉居中即齐。
         // v1.3.6: 日期行不再紧贴歌手名——下移 10dp,落在歌手名与播放按钮行的中间
-        // 呼吸位(用户定调"挨得太紧,往下一点才协调")。
+        // 呼吸位(定调"挨得太紧,往下一点才协调")。
         item {
             Column {
                 Text(
@@ -1191,7 +1191,7 @@ private fun AlbumDetail(vm: MainViewModel, key: String) {
         // 需求三的最终呈现形态：顶部用封面/LOGO 位代表整张专辑，而不是某首拆分单曲的
         // 序号占位；点它从文件开头完整播到结尾，不受任何拆分区间限制，计「专辑被播放
         // 一次」（kind='album'），绝不产生任何单曲事件。
-        // v22 修补(用户反馈⑦): 左侧加唱片图标与下方歌曲序号对齐(原来封面图与序号
+        // v22 修补(实测反馈⑦): 左侧加唱片图标与下方歌曲序号对齐(原来封面图与序号
         // 列不对齐,看起来不整齐);删去副标题"完整版 · XX 首"。
         // 草稿态（有曲目还没定时间点）：给一条可点的提示条。未完成的曲目不显示在
         // 下方列表里，避免出现时长未知的幽灵行。
@@ -1268,7 +1268,7 @@ private fun AlbumDetail(vm: MainViewModel, key: String) {
             }
         }
         // ── v1.3.10 需求 A22:移除「完整专辑（整轨）」入口 ────────────────────
-        // 用户实测:分轨之后这条整轨行在歌曲列表下方**显示错乱**,而且"未分轨版本
+        // 真机实测:分轨之后这条整轨行在歌曲列表下方**显示错乱**,而且"未分轨版本
         // (整轨)"与分轨后的单曲在体验上并没有区别 → 决定**暂时不显示整轨入口**。
         // 原来的实现(v23 方案C:分节细线 + 眉题 + 缩进对齐)整段删除;
         // 专门的 SplitSectionDivider 也随之成为死代码,一并删掉。
@@ -1399,7 +1399,7 @@ private fun NumberedTrackRow(
     val c = LocalOrganic.current
     val isCur = track.id == vm.player.currentId
     // v5.2 隐藏曲:行变灰(透明度降到 0.45),标题颜色也压暗,让人一眼看出
-    // 这是被跳过的曲。但行还在、能点,单曲点击照常播(因为用户明确点了)。
+    // 这是被跳过的曲。但行还在、能点,单曲点击照常播(因为需求方明确点了)。
     val hidden = vm.isHidden(track.id)
     // v5.2 隐藏曲:当前正在播的那首要保持满亮(跟 TrackRow 一致),只灰掉没在
     // 播的 hidden 曲。否则正在播的隐藏曲在专辑页会比 songs 列表里暗一截。
@@ -1703,7 +1703,7 @@ private fun ArtistDetail(vm: MainViewModel, name: String) {
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                             Text("专辑", style = body(14f, FontWeight.Bold, c.n700))
                             // v1.3.6: 靠右(自然顶到内容区右缘,与列表对齐)且不标数量
-                            // (用户定调:数字删掉,更干净)。触区给足(整行右半段可点)。
+                            // (定调:数字删掉,更干净)。触区给足(整行右半段可点)。
                             Box(
                                 Modifier
                                     .clip(RoundedCornerShape(8.dp))

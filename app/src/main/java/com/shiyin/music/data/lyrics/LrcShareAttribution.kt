@@ -3,7 +3,7 @@ package com.shiyin.music.data.lyrics
 /**
  * v1.3.10 需求 A30:LrcShare 歌词的来源署名清洗。
  *
- * LrcShare 返回的 LRC 会带一套"前缀+后缀"来源标注(用户实测不想要):
+ * LrcShare 返回的 LRC 会带一套"前缀+后缀"来源标注(真机实测不想要):
  *   [ti: 老师好]
  *   [ar: 阴三儿]
  *   [al: 未知艺术家]

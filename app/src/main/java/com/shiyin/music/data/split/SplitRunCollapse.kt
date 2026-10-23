@@ -31,7 +31,7 @@ object SplitRunCollapse {
      * ⚠️ 为什么必须把区间交出来：队列条目只带 `index` 时，引擎侧无从知道"这条到底
      * 管到第几首为止"，于是段内推进（ticker 越界检查 / next / 系统媒体键）会一路走完
      * **整张方案**——歌单里放一首拆分单曲，播完会接着播同一整轨文件的下一段，而不是
-     * 歌单的下一首（用户实测："一个座位坐了 11 个人"）。
+     * 歌单的下一首（真机实测："一个座位坐了 11 个人"）。
      */
     data class Run(val repIndex: Int, val startSegment: Int, val lastSegment: Int)
 

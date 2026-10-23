@@ -20,7 +20,7 @@ object LyricsFetchSkill : AgentEngine.AgentSkill {
      * v1.3.10 需求 A27:描述不再把自己说成"找歌词"这件事的**全部**。
      * 旧描述是 `为当前播放的歌曲找歌词(LRCLIB→网易云)`——等于把"找歌词 = 这个技能"
      * 钉死在模型脑子里,内置源搜不到它就只会回"无此资源",不会想到还有其他路
-     * (用户实测:"死死限定住,那就是 workflow 不是 agent")。
+     * (真机实测:"死死限定住,那就是 workflow 不是 agent")。
      */
     override val description =
         "从**内置**歌词源(LRCLIB → 网易云音乐 → LrcShare)检索当前播放歌曲的歌词。" +

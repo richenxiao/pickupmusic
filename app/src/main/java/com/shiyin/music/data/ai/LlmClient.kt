@@ -27,7 +27,7 @@ data class LlmResponse(
     /**
      * v1.3.11: 服务端给的结束原因(`stop`=正常结束,`length`=被 max_tokens 截断)。
      *
-     * **这次必须留下它**:用户报"翻译时好时坏"时,日志里只有 `body=<前300字>`,
+     * **这次必须留下它**:真机报障"翻译时好时坏"时,日志里只有 `body=<前300字>`,
      * 而 finish_reason 在响应尾部、根本不在那 300 字里 —— 只能靠人工推理半天。
      * 思考型模型把预算花光导致正文为空,正是靠这个字段一眼可判。
      */
@@ -119,7 +119,7 @@ object LlmClient {
      * abort"——app 息屏/切后台后 OkHttp 复用被服务端关闭的死连接)自动重试 2 次
      * (间隔 1s/2s)。HTTP 4xx/5xx(如 429 额度)不重试——那是服务端拒绝,重试无意义。
      * v1.3.5: 重试 2→1 次——readTimeout 放宽到 120s 后,网络异常路径最坏
-     * 3 次 × 120s = 6 分钟"无返回"(用户实测 10 分钟量级假死)。1 次重试保住死连接
+     * 3 次 × 120s = 6 分钟"无返回"(真机实测 10 分钟量级假死)。1 次重试保住死连接
      * 复用的真实收益(1s 内失败的那种),超时类(真等了 120s)不再翻倍罚时。
      * v1.3.x furigana: [callSec] per-call 读超时(秒)——振假名兜底这类轻量结构化
      * 调用传 45s:全局 120s 是给流式聊天(打字机可边等边看)留的,后台静默任务撞上
@@ -197,7 +197,7 @@ object LlmClient {
      *
      * v1.3.11:原来只有 `LLM resp http=.. body=<前 300 字>` —— 正文为空时,那 300 字里
      * 既没有 finish_reason 也没有 token 用量,"思考吃光预算"这种失败只能靠猜
-     * (用户报"翻译时好时坏",是人工翻半天日志才定案的)。这行把判据全摆出来:
+     * (真机报障"翻译时好时坏",是人工翻半天日志才定案的)。这行把判据全摆出来:
      * finish / 用量 / 正文长度 / 思考长度,一眼可判。
      */
     private fun logCallLine(r: LlmResponse?, ms: Long, callSec: Long, maxTokens: Int) {
@@ -737,7 +737,7 @@ object LlmClient {
                 lastError = m
                 return LlmToolResult.Err(null, m)
             }
-            // v1.3.x 修复(用户反馈⑪:官方 DeepSeek 报"网络异常JSONNULL"、翻译却正常):
+            // v1.3.x 修复(实测反馈⑪:官方 DeepSeek 报"网络异常JSONNULL"、翻译却正常):
             // 翻译走 call()(解析路径有完整 JsonNull 防御),agent 走 callWithTools()
             // ——这条路径的解析防御不全:choices 数组元素是 JsonNull 时 .asJsonObject
             // 直接抛 Gson 强转异常,message 以 "JsonNull" 开头,被 catch(Exception)

@@ -17,7 +17,7 @@ object MemoryPresentation {
     data class Section(val title: String, val types: List<String>)
 
     /** 页面分组顺序 = 显示顺序。
-     *  ⚠️ v1.3.13:标题暂用 YOU / TOPICS(用户要求"先改成 YOU、TOPICS,等后面再改"),
+     *  ⚠️ v1.3.13:标题暂用 YOU / TOPICS(需求要求"先改成 YOU、TOPICS,等后面再改"),
      *  只是**显示名**,不影响分组归属(归属仍由下面的 types 决定)。 */
     val SECTIONS: List<Section> = listOf(
         Section("YOU", listOf(MemoryType.PERSONAL, MemoryType.PREFERENCE)),
@@ -46,7 +46,7 @@ object MemoryPresentation {
     }
 
     /**
-     * 按分组整理记忆。**空分组直接不返回**——用户定调:没有"关系"就不要显示
+     * 按分组整理记忆。**空分组直接不返回**——定调:没有"关系"就不要显示
      * "关系 · 暂无记忆"。组内按 updatedAt 倒序(最近更新的在前)。
      */
     fun group(memories: List<Memory>): List<Pair<Section, List<Memory>>> =

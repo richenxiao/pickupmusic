@@ -5,7 +5,7 @@ import com.shiyin.music.data.MediaScanner
 /**
  * **歌手别名（合并）在"复合艺人串"上的解析**（纯逻辑，可 JVM 单测）。
  *
- * ### 它修的 bug（用户 2026-10-19）
+ * ### 它修的 bug（定稿）
  * > "如果专辑 1 是 AAA/bbb 的专辑，我合并 bbb→BBB 就不会有任何反应，只能把专辑信息
  * >  AAA/bbb 改为 AAA/BBB 才能识别出来这张专辑到 BBB。"
  *

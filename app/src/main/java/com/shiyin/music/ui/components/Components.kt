@@ -395,7 +395,7 @@ object ArtCache {
         }
         // 2026-10-22：缓存清了还必须让**正在显示**的封面重新取图。取封面的
         // produceState 把 coverRevision 放进 key —— 只清缓存不 bump 的话
-        // composition 不重跑，页面会继续显示旧位图（用户报"换封面没反应"）。
+        // composition 不重跑，页面会继续显示旧位图（真机报障"换封面没反应"）。
         coverRevision++
     }
 
@@ -491,7 +491,7 @@ object ArtCache {
         }
         var candidates = fetchITunesCandidates(track, multiRegion = false)
         if (candidates.isEmpty()) {
-            // 2026-10-22（用户报长专辑名识别不到封面；实测「如果每天都可以 happy happy
+            // 2026-10-22（真机报障长专辑名识别不到封面；实测「如果每天都可以 happy happy
             // 誰想要sad:)) – 一起去度假」用 entity=album 即使精确查询也 0 命中，
             // 而 entity=song「歌名+歌手」能命中同一张专辑）⇒ album 实体空结果时
             // 用 song 实体兜底，取它自带的 artwork（就是专辑封面）。
@@ -740,7 +740,7 @@ object ArtCache {
                     val bytes = resp.body?.bytes()
                     // v1.3.10: 非 2xx 不落盘也不解码。Discogs 的图片 URL 带签名会过期,
                     // 过期后返回 403 错误页;旧实现不校验状态码,把错误页当图片字节写进
-                    // 磁盘缓存 → 这一格此后永远解不开(用户反馈"部分歌手头像显示不出来"
+                    // 磁盘缓存 → 这一格此后永远解不开(实测反馈"部分歌手头像显示不出来"
                     // 且"改几次都没修好"的直接原因:坏字节被永久缓存)。
                     if (bytes == null || !resp.isSuccessful) {
                         android.util.Log.d("AIM", "img download fail code=${resp.code} ${artUrl.take(50)}")
@@ -862,7 +862,7 @@ internal fun rememberAlbumArtState(
  *
  *  v1.3.10: 加 [onRemoteLoadFailed]——远端 URL 加载失败(典型:Discogs 签名过期 403、
  *  源站删图)时通知调用方清缓存重新解析。此前失败后缓存行仍在、URL 仍指向死链,
- *  头像永久空白(用户反馈"部分歌手头像显示不出来,改几次都没修好")。
+ *  头像永久空白(实测反馈"部分歌手头像显示不出来,改几次都没修好")。
  *  同一 URL 只上报一次,重组/重试不会打成风暴;本地 file://、content:// 不上报
  *  (多为文件缺失,重解析无意义)。 */
 @Composable
@@ -978,7 +978,7 @@ fun CoverArt(
     val (bg, fg) = coverPalette(track?.paletteIndex ?: 0)
     val sizeMod = if (fillToParent) Modifier.fillMaxSize() else Modifier.size(size)
 
-    // v1.3.x 修复(用户反馈⑮:切歌时封面"正确→首字→正确"闪一下):
+    // v1.3.x 修复(实测反馈⑮:切歌时封面"正确→首字→正确"闪一下):
     // rememberAlbumArt 按 track.id 重启 produceState,新曲封面未就绪期间返回 null
     // → 旧实现立刻落到"首字占位",封面到达再切回,闪一帧。
     // 修复:①加载间隙保持上一张已就绪封面(不闪首字);
@@ -1053,7 +1053,7 @@ fun CoverArt(
         lastArt != null && lastAlbumId != (track?.albumId ?: Long.MIN_VALUE)
     val shown = if (pendingFlip) lastArt else display
     // v1.5.0 封面比例规则(规则 2):非方形内嵌图(横版/特殊版式专辑)在方形槽内改
-    // Fit + **固定黑/白填充**(随主题;用户 2026-10-24 拍板"两边固定黑 or 白就行,
+    // Fit + **固定黑/白填充**(随主题;拍板"两边固定黑 or 白就行,
     // 取色反而不好看"),不再 Crop 裁掉两侧。
     val isDark = LocalOrganic.current.isDark
     val barColor = if (isDark) Color.Black else Color.White
@@ -1188,7 +1188,7 @@ fun Modifier.shadowMd(shape: Shape) = this.shadow(6.dp, shape, clip = false)
 /**
  * v1.3.10 需求 A20:点击**无涟漪**。
  *
- * 用户明确不喜欢默认的灰色涟漪——"点一下灰块占满整个按钮的范围,真的好丑"。
+ * 需求方明确不喜欢默认的灰色涟漪——"点一下灰块占满整个按钮的范围,真的好丑"。
  * 这里只去掉**视觉反馈**:命中范围、enabled、onClick 时机与 [clickable] 完全一致。
  *
  * 需要"看得见的按压反馈"时别用它,而是像设置页三段控件 / clarify 选项行那样,
@@ -1378,7 +1378,7 @@ fun TrackRow(
     // v5.2 隐藏曲:整库 songs 列表+歌单里也要让人看出这是被跳过的曲。
     // 调用方传 isHiddenTrack=true 时行变灰,标题压暗。
     isHiddenTrack: Boolean = false,
-    /** v1.5.0 右滑固定：已固定 ⇒ 标题左侧画一个绿色小图钉（用户 2026-10-15 规格）。 */
+    /** v1.5.0 右滑固定：已固定 ⇒ 标题左侧画一个绿色小图钉（定稿规格）。 */
     pinned: Boolean = false,
 ) {
     val c = LocalOrganic.current
@@ -1428,7 +1428,7 @@ fun TrackRow(
                     style = body(15f, FontWeight.SemiBold, titleColor),
                     maxLines = 1, overflow = TextOverflow.Ellipsis,
                 )
-                // 用户 2026-10-16：图钉放**第二行（类型行）的第一个位置**
+                // 定稿：图钉放**第二行（类型行）的第一个位置**
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier.padding(top = 2.dp),
@@ -1540,7 +1540,7 @@ fun DialogActionsRow(
 }
 
 
-// ── v1.5.1: 「上面一排只放图标的方框」—— 用户 2026-10-21 手绘定稿 ──────────────
+// ── v1.5.1: 「上面一排只放图标的方框」—— 定稿 手绘定稿 ──────────────
 /**
  * **一排只放图标的方框**，选中的那档底下是一层**滑过去的橙色块**。
  *
@@ -1579,7 +1579,7 @@ fun IconBlockRow(
 
         // ① 橙块层（在方框之下）
         // ⚠️ 2026-10-21 修：原来想做"上下各溢出 3dp"，用 `height+6dp` + `offset(y=-3dp)`，
-        // 但实际布局里**没居中** —— 用户实测"头上超边框、下面留一道缝没填满"。
+        // 但实际布局里**没居中** —— 真机实测"头上超边框、下面留一道缝没填满"。
         // 现在**不溢出**，橙块与方框严丝合缝（同尺寸、同圆角）。
         Box(
             Modifier
@@ -1655,7 +1655,7 @@ fun ThreeStopSegmentedControl(
                 .clip(RoundedCornerShape(9.dp))
                 // v1.3.10 需求 A18:选中指示器用**实心 accent**——与各"开"状态控件
                 // (OrganicSwitch 开态、播放主键)同一套语言。旧版是 accent 0.20 淡橙,
-                // 用户反馈"和其他打开状态的按钮颜色不一致"。
+                // 实测反馈"和其他打开状态的按钮颜色不一致"。
                 .background(c.accent),
         )
         Row(

@@ -77,7 +77,7 @@ class PlaybackService : MediaSessionService() {
      * ⚠️ 单声道已**再次撤回**(2026-09-23)。
      *
      * v23 试过一次"安全版":官方 ChannelMixingAudioProcessor + 与 media3 默认实现
-     * 逐行一致的 buildAudioSink 覆写,只多一句 setAudioProcessors。装机后**用户实测
+     * 逐行一致的 buildAudioSink 覆写,只多一句 setAudioProcessors。装机后**真机实测
      * 仍然播不了** —— 与 2026-09-22 那次自建 AudioSink 的结论一致:本项目这条
      * ExoPlayer 管线上,任何 buildAudioSink 覆写都会让音频渲染失效。
      *
@@ -146,7 +146,7 @@ class PlaybackService : MediaSessionService() {
             //（控制中心/锁屏/通知读取的标准通道）。onConnect 的 ConnectionResult
             // 只对已连接控制器生效，通知首次渲染可能早于握手完成——构造期设置让
             // 会话存在那一刻 PlaybackState 就带按钮。
-            // ⚠️ 灵动岛结论（2026-10-24 用户实测收尾）：OnePlus PKG110 / Android 16
+            // ⚠️ 灵动岛结论（2026-10-24 真机实测收尾）：OnePlus PKG110 / Android 16
             // (CN01) 上，第三方 App 的自定义按钮灵动岛一律不渲染（网易云、Spotify
             // 等合作大厂才有，判断为厂商白名单或私有通道；dumpsys 证实我们的
             // CustomAction 已在 PlaybackState 上、iconResId 指向真实资源，通道无
@@ -176,7 +176,7 @@ class PlaybackService : MediaSessionService() {
                         // v1.5.0: 自定义布局 = [点赞]。Android 13+ 系统媒体卡把它放进
                         // 播放/暂停键左侧的槽位（官方文档「媒体控制」槽位表：单个自定义
                         // 按钮占上一首与播放之间的位置），正好是用户要的"点赞在左边"。
-                        // 心形按收藏状态切实心/空心（用户 2026-10-23"没有反馈色"）——
+                        // 心形按收藏状态切实心/空心（定稿"没有反馈色"）——
                         // 这里先用缓存状态立即给（null 按空心），onPostConnect 查库纠正，
                         // 避免通知出现被 DB 查询拖慢。
                         .setCustomLayout(listOf(likeButton(currentFavState == true)))

@@ -137,7 +137,7 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
     }
     val safeBg = artBg // bg colour, named for backward-compat with the button/dialog uses below
     val lines = ly.parsed.lines
-    // v22 修补(用户反馈⑥"歌词本还是整轨时长"):拆分模式下读**显示时长**
+    // v22 修补(实测反馈⑥"歌词本还是整轨时长"):拆分模式下读**显示时长**
     // (当前这首的分段时长),不读 vm.player.durationMs(整轨文件总时长)。
     // displayDurationMs() 内部 currentCarry() 为 null(普通曲目)时回退 durationMs,
     // 与旧路径语义一致;拆分单曲时返回该曲的 endMs-startMs,进度条/底栏时长全对。
@@ -149,7 +149,7 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
     // 派生:读点订阅的是派生结果 activeI(只在行推进时变,每 2-5s 一次),
     // 不是 ticker 原始值——300ms 重组风暴消失;行推进时行高亮/跟行滚动
     // 照常更新(本来就要更新)。
-    // v1.3.x 跟行/高亮延迟修复(用户反馈⑯:唱到该行还慢半拍才亮):
+    // v1.3.x 跟行/高亮延迟修复(实测反馈⑯:唱到该行还慢半拍才亮):
     // 与"重组风暴"同一类问题——positionMs 是 ticker 每 300ms 刷的状态,派生值
     // 最多滞后一个 tick;再叠 220ms 颜色渐变,感知可到 ~0.5s。
     // 修复:①位置改用 framePositionMs()(ExoPlayer currentPosition 自带时钟插值,
@@ -171,7 +171,7 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
             ly.parsed.activeIndex(vm.player.frameDisplayPositionMs(), durMs, ly.offsetMs)
         }
     }
-    // v1.3.x 用户反馈("点时钟锚定后,被点到的那行应该在本行亮起,像被唱到了一样"):
+    // v1.3.x 实测反馈("点时钟锚定后,被点到的那行应该在本行亮起,像被唱到了一样"):
     // 未打轴的歌词 activeIndex 恒为 -1(整列都不亮),而打轴正是逐行点时钟的场景——
     // 所以"刚锚定的那一行"要单独亮起来。记最后一次锚定的行;全部锚定完成后
     // (synced=true)高亮交回 activeIndex。
@@ -221,7 +221,7 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
     // 弹层里可见并可手动重跑。切歌(ly 变)后对新曲再判一次。
     // v1.3.x 歌词本设置:furiganaAutoVerify 开关(默认 true)管自动校验;hasKana
     // 已确保只有日语歌进这里——中英文歌(hasKana=false)振假名开关根本不显示,
-    // 也不会触发联网校验(用户反馈中英文歌也被自动获取振假名,根因是旧代码只靠
+    // 也不会触发联网校验(实测反馈中英文歌也被自动获取振假名,根因是旧代码只靠
     // furiganaOn 判定,而 furiganaOn 在中英文歌上默认 false 但用户可能误触开启;
     // 现在双条件 + 开关只对日语歌可见,语义收紧)。
     // v1.3.x code-review(F2):网络/LLM pipeline 限歌词本实际打开才跑。预热期
@@ -243,7 +243,7 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
     //
     // ⚠️ 「恢复」与「自动翻译」必须走**同一个**入口顺序执行,不能拆成两个
     // LaunchedEffect 并发跑:恢复要 await 读库,自动翻译只看内存 → 会抢跑翻一遍,
-    // 恢复结果再被"进行中"守卫丢掉(用户反馈"译好的退出后又要重新加载")。
+    // 恢复结果再被"进行中"守卫丢掉(实测反馈"译好的退出后又要重新加载")。
     val trLyricsHash = remember(ly.raw) { com.shiyin.music.data.furigana.LyricsHash.of(ly.raw) }
     LaunchedEffect(ly.mediaId, trLyricsHash, vm.translateAutoForeign) {
         vm.enterLyricsTranslation(ly, vm.translateAutoForeign)
@@ -285,8 +285,8 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
                 .fillMaxWidth()
                 .padding(start = 22.dp, end = 22.dp, top = 0.dp, bottom = 8.dp),
         ) {
-            // v1.3.10 需求 A33(第2版,用户实测反馈):**标题居中 + 返回键不挪位**。
-            // 第1版在左侧加 38dp 占位让标题居中,却把返回键一并推右了(用户实测:
+            // v1.3.10 需求 A33(第2版,真机实测反馈):**标题居中 + 返回键不挪位**。
+            // 第1版在左侧加 38dp 占位让标题居中,却把返回键一并推右了(真机实测:
             // "最左侧的返回按钮被往右边移动了")——根因是占位与返回键是 Row 里两个
             // 独立兄弟,占位占掉了最左的位置。
             // 现在改 Box + **绝对居中**:标题居中于整行(与左右键数量无关),返回键
@@ -309,7 +309,7 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
             // 用 Lucide 里的加粗变体)。④返回改调 requestLyricsExit()——与物理
             // 返回键同一下拉退出动画,不再瞬间消失(动画状态机在 AppRoot 的
             // Dialog 层,按钮原来直接置 lyricsOn=false 跳过了它)。
-            // v1.5.0 用户 2026-10-14:「点击效果要做好」——涟漪已被否，改用**缩放+压暗**
+            // v1.5.0 定稿:「点击效果要做好」——涟漪已被否，改用**缩放+压暗**
             // （无底色按钮的通用做法，见 ui/components/PressFeedback.kt）。
             val exitSrc = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
             Box(
@@ -355,7 +355,7 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
             //  · 默认:**只有未同步(无时间戳、需要人工打轴)的歌词**显示;
             //    正常在线抓到的歌词本来就有时间戳,不该摆一个校对入口在那儿;
             //  · 用户开了「始终显示时间轴校对」后:已同步歌词也常显(便于反复微调)。
-            // (中途曾一刀切改成"永远显示",用户实测反馈后收敛回这个规则。)
+            // (中途曾一刀切改成"永远显示",真机实测反馈后收敛回这个规则。)
             if (vm.tapSyncMode == MainViewModel.TapSyncMode.NotStarted) {
                 if (showCalibKey) {
                     val calibSrc = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
@@ -469,7 +469,7 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
                 }
             }
         }
-        // v1.3.x 滚动流畅度(用户反馈"逐行切换僵硬、帧率低,想要振假名切换那种
+        // v1.3.x 滚动流畅度(实测反馈"逐行切换僵硬、帧率低,想要振假名切换那种
         // 流畅度"):animateScrollToItem 用默认 spring,与全页 240ms FastOutSlowIn
         // 动画语言不一致。可见行(逐行推进的常态)改 animateScrollBy 精确差值,
         // spec 统一 240ms FastOutSlowIn——与行高/振假名动画同节奏;不可见行
@@ -485,7 +485,7 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
         // 收窄订阅:用 derivedStateOf 只盯这个布尔,避免 byLine 每次变化都全页重组。
         val trVisible by remember { androidx.compose.runtime.derivedStateOf { vm.lyricsTranslation.hasContent } }
         // v1.3.x 打轴模式:当前待锚定行自动滚动到可视区居中——锚定后前进到下一句
-        // 时,用户不需要手动找回焦点(用户反馈 Bug A 的交互层修复:打轴模式下
+        // 时,用户不需要手动找回焦点(实测反馈 Bug A 的交互层修复:打轴模式下
         // 当前行始终在可视区中央,点击屏幕任意位置即可锚定)。
         LaunchedEffect(vm.tapSyncCurrentLine, vm.tapSyncMode) {
             if (vm.tapSyncMode != MainViewModel.TapSyncMode.InProgress) return@LaunchedEffect
@@ -505,7 +505,7 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
                 listState.animateScrollToItem(vm.tapSyncCurrentLine, scrollOffset = -(viewport / 2 - 60))
             }
         }
-        // v1.5.0 单曲循环重启（用户 2026-10-22 报）：循环进入下一轮时 track.id 不变
+        // v1.5.0 单曲循环重启（真机报障）：循环进入下一轮时 track.id 不变
         // （媒体项没换，上面的 LaunchedEffect(track.id) 不会跑），activeI 从末行跳回 -1
         // （前奏无焦点）——旧代码 `if (activeI >= 0)` 直接跳过，列表整段前奏停在上一轮
         // 的末尾，直到第一句唱响才跳回开头。修复：盯住「有焦点→无焦点」这个**边沿**
@@ -513,7 +513,7 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
         // ⚠️ 只在边沿触发：未打轴歌词 activeI 恒 -1 永远不进这个分支；用户手动浏览
         // （activeI 不变，effect 不重跑）也不打扰。
         var prevActiveI by remember { androidx.compose.runtime.mutableIntStateOf(-1) }
-        // 2026-10-22 用户报「唱到下一句时整段歌词要跟行，滑动浏览会停住划不动」：
+        // 2026-10-22 真机报障「唱到下一句时整段歌词要跟行，滑动浏览会停住划不动」：
         // 跟行用 animateScrollBy/animateScrollToItem，用户正在拖动时两者抢手势，
         // 动画会把手指的滚动拽回去。修法：
         //  · 手指一按下拖动（isDragged=true）就把跟行 effect **取消**（isDragged 进 key）；
@@ -583,7 +583,7 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
             // 于是读成"不在顶部"，本次下拉被静默否决，用户读作"有时能拉有时不能"。
             // 判据只留 canScrollBackward：它表达"内容真的从顶部滚走了"，才是
             // "起手在顶、中途被跟行带走"的真实信号。起手在顶即可拉
-            //（用户 2026-10-22 明确要求：滑到顶接着往下滑就应该能拉，不要加稳定期）。
+            //（定稿 明确要求：滑到顶接着往下滑就应该能拉，不要加稳定期）。
             vm.lyricsAtTopNow = { !listState.canScrollBackward }
         }
         // v1.3.x 第6轮反馈:下拉退出的**唯一起手判据**是"本手势按下那一刻列表是否在顶"。
@@ -687,7 +687,7 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
                                         // v23: target 是**当前曲目内**的毫秒(时间戳/按行数均分),
                                         // 必须走 seekToDisplayMs —— 走 seekToMs 会被当成整轨文件
                                         // 绝对坐标,拆分单曲下 seek 到区间外 → 边界检查切到第一首
-                                        // (用户实测:"点歌词行会退出播放,转到专辑的第一首歌")。
+                                        // (真机实测:"点歌词行会退出播放,转到专辑的第一首歌")。
                                         val target = line.timeMs?.let { (it - ly.offsetMs).coerceAtLeast(0) }
                                             ?: (i.toLong() * durMs / lines.size.coerceAtLeast(1))
                                         vm.player.seekToDisplayMs(target)
@@ -712,7 +712,7 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
                         Spacer(Modifier.size(6.dp))
                     }
                     // v1.2.0 #1a: 句间过渡用 animateColorAsState 渐变，不再硬切。
-                    // v1.3.x 打轴模式修正(用户反馈"打轴根本没有变亮"):打轴模式下
+                    // v1.3.x 打轴模式修正(实测反馈"打轴根本没有变亮"):打轴模式下
                     // **只有当前待锚定行亮**,其余行(含已唱过的)全部暗——聚光灯效果,
                     // 跟唱的反转。原实现 isTapSyncCurrent 和 isActive 都是 artFg,
                     // 播放中已唱行也在亮,当前行混在里面完全看不出。
@@ -721,7 +721,7 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
                             vm.tapSyncMode == MainViewModel.TapSyncMode.InProgress ->
                                 if (isTapSyncCurrent) LyricText else lyricInactiveC
                             // 未打轴时 activeIndex 恒 -1:刚点时钟锚定的那一行单独亮起
-                            // (用户要求"像被唱到了一样")。
+                            // (需求要求"像被唱到了一样")。
                             unsynced && i == tappedLine -> LyricText
                             // v1.3.x 歌词颜色档:行色用歌词色路(LyricText/lyricInactiveC),
                             // 不再用 artFg——否则改歌词颜色会连带整页图标/按钮变色。
@@ -759,7 +759,7 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
                     // 占位文案(宁可缺行不可错行——该行无译文就是真的没译出来)。
                     // v1.3.x 反馈第3轮:【去掉 animateContentSize】——它包着原文+译文
                     // 整列,振假名 Canvas 行高变化也被它二次动画化(位置/高度全被打乱,
-                    // 用户实测"比上一版还差、出来的位置都变了")。高度变化交给自然
+                    // 真机实测"比上一版还差、出来的位置都变了")。高度变化交给自然
                     // 重组(即时),淡入淡出+下滑由 trProgress 一条动画驱动(一步到位,
                     // 无第二条赛跑)。
                     Column(Modifier.weight(1f)) {
@@ -804,7 +804,7 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
                             label = "trProgress",
                         )
                         // v1.3.x 反馈⑤:译文颜色与正文**同步渐变**——正文用 animateColorAsState
-                        // (220ms),译文此前是 if 瞬间切换(用户实测"正文亮的比翻译慢")。
+                        // (220ms),译文此前是 if 瞬间切换(真机实测"正文亮的比翻译慢")。
                         // 同一 animateColorAsState 同一 spec:两者同时开始、同时到达。
                         // v1.3.x 反馈⑩(译文与正文不同时亮起/部分行只有翻译亮):原实现 trColor
                         // 直接读 `i <= activeI`(组合级),而 lineColor 走 derivedStateOf(延迟读)。
@@ -828,7 +828,7 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
                         // heightProgress)同一种手感:容器高度随 trProgress 长开、
                         // clipToBounds 把文字按"卷帘"露出。v1.3.x 曾把这里改成
                         // "内容撑开 + 只有 alpha/translationY",展开失去高度维度,
-                        // 用户实测"弹出手感不流畅了"——改回高度驱动。
+                        // 真机实测"弹出手感不流畅了"——改回高度驱动。
                         //
                         // 与旧版的唯一区别:高度按**实测行数**算(trFullH = 行高 × 行数),
                         // 不再写死单行。因此长译文换行后完整显示(需求:译文不被截断),
@@ -963,7 +963,7 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     // 撤销——打轴模式按钮加大到 44dp,加边框让涟漪反馈在封面取色
-                    // 背景下可见(用户反馈"按钮没有反馈":36dp 小按钮 + 无底纹
+                    // 背景下可见(实测反馈"按钮没有反馈":36dp 小按钮 + 无底纹
                     // 涟漪在深色背景上几乎看不见)。
                     Box(
                         Modifier.size(44.dp).clip(CircleShape).background(btnBg)
@@ -1053,7 +1053,7 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
                 Modifier
                     .fillMaxWidth()
                     // 第6轮:触摸范围=条本身显示范围(4dp)。原 18dp 隐形触区在条上下
-                    // 各扩 7dp,滚歌词/点底栏时误触跳转(用户实测)。要拖就拖条本身。
+                    // 各扩 7dp,滚歌词/点底栏时误触跳转(真机实测)。要拖就拖条本身。
                     .height(4.dp)
                     .then(if (interactive) Modifier.pointerInput(durMs) {
                         awaitEachGesture {
@@ -1112,10 +1112,10 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
                 horizontalArrangement = Arrangement.Center,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                // v1.5.0 伴唱麦克风的位置规则（用户 2026-10-12 再修正）：
+                // v1.5.0 伴唱麦克风的位置规则（定稿 再修正）：
                 //   · 麦克风**恒在播放键左侧最外**；
                 //   · **有「あ」时麦克风在「あ」左侧**（即 麦克风 → あ → 播放键）；
-                //     用户 2026-10-07 定的是相反顺序，2026-10-12 看过实机后改了回来，
+                //     定稿 定的是相反顺序，2026-10-12 看过实机后改了回来，
                 //     以本条为准——「伴唱在左比较协调」；
                 //   · 两个都在左边时留 16dp 间距（六边形激活时顶点略外凸，要留余量）；
                 //   · 总开关（设置→歌词本「启用伴唱功能」）关闭时不显示麦克风。
@@ -1144,7 +1144,7 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
                     // v1.3.x 虚影终版:同上两个按钮——去掉圆形底色块。未激活态:
                     // 无背景,あ 字原色悬浮;激活态保留 artFg 实心盘(这个是功能
                     // 状态指示,用户验证过满意,保留)。
-                    // v1.5.0:涟漪仍否，但**补上缩放压暗反馈**（用户 2026-10-14 要求）。
+                    // v1.5.0:涟漪仍否，但**补上缩放压暗反馈**（定稿 要求）。
                     val kanaSrc = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
                     Box(
                         Modifier
@@ -1197,7 +1197,7 @@ fun LyricsScreen(vm: MainViewModel, interactive: Boolean = true) {
                 Spacer(Modifier.width(padR))
                 // v1.3.x 需求6:「譯」翻译按钮(繁体,用户已定)。与「あ」同 38dp、同一行平行。
                 // 三态:①初始=无底色悬浮「譯」;②进行中=**实心圆**(同「あ」激活态)+ 圆周
-                // 顺时针加载弧;③已译=**圆角方块** + 右上角**纯文字 AI**(无圆圈底,用户明确)。
+                // 顺时针加载弧;③已译=**圆角方块** + 右上角**纯文字 AI**(无圆圈底,需求方明确)。
                 // 点击语义与振假名一致——**数据持久化,按钮只管显示/隐藏**:
                 //   进行中→取消;已显示→隐藏(数据留);有数据未显示→立刻显示(不调 API);无数据→发起翻译。
                 // 第6轮:只对外语歌词挂载(foreignLyrics);纯中文歌词补等宽空位保持播放键居中。

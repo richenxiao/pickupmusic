@@ -82,7 +82,7 @@ fun LyricsMorphOverlay(vm: MainViewModel, morph: LyricsMorphState, interactive: 
     // 组合期零协程、零轮询。极端时序(缓存未就绪)回退静态调色板,窗口层
     // 背景色在 p<0.08 淡入窗内肉眼不可分辨差异。
     // v1.3.x:窗口层色与 LyricsScreen 背景同源(都是 raw 封面色)——歌词颜色档
-    // 只变文字不变背景(用户明确),故窗口层不需要任何档位调整,展开中段无跳变。
+    // 只变文字不变背景(需求方明确),故窗口层不需要任何档位调整,展开中段无跳变。
     val artBg = com.shiyin.music.ui.components.ArtCache.colorFor(track?.albumId ?: -1L)?.let {
         androidx.compose.ui.graphics.Color(it.first)
     } ?: com.shiyin.music.ui.components.coverPalette(track?.paletteIndex ?: 0).first
@@ -113,8 +113,8 @@ fun LyricsMorphOverlay(vm: MainViewModel, morph: LyricsMorphState, interactive: 
                     )
                     // 2026-10-22：手势当下**直接问**歌词列表（闭包读 LazyListState），
                     // 不再用异步快照布尔 —— 旧实现快速滑动/长按拖动时可能拿到旧值，
-                    // 用户报"在歌词中间/最后几句也能拖几次触发下拉"。
-                    // ⚠️ 不要求"顶部稳定 N 毫秒"（曾试过 400ms）：用户实测"一直往下滑
+                    // 真机报障"在歌词中间/最后几句也能拖几次触发下拉"。
+                    // ⚠️ 不要求"顶部稳定 N 毫秒"（曾试过 400ms）：真机实测"一直往下滑
                     // 到顶之后接着往下滑，应该就能拉"——加稳定期会让他必须停一下，
                     // 手感发卡。回到"起手在顶即可拉"。
                     val downAtTop = vm.lyricsAtTopNow?.invoke() ?: vm.lyricsListAtTop
@@ -145,7 +145,7 @@ fun LyricsMorphOverlay(vm: MainViewModel, morph: LyricsMorphState, interactive: 
                                 if (kotlin.math.abs(dyRaw) > viewConfiguration.touchSlop) {
                                     if (dyRaw <= 0f) break
                                     pullDown = true
-                                    // 长按后才动 → 不当下拉（用户明确报的残留触发路径）。
+                                    // 长按后才动 → 不当下拉（需求方明确报的残留触发路径）。
                                     val heldTooLong =
                                         change.uptimeMillis - down.uptimeMillis > longPressTimeoutMs
                                     // 越过 slop 时再问一次：起手在顶、但手势过程中列表
@@ -194,7 +194,7 @@ fun LyricsMorphOverlay(vm: MainViewModel, morph: LyricsMorphState, interactive: 
             // ⚠️ 为什么必须带"超过 slop"这个条件（此前踩过两次）：
             //  · 无条件吞 → 把列表越过 slop 前的**起步位移**也吃掉 → LazyColumn 的
             //    拖拽起不来（"有时滑不动"）；
-            //  · 只在"已在顶部"吞 → 中段长按拖动照样穿透（用户 2026-10-22 复报）。
+            //  · 只在"已在顶部"吞 → 中段长按拖动照样穿透（定稿 复报）。
             // 带 slop 后语义正好：列表正常滚动时它会在越过 slop 的那一刻消费掉位移
             //（Main pass 叶子→根，列表先跑）⇒ 这里看到 isConsumed 就整段放行；
             // 只有"列表压根没参与/吃不下"的手势才会被这里拦下。

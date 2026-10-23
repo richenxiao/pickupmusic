@@ -62,7 +62,7 @@ object AlbumSortSkill : AgentEngine.AgentSkill {
         // ── v1.3.15:**用户自己报了顺序 → 直接按他报的排,不问模型、不联网** ──────────────
         // 真机实测:用户把正确顺序整段贴进对话(「1.枣庄市马思唯 2.轨道飞虎 …」),程序依旧
         // 回"已按官方顺序排列"却还是错的 —— 因为排序调用的提示里**只有本地曲目表和联网资料,
-        // 不含用户原话**。用户既然白纸黑字给了顺序,那就是最权威的依据:秒回、零成本、不会错。
+        // 不含需求原话**。用户既然白纸黑字给了顺序,那就是最权威的依据:秒回、零成本、不会错。
         // 门槛见 AgentService.userGivenOrder(≥3 首且覆盖 ≥80%,避免把闲聊误判成给了顺序)。
         val userOrder = AgentService.userGivenOrder(ctx.recTurnContext().userMessage, currentTitles)
         if (userOrder.isNotEmpty()) {
@@ -198,7 +198,7 @@ object AlbumSortSkill : AgentEngine.AgentSkill {
         // 因为编号格式是弱模型的老坑)→ 照它的顺序写下标即可,零文本匹配。
         ctx.applyAlbumOrderIndices(key, result.orderedIndices)
         onStep("writeback", AgentEngine.StepStatus.DONE)
-        // v1.5.0（2026-10-12 用户实测《LSC》）：**不许再报假成功**。
+        // v1.5.0（2026-10-12 真机实测《LSC》）：**不许再报假成功**。
         // applyAlbumOrderIndices 在"只认出部分曲目"时走的是**待确认闸门**——
         // 此时 **什么都不会落库**，而旧文案照样回"已按官方顺序排列"，用户看到的正是
         // "说排好了、结果没动/还是错的"。有闸门就如实说。

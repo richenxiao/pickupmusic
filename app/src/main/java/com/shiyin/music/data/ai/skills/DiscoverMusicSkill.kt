@@ -22,7 +22,7 @@ import kotlinx.coroutines.withContext
  */
 internal object DiscoverCopy {
 
-    /** 限定范围的说法:"方大同" / "《X》" / "方大同的《X》";都没有则 null(不限范围)。 */
+    /** 限定范围的说法:歌手名 / "《X》" / "歌手名的《X》";都没有则 null(不限范围)。 */
     private fun subjectOf(artistLabel: String?, album: String?): String? = when {
         // 注意:模板里紧跟中文时必须写 ${...} —— Kotlin 认 CJK 为合法标识符字符,
         // "$artistLabel的…" 会被解析成标识符 `artistLabel的`(踩过,编译期 Unresolved reference)。
@@ -33,7 +33,7 @@ internal object DiscoverCopy {
     }
 
     /**
-     * 副文案:模型的理由;**没有理由就显示专辑名**(用户定调)。
+     * 副文案:模型的理由;**没有理由就显示专辑名**(定调)。
      * 理由会被上游截断到 30 字,(推荐卡一行放得下)。
      */
     fun note(why: String?, album: String?): String =
@@ -86,12 +86,12 @@ internal object DiscoverCopy {
 /**
  * v1.3.15 起:按**场景/歌手/专辑**挑歌(重构自 v1.3.10 的"开放式选曲")。
  *
- * 真机缺陷(用户报):
- *  ① 「推荐方大同适合睡觉的歌」→ 推荐列表里一首方大同都没有(歌手限定没生效);
- *  ② 纠正"我要的是方大同的"→ 它又给了一张**按热度**排的表(静默降级成热度排序);
+ * 真机缺陷(真机报障):
+ *  ① 「推荐某歌手适合睡觉的歌」→ 推荐列表里一首该歌手都没有(歌手限定没生效);
+ *  ② 纠正"我要的是某歌手的"→ 它又给了一张**按热度**排的表(静默降级成热度排序);
  *  ③ 最后说"直接推荐"→ 才问要不要播,但**没写播的是哪首**。
  *
- * 分工(用户定调,别搞反):
+ * 分工(定调,别搞反):
  *  - **硬约束(歌手/专辑)由代码保证** —— 候选池只在该歌手/该专辑范围内取,不靠模型自觉;
  *    歌手名先经 [RecommendationPlan.resolveArtists] 解析(繁简/大小写/别名),库内没有就
  *    如实说"没有",**绝不拿别的歌手顶上**;
@@ -163,7 +163,7 @@ object DiscoverMusicSkill : AgentEngine.AgentSkill {
             )
         }
 
-        // ── 槽位合并:本轮为准;「只补一句『方大同的』」时由代码继承上一轮场景 ──
+        // ── 槽位合并:本轮为准;「只补一句『某歌手的』」时由代码继承上一轮场景 ──
         onStep("resolve", AgentEngine.StepStatus.RUNNING)
         val rc = ctx.recTurnContext()
         val merged = RecommendationPlan.mergeIntent(
@@ -243,7 +243,7 @@ object DiscoverMusicSkill : AgentEngine.AgentSkill {
             return@withContext AgentEngine.SkillResult("${who.ifBlank { "按这个条件" }}库里没有找到可推荐的歌。", success = false)
         }
         onStep("pool", AgentEngine.StepStatus.DONE)
-        // 记下本轮槽位(含代码继承来的场景):下一轮只补一句「方大同的」时接得上
+        // 记下本轮槽位(含代码继承来的场景):下一轮只补一句「某歌手的」时接得上
         ctx.recordRecIntent(merged.scene, merged.artist, merged.album)
 
         // ── ③ 没有场景 → 不需要模型判断:给该范围内最常听的(确定性,不编理由)──

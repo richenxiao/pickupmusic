@@ -137,7 +137,7 @@ class ArtistImageResolver(private val dao: ShiyinDao) {
             android.util.Log.d("AIM", "photo tier exhausted (personOnly) → null ${System.currentTimeMillis() - started}ms")
             // v1.3.5: 不写失败锁——personOnly 只是头像场景的窄查询(跳过专辑兜底),
             // photo 层搜空不代表整名失败;写了会把已有的 album 兜底缓存覆盖成失败行,
-            // 歌手页大写真跟着消失(用户反馈"写真明明存在却没了"的一半根因)。
+            // 歌手页大写真跟着消失(实测反馈"写真明明存在却没了"的一半根因)。
             return null
         }
         raceGroup(albumSources, name, personOnly)?.let { return cacheAndReturn(name, it, started) }

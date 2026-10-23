@@ -190,7 +190,7 @@ fun SearchScreen(vm: MainViewModel) {
                 // v1.3.3b review#B3: 归属口径改与歌手页一致(splitArtists 含该歌手即算,
                 // 排除合集)——原 first.artist != artistMatch 精确比对会漏掉所有合作专辑
                 // (first.artist="A, B" 搜 A 永远不等)。
-                // v1.3.5 排版重做(用户定调):去掉"热门专辑"标题卡 + 播放次数;一专辑一行
+                // v1.3.5 排版重做(定调):去掉"热门专辑"标题卡 + 播放次数;一专辑一行
                 // (封面 + 名字 + 像 Spotify 那样名字下一行"专辑/EP/单曲 · 歌手名"),
                 // 与下方歌曲行同一套行语言,不再三栏挤一排。
                 item(key = "artist-albums") {

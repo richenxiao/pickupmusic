@@ -228,7 +228,7 @@ private fun CloudBackupScreen(vm: MainViewModel, scrollStates: MutableMap<String
                     expanded = dropOpen,
                     onDismissRequest = { dropOpen = false },
                     containerColor = c.surface,
-                    // 与长条同宽（下拉默认按内容宽度收窄，用户要求"跟这个长条一样长"）
+                    // 与长条同宽（下拉默认按内容宽度收窄，需求要求"跟这个长条一样长"）
                     modifier = Modifier.fillMaxWidth(0.82f),
                 ) {
                     androidx.compose.material3.DropdownMenuItem(
@@ -265,7 +265,7 @@ private fun CloudBackupScreen(vm: MainViewModel, scrollStates: MutableMap<String
                         text = { Text("＋ 新增自定义", style = body(13f, FontWeight.Normal, c.text)) },
                         onClick = {
                             namingNew = true; newName = ""
-                            // 用户 2026-10-22："自定义的时候不要默认填入坚果云的网站"
+                            // 定稿："自定义的时候不要默认填入坚果云的网站"
                             // —— 只清掉坚果云的默认地址（用户自己填过的地址不动）。
                             if (url == JIANGUO_WEBDAV) url = ""
                             dropOpen = false
@@ -506,7 +506,7 @@ private fun CloudBackupScreen(vm: MainViewModel, scrollStates: MutableMap<String
     }
 
     // （「新增自定义」不再弹表单：在配置卡里就地填渠道名称 + 原有地址/账号/密码，
-    //   由「保存凭据」一并保存 —— 用户 2026-10-22 澄清的口径。）
+    //   由「保存凭据」一并保存 —— 定稿 澄清的口径。）
 }
 
 /**
@@ -527,7 +527,7 @@ private fun LogsScreen(vm: MainViewModel, scrollStates: MutableMap<String, Scrol
     var crashCount by remember { mutableStateOf(0) }
     var bytes by remember { mutableStateOf(0L) }
     var msg by remember { mutableStateOf<String?>(null) }
-    // 实际落盘的日志文件清单——用户明确要求"打开就有可以看到的文件"，
+    // 实际落盘的日志文件清单——需求方明确要求"打开就有可以看到的文件"，
     // 所以除了内容，也把文件本身列出来（文件名 + 大小 + 行数）。
     var files by remember { mutableStateOf<List<java.io.File>>(emptyList()) }
     var crashFiles by remember { mutableStateOf<List<java.io.File>>(emptyList()) }
@@ -541,7 +541,7 @@ private fun LogsScreen(vm: MainViewModel, scrollStates: MutableMap<String, Scrol
         bytes = com.shiyin.music.data.log.UsageLog.sizeBytes(context)
     }
     // 实时刷新：这一页开着时每 1.5s 重读一次。日志是**追加写**的小文件，重读代价
-    // 可忽略；原来只在进页面时读一次，用户必须退出重进才能看到新记录——用户明确
+    // 可忽略；原来只在进页面时读一次，用户必须退出重进才能看到新记录——需求方明确
     // 要求"实时展示"，这里就不能是一次性快照。
     androidx.compose.runtime.LaunchedEffect(Unit) {
         while (true) {
@@ -631,7 +631,7 @@ private fun LogsScreen(vm: MainViewModel, scrollStates: MutableMap<String, Scrol
             msg?.let { Text(it, style = body(12f, FontWeight.Normal, c.a700)) }
         }
 
-        // 文件清单放在内容之前——用户原话"打开就有可以看到的文件了才对"：
+        // 文件清单放在内容之前——需求原话"打开就有可以看到的文件了才对"：
         // 先看到有哪些文件（按天一个 + 崩溃报告），再看内容。
         SectionLabel("日志文件")
         Column(
@@ -775,7 +775,7 @@ private fun HelpInfoButton(title: String, text: String) {
  * v23: 设置页行骨架 —— 所有设置行的**唯一**排版来源。
  * 统一 padding(vertical=13.dp)、图标位 19dp、行内间距 13dp、副标题 12.5sp + top 2dp。
  * 抽出来的原因:手写行(识别缓存 11.5sp、备份与恢复 11sp,且都没有 top padding)与
- * SettingRow/CardEntryRow 各自为政,同类型行高度不一致(用户反馈"各个功能占据的
+ * SettingRow/CardEntryRow 各自为政,同类型行高度不一致(实测反馈"各个功能占据的
  * 高度都不统一")。此后新增设置行一律走这里,不要再手写 Row。
  */
 @Composable
@@ -847,7 +847,7 @@ private fun CardEntryRow(
         onClick = onClick,
         trailing = {
             // 尾注文字 + 箭头必须**横排**——骨架把 trailing 包进了一个 Box
-            // （Box 会叠放子项），直接并列两个 composable 会叠在一起（用户实测：
+            // （Box 会叠放子项），直接并列两个 composable 会叠在一起（真机实测：
             // 睡眠/云备份/日志的尾注文字和箭头重叠）。
             Row(
                 verticalAlignment = Alignment.CenterVertically,
@@ -983,8 +983,8 @@ private fun SettingsRoot(vm: MainViewModel, scrollStates: MutableMap<String, Scr
             //   归纳功能。然后**不要有**显示隐藏了多少、已开启什么" ⇒ 入口行只有名字，无尾注。
             CardEntryRow(
                 // ⚠️ 图标不能撞：这一行原来用 `Users`，而里面「**歌手合并**」那个按钮也是 `Users`
-                // —— 用户 2026-10-19 直接指出"歌手管理的图标跟歌手合并一样，我说了不要雷同图标"。
-                // 中间一度换成 `Layers`，但那是"多层收纳"，**不表达歌手**（用户 2026-10-20：
+                // —— 定稿 直接指出"歌手管理的图标跟歌手合并一样，我说了不要雷同图标"。
+                // 中间一度换成 `Layers`，但那是"多层收纳"，**不表达歌手**（定稿：
                 // "图标要表达歌手/艺人，伴唱已经占用了麦克风，歌手管理不要再用麦克风"）。
                 // 现在用**新增**的 `UsersRound`（一群歌手），与同页其余入口零重复。
                 Lucide.UsersRound, c.n700, "歌手管理",
@@ -994,14 +994,14 @@ private fun SettingsRoot(vm: MainViewModel, scrollStates: MutableMap<String, Scr
             ) { vm.navFilesTo(FilesView.ArtistManage) }
         }
 
-        // v1.3.11:「拾光记忆」已移到「拾光 Agent 设置」里(用户定调:它属于 Agent 域,
+        // v1.3.11:「拾光记忆」已移到「拾光 Agent 设置」里(定调:它属于 Agent 域,
         // 不该混在文件/资源设置里)。这里不再保留第二个入口,避免同一页两处可达。
 
         // v1.3.10 需求 A24:「播放」与「数据管理」**拆成两张卡**。
         // 此前两项共用一张卡(理由是"不为只有一个子项的类别建独立栏目标题"),但用户
         // 明确觉得"两个不相关的组件连在一起"很怪 → 各占一张卡、各一行,视觉上断开。
         // 仍然不给它们加栏目标题(避免空壳分类,与原决定的意图一致)。
-        // v1.3.10(二改):用户反馈"两张卡太大了,应该和其他选项一样大小"——单行卡原来
+        // v1.3.10(二改):实测反馈"两张卡太大了,应该和其他选项一样大小"——单行卡原来
         // 沿用了多行卡的 6dp 上下留白,单行时显胖。压到 2dp,与其它单行行高节奏一致。
         Column(
             Modifier
@@ -1094,7 +1094,7 @@ private fun FilesManageScreen(vm: MainViewModel, scrollStates: MutableMap<String
                 .padding(horizontal = 16.dp, vertical = 6.dp),
         ) {
             // 「识别资源」= 联网识别到的歌词/封面。副标题只留**用户不知道的那一条**：
-            // AI 翻译结果不受这个开关影响、总是保存（token 是用户明确花掉的）。
+            // AI 翻译结果不受这个开关影响、总是保存（token 是需求方明确花掉的）。
             SettingRow(
                 Lucide.Download, "自动保存识别资源",
                 "AI 翻译结果始终保存",
@@ -1182,7 +1182,7 @@ private fun DataManageScreen(vm: MainViewModel, scrollStates: MutableMap<String,
             try {
                 val bytes = vm.exportBackupZip(backupCats)
                 context.contentResolver.openOutputStream(uri)?.use { it.write(bytes) }
-                // v22: 备份里**含 API Key / 供应商配置**（用户定调：要进，否则换机最痛），
+                // v22: 备份里**含 API Key / 供应商配置**（定调：要进，否则换机最痛），
                 // 所以导出后必须明确提醒一句"含密钥"，让用户知道这个文件不能随便发。
                 backupMsg = "已备份（${"%.1f".format(bytes.size / 1024.0 / 1024.0)} MB）· " +
                     "含 API Key（明文），请勿放在公开位置"
@@ -1367,7 +1367,7 @@ private fun DataManageScreen(vm: MainViewModel, scrollStates: MutableMap<String,
                 }
                 },
             )
-            // ── v1.5.0 A60：备份内容分类（用户拍板：每项一个开关 + 实时大小，
+            // ── v1.5.0 A60：备份内容分类（拍板：每项一个开关 + 实时大小，
             //    体积由用户自己权衡；相关项归父类，如"拾光 Agent → 聊天记录/记忆"）──
             Column(Modifier.fillMaxWidth().padding(bottom = 6.dp)) {
                 for (group in com.shiyin.music.data.db.BackupGroup.entries) {
@@ -1733,17 +1733,17 @@ private fun LyricsBookScreen(vm: MainViewModel, scrollStates: MutableMap<String,
             // v1.5.0 伴唱总开关（规格 §10）。默认开；关闭后歌词页不显示麦克风入口，
             // 设备慢的用户可彻底关掉。
             // ⚠️⚠️ 这里**推翻了 2026-10-17 的一次定稿**：原来写着"图标用音符，**不用那个残缺的
-            //   麦克风**（用户指出）"。本轮图标审查里用户对这一行选了 `mic-vocal`。
+            //   麦克风**（验收指出）"。本轮图标审查里用户对这一行选了 `mic-vocal`。
             //   判断：当时反对的是 `Lucide.Mic` **那个图形的形状**（后来歌词页的麦克风按钮
             //   是照样图手绘的 `DesignMicIcon`），不是反对"话筒"这个语义；`mic-vocal` 是另一张图。
             //   若理解错、或你看过觉得不该出现话筒，说一声单独回退这一行（本行改动独立成提交）。
             SettingRow(Lucide.MicVocal, "启用伴唱功能", null, divider = true) {
                 OrganicSwitch(vm.karaokeEnabled) { vm.setKaraokeEnabled(!vm.karaokeEnabled) }
             }
-            // A73（用户 2026-10-15）：分轨默认模型。**只有 9482 内置**（A57），其余两项
+            // A73（定稿）：分轨默认模型。**只有 9482 内置**（A57），其余两项
             // 2026-10-17：原来这里有一段"分轨模型"三选一（当时另两个没内置、置灰不可选）。
             // 现在三个模型都能从「设置 · 播放 · 伴唱」下载并选择，那段既过时又与那边重复，
-            // 按用户要求"歌词本只留一个伴唱按钮"→ 配置统一收进伴唱设置页，这里删掉。
+            // 按需求要求"歌词本只留一个伴唱按钮"→ 配置统一收进伴唱设置页，这里删掉。
         }
         // 外语自动翻译:进入歌词本时外语歌自动触发 AI 翻译(默认关——AI 永远用户主动
         // 触发,不静默烧 token)。默认显示译文:有保存译文时进页面直接给看(译完即存
@@ -1792,7 +1792,7 @@ private fun LyricsBookScreen(vm: MainViewModel, scrollStates: MutableMap<String,
     }
 }
 
-// ── v1.3.x 播放设置子页(用户 2026-09-22 指定分组)────────────────────────────
+// ── v1.3.x 播放设置子页(分组定稿)────────────────────────────
 // 六项:无缝播放(从设置主页搬来)/音量均衡/单声道音频/允许与其他应用同时播放/均衡器。
 // 均衡器是 5 段 EQ 开关;具体曲线走系统 Equalizer(需要播放器持有 audioSessionId)。
 @Composable
@@ -1852,10 +1852,10 @@ private fun PlaySettingsScreen(vm: MainViewModel, scrollStates: MutableMap<Strin
     }
 }
 
-// ── v1.5.0 设置 · 播放 · 伴唱（2026-10-17 用户要求出"正式版"）─────────────────
+// ── v1.5.0 设置 · 播放 · 伴唱（2026-10-17 需求要求出"正式版"）─────────────────
 /** 本页用的别名：`RetentionMode` 全名太长，而本地 `val M = 枚举类` 在 Kotlin 里不成立。 */
 private typealias StemRet = com.shiyin.music.data.karaoke.RetentionMode
-// 歌词本那边**只留一个麦克风按钮**，模型/缓存这些配置全部收到这里（用户原话）。
+// 歌词本那边**只留一个麦克风按钮**，模型/缓存这些配置全部收到这里（需求原话）。
 // 模型铭牌（人声/伴奏、高频截至、相对耗时）是**从参数算出来的**，不是文案：
 //  · 高频截至 = (dim_f−1) × 44100 / n_fft —— 超过它的频段人声估计恒为 0，
 //    也就意味着这段原曲会原封不动留在伴奏里（齿音/镲片顶端就是这么漏出来的）；
@@ -1865,7 +1865,7 @@ private fun KaraokeSettingsScreen(vm: MainViewModel, scrollStates: MutableMap<St
     val c = LocalOrganic.current
     androidx.compose.runtime.LaunchedEffect(Unit) { vm.refreshKaraokeSettings() }
     val models = com.shiyin.music.data.karaoke.MdxModel.values()
-    // 二次确认的目标（用户 2026-10-18：删除/清空这类不可逆操作一律要确认，防误触）
+    // 二次确认的目标（定稿：删除/清空这类不可逆操作一律要确认，防误触）
     var pendingDelete by androidx.compose.runtime.remember {
         androidx.compose.runtime.mutableStateOf<com.shiyin.music.data.karaoke.MdxModel?>(null)
     }
@@ -1897,7 +1897,7 @@ private fun KaraokeSettingsScreen(vm: MainViewModel, scrollStates: MutableMap<St
                 .background(c.surface)
                 .padding(vertical = 6.dp),
         ) {
-            // 下载渠道：用户实测"下到 6% 又回到 1%"，要能自己选走哪条线
+            // 下载渠道：真机实测"下到 6% 又回到 1%"，要能自己选走哪条线
             Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)) {
                 Text("下载渠道", style = body(13.5f, FontWeight.SemiBold, c.text))
                 Row(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -1923,7 +1923,7 @@ private fun KaraokeSettingsScreen(vm: MainViewModel, scrollStates: MutableMap<St
                             style = body(14f, FontWeight.SemiBold, c.text),
                             modifier = Modifier.weight(1f),
                         )
-                        // 状态标签**与模型名同一行、靠右**（用户 2026-10-18：别挤占下面那一行）
+                        // 状态标签**与模型名同一行、靠右**（定稿：别挤占下面那一行）
                         Text(
                             when {
                                 downloading -> "下载中 ${(vm.karaokeDownloadPct * 100).toInt()}%"
@@ -1968,7 +1968,7 @@ private fun KaraokeSettingsScreen(vm: MainViewModel, scrollStates: MutableMap<St
                         }
                     }
                     Row(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        // 用户 2026-10-18：**两态按钮** —— 未默认=不显眼的灰白「设为默认」；
+                        // 定稿：**两态按钮** —— 未默认=不显眼的灰白「设为默认」；
                         // 已是默认=橙色「默认」且不可再点。右上角那个「默认」名牌已去掉。
                         DefaultModelButton(isDefault) { vm.setKaraokeModelId(m.id) }
                         if (!installed || broken) {
@@ -1977,7 +1977,7 @@ private fun KaraokeSettingsScreen(vm: MainViewModel, scrollStates: MutableMap<St
                             }
                         }
                         if (installed || broken) {
-                            // 删除统一**红色** + 二次确认（用户 2026-10-18：要有警惕性、防误触）
+                            // 删除统一**红色** + 二次确认（定稿：要有警惕性、防误触）
                             KaraokeAction("删除", vm.karaokeDownloadId == null, danger = true) {
                                 pendingDelete = m
                             }
@@ -1999,7 +1999,7 @@ private fun KaraokeSettingsScreen(vm: MainViewModel, scrollStates: MutableMap<St
                 .background(c.surface)
                 .padding(horizontal = 16.dp, vertical = 6.dp),
         ) {
-            // ── 保存策略：**两行独立上限**（用户 2026-10-18 重构）──────────────────
+            // ── 保存策略：**两行独立上限**（定稿 重构）──────────────────
             // 2026-10-20 用户：**删掉下面那行小字**（"两项同时生效…"整段不要）。
             Column(Modifier.fillMaxWidth().padding(vertical = 12.dp)) {
                 Text("保存策略", style = body(13.5f, FontWeight.SemiBold, c.text))
@@ -2007,7 +2007,7 @@ private fun KaraokeSettingsScreen(vm: MainViewModel, scrollStates: MutableMap<St
                 // 2026-10-20 用户改的标签：保存 → **最多保存曲目**；最多占用 → **最多占用空间**。
                 // 2026-10-20 用户："按曲目这行必须用同一套组件、同一种交互：数字输入框 + 预设下拉框。
                 // 不要自己另写一套。" ⇒ 复用同一个 RetentionRow，只是把 presets 从 null 换成列表。
-                // ⚠️ 预设值 0/5/10/20/50/100 是**我拟定的**（用户原话没给具体值）；
+                // ⚠️ 预设值 0/5/10/20/50/100 是**我拟定的**（需求原话没给具体值）；
                 //    默认 10 与 `MainViewModel.stemRetentionCount` 的初值一致。
                 RetentionRow(
                     label = "最多保存曲目",
@@ -2045,7 +2045,7 @@ private fun KaraokeSettingsScreen(vm: MainViewModel, scrollStates: MutableMap<St
         }
         Box(Modifier.height(114.dp))
 
-        // ── 二次确认（用户 2026-10-18：删除/清空一律要确认，防误触）──────────────
+        // ── 二次确认（定稿：删除/清空一律要确认，防误触）──────────────
         pendingDelete?.let { m ->
             androidx.compose.material3.AlertDialog(
                 onDismissRequest = { pendingDelete = null },
@@ -2118,12 +2118,12 @@ private fun KaraokeBadge(text: String, c: com.shiyin.music.ui.theme.OrganicColor
 }
 
 /**
- * **删除类操作的红**（用户 2026-10-18："删除键要警惕一点，改成红色"）。
+ * **删除类操作的红**（定稿："删除键要警惕一点，改成红色"）。
  *
  * ⚠️ 2026-10-19 修正：原来用 `c.a700`，而主题里的 `a700` 是**橙色系** ——
  * 深色主题下更是浅橘 `#FFC6A5`，看着像"次要操作"，一点都不像危险。
  *
- * ⚠️ 2026-10-20 用户反馈："按钮的红色又**太过头**了，亮的和主题不搭" ——
+ * ⚠️ 2026-10-20 实测反馈："按钮的红色又**太过头**了，亮的和主题不搭" ——
  * 从 `#D2453A`（正红）调成**砖红** `#A94A38`：饱和度与明度都收进暖色系，与 accent `#C67139` 同族。
  */
 private val DANGER_RED = androidx.compose.ui.graphics.Color(0xFFA94A38)
@@ -2154,7 +2154,7 @@ private fun KaraokeAction(
 }
 
 /**
- * 「设为默认 / 默认」**两态按钮**（用户 2026-10-18）：
+ * 「设为默认 / 默认」**两态按钮**（定稿）：
  * 未默认 = 不显眼的灰白底 + "设为默认"（可点）；已是默认 = 橙底白字 "默认"（不可再点）。
  * 原来的做法是"默认"另挂一个右上角名牌 —— 已去掉，状态就由这个按钮自己表达。
  */
@@ -2175,7 +2175,7 @@ private fun DefaultModelButton(isDefault: Boolean, onClick: () -> Unit) {
 
 /**
  * 缓存策略的**一行**：标签在左，**控件在右**，且数字输入与预设下拉**同在一个框里**
- * （用户 2026-10-19："下拉框和单选框是一体的，在框的右侧""输入框要在右侧，不要那么大，
+ * （定稿："下拉框和单选框是一体的，在框的右侧""输入框要在右侧，不要那么大，
  * 与字体行平齐"）。
  */
 @Composable
@@ -2256,7 +2256,7 @@ private fun RetentionNumberField(value: Int, unit: String, onCommit: (Int) -> Un
  * 预设下拉：**贴在同一个框的右半边**（用户："下拉框和单选框是一体的，在框的右侧"）。
  *
  * ⚠️ `containerColor = c.surface` 是主题适配所必需的 —— 不传的话 Material3 默认给**全白**底，
- * 深色主题下弹出来一整块白（用户 2026-10-19 实测到并指正）。
+ * 深色主题下弹出来一整块白（真机实测到并指正）。
  * 这条与项目里 `ArtistAlbumList` 的下拉框用法一致。
  */
 @Composable
@@ -2289,7 +2289,7 @@ private fun RetentionPresetDropdown(current: Int, presets: List<Pair<Int, String
 /**
  * **可选项胶囊**（下载渠道等"三选一"）。
  *
- * ⚠️ 2026-10-19 用户指出"单选框主题适配没做"。真因：未选中态原本用 `n100` 填底，
+ * ⚠️ 2026-10-19 验收指出"单选框主题适配没做"。真因：未选中态原本用 `n100` 填底，
  * 而**深色主题下 `n100`(#2E2B25) 与卡片底 `surface`(#2B2620) 几乎同色** ⇒ 胶囊边界看不见，
  * 看着就像一堆散落的文字。改成：
  *  · 未选中 = `n100` 底 **+ `n400` 描边**（描边在两套主题下都与卡片底有明显对比）；
@@ -2313,7 +2313,7 @@ private fun KaraokeChip(label: String, selected: Boolean, c: com.shiyin.music.ui
     )
 }
 
-// ── v1.3.x 均衡器子页(用户反馈"均衡器不是开关,是多频段调节")──────────────────
+// ── v1.3.x 均衡器子页(实测反馈"均衡器不是开关,是多频段调节")──────────────────
 // 5 段 EQ:每段一条滑杆调增益(±15 dB),顶部总开关。增益单位毫贝(mB),
 // 经 AUDIO_SETTINGS 命令下发到服务进程的 android.media.audiofx.Equalizer。
 private val EQ_BAND_LABELS = listOf("60Hz", "230Hz", "910Hz", "3.6kHz", "14kHz")
@@ -2690,11 +2690,11 @@ private fun DevicesScreen(vm: MainViewModel) {
     }
 }
 
-// ── v1.5.0 设置 · 歌手管理（用户 2026-10-18 要求合并）────────────────────────
+// ── v1.5.0 设置 · 歌手管理（定稿 要求合并）────────────────────────
 /**
  * **歌手管理**：把散在设置各处的三个歌手相关子页收进一处。
  *
- * 用户原话："把当前歌手合并改为歌手管理，然后里面集成歌手栏目、歌手合并、歌手写真源等
+ * 需求原话："把当前歌手合并改为歌手管理，然后里面集成歌手栏目、歌手合并、歌手写真源等
  * 与歌手相关的，免得设置太难看"。
  *
  * 纯**导航收拢**：三个子页原样搬进来，逻辑一个没动；一级页由原来的三行变成一行。
@@ -2718,7 +2718,7 @@ private fun ArtistManageScreen(vm: MainViewModel, scrollStates: MutableMap<Strin
                 "写真源 —— 歌手页的图片从哪几个来源找。",
         ) { vm.navFilesBack() }
 
-        // 用户 2026-10-19：**三个大按钮**。上面那三行「隐藏客串歌手 / 歌手合并 / 写真源」
+        // 定稿：**三个大按钮**。上面那三行「隐藏客串歌手 / 歌手合并 / 写真源」
         // 小标题全部去掉 —— 它们本来就是同一级的三个功能，各自点进去就行。
         ArtistManageButton(Lucide.UserRoundX, "隐藏客串歌手") { vm.navFilesTo(FilesView.HiddenArtists) }
         ArtistManageButton(Lucide.Merge, "歌手合并") { vm.navFilesTo(FilesView.Merges) }
@@ -2774,7 +2774,7 @@ private fun ArtistManageButton(
 }
 
 /**
- * **隐藏客串歌手**（用户 2026-10-19 定稿的交互）。
+ * **隐藏客串歌手**（定稿 定稿的交互）。
  *
  * 关系要一眼看懂（原话）："关闭了隐藏客串歌手，那所有的也跟着关闭；打开了，所有跟着打开，
  * 用户就很清楚的知道是什么关系。然后就可以关掉特定的一些他不想隐藏的歌手"。
@@ -2783,7 +2783,7 @@ private fun ArtistManageButton(
  *   · 总开关【开】⇒ 下面全部跟着【开】（都隐藏），点进去把想留的那几位**关掉**；
  *   · 总开关【关】⇒ 全部显示，下面的开关也全部跟着关。
  *
- * 用户明确要求**不写任何解释文字**（"判定为客串 30 位"这类都不要）。
+ * 需求方明确要求**不写任何解释文字**（"判定为客串 30 位"这类都不要）。
  */
 @Composable
 private fun HiddenArtistsScreen(vm: MainViewModel, scrollStates: MutableMap<String, ScrollState>) {
@@ -2811,7 +2811,7 @@ private fun HiddenArtistsScreen(vm: MainViewModel, scrollStates: MutableMap<Stri
             SettingRow(Lucide.UserRoundX, "隐藏客串歌手", null, divider = false) {
                 OrganicSwitch(vm.hideFeatureArtists) { vm.setHideFeatureArtists(!vm.hideFeatureArtists) }
             }
-            // 逐个列出；开关 = "隐藏这位"。**不写任何解释**（用户要求）。
+            // 逐个列出；开关 = "隐藏这位"。**不写任何解释**（需求要求）。
             vm.featureArtistsForManage().forEach { name ->
                 Box(
                     Modifier.padding(horizontal = 16.dp).fillMaxWidth().height(1.dp).background(c.divider),
@@ -2870,7 +2870,7 @@ private fun MergesScreen(vm: MainViewModel) {
                 )
             }
         } else {
-            // 2026-10-22 用户要求按**目标名分组**展示（原先是平铺的 "A → B"）：
+            // 2026-10-22 需求要求按**目标名分组**展示（原先是平铺的 "A → B"）：
             //   周杰伦
             //      — JAYCHOU      (撤销)
             //      — JAY CHOU     (撤销)
@@ -2988,7 +2988,7 @@ private fun AboutScreen(vm: MainViewModel) {
                 )
                 if (hasUpdate) OIcon(Lucide.ChevronRight, 13.dp, c.a700)
             }
-            // v22 删减:去掉「完全本地运行 · 不上传任何数据」整行(用户定调 —— 这句话本身
+            // v22 删减:去掉「完全本地运行 · 不上传任何数据」整行(定调 —— 这句话本身
             // 不准确，且不想在关于页放这类宣称)，以及振假名的功能描述行。
             // 仅保留 JMdict 的**最小归属声明**并移到页面最底部：
             // 振假名词表是从 JMdict 派生的 CC BY-SA 4.0 数据，
@@ -3412,7 +3412,7 @@ private fun CheckRow(vm: MainViewModel, t: Track, sub: String) {
 }
 
 // ── trash ──────────────────────────────────────────────────────────────────
-// v1.3.x: 独立回收站子页删除——回收站段并入 CleanScreen 页顶(用户拍板合并)。
+// v1.3.x: 独立回收站子页删除——回收站段并入 CleanScreen 页顶(拍板合并)。
 
 // ── v1.2.1 写真源配置子页 · v1.3.2 重排:两段式(内置源 / 自定义源)。
 //      需 Key 的源(Fanart/Last.fm)与用户自建 URL 源统一归入「自定义源」(置底),
@@ -3710,7 +3710,7 @@ private fun TranslateButtonModeRow(vm: MainViewModel) {
  *       音乐      用户喜欢《Pretender》 …
  * ```
  *
- * 刻意不做(用户定调):不做卡片 / 彩色分类块、不加搜索·筛选·排序、不新增分类;
+ * 刻意不做(定调):不做卡片 / 彩色分类块、不加搜索·筛选·排序、不新增分类;
  * **空分组直接不显示**(没有"关系"就不出现"关系·暂无");类型与来源全部翻成中文,
  * 页面上不出现 `personal` / `explicit` 这类库内取值。
  */
@@ -3743,7 +3743,7 @@ internal fun MemoryScreen(vm: MainViewModel, onBack: () -> Unit) {
         )
     }
 
-    // 删除一律走确认(用户定调:不允许点一下就没了)
+    // 删除一律走确认(定调:不允许点一下就没了)
     pendingDelete?.let { mem ->
         MemoryDeleteDialog(
             content = mem.content,
@@ -3783,7 +3783,7 @@ private fun MemoryListScreen(
     val memories = vm.memories
     val groups = com.shiyin.music.data.memory.MemoryPresentation.group(memories)
     Column(Modifier.fillMaxSize()) {
-        // v1.3.13(用户反馈"点进去感觉内容被抬上去了"):全站设置子页的页头顶距是 22dp
+        // v1.3.13(实测反馈"点进去感觉内容被抬上去了"):全站设置子页的页头顶距是 22dp
         // (见 SettingsPages 的 screenPadding),这里原来只有左右、**没有上边距** —— 返回键
         // 紧贴状态栏,整页比别的子页高一截。补上同值,页头与内容共用 20dp 左基线。
         Box(Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 22.dp)) {
@@ -3827,7 +3827,7 @@ private fun MemoryListScreen(
             } else {
                 for ((section, rows) in groups) {
                     item(key = "sec-${section.title}") {
-                        // v1.3.13(用户反馈"你 和下面的 TAG 都是橙色时,看不清重点"):
+                        // v1.3.13(实测反馈"你 和下面的 TAG 都是橙色时,看不清重点"):
                         // 分组标题 = **亮色结构标**(主文字色 + 更重字重 + 字距),行内 TAG = 橙色色片。
                         // 两者一个管结构、一个管分类,颜色与形状都不同,重点一眼可辨。
                         Column(Modifier.padding(top = 16.dp, bottom = 6.dp)) {
@@ -3885,7 +3885,7 @@ private fun MemoryToggleRow(title: String, checked: Boolean, onToggle: () -> Uni
  *            你告诉我的 · 2026/09/29
  * ```
  *
- * 信息层级(用户定调):**内容**是最主要的视觉信息,分类次之,来源/时间最弱。
+ * 信息层级(定调):**内容**是最主要的视觉信息,分类次之,来源/时间最弱。
  * 整行可点(进详情)。编辑/删除**常驻**——Android 没有 Hover,不能藏在长按或点击之后。
  */
 @Composable
@@ -3999,7 +3999,7 @@ private fun MemoryDetailScreen(
             Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState())
                 .padding(horizontal = 20.dp).padding(bottom = 40.dp),
         ) {
-            // v1.3.12(用户反馈):**永远显示完整详情**(最后更新 / 记忆内容 / 来源 / 类型)。
+            // v1.3.12(实测反馈):**永远显示完整详情**(最后更新 / 记忆内容 / 来源 / 类型)。
             // 之前"编辑态"把元信息整块藏掉 → 从 ✎ 进来只看到一块内容、返回再点才看到完整页面,
             // 分两步走很别扭。现在编辑只是把「记忆内容」那一块**就地**换成输入框,其余照常显示。
             SectionLabel("最后更新", color = c.a700)
@@ -4145,7 +4145,7 @@ private fun AddMemoryDialog(onDismiss: () -> Unit, onAdd: (String, String) -> Un
  *  · 内置源(LRCLIB / 网易云音乐 / LrcShare)可单独开关(关掉的不再参与自动匹配与来源菜单);
  *  · 可以添加**自己的歌词 API**(URL 模板 + JSON 路径 + 可选请求头)。
  *
- * 设计要点(用户原话:"不能说用户到时候要填什么参数找不到能填写的地方"):
+ * 设计要点(需求原话:"不能说用户到时候要填什么参数找不到能填写的地方"):
  * 表单里**每个字段都有中文标签 + 一行说明 + 示例**,照着任何"GET 返回 JSON"的歌词 API
  * 文档都能填完即可用,不需要看代码。
  */
@@ -4309,7 +4309,7 @@ private fun LyricsSourcesScreen(vm: MainViewModel, scrollStates: MutableMap<Stri
     }
 }
 
-/** 表单字段:标签 + 说明占位符(用户要求"参数要有地方填")。 */
+/** 表单字段:标签 + 说明占位符(需求要求"参数要有地方填")。 */
 @Composable
 private fun LyricSourceField(label: String, hint: String, value: String, onChange: (String) -> Unit) {
     val c = LocalOrganic.current
@@ -4422,7 +4422,7 @@ private fun CustomLyricsSourceDialog(
  * 这类问题,没有任何东西可看。这里把"卡在哪一步、命中多少、模型回了什么开头"摆出来,
  * 并提供「复制全部」—— 用户可直接粘贴给开发窗口。
  *
- * 刻意做**最简**:列表 + 复制全部 + 开关 + 一句提示。不做详情页/筛选(用户定调)。
+ * 刻意做**最简**:列表 + 复制全部 + 开关 + 一句提示。不做详情页/筛选(定调)。
  */
 @Composable
 internal fun AgentDiagScreen(vm: MainViewModel, onBack: () -> Unit) {

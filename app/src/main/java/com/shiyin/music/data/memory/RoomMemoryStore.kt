@@ -11,7 +11,7 @@ import com.shiyin.music.data.db.ShiyinDao
  * [MemoryRules] 与 [MemoryManager](纯逻辑,可纯 JVM 单测)。这条分界是整个 P1 的设计要点:
  * 数据质量规则必须能脱离 Android 运行时被验证。
  *
- * ⚠️ P1 阶段**不接入对话链路**(用户明确划界):本类只提供实现,谁都不 new 它。
+ * ⚠️ P1 阶段**不接入对话链路**(需求方明确划界):本类只提供实现,谁都不 new 它。
  * 接线(回合后提取、回合前检索注入)属于 P2。
  */
 class RoomMemoryStore(private val dao: ShiyinDao) : MemoryStore {

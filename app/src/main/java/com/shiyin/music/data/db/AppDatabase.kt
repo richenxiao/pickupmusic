@@ -584,7 +584,7 @@ interface ShiyinDao {
      * ⚠️ `day = (timestamp + :tzOffsetMs) / 86400000` —— **必须加时区偏移**。原实现是
      * `timestamp / 86400000`(纯 UTC 天序号),注释却写着"本地零点":对 UTC+8 用户,天边界
      * 落在本地 08:00,凌晨 0-8 点的用量被算进"昨天",而"今天"又漏掉这 8 小时 ——
-     * 用户看到的"当天/今天"数字与实际不符(用户反馈"准度不够"的来源之一)。
+     * 用户看到的"当天/今天"数字与实际不符(实测反馈"准度不够"的来源之一)。
      * 偏移由 TokenUsageWindow 按当前时区算出(中国无夏令时,取今天偏移即可)。
      */
     @Query("SELECT ((timestamp + :tzOffsetMs) / 86400000) AS day, SUM(promptTokens) AS inputTokens, SUM(completionTokens) AS outputTokens, SUM(cacheTokens) AS cacheTokens FROM token_usage_log WHERE timestamp >= :since GROUP BY day ORDER BY day")
@@ -780,7 +780,7 @@ interface ShiyinDao {
 
     // v4: store/refresh the iTunes releaseDate for an album without rewriting
     // url/source/colors. Used by the artist album list for sort-by-release-date.
-    // v1.3.x 修补(用户反馈⑤"返回了时间,结果也录入不进去"):原 UPDATE 只更新
+    // v1.3.x 修补(实测反馈⑤"返回了时间,结果也录入不进去"):原 UPDATE 只更新
     // 已有行——专辑封面还没缓存过(album_art_cache 无该 albumId 的行)时 UPDATE
     // 影响行数=0,日期根本没写进去。改用 UPSERT:无行时插入占位行(只含日期),
     // 有行时只更 releaseDate(保留封面/取色)。
@@ -1109,8 +1109,8 @@ interface ShiyinDao {
     @Query("SELECT timestamp FROM token_usage_log")
     suspend fun allTokenUsageTimestamps(): List<Long>
 
-    // ── v1.5.0 A60：仍然漏掉的用户资产（用户要求"除易重建项外全部要备"）─────────
-    // 盘查（docs/internal/backup-coverage-audit.md）发现原来这六类都没进备份：
+    // ── v1.5.0 A60：仍然漏掉的用户资产（需求要求"除易重建项外全部要备"）─────────
+    // 盘查（备份覆盖盘查）发现原来这六类都没进备份：
 
     /** 歌手别名合并（用户手工整理的 from→to 映射）。 */
     @Query("SELECT * FROM artist_alias")
@@ -1138,7 +1138,7 @@ interface ShiyinDao {
 
     /**
      * 专辑封面缓存：**重点是 url/source**——自动获取的封面只需链接即可重抓，
-     * 恢复后不必重新"找图"（用户明确要求"自动获取的要记录来源链接"）。
+     * 恢复后不必重新"找图"（需求方明确要求"自动获取的要记录来源链接"）。
      * bgArgb/fgArgb（取色）一并带上，省一次取色计算。
      */
     @Insert(onConflict = OnConflictStrategy.REPLACE)

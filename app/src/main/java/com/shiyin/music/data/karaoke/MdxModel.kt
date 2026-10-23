@@ -2,7 +2,7 @@ package com.shiyin.music.data.karaoke
 
 /**
  * P0 Spike 阶段 B：三个内置模型的参数（全部来自 UVR 官方 model_data.json 核实值，
- * 见 docs/internal/karaoke-p0-phase-a.md；assetName 是打进 APK 的文件名）。
+ * 见 伴唱 P0 阶段 A 报告；assetName 是打进 APK 的文件名）。
  */
 enum class MdxModel(
     /** 稳定标识：缓存路径与 model.json 都用它（不要用 enum 名，改名会失效）。 */
@@ -13,7 +13,7 @@ enum class MdxModel(
      * 是否**打进当前 APK**（A57 拍板：只有 9482 = 29.7MB 进包；另两个各 ~67MB 超线，
      * 走"未内置"提示，等下载入口单独做）。
      *
-     * ⚠️ 2026-10-15 用户报「默认好像是 hq3」——**功能上一直是 9482**，误导来自 demo 标签，
+     * ⚠️ 2026-10-15 真机报障「默认好像是 hq3」——**功能上一直是 9482**，误导来自 demo 标签，
      * 所以这里把"能不能用"变成**数据**而不是文案，UI 直接照 [bundled] 置灰未内置项。
      */
     val bundled: Boolean,
@@ -45,7 +45,7 @@ enum class MdxModel(
 ) {
     // 9482 = vocals 模型：伴奏 = 原曲 − 人声×compensate
     // ⚠️ 名字里**不再带「（默认·人声模型）」这类后缀** —— 铭牌已经写了"人声/伴奏"、"默认"，
-    //    再写一遍就是牛皮癣（用户 2026-10-17 明确要求去掉）。
+    //    再写一遍就是牛皮癣（定稿 明确要求去掉）。
     M9482(
         "mdx_9482", "9482", "UVR_MDXNET_9482.onnx", bundled = true,
         nFft = 6144, hop = 1024, dimF = 2048, dimT = 256,

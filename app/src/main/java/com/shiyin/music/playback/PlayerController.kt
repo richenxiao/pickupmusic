@@ -57,7 +57,7 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
     /** Kept in sync with the DataStore setting by the ViewModel. */
     var gaplessEnabled: Boolean = true
 
-    // ── 升降 Key 卡死取证：被动看门狗（用户 2026-10-20「修改0」）────────────────────
+    // ── 升降 Key 卡死取证：被动看门狗（「修改0」取证）────────────────────
     // 默认关闭 ⇒ 关闭时 `stallWatchdogEnabled == false`，ticker 里那两行判断各是一次
     // 布尔读 + 短路，**不抓栈、不落盘、不改播放行为**。
     // 开启路径：MainViewModel 的 karaoke-cmd 通道（`watchdog 1`）。
@@ -216,7 +216,7 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
         }
 
         /**
-         * v1.3.10 诊断(用户反馈 A23「藤井风《罪の香り》播到 1:37 就静音」):
+         * v1.3.10 诊断(实测反馈 A23「藤井风《罪の香り》播到 1:37 就静音」):
          * 此前**没有实现 onPlayerError**——解码/音轨错误被完全静默吞掉,表现就是
          * "到某一秒突然静音、无提示、日志里也查不到"。这里把错误码、当前位置与
          * cause 链完整打印出来,便于定位"某一秒静音"这类问题。
@@ -332,7 +332,7 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
         else framePositionMs()
 
     /**
-     * 把卡死证据抓下来（用户 2026-10-20「修改0」step 3）。
+     * 把卡死证据抓下来（「修改0」取证step 3）。
      *
      * - **logcat**：tag `PickUpDiag`，按 3000 字符切片 —— logcat 单条上限约 4KB，
      *   整份一次性塞进去会被**静默截断**，那就等于没抓到。
@@ -398,7 +398,7 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
                     realignIfWrappedBeforeSegment()
                     val newPos = absOf(c.currentPosition.coerceAtLeast(0))
                     // v1.3.10 诊断(A23):位置**无故后退**时留痕(没有任何 seek 请求却退回去)。
-                    // 用户实测「1:37 静音 → 1:40 → 又跳回 1:37」正是这类症状。
+                    // 真机实测「1:37 静音 → 1:40 → 又跳回 1:37」正是这类症状。
                     if (newPos + 1500L < positionMs) {
                         android.util.Log.w(
                             "PlayerDiag",
@@ -406,7 +406,7 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
                         )
                     }
                     positionMs = newPos
-                    // 升降 Key 卡死取证（用户 2026-10-20 修改0）：Key 变化后位置 >2 秒不前进
+                    // 升降 Key 卡死取证（定稿 修改0）：Key 变化后位置 >2 秒不前进
                     // ⇒ 抓**全部**线程栈。**只诊断，不做任何自愈动作**（用户明令不许用
                     // 超时/吞异常/重试掩盖）。关闭时这里是一次布尔短路，零影响。
                     if (stallWatchdogEnabled &&
@@ -1122,7 +1122,7 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
         }
         val f = fraction.coerceIn(0f, 1f)
         val target = t.startMs + ((t.endMs - t.startMs) * f).toLong()
-        // v1.3.10 诊断(A23):seek 留痕(用户实测"拖到 1:38 就正常"→ 需要知道 seek 落在哪)
+        // v1.3.10 诊断(A23):seek 留痕(真机实测"拖到 1:38 就正常"→ 需要知道 seek 落在哪)
         android.util.Log.i(
             "PlayerDiag",
             "seek displayFraction=$f → file=$target (段=[${t.startMs},${t.endMs}) 段内=${(target - t.startMs)})",
@@ -1293,7 +1293,7 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
     }
 
     /** v1.3.8: 直接设定循环模式(Agent 的 playback_mode 技能用)——cycleRepeat 只能轮流切,
-     *  用户说"单曲循环"时必须能一步到位,不能连点两次碰运气。 */
+     *  使用场景"单曲循环"时必须能一步到位,不能连点两次碰运气。 */
     fun setRepeat(mode: Int) {
         repeatMode = mode
         controller?.repeatMode = mode

@@ -18,7 +18,7 @@ class MemoryManager(
     /**
      * 写入一条候选记忆。裁决顺序(**先校验、再去重、最后冲突**):
      *  1. 归一化+截断 → 空内容/非法 type 直接拒;
-     *  2. 一次性情绪("今天有点累")默认拒——除非用户明确要求记住,或调用方传
+     *  2. 一次性情绪("今天有点累")默认拒——除非需求方明确要求记住,或调用方传
      *     [allowTransient]=true(设置里的「连情绪与近况也记」,用户主动开的口子);
      *  3. 与既有**有效**条目重复(同一件事的换说法)→ **update 旧条目**,不新增;
      *  4. 与既有条目同主题但说法冲突(「喜欢 aiko」→「不再喜欢 aiko」)→ 新增,
@@ -37,7 +37,7 @@ class MemoryManager(
             return RememberOutcome.Rejected(RememberOutcome.Reason.TRANSIENT)
         }
         // v1.3.13:只是"用户让播放过 X"这类**指令流水** → 拒。这不是偏好,记多了会把
-        // 对用户的印象记歪(用户实测反馈)。用户明说记住 / 手加的条目不受此限。
+        // 对用户的印象记歪(真机实测反馈)。用户明说记住 / 手加的条目不受此限。
         if (!explicit && MemoryRules.isCommandRecord(content)) {
             return RememberOutcome.Rejected(RememberOutcome.Reason.COMMAND_RECORD)
         }
@@ -107,7 +107,7 @@ class MemoryManager(
         return true
     }
 
-    /** 用户要求忘记某条(硬删除)。返回是否命中。 */
+    /** 需求要求忘记某条(硬删除)。返回是否命中。 */
     suspend fun forget(id: String): Boolean {
         if (store.byId(id) == null) return false
         store.delete(id)

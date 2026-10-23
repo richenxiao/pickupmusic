@@ -32,7 +32,7 @@ object LyricsFetcher {
     private fun customSource(name: String): CustomLyricsSourceDef? =
         LyricsSourceConfig.customSources.firstOrNull { it.name == name }
     private const val UA = "Shiyin/1.0 (Android local music player)"
-    // v1.3.x 2s→5s:±2s 把"搜到正确歌曲"误判为无结果(用户实测网易云明明有歌词却报
+    // v1.3.x 2s→5s:±2s 把"搜到正确歌曲"误判为无结果(真机实测网易云明明有歌词却报
     // 无——本地 tag/VBR 头时长与官方曲库录制时长差 3-5s 是常态:intro 差异、首段静音、
     // ms→s 截断舍入再吃 ±1s)。放宽后:搜到正确歌曲不再被时长门否决。5s 仍显著低于
     // live/广播剪辑/混音版与原版的典型时长差(≥8s),不会误配到错误版本。
@@ -139,8 +139,8 @@ object LyricsFetcher {
         }
         // Search fallback with duration tolerance.
         searchLrclib(title, artist, durationSec, requireArtistMatch = false)?.let { return it }
-        // 2026-10-22（用户报「new note 识别不到歌词」）：LRCLIB **带 artist 过滤**时
-        // 简繁对不上就 0 条（库里歌手是繁体「陳嫺靜」，本地 tag 是简体「陈娴静」——
+        // 2026-10-22（真机报障「new note 识别不到歌词」）：LRCLIB **带 artist 过滤**时
+        // 简繁对不上就 0 条（库里歌手是繁体写法、本地 tag 是简体写法——
         // 实测同一首歌带过滤 0 条、去掉过滤 7 条且首条 duration 与本地完全一致）。
         // 兜底：去掉 artist 过滤再搜一次，本地用 FuzzySearch.normalize（繁→简）
         // 归一后比对歌手，时长仍按 ±DURATION_TOLERANCE_SEC 把关。
@@ -225,7 +225,7 @@ object LyricsFetcher {
             android.util.Log.w("Lyrics", "netease 无候选(全部尝试失败)")
             return null
         }
-        // v1.3.x 鉴权(用户反馈⑧:阴三儿《爽歪歪》vs 大张伟《爽歪歪》同名不同歌,
+        // v1.3.x 鉴权(实测反馈⑧:同名不同歌手的两首歌会互相污染候选,
         // 旧实现只按时长差挑 bestId——同名不同歌手的版本时长恰好更接近时就配错)。
         // v1.3.9:候选构造与选择抽成 internal 纯函数,单测用**真实抓包数据**覆盖
         // (见 LyricsMatchTest)——此前这段逻辑只能靠线上复现,回归一次修一次。
@@ -253,7 +253,7 @@ object LyricsFetcher {
         android.util.Log.i("Lyrics", "netease 选中 id=${picked.id} diff=${picked.diff}")
         // v1.3.x yrc:部分新歌歌词只有逐字格式(yrc 字段),lrc 为空串——
         // 客户端展示的滚动歌词来自 yrc,只读 lrc 会把"明明有歌词"误报为无结果
-        // (实测:《虎头奔》揽佬SKAI ISYOURGOD id=2080172427)。yv=1/yrv=1 请求 yrc,
+        // (实测:个别曲目 lv=1 时 lrc 为空串且无 yrc 字段)。yv=1/yrv=1 请求 yrc,
         // lrc 空时解析 yrc 转标准 LRC。
         // v1.3.9: lv 参数改 -1。PC 端差分测试锁定:同一首歌、同样参数,仅 lv 不同——
         // lv=1 时 lrc="" 且无 yrc 字段(实测《开波》id=2130715020,以及《虎头奔》),
@@ -409,7 +409,7 @@ object LyricsFetcher {
      *  4. **受控兜底**(v1.3.9 新增):歌手名是变体写法(play J / Player J、aka 名、
      *     中英文名混用)时前三档全落空 → 归一化歌名**完全相等**、时长差 ≤5s、
      *     且与返回歌手名有公共前缀的候选**有且仅有一个**时接受。
-     *     唯一性 + 公共前缀共同挡住"同名不同歌"(阴三儿《爽歪歪》vs 大张伟《爽歪歪》)。
+     *     唯一性 + 公共前缀共同挡住"同名不同歌"(两位歌手各有一首同名歌)。
      * 最后:本地有时长且选中候选时长差 >10s → 拒绝(live/混音版风险)。
      */
     internal fun selectNeteaseCandidate(
@@ -433,7 +433,7 @@ object LyricsFetcher {
      * 归一化:剥括号补充说明(「晴天 (Live)」→「晴天」),再交给 FuzzySearch.normalize
      * 做**全角→半角 + 繁体→简体 + 去空格 + 小写**。
      *
-     * ⚠️ 必须复用 FuzzySearch 而不是自己 lowercase():歌手/歌名里「周杰倫 vs 周杰伦」
+     * ⚠️ 必须复用 FuzzySearch 而不是自己 lowercase():歌手/歌名里繁简/全半角差异
      * 「Jay Chou vs 周杰倫」这类差异只靠小写消不掉,而匹配的 artistHit 是硬闸门——
      * 归一旦对不上,整首歌词就永远搜不到(实测回归)。
      * 正则提成 object 级常量:原实现每次调用都 Pattern.compile 两遍,

@@ -12,7 +12,7 @@ import java.util.Date
 import java.util.Locale
 
 /**
- * v1.5.0 P1：**调试导出隔离**（用户 2026-10-12 P1 修正）。
+ * v1.5.0 P1：**调试导出隔离**（定稿 P1 修正）。
  *
  * 原来调试页把分离出来的 WAV 直接写进共享的 `Music/PickUpMusic/`——等于往用户的
  * 真实音乐目录里丢调试产物，会被系统媒体库和 App 自己的曲库扫进去。改成：
@@ -22,7 +22,7 @@ import java.util.Locale
  *  - 同目录一份 `_map.tsv` 对照表：哪个文件 ↔ 哪个模型/后端/线程/哪首歌；
  *  - 调试页可一键清空（[clear]）。
  *
- * ⚠️ **这些 WAV 一定会进系统媒体库 —— 2026-10-12 真机实测确认，且是用户拍板接受的取舍**：
+ * ⚠️ **这些 WAV 一定会进系统媒体库 —— 2026-10-12 真机实测确认，且是拍板接受的取舍**：
  *  1. **`.nomedia` 建不出来**：MediaProvider 不接受点开头的文件名，insert 时把 `.nomedia`
  *     改名成 `_.nomedia`（files 表 media_type=0），而这个名字**不被媒体扫描认作** no-media
  *     标记 —— 随后写入的两个 WAV 照样出现在 `content://media/external/audio/media`。
@@ -34,10 +34,10 @@ import java.util.Locale
  *     **裸查询**（无 selection），落在该表里的行都会进曲库。
  *  4. 绕过 MediaStore 直接写文件需要 `MANAGE_EXTERNAL_STORAGE` —— App 没有，也不该加。
  *
- *  **用户拍板（2026-10-12）**：位置与文件名**都不动**，**只挡拾音自己** —— 靠
+ *  **拍板（2026-10-12）**：位置与文件名**都不动**，**只挡拾音自己** —— 靠
  *  [com.shiyin.music.data.MediaScanner] 里按路径的过滤把本 App 曲库挡干净；
  *  **接受系统音乐 App / 别的播放器仍会列出它们**。（判据：调试导出只是开发期产物，
- *  用户明确说过"不能播不是需求"，不值得为它改目录结构。）
+ *  需求方明确说过"不能播不是需求"，不值得为它改目录结构。）
  *
  *  产品侧的伴奏/人声（P2 及以后）**不走这里** —— 那是 `filesDir/pickup/accompaniment-cache/`，
  *  永远只待在拾音自己的地盘内，从不进共享存储。
@@ -130,7 +130,7 @@ object DebugExport {
      * 目录里的文件数（[delete] 为 false 只数）；[delete] 为 true 则逐个删掉。
      *
      * [delete] 走 `ContentResolver.delete(uri)` —— MediaProvider 会**连同磁盘文件一起删**，
-     * 媒体库记录也随之消失。用户 2026-10-12 明确要求清空必须两者都删：只删文件不删记录的话，
+     * 媒体库记录也随之消失。定稿 明确要求清空必须两者都删：只删文件不删记录的话，
      * 系统音乐 App 里仍会留着指向已删文件的条目。
      */
     fun clear(context: Context, delete: Boolean): Int {

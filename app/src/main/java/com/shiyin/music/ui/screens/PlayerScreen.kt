@@ -180,7 +180,7 @@ fun PlayerScreen(vm: MainViewModel) {
         Column(
             Modifier
                 .fillMaxSize()
-                // ⚠️ 顺序要紧（用户 2026-10-20）：
+                // ⚠️ 顺序要紧（定稿）：
                 //  ① **先 verticalScroll**，再把 insets / 左右留白 / 顶部避让**放进滚动内容里**
                 //     —— 它们会随内容一起滚走，所以封面能从按钮后面一路滑出屏幕顶端，
                 //     中间没有被 padding 造成的"硬边界"；
@@ -196,10 +196,10 @@ fun PlayerScreen(vm: MainViewModel) {
             // v3.0: removed the square aspectRatio container + ContentScale.Fit
             // that left gaps showing the page bg behind the cover. Now the image
             // fills the width directly with no background behind it.
-            // v1.5.0 封面比例（用户 2026-10-24 拍板）：播放页**恒定按原始比例**显示
+            // v1.5.0 封面比例（拍板）：播放页**恒定按原始比例**显示
             //（钳 0.5~2.0，不依赖设置开关）——内嵌封面本身可能是横版/竖版，旧版
             // FillWidth 会把它拉成"长长的"；极端比例超出钳制时用钳后槽 + Fit，
-            // 两侧补**固定黑/白**（随主题，用户明确不要取色填充——"取色反而不好看"）。
+            // 两侧补**固定黑/白**（随主题，需求方明确不要取色填充——"取色反而不好看"）。
             val art = rememberAlbumArt(track, 480.dp)
             val artRatio = CoverRatio.ratioOf(art?.width ?: 0, art?.height ?: 0)
             val slotRatio = CoverRatio.slotRatio(artRatio)
@@ -348,7 +348,7 @@ fun PlayerScreen(vm: MainViewModel) {
             // positionMs,避免滑块被每帧拉回播放位置。
             var scrubFraction by remember { mutableStateOf<Float?>(null) }
             val pct = if (durMs > 0) (vm.player.displayPositionMs().toFloat() / durMs).coerceIn(0f, 1f) else 0f
-            // v1.3.10 B1①(用户反馈"推进动画卡顿"):`positionMs` 每 **300ms** 才更新一次
+            // v1.3.10 B1①(实测反馈"推进动画卡顿"):`positionMs` 每 **300ms** 才更新一次
             // (PlayerController.TICK_MS=300),直接 `pos/dur` 会让进度条每 300ms 跳一格。
             // 在两次 tick 之间做**指数逼近**持续推进:目标每 300ms 抬一次,条面每帧平滑追上。
             //  · 只在实际播放时跑(暂停/停止即退出循环,不在后台空转烧电);
@@ -378,7 +378,7 @@ fun PlayerScreen(vm: MainViewModel) {
                 Modifier
                     .fillMaxWidth()
                     // 第6轮:触摸范围=条本身显示范围(6dp)。原 12dp 隐形触区误触
-                    // (用户实测)。滑块 15dp 用 requiredSize 强制保留原尺寸——
+                    // (真机实测)。滑块 15dp 用 requiredSize 强制保留原尺寸——
                     // 注意 `Modifier.size()` 是 enforceIncoming=true,会被这里的
                     // 6dp 高度约束压成 15×6 的扁椭圆(Box 的"不裁剪"只管绘制、
                     // 不改约束),必须用 requiredSize 才能真溢出。
@@ -503,7 +503,7 @@ fun PlayerScreen(vm: MainViewModel) {
                     }
                 }
             }
-            // v1.3.x 用户反馈(两次):时间行与进度条**挨得太近**——加 12dp 上间距
+            // v1.3.x 实测反馈(两次):时间行与进度条**挨得太近**——加 12dp 上间距
             // (原来只有进度条 Box 底部到文字的自然间距,视觉上贴在一起)。
             Row(Modifier.fillMaxWidth().padding(top = 12.dp, bottom = 14.dp), horizontalArrangement = Arrangement.SpaceBetween) {
                 Text(formatDuration(shownPosMs / 1000), style = body(12f, FontWeight.Normal, c.n600))
@@ -646,7 +646,7 @@ private fun LyricsPeekCard(vm: MainViewModel, artBg: Color, artFg: Color, dimC: 
     val ly = vm.currentLyrics
     val lines = ly?.parsed?.lines ?: emptyList()
     // v1.3.x 歌词颜色档:卡片预览文字跟随档位(与 LyricsScreen 同一套规则)——
-    // 原来 fg 传的是 artFg(UI 控件色,随封面),改了"歌词颜色"卡片纹丝不动(用户实测)。
+    // 原来 fg 传的是 artFg(UI 控件色,随封面),改了"歌词颜色"卡片纹丝不动(真机实测)。
     val lyricTextC = when (vm.lyricsColorMode) {
         "white" -> Color.White
         "black" -> Color(0xFF1A1A1E)

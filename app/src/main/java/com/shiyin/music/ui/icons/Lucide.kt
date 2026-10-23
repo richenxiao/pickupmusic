@@ -220,7 +220,7 @@ object Lucide {
 
     /**
      * v1.3.10 需求 A25:单曲循环图标(Lucide `repeat-1`)。
-     * 旧实现是"Repeat 图标上叠一个 9sp 的 '1' Text"——居中叠字既糊又土(用户实测嫌丑)。
+     * 旧实现是"Repeat 图标上叠一个 9sp 的 '1' Text"——居中叠字既糊又土(真机实测嫌丑)。
      * 官方 repeat-1 = repeat 的四条路径 + 中间的「1」(`M11 10h1v4`)。
      */
     val Repeat1 by lazy {
@@ -322,7 +322,7 @@ object Lucide {
         stroke("users", "M18 21a8 8 0 0 0-16 0", "M10 8m-5 0a5 5 0 1 0 10 0a5 5 0 1 0 -10 0", "M22 20c0-3.37-2-6.5-4-8a5 5 0 0 0-.45-8.3")
     }
 
-    // ── 歌手管理四件套（用户 2026-10-20 图标审计）─────────────────────────────
+    // ── 歌手管理四件套（定稿 图标审计）─────────────────────────────
     // 用户口径：「我强调很多次了，图标尽量不要一样，给我更换」+「每个入口的图标必须与该功能
     // 语义直接相关，不接受"大概沾边"」。四个都是**新增**，path data 取自 lucide.dev，
     // 一律按本文件 stroke() 写法（24×24 / stroke 2.75 / round cap-join），圆与矩形转成 path
@@ -373,7 +373,7 @@ object Lucide {
     val Speaker by lazy {
         stroke("speaker", "M6 2h12a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2z", "M12 6h.01", "M12 14m-4 0a4 4 0 1 0 8 0a4 4 0 1 0 -8 0", "M12 14h.01")
     }
-    // v1.3.x 播放设置专用(用户明确要求不复用图标):Volume2/AudioLines/SlidersVertical/Layers,
+    // v1.3.x 播放设置专用(需求方明确要求不复用图标):Volume2/AudioLines/SlidersVertical/Layers,
     // 与 Lucide 官方 24x24 路径一致,描边风格同本项目 stroke()。
     val Volume2 by lazy {
         stroke(
@@ -470,7 +470,7 @@ object Lucide {
     }
     val Menu by lazy { stroke("menu", "M4 6h16", "M4 12h16", "M4 18h16", width = 2.5f) }
     /** v1.3.5: 首页专用汉堡——三条线比标准 Menu 更长(20)、间距更大(y=4/12/20,跨 16
-     *  而非 12)、线更粗(3),在小圆按钮里视觉量级与"下午好"大标题相称(用户定调:
+     *  而非 12)、线更粗(3),在小圆按钮里视觉量级与"下午好"大标题相称(定调:
      *  线要拉开,视觉不协调)。 */
     val MenuWide by lazy { stroke("menuWide", "M3 4h18", "M3 12h18", "M3 20h18", width = 3f) }
     val Download by lazy { stroke("download", "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4", "m7 10 5 5 5-5", "M12 15V3") }
@@ -488,7 +488,7 @@ object Lucide {
     /** v1.3.x 识别缓存专用(存储/数据库语义),与文件夹管理(Folder)去重。Lucide "database"。 */
     val Database by lazy { stroke("database", "M12 5c-5 0-9 1.2-9 2.7v10.6c0 1.5 4 2.7 9 2.7s9-1.2 9-2.7V7.7c0-1.5-4-2.7-9-2.7z", "M3 8c0 1.5 4 2.7 9 2.7s9-1.2 9-2.7", "M3 12.7c0 1.5 4 2.7 9 2.7s9-1.2 9-2.7") }
 
-    // ── 图标审查·阶段二（用户 2026-10-21 逐项选定）──────────────────────────────
+    // ── 图标审查·阶段二（定稿 逐项选定）──────────────────────────────
     // path data 取自 **lucide-static 1.61.0**（ISC，Copyright (c) 2026 Lucide Icons and Contributors），
     // 一律按本文件 `stroke()` 写法：24×24 viewport / stroke-width 2.75 / round cap-join。
     // ⚠️ **circle 与 rect 已转成等价 path** —— `stroke()` 只吃 path data，喂 `<circle>` 会崩。
@@ -600,7 +600,7 @@ object Lucide {
     }
 
     /**
-     * 播客 —— 播放速度「现代模式」档（用户 2026-10-21 定）。
+     * 播客 —— 播放速度「现代模式」档（定稿 定）。
      *
      * 理由（用户认同）：副标题本来就写着"播客效果"，图标与文字一致不用猜；
      * 播客类应用的倍速正是"变速不变调"的典型场景；与「复古＝磁带」构成
@@ -610,7 +610,7 @@ object Lucide {
         stroke(
             "podcast",
             "M12 17v4",
-            // ⚠️ 弧参数必须**显式空格分隔**（2026-10-22 用户报"现代模式图标显示不全"）：
+            // ⚠️ 弧参数必须**显式空格分隔**（2026-10-22 真机报障"现代模式图标显示不全"）：
             // 官方 lucide 源里是紧凑写法 "a6 6 0 00-3-5.197"（两个 flag 连写、且 flag
             // 紧跟负号）。Compose 的 PathParser 对这种写法解析失败 —— 用 JVM 实测
             // addPathNodes 后整条弧被**静默丢弃**，只剩 MoveTo，于是四道电波全不画。
@@ -624,7 +624,7 @@ object Lucide {
         )
     }
 
-    // ── 图标审查阶段二 · 第 2 轮（用户 2026-10-21 在第二轮对照页上选定）──────────────
+    // ── 图标审查阶段二 · 第 2 轮（定稿 在第二轮对照页上选定）──────────────
 
     /** 高音谱号 —— 播放页菜单「升降 Key」（原 `SlidersBold`，滑块读起来像 EQ/设置）。 */
     val ClefTreble by lazy {

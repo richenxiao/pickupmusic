@@ -50,7 +50,7 @@ object PlaybackControlSkill : AgentEngine.AgentSkill {
      *
      * ⚠️ 不要自己 lowercase()+filter { isLetterOrDigit }:候选来自 ctx.searchTracks,
      * 而定这个技能要与之比对的是「库内标题」——全 App 的规范归一就是
-     * FuzzySearch.normalize。自造版对「周杰倫/周杰伦」「ＡＢＣ/ABC」「晴天 (Live)/晴天」
+     * FuzzySearch.normalize。自造版对「繁体/简体」「全角/半角」「带版注/无版注」
      * 全部判不相等 → 精确命中失败 → 退化成"把 30 条搜索结果全部塞进队列",
      * 用户点名单曲却先听到一首不相干的。
      */
@@ -89,10 +89,10 @@ object PlaybackControlSkill : AgentEngine.AgentSkill {
         }
 
         // ── play + 点名了内容 ────────────────────────────────────────────────
-        // v1.3.12 真机 bug 修正:原来**先找专辑**——用户说「给我播放藤井风的 prema」,
+        // v1.3.12 真机 bug 修正:原来**先找专辑**——使用场景「给我播放某歌手的某歌」,
         // 库里正好有同名专辑,于是整张 9 首被播了,而他要的是那首单曲。
         // 现在:默认按**单曲**找(用户点作品名时想要的就是那首歌);只有明确 scope=album
-        // (用户说了"专辑/整张")才播整张;两者都存在时由上层用**选择卡片**问用户,不猜。
+        // (使用场景了"专辑/整张")才播整张;两者都存在时由上层用**选择卡片**问用户,不猜。
         if (action == "play" && target.isNotBlank()) {
             val wantsAlbum = args["scope"]?.trim().equals("album", ignoreCase = true)
             val restart = args["restart"]?.trim().equals("true", ignoreCase = true)
@@ -109,8 +109,8 @@ object PlaybackControlSkill : AgentEngine.AgentSkill {
 
             // v1.3.10: 检索改用 [AgentLibrarySearch]——FuzzySearch(全半角/繁简/编辑距离)
             // + 假名↔罗马字 + 译名/别名写法兜底。旧实现直接 ctx.searchTracks(关键词包含匹配),
-            // 用户说别名/译名/罗马字/记错一个字就"库里没找到",还回一句"请说完整歌名"——
-            // 这正是用户反馈"必须百分百匹配歌名才能播放"的直接来源。弱模型也不会自己再搜一次。
+            // 使用场景别名/译名/罗马字/记错一个字就"库里没找到",还回一句"请说完整歌名"——
+            // 这正是实测反馈"必须百分百匹配歌名才能播放"的直接来源。弱模型也不会自己再搜一次。
             val hits = AgentLibrarySearch.resolve(ctx, config, target, 30)
             if (hits.isEmpty()) {
                 // 单曲里没有 → 也许用户要的是同名专辑(他没明说"专辑",但库里只有这张叫这名)
@@ -125,7 +125,7 @@ object PlaybackControlSkill : AgentEngine.AgentSkill {
             if (exact != null) {
                 // v1.3.12 幂等(**在技能里**,不在运行时):同一首已经在放就别重新从头放。
                 // 技能自己有真实播放状态,由它说这句人话——不必让运行时替它说话。
-                // 只有用户明确要求重来(上层把 restart 注进来)才 restart。
+                // 只有需求方明确要求重来(上层把 restart 注进来)才 restart。
                 val cur = ctx.currentTrack()
                 if (!restart && ctx.isPlaying() && cur?.id == exact.id) {
                     return@withContext done("《${exact.title}》已经在放了。想从头听就说一句「重新播放」。")

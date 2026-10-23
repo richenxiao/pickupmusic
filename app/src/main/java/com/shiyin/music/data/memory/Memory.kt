@@ -6,7 +6,7 @@ package com.shiyin.music.data.memory
  * 与 Persona 的边界:Persona 是"拾光是谁"(AgentEngine.persona),Memory 是"拾光认识这个
  * 用户什么"。两者架构分离——记忆**永不写进人格提示词**,只作为运行时注入的动态块。
  *
- * 字段与用户 2026-09-28 定稿一致:id/type/content/createdAt/updatedAt/importance/source。
+ * 字段与定稿 定稿一致:id/type/content/createdAt/updatedAt/importance/source。
  */
 data class Memory(
     val id: String,
@@ -46,7 +46,7 @@ object MemoryType {
 }
 
 object MemorySource {
-    /** 用户明确要求记住("记住这个"/"别忘了")——优先级最高,且绕过一次性情绪拒表。 */
+    /** 需求方明确要求记住("记住这个"/"别忘了")——优先级最高,且绕过一次性情绪拒表。 */
     const val EXPLICIT = "explicit"
     /** 运行时从对话里推断出来的。 */
     const val INFERRED = "inferred"
@@ -57,7 +57,7 @@ object MemorySource {
 /**
  * 写入候选(来自提取环节或用户明说)。
  *
- * @param userSaid 触发这条候选的**用户原话**。规则要据此判断"是不是明确要求记住"
+ * @param userSaid 触发这条候选的**需求原话**。规则要据此判断"是不是明确要求记住"
  *   (仅看 content 不够:content 常被提炼过,原话里的"记住"必须能看见)。
  */
 data class MemoryCandidate(

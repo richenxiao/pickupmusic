@@ -3,9 +3,9 @@ package com.shiyin.music.playback
 import androidx.media3.common.Player
 
 /**
- * 升降 Key 卡死取证 —— **被动看门狗**（用户 2026-10-20「修改0」P0）。
+ * 升降 Key 卡死取证 —— **被动看门狗**（「修改0」取证P0）。
  *
- * ### 契约（用户原话）
+ * ### 契约（需求原话）
  * > "默认关闭；通过现有的 karaoke-cmd 文件通道开启…开启后，每次 Key 变化起，若播放位置
  * >  超过 2 秒不前进，则调用 `Thread.getAllStackTraces()` 和 `ExoPlayer:Playback` 线程栈，
  * >  打印到 logcat（tag 用 `PickUpDiag`），同时落盘到 App 私有目录。关闭时对播放行为零影响。"

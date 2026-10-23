@@ -218,7 +218,7 @@ fun AppRoot(vm: MainViewModel) {
         }
 
         // 侧边栏右滑阈值——过阈值后交给上面的 LaunchedEffect 接管展开动画。
-        // v1.3.3: 48→20dp——用户反馈右滑常没反应,阈值过高是主因之一。
+        // v1.3.3: 48→20dp——实测反馈右滑常没反应,阈值过高是主因之一。
         // (手势本体在下方内容 Box 的 Final-pass pointerInput 里,见 v1.3.5 注释。)
         val openThresholdPx = with(LocalDensity.current) { 20.dp.toPx() }
 
@@ -350,7 +350,7 @@ fun AppRoot(vm: MainViewModel) {
             // v1.3.0: Agent 页是独立对话界面,不显示底部导航栏和 MiniPlayer。
             // v1.3.6: MiniPlayer 进出加动画——播放页展开时向下滑出、收起时滑回,
             // 用与播放 sheet 相同的 DecelerateEasing 曲线族,与下拉动作呼应(此前
-            // 瞬间消失/弹回,按帧生硬——用户反馈的正是这)。AnimatedVisibility 让
+            // 瞬间消失/弹回,按帧生硬——实测反馈的正是这)。AnimatedVisibility 让
             // 布局高度同步动画(收起滑回时 BottomNav 自然下移接住,不再跳)。
             if (!vm.agentOpen) {
                 androidx.compose.animation.AnimatedVisibility(
@@ -607,7 +607,7 @@ fun AppRoot(vm: MainViewModel) {
                     }
                     // v1.3.11: **播放页/歌词本上也要看得见提示**。
                     // ToastHost 原先只挂在主窗口(AppRoot:750),而 ModalBottomSheet 是**独立窗口**
-                    // —— 播放页与歌词本上的任何提示都被它压在下面。用户实测症状:"点翻译按钮
+                    // —— 播放页与歌词本上的任何提示都被它压在下面。真机实测症状:"点翻译按钮
                     // 转圈,没返回就直接停止动画、回到没按过的样式,而且**没有报错**"
                     // (代码确实调了 showToast,但那个 toast 渲染在歌词本下面,根本看不见)。
                     ToastHost(vm)
@@ -678,7 +678,7 @@ fun AppRoot(vm: MainViewModel) {
                 // v1.3.3b: 播放速度子页有自定义速度输入框——contentWindowInsets 置零后
                 // sheet 不再自动避让 IME,内容包 imePadding 让输入框随键盘顶起。
                 //
-                // P2-D（用户 2026-10-18）：面板**抬高** —— 原先完全由内容决定高度，短的子页
+                // P2-D（定稿）：面板**抬高** —— 原先完全由内容决定高度，短的子页
                 // （比如"升降 Key"）被用户嫌"非常矮"。
                 // ⚠️ 2026-10-19 用户看到成品后指正：第一版写成**固定 60% 高**，结果短子页
                 // **底下空出一大片**，布局很怪。改为**内容自适应 + 下限 + 上限**：
@@ -779,7 +779,7 @@ private fun ArtistPickerDialog(vm: MainViewModel) {
     val c = LocalOrganic.current
     val artists = vm.artistPickerFor
     if (artists == null || artists.isEmpty()) return
-    // v1.3.x 头像修复(用户报告:多作者选择弹窗头像框没识别到写真):原实现
+    // v1.3.x 头像修复(真机报障告:多作者选择弹窗头像框没识别到写真):原实现
     // 每行只有通用 User 图标,没接头像链路。歌手页同款两步:fetchArtistAvatar
     // 触发解析(override→cache→Discogs 自动源,cache 命中不触网)+ artistImage
     // 取 URL + rememberCandidateArt 出位图。URL 未就绪/无写真时回退 User 图标。
@@ -854,7 +854,7 @@ private fun LyricsSourcePickerDialog(vm: MainViewModel) {
             } catch (_: Exception) { }
         }
     }
-    // v1.3.x: agent websearch 需 LLM+联网搜索双配置——未配置时置灰(选项副文案已按用户要求移除)。
+    // v1.3.x: agent websearch 需 LLM+联网搜索双配置——未配置时置灰(选项副文案已按需求要求移除)。
     val agentReady = vm.activeLlmConfig() != null && vm.tavilyApiKey.isNotBlank()
     androidx.compose.material3.AlertDialog(
         onDismissRequest = { vm.lyricsSourcePicker = false },
@@ -922,7 +922,7 @@ private fun SourcePickerRow(
         horizontalArrangement = Arrangement.spacedBy(11.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        // v1.3.10 需求 A31(二改):**去掉每源图标**——用户指出"图标跟供应商完全无关",
+        // v1.3.10 需求 A31(二改):**去掉每源图标**——验收指出"图标跟供应商完全无关",
         // 语义图标反而误导。改成用户给的方案:**选中项前面一个实心圆点**。
         // 非选中项保留等宽空位(9dp),保证所有标签左缘对齐。
         Box(Modifier.size(9.dp), contentAlignment = Alignment.Center) {
@@ -1098,7 +1098,7 @@ private fun RootBackHandler(vm: MainViewModel) {
 private val MiniCoverSize = 40.dp
 
 /** v1.3.x 需求4:封面与歌名/歌手文字区之间的留白。
- *  原为 11dp,用户反馈"封面和歌名、歌手名之间距离太近",加大到 20dp;
+ *  原为 11dp,实测反馈"封面和歌名、歌手名之间距离太近",加大到 20dp;
  *  歌名↔歌手彼此仍保持原有紧凑行距(未动 Column 内两行)。 */
 private val MiniCoverTextGap = 20.dp
 
@@ -1289,14 +1289,14 @@ private fun MiniPlayer(vm: MainViewModel, track: Track) {
                                 Text(pageTrack.title, style = body(13.5f, FontWeight.Bold, c.text), maxLines = 1, overflow = TextOverflow.Ellipsis)
                                 // v1.3.10: 补 overflow——原实现只有 maxLines,Compose 默认 Clip,
                                 // "揽佬SKAI ISYOURGOD" 这类长名被硬裁成"揽佬SKAI"且无省略号,
-                                // 看起来像名字只剩一半(用户反馈"歌手名显示不全")。与上一行同款省略号。
+                                // 看起来像名字只剩一半(实测反馈"歌手名显示不全")。与上一行同款省略号。
                                 Text(pageTrack.artist, style = body(11.5f, FontWeight.Normal, c.n600), maxLines = 1, overflow = TextOverflow.Ellipsis)
                             }
                         }
                     }
                 }
                 // ── 封面轨道:封面**位置固定,永不跟拖动走** ──────────────────────────
-                // 设计意图(用户 2026-09-28 明确):左右滑切歌时"走的是歌名/歌手,封面不动"
+                // 设计意图(定稿 明确):左右滑切歌时"走的是歌名/歌手,封面不动"
                 // ——所以封面的切换效果必须由 CoverArt 自己的**跨专辑交叉淡化**承担
                 // (crossFade=true),而不是让它横移跟着页面替换。
                 //
@@ -1310,7 +1310,7 @@ private fun MiniPlayer(vm: MainViewModel, track: Track) {
                     // v1.3.10 需求 A17:封面槽的 key **只含槽位,不含 track.id**。
                     // 为什么:换歌时若 key 变化,这个 CoverArt 实例会被重建 → 它 `remember`
                     // 里的"上一张已就绪封面"(lastArt)被清空 → 跨专辑淡化失去垫底的旧封面,
-                    // 且新曲封面未就绪时会落到**首字占位**(用户报的"原封面→首字→新封面"闪烁)。
+                    // 且新曲封面未就绪时会落到**首字占位**(真机报障的"原封面→首字→新封面"闪烁)。
                     // 只按槽位作 key(0/1/2 天然唯一)保留实例与 lastArt,淡化才成立。
                     key(slotIndex) {
                         Box(
@@ -1320,7 +1320,7 @@ private fun MiniPlayer(vm: MainViewModel, track: Track) {
                                 .clickable { vm.playerOpen = true },
                         ) {
                             // v1.3.10 需求 A17:封面**固定不动**(见上方注释),跨专辑换封面
-                            // 用**翻面**动画交代——用户明确要的"翻面过渡效果"。
+                            // 用**翻面**动画交代——需求方明确要的"翻面过渡效果"。
                             CoverArt(
                                 pageTrack, MiniCoverSize, RoundedCornerShape(8.dp), fontSize = 16,
                                 transition = CoverTransition.FLIP,
@@ -1337,7 +1337,7 @@ private fun MiniPlayer(vm: MainViewModel, track: Track) {
                     .clickable { SystemOutputSwitcherDialogController.showDialog(ctx) },
                 contentAlignment = Alignment.Center,
             ) {
-                // v5.2: mini 设备按钮保持默认图标（用户反馈：随设备变图标反而违和、
+                // v5.2: mini 设备按钮保持默认图标（实测反馈：随设备变图标反而违和、
                 // 切蓝牙不变色。回退到恒显 Speaker，点击仍调系统 Output Switcher）。
                 OIcon(Lucide.Speaker, 17.dp, c.n600)
             }
@@ -1547,9 +1547,9 @@ private const val BRAND_EN_SP = 15.5f
 private val BRAND_GAP = 2.dp
 
 /**
- * 副标题「PickUpMusic」的不透明度（用户 2026-10-20「修改1」）。
+ * 副标题「PickUpMusic」的不透明度（定稿「修改1」）。
  *
- * 用户原话："「拾音」和「PickUpMusic」不是平级，英文是副标题…白色 alpha 0.78，
+ * 需求原话："「拾音」和「PickUpMusic」不是平级，英文是副标题…白色 alpha 0.78，
  * **比「拾音」淡一点点，不要灰很多，但肉眼要有区分度**"。
  *
  * 叠在深色抽屉底 `#2B2620` 上时，主题文字色（米白 #F2E9DA）按 0.78 透明度混出
@@ -1573,7 +1573,7 @@ private val BRAND_CN_LIFT = 2.6.dp
  * 品牌标识在给定可用宽度下允许的**整体缩放比**（纯函数，JVM 单测见 `BrandMarkFitTest`）。
  *
  * 恒 ≤ 1；可用宽度不足时按**同一比例**把两段一起缩小，所以 26 : 15.5 的字号比例保持不变。
- * **不设缩放下限**：用户要求"低于下限也不许换行，继续缩小"，因此宽度多窄都只缩不折行。
+ * **不设缩放下限**：需求要求"低于下限也不许换行，继续缩小"，因此宽度多窄都只缩不折行。
  *
  * @param availPx 抽屉里留给品牌区的可用宽度（px）；≤ 0 视为无约束
  * @param naturalPx 两段按原字号排版后的自然总宽（px）
@@ -1586,7 +1586,7 @@ internal fun brandMarkScale(availPx: Int, naturalPx: Int): Float {
 /**
  * 侧边栏品牌标识：「拾音」+「PickUpMusic」，**永远单行**。
  *
- * - 两段都用 [FontFamily.Default]（用户 2026-10-20 指定：不用 `body()`/`heading()` 的自定义字体），
+ * - 两段都用 [FontFamily.Default]（定稿 指定：不用 `body()`/`heading()` 的自定义字体），
  *   纯白；「拾音」Bold、「PickUpMusic」SemiBold。
  * - **宽度适配**：先用 [rememberTextMeasurer] 量出两段的自然总宽，再用 [brandMarkScale] 求整体
  *   缩放比 —— 装得下按原尺寸，装不下一起缩，**永不换行**（`maxLines = 1` + `softWrap = false`）。
@@ -1600,7 +1600,7 @@ private fun BrandMark() {
     val measurer = rememberTextMeasurer()
     val density = LocalDensity.current
     // 2026-10-23 用户定稿：两主题同一配方——两行**同色系**（都是主题文字色），
-    // 英文只淡一档（0.78）。浅色此前用 n500 暖灰，用户实测"一个全黑一个浅灰
+    // 英文只淡一档（0.78）。浅色此前用 n500 暖灰，真机实测"一个全黑一个浅灰
     // 很奇怪"，与「拾音」不搭；n500 与 v1.4.0 同款但那是 13sp 细体，现 15.5sp
     // 粗体下色差被放大。文字色 0.78 叠米色底混出 ≈#4C4842 软深棕灰——"黑但淡"。
     val cnColor = c.text
@@ -1615,7 +1615,7 @@ private fun BrandMark() {
         fontFamily = FontFamily.Default,
         fontWeight = FontWeight.SemiBold,
         fontSize = BRAND_EN_SP.sp,
-        // 副标题比标题淡一点（用户 2026-10-20 修改1；v1.4.0 浅色即 n500）。
+        // 副标题比标题淡一点（定稿 修改1；v1.4.0 浅色即 n500）。
         color = enColor,
     )
     // 量宽用**与渲染完全相同的一份 style**（同一 fontScale / density），
@@ -1670,7 +1670,7 @@ private val MENU_MIN_HEIGHT = 268.dp
 private const val MENU_MAX_HEIGHT_FRACTION = 0.6f
 
 /**
- * P2-D：面板内容**底部留白** —— 用户要求"任何可点击控件不得位于屏幕底部内（导航栏高度 + 72dp）"。
+ * P2-D：面板内容**底部留白** —— 需求要求"任何可点击控件不得位于屏幕底部内（导航栏高度 + 72dp）"。
  * 导航栏那一段由 `navigationBarsPadding()` 负责，这里再补 72dp。
  */
 private val MENU_BOTTOM_SAFE_DP = 72.dp
@@ -1682,7 +1682,7 @@ private fun PlayerMenuSheetContent(vm: MainViewModel) {
     if (track == null) return
     // 2026-10-22 用户："播放页编辑点进播放速度/升降 Key/伴唱等子页时，退出没有对应的
     // 动画，很不自然，加一个自然的过渡动画" → 初版做了 56dp 位移 + 明显淡入，
-    // 用户反馈"不太自然，喧宾夺主" ⇒ **收轻**：位移 16dp、160ms、淡入只到 0.85，
+    // 实测反馈"不太自然，喧宾夺主" ⇒ **收轻**：位移 16dp、160ms、淡入只到 0.85，
     // 只当一个"换页了"的暗示，不抢内容。
     val menuDepth = when (vm.pMenuView) {
         null, "root" -> 0
@@ -1724,7 +1724,7 @@ private fun PlayerMenuSheetContent(vm: MainViewModel) {
                     SheetActionRow(Lucide.Disc, "查看专辑") { vm.goAlbumOf(track.id, highlight = false) }
                 }
                 SheetActionRow(Lucide.User, "查看歌手") { vm.goArtistOf(track.id) }
-                // v1.3.x: "播放页设置"子页入口移除(用户 2026-09 拍板)——睡眠定时/
+                // v1.3.x: "播放页设置"子页入口移除(定稿)——睡眠定时/
                 // 播放速度直接放根菜单(带状态尾注,点击进各自子页);无缝播放/
                 // 自动匹配歌词只留在系统设置页,不再在播放页镜像。
                 SheetActionRow(
@@ -1737,7 +1737,7 @@ private fun PlayerMenuSheetContent(vm: MainViewModel) {
                 SheetActionRow(
                     // 2026-10-21 用户："播放页编辑中播放速度选项**改回原来的图标**"
                     // ⇒ 从 `Lucide.Gauge` 换回 Compose 的 `Icons.Filled.Speed`。
-                    // （之前是为了统一描边风格才换的 gauge，用户明确否掉，以用户为准。）
+                    // （之前是为了统一描边风格才换的 gauge，需求方明确否掉，以用户为准。）
                     Icons.Filled.Speed, "播放速度",
                     trailing = {
                         val spd = if (vm.playbackSpeed == 1.0f) "正常" else "%.2f×".format(vm.playbackSpeed)
@@ -1745,8 +1745,8 @@ private fun PlayerMenuSheetContent(vm: MainViewModel) {
                         OIcon(Lucide.ChevronRight, 16.dp, c.n500)
                     },
                 ) { vm.pMenuView = "speed" }
-                // v1.5.0 用户 2026-10-14：**升降 Key 独立成一项**（原先挤在"播放速度"子页里，
-                // 用户明确指出它该有自己的入口 —— 它是独立的播放控制，不是速度的一个附属）。
+                // v1.5.0 定稿：**升降 Key 独立成一项**（原先挤在"播放速度"子页里，
+                // 需求方明确指出它该有自己的入口 —— 它是独立的播放控制，不是速度的一个附属）。
                 SheetActionRow(
                     // 2026-10-21 图标审查第 2 轮：原为 `SlidersBold`（滑块，读起来像 EQ/设置）→ 谱号。
                     Lucide.ClefTreble, "升降 Key",
@@ -2027,7 +2027,7 @@ private fun PlayerMenuSheetContent(vm: MainViewModel) {
                         }
                         // ⚠️ 2026-10-21 修：这里原来用 `OutlinedTextField` 并硬压 `.height(36.dp)`。
                         // M3 的 `OutlinedTextField` **内部最小高度是 56dp**（label/placeholder 要给
-                        // 浮动标签留位），被压到 36dp 后内容区被裁 —— 用户实测"内容一直没显示完整，
+                        // 浮动标签留位），被压到 36dp 后内容区被裁 —— 真机实测"内容一直没显示完整，
                         // 永远只显示一半"。改用 `BasicTextField`（与设置页「最多保留曲目」那行同一写法），
                         // 高度完全由外层 Box 决定；文字用 Box 的 CenterStart 垂直居中。
                         Box(
@@ -2076,7 +2076,7 @@ private fun PlayerMenuSheetContent(vm: MainViewModel) {
                                 .padding(horizontal = 8.dp, vertical = 8.dp),
                         )
                     }
-                    // 2026-10-21 用户手绘定稿（对照页 docs/slider-mockup.html 已确认）：
+                    // 2026-10-21 用户手绘定稿（对照页 滑块定稿图 已确认）：
                     //   上面一排**只放图标的方框**（磁带 / 播客）+ 下面**设置页同款分段控件**（文字）
                     //   + 控件下一行**随选项变化的说明**。
                     // 顺带解掉之前那处同页重复：播放速度行 = Gauge，而现代档原本也是 Gauge；
@@ -2108,11 +2108,11 @@ private fun PlayerMenuSheetContent(vm: MainViewModel) {
                         style = body(12f, FontWeight.Normal, c.n500),
                         modifier = Modifier.fillMaxWidth().padding(top = 9.dp, start = 2.dp),
                     )
-                    // v1.5.0：升降 Key **已移到它自己的子页**（用户 2026-10-14 要求独立），
+                    // v1.5.0：升降 Key **已移到它自己的子页**（定稿 要求独立），
                     // 这里不再重复放一份。
                 }
             } else if (vm.pMenuView == "key") {
-                // v1.5.0 升降 Key —— **独立子页**（用户 2026-10-14 要求与"播放速度"分开）
+                // v1.5.0 升降 Key —— **独立子页**（定稿 要求与"播放速度"分开）
                 Column {
                     Row(Modifier.fillMaxWidth().padding(bottom = 14.dp), verticalAlignment = Alignment.CenterVertically) {
                         Box(
@@ -2822,7 +2822,7 @@ private fun BoxScope.AlbumMenuSheet(vm: MainViewModel) {
             )
             Box(Modifier.fillMaxWidth().height(1.dp).background(c.divider))
             Spacer(Modifier.height(6.dp))
-            // ── v22 修补: 拆分专辑禁用「调整歌曲顺序」(用户反馈③——专辑页排序
+            // ── v22 修补: 拆分专辑禁用「调整歌曲顺序」(实测反馈③——专辑页排序
             // 与拆分编辑页的顺序是两套真源,专辑页改动会导致移动错乱;拆分后一切
             // 顺序以编辑页为准,想调顺序回编辑页拖)。
             if (!vm.albumIsSplit(vm.albumKey ?: "")) {
@@ -2905,7 +2905,7 @@ private fun DateField(
     label: String,
     value: Int,
     options: List<Int>,
-    /** v1.5.0 A58：值为"未设置"(0) 时，下拉打开定位到哪个值——用户要求年份停在 2000，
+    /** v1.5.0 A58：值为"未设置"(0) 时，下拉打开定位到哪个值——需求要求年份停在 2000，
      *  而不是停在第 0 项（那等于要从公元 1 年一路滚两千年）。 */
     unsetScrollTo: Int = 2000,
     modifier: Modifier = Modifier,
@@ -3031,7 +3031,7 @@ private fun AlbumEditDialogs(vm: MainViewModel, trackEditFor: Long?, onTrackEdit
     // 三个封面入口全都静默 return，用户看到"换封面一点反应都没有"。
     val effAlbumId = albumId?.takeIf { it > 0 }
         ?: com.shiyin.music.data.overrideIdForAlbumKey(vm.albumKey ?: "")
-    // ⚠️ 选图 launcher **必须注册在条件块之外**（2026-10-22 用户报"本地图片换封面没反应"）：
+    // ⚠️ 选图 launcher **必须注册在条件块之外**（2026-10-22 真机报障"本地图片换封面没反应"）：
     // 原实现声明在 `if (vm.albumCoverEdit)` 里，而「选相册」按钮先 albumCoverEdit=false
     // 再 picker.launch() —— 对话框先销毁、launcher 随之注销，选图结果回调**永远不回来**。
     // 注册在 AlbumEditDialogs 的稳定作用域里，对话框关掉也不影响回调送达。
@@ -3056,7 +3056,7 @@ private fun AlbumEditDialogs(vm: MainViewModel, trackEditFor: Long?, onTrackEdit
                 val currentType = remember(effAlbumId) { vm.albumTypeFor(effAlbumId) }
                 var type by rememberSaveable(vm.albumKey) { mutableStateOf(currentType) }
                 // v1.3.6: 发布日期编辑——年/月/日三个**下拉单选框**(旧版滑杆 0..2030
-                // 拉到崩,大跨度数值滑杆根本不可用——用户定调)。未识别日期默认"未设
+                // 拉到崩,大跨度数值滑杆根本不可用——定调)。未识别日期默认"未设
                 // 置";选了年月日后按年月 clamp 天数;把"未设置"选回去即清空日期。
                 // v1.3.6 崩溃修复:旧版 savedDate.substring(5,7) 在空串日期(未识别)
                 // 上直接 StringIndexOutOfBounds 闪退——全部改 takeIf+长度守卫。
@@ -3438,9 +3438,9 @@ private fun CandidateCover(
  * v1.5.0 伴唱 §8：升降 Key 行（−6…+6 半音，含 0.5 步进；点中间数字复位）。
  *
  * **只放在「播放倍速」子页一处** —— 它是全局播放控制，和播放速度同级。
- * （2026-10-14 用户指出：原先速度子页与伴唱面板各放了一份，会被误读成两个独立功能。）
+ * （2026-10-14 验收指出：原先速度子页与伴唱面板各放了一份，会被误读成两个独立功能。）
  *
- * 步进（用户要求增大精度后定的）：
+ * 步进（需求要求增大精度后定的）：
  *  - **点 ±** → 走 **1 个半音**（快速找调，最常用）；
  *  - **长按 ±** → 走 **0.5 个半音**（微调，跟唱对不上原调那半格时用）。
  * 内部单位是**半音步数**（+1 步 = +0.5 半音），见 [com.shiyin.music.playback.KeyShift]。
@@ -3501,7 +3501,7 @@ private fun KeyShiftRow(vm: MainViewModel, c: com.shiyin.music.ui.theme.OrganicC
  *
  * 入口两处，打开的是同一个面板：歌词页的伴唱麦克风按钮、播放页 ⋮ 菜单的「伴唱」项。
  *
- * A70（用户 2026-10-15 口述）改口径：
+ * A70（定稿）改口径：
  *  - **进面板默认「原曲」**，三档滑块**常显**；原来的「开启伴唱」门槛已删除
  *    （旧版未开启时滑块根本不出现，用户判定为"完全没有用的步骤"）。
  *  - 选「人声/伴奏」本身就会起分离 ⇒ 这里显示加载状态、**原曲继续唱着**，
@@ -3566,7 +3566,7 @@ private typealias KModeVisual = com.shiyin.music.ui.components.KaraokeModeVisual
 /**
  * P2-D：**带声波的人头剪影**（人声档）。
  *
- * 用户明确"**不是麦克风**" —— 所以不画手持话筒，画一个人头 + 肩 + 右侧两道声波弧。
+ * 需求方明确"**不是麦克风**" —— 所以不画手持话筒，画一个人头 + 肩 + 右侧两道声波弧。
  */
 @Composable
 private fun HeadWaveIcon(diameter: androidx.compose.ui.unit.Dp, tint: Color) {

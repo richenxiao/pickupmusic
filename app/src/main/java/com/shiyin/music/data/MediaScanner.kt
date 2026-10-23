@@ -273,7 +273,7 @@ object MediaScanner {
                 val id = c.getLong(iId)
                 val data = c.getString(iData) ?: ""
                 val rel = c.getString(iRel) ?: ""
-                // v1.5.0 P1：调试导出的伴奏/人声 WAV **不是"歌"**，不进曲库（用户 2026-10-12 定调：
+                // v1.5.0 P1：调试导出的伴奏/人声 WAV **不是"歌"**，不进曲库（定稿 定调：
                 // 伴奏/人声要一直圈在拾音自己的地盘内，只在开发期例外）。
                 // 这里按路径拦一道，是**双保险**——正常情况根本走不到：DebugExport 落盘时用的是
                 // 非音频 MIME，MediaProvider 不会把它归入 MediaStore.Audio，本查询也就查不到它。

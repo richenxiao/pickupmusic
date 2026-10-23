@@ -125,7 +125,7 @@ import kotlinx.coroutines.launch
  * 行间细分隔线,按下时 accent 描边 + 略深底色) / 「其他」出口行(铅笔 + 占位文字 + 跳过)。
  *
  * 刻意的取舍:
- * - **单问题单组**,不做分页(用户 2026-09-28 定调;schema 也只支持一个 question)。
+ * - **单问题单组**,不做分页(定稿 定调;schema 也只支持一个 question)。
  * - 「其他」出口**始终存在**——模型给的选项再周全也可能没覆盖用户的真实想法,
  *   只有封闭选项会把用户卡死。
  * - 移动端没有键盘 ↑↓ 导航,所以"高亮"落在**按下态**(手指按住哪行哪行亮),
@@ -286,7 +286,7 @@ fun AgentScreen(vm: MainViewModel) {
     }
     // v1.3.4: 流式期间持续贴底——思考链/打字机都是 replaceAt 更新(size 不变),上面那条
     // LaunchedEffect(size) 不会触发,长思考链把呼吸胶囊顶出可视区、用户看到页面一动不动
-    // "卡住",回答出来才跳一下(用户反馈的"思考一分钟只闪一两秒"正是这个)。
+    // "卡住",回答出来才跳一下(实测反馈的"思考一分钟只闪一两秒"正是这个)。
     // 已经滚离底部(往上翻历史)时不强拽——查看历史优先于自动跟滚。
     val lastMsg = vm.agentMessages.lastOrNull()
     LaunchedEffect(lastMsg?.text, lastMsg?.thinking, vm.agentRunning) {
@@ -300,7 +300,7 @@ fun AgentScreen(vm: MainViewModel) {
     // v1.3.3: 键盘弹出时对话内容也要"顶上去"——列表高度被 imePadding 压缩后,
     // 最新消息会落在可视区外被键盘遮住;监听 IME inset 变化自动滚到底,内容保持可见。
     // 用 scrollToItem(瞬移)不用 animateScrollToItem——动画会让内容"追上去",
-    // 视觉上变成"输入框先动、内容后动"两拍卡顿(用户反馈的正是这个)。
+    // 视觉上变成"输入框先动、内容后动"两拍卡顿(实测反馈的正是这个)。
     val imeBottom = WindowInsets.ime.getBottom(androidx.compose.ui.platform.LocalDensity.current)
     LaunchedEffect(imeBottom, vm.agentMessages.size) {
         if (imeBottom > 0 && vm.agentMessages.isNotEmpty()) {
@@ -315,7 +315,7 @@ fun AgentScreen(vm: MainViewModel) {
     Column(Modifier.fillMaxSize().background(c.bg).imePadding()) {
         // 顶栏
         Row(
-            // v1.3.12(用户反馈"各页返回键位置乱、与板块不对齐"):拾光 Agent 所有层级
+            // v1.3.12(实测反馈"各页返回键位置乱、与板块不对齐"):拾光 Agent 所有层级
             // 统一用 **20dp** 左内边距(与全站设置子页一致),页头与内容同一条左基线。
             Modifier.fillMaxWidth().padding(start = 20.dp, end = 16.dp, top = 16.dp, bottom = 8.dp)
                 .statusBarsPadding(),
@@ -544,7 +544,7 @@ fun AgentScreen(vm: MainViewModel) {
             ),
         ) {
             // §34:页面自己处理 Insets(状态栏/导航栏),**不硬编码顶部间距**。
-            // 之前这里只有 background(c.bg),内容会顶到状态栏上(用户实测的 bug)。
+            // 之前这里只有 background(c.bg),内容会顶到状态栏上(真机实测的 bug)。
             Column(Modifier.fillMaxSize().background(c.bg).statusBarsPadding().navigationBarsPadding()) {
                 MemoryScreen(vm) { vm.agentMemoryScreenOpen = false }
             }
@@ -695,7 +695,7 @@ private fun AgentSettingsDialog(vm: MainViewModel, onDismiss: () -> Unit) {
                 }
 
                 // ── 对话显示(v1.3.12) ─────────────────────────────────────────────
-                // 用户实测:"思考链默认是展开的,应该在设置能够选择默认收起。"
+                // 真机实测:"思考链默认是展开的,应该在设置能够选择默认收起。"
                 SettingsSection("对话") {
                     Row(
                         Modifier.fillMaxWidth()
@@ -757,7 +757,7 @@ private fun AgentSettingsDialog(vm: MainViewModel, onDismiss: () -> Unit) {
                 }
 
                 // ── 拾光记忆(v1.3.12) ─────────────────────────────────────────────
-                // 用户定调:功能区只有一个「拾光记忆」,**不要再套一层"记忆 → 拾光记忆"**
+                // 定调:功能区只有一个「拾光记忆」,**不要再套一层"记忆 → 拾光记忆"**
                 // 的重复层级。所以这里不给 SettingsSection 标题,直接做成一个独立设置项。
                 Column(
                     Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(c.surface)
@@ -812,7 +812,7 @@ private fun SettingsSection(title: String, content: @Composable () -> Unit) {
 }
 
 /** 供应商 chip:选中(展开配置)高亮 accent;激活(当前用于 Agent)带橙点。
- *  v1.3.6: 激活的 chip 整颗变橙(不止橙点——用户定调"哪个中间商在用,一眼看到");
+ *  v1.3.6: 激活的 chip 整颗变橙(不止橙点——定调"哪个中间商在用,一眼看到");
  *  同时选中+激活时用描边区分(橙底白字 + 白描边)。 */
 @Composable
 private fun ProviderChip(text: String, selected: Boolean, active: Boolean, onClick: () -> Unit) {
@@ -1028,7 +1028,7 @@ private fun AgentBubble(
         Modifier.fillMaxWidth(),
         horizontalAlignment = if (isUser) Alignment.End else Alignment.Start,
     ) {
-        // v1.3.5: 步骤面板回到气泡内(底部固定任务清单组件已撤——用户定调:状态
+        // v1.3.5: 步骤面板回到气泡内(底部固定任务清单组件已撤——定调:状态
         // 跟着对话走,聊天流里逐行看;清单概念是给"开发过程"看的,不是 app UI)。
         // v1.3.9(选项2): 动态 Logo 是状态记录的前缀——同一时刻只出现在一处：
         // 有步骤在执行(TOOL/SEARCH)时归步骤块,否则归思考块(THINKING)。
@@ -1051,7 +1051,7 @@ private fun AgentBubble(
                 Column(Modifier.padding(bottom = 6.dp).widthIn(max = 320.dp)) {
                     // v1.4.0: 按语义排序后再渲染——「思考」在上、「联网搜索」在下。
                     // 底层 steps 是**按加入顺序**追加的，搜索往往先于思考被 upsert，
-                    // 不排序就会出现"搜索在上、思考在下"（用户实测反馈）。
+                    // 不排序就会出现"搜索在上、思考在下"（真机实测反馈）。
                     for (s in msg.steps.sortedBy { stepOrder(it.id) }) StepRow(s, c)
                 }
             }
@@ -1087,7 +1087,7 @@ private fun AgentBubble(
                     Text(msg.text, style = body(13.5f, FontWeight.Normal, androidx.compose.ui.graphics.Color.White))
                 }
             } else {
-                // v1.3.9: 顺序修正(用户定调)——**思考链在上、最终输出在下**。
+                // v1.3.9: 顺序修正(定调)——**思考链在上、最终输出在下**。
                 // 之前是 [已思考] → [正文] → [查看思考过程],正文被夹在中间;
                 // 现在:先思考块(已思考 / 查看思考过程 + 展开记录),再正文。
                 val showProcessHistory = msg.processHistory.size >= 2 ||
@@ -1142,7 +1142,7 @@ private fun AgentBubble(
 
                 // v1.3.8: Agent 回复内容(最终输出——在思考链之下)
                 // v1.3.13:打字机还在吐字时**不算完成** —— 否则【复制】【重试】与署名 Logo
-                // 会在正文还没吐完时就冒出来(用户实测)。打字机与 agentRunning 是解耦的
+                // 会在正文还没吐完时就冒出来(真机实测)。打字机与 agentRunning 是解耦的
                 // (见 AgentReplyText 的 v1.3.9 注释),所以这里必须单独听它是否还在打字。
                 var typingNow by remember { mutableStateOf(false) }
                 AgentReplyText(
@@ -1173,7 +1173,7 @@ private fun AgentBubble(
                     // COMPLETED 状态：有内容且已完成
                     // 布局严格照 Claude 真机截图：正文 → 操作栏(复制/重试) → **Logo 另起
                     // 一行在下方**（不与操作栏同行，也不在其上方）。
-                    // v1.3.9: 落款 Logo **只属最新一条回复**（用户定调:署名唯一;发了新
+                    // v1.3.9: 落款 Logo **只属最新一条回复**（定调:署名唯一;发了新
                     // 消息,旧回复的落款随之消失）;操作栏每条都保留。
                     hasContent -> {
                         Column {
@@ -1204,7 +1204,7 @@ private fun AgentBubble(
                                     painter = androidx.compose.ui.res.painterResource(agentBrandRes(c.isDark)),
                                     contentDescription = null,
                                     // v1.3.15: 44→60dp(署名标偏小),并**贴近上方操作栏**
-                                    // (6→2dp:用户反馈署名离复制/重试太远)。与生成中的静止标
+                                    // (6→2dp:实测反馈署名离复制/重试太远)。与生成中的静止标
                                     // 同尺寸,署名出现时不再有大小跳变。
                                     // drawable 已按裁剪视口重生成,盒子多大图案就多大。
                                     // 左缘与消息列对齐(x=0);思考中胶囊的 Logo 也对齐到这里。
@@ -1235,12 +1235,12 @@ private fun AgentBubble(
                     .clip(RoundedCornerShape(8.dp))
                     .background(c2.bg)
                     // v1.3.9: start=0——Logo 左缘对齐到消息列(与署名 Logo 同一垂直线),
-                    // 用户定调"加载 Logo 对齐署名 Logo 的位置"。
+                    // 定调"加载 Logo 对齐署名 Logo 的位置"。
                     .padding(start = 0.dp, end = 10.dp, top = 6.dp, bottom = 6.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                // v1.3.15: 尺寸 40→60dp、速度与"执行中"统一为 2x(用户反馈:刚发命令时的
+                // v1.3.15: 尺寸 40→60dp、速度与"执行中"统一为 2x(实测反馈:刚发命令时的
                 // 思考中比执行中**慢一半**,同一个 Logo 前后换了节奏。原因就是这处用默认 1f、
                 // 步骤面板那处传 2f,文件里的注释还写着"平时 1f"—— 视觉上就是两档速度)。
                 // 与 ThinkingBlock 内的 Logo 始终保持同尺寸、同速:占位气泡到思考块的切换
@@ -1253,7 +1253,7 @@ private fun AgentBubble(
                 )
             }
         }
-        // v1.3.5: 消息级"本次 N tokens"删除(用户定调:用量不在对话里报,统计曲线
+        // v1.3.5: 消息级"本次 N tokens"删除(定调:用量不在对话里报,统计曲线
         // 挪到 Agent 设置页)。
     }
 }
@@ -1264,7 +1264,7 @@ private fun AgentBubble(
  *           1.5-2s ease-in-out 循环),不是通用 loading 圈。
  *  完成态: 折叠为"已思考 X 秒"(耗时本身有信息量),高度收缩 200-250ms ease-out。
  *  展开态: reasoning 按语义分段(转折词分段),段落间细分隔线,expandVertically
- *          200ms FastOutSlowIn。v1.3.4: live 期间也可点开(边思考边看,用户定调
+ *          200ms FastOutSlowIn。v1.3.4: live 期间也可点开(边思考边看,定调
  *          "点击之后它就展开了"才是正常产品逻辑,不再等完成才给点)。
  *  卡住降级: live 超过 9s 无新内容(由外部不再更新触发不了,内部用 LaunchedEffect
  *          监测 thinking 文本静止时长)→ 文案切"仍在思考…"。
@@ -1303,7 +1303,7 @@ private fun ThinkingBlock(
     defaultCollapsed: Boolean = false,
 ) {
     val c = LocalOrganic.current
-    // v1.3.5: live 态默认展开(用户定调:思考中就摊开看,像 ChatGPT 的 reasoning
+    // v1.3.5: live 态默认展开(定调:思考中就摊开看,像 ChatGPT 的 reasoning
     // 流);回复出来(live=false)自动折叠成"已思考 X 秒"。用户手动点开/收起过
     // (manualToggle)就尊重手选,不再自动切。
     // v1.3.12:设置里可改为"默认收起"(defaultCollapsed)——那时连 live 也不自动摊开。
@@ -1391,7 +1391,7 @@ private fun ThinkingBlock(
 
 /** v1.3.3: Agent 回复文本——流式已由 VM 逐段写入 msg.text,这里不再本地模拟打字机;
  *  尾部光标(▍)随文本存在,流完自然消失。
- * v1.3.5: 真逐字打字机——VM 侧 onContent 是全量串,一整段一整段跳(用户反馈"像
+ * v1.3.5: 真逐字打字机——VM 侧 onContent 是全量串,一整段一整段跳(实测反馈"像
  * 一段动画渲染出来,不是一个字一个字吐")。这里维护显示游标:每 ~30ms 吐 1-2
  * 个字符平滑追赶全量文本;流结束时一次性追平(不拖泥带水)。CJK 与拉丁都按
  * 字符数推进(视觉节奏一致性够用)。
@@ -1405,7 +1405,7 @@ private fun AgentReplyText(
     onTypingChanged: (Boolean) -> Unit = {},
 ) {
     val c = LocalOrganic.current
-    // v1.3.9 打字机修复(用户实测"最终回答瞬间输出"):技能类回复的正文是**一次性**
+    // v1.3.9 打字机修复(真机实测"最终回答瞬间输出"):技能类回复的正文是**一次性**
     // 写入的,`agentRunning` 几乎立刻翻 false——只按 streaming 判断,动画还没跑就已结束。
     // 现在:首帧决定起点(流式中从 0 开始;历史消息直接整段),末条消息**持续跑到追平**
     // 为止(与 agentRunning 解耦),不再中途被"瞬间补全"截断。
@@ -1458,7 +1458,7 @@ private fun AgentReplyText(
  *
  * 不写"有什么我能帮你的"(通用助手腔)、不列功能清单、不催输入;
  * 也**不替用户安排下一步**("慢慢挑""不着急"那类预设动作的说法一律弃用)。
- * 排版硬约束(用户要求):**每行都短到能独占一行**,否则窄屏上第二行会被挤成一两个字;
+ * 排版硬约束(需求要求):**每行都短到能独占一行**,否则窄屏上第二行会被挤成一两个字;
  * 颜文字只出现在行尾、且整组跟着这一行(靠显式分行 + softWrap=false 保证不被拆开),
  * 取值来自 [com.shiyin.music.data.ai.KaomojiPolicy] 的同一份清单(UI 与模型输出不许漂移),
  * 只在情绪点略高的两条用;不用也不是缺陷——不写死有或无。
@@ -1594,7 +1594,7 @@ private fun TypewriterGreeting(
 
 /**
  * v1.3.15:删掉问候语尾部的**逐字渐入**(原实现:末尾 4 个字素 0.35→1 alpha)。
- * 用户反馈"打字到倒数第三个字时有打光效果,显示并不好"—— 打字机本身已经把"正在写"讲清楚了,
+ * 实测反馈"打字到倒数第三个字时有打光效果,显示并不好"—— 打字机本身已经把"正在写"讲清楚了,
  * 再给尾字加一道由浅到深的光只会让那两个字看起来像没渲染出来。现在所有字素同色,写出来即完整。
  */
 
@@ -1770,7 +1770,7 @@ private fun StepRow(s: AgentEngine.Step, c: com.shiyin.music.ui.theme.OrganicCol
  * 为什么要它:记忆出问题时从对话里看不出断在哪一步(没存?存失败?没检索到?检索异常?
  * 没注入?注入了没用?)。这一行把**真实状态**摆出来,让问题可判断。
  *
- * 视觉规格(用户定调):
+ * 视觉规格(定调):
  *  - **进行中** → 文案上有一道**从左向右流动的光**。实现:把文字渲进自己的离屏层
  *    (CompositingStrategy.Offscreen),再用 `SrcAtop` 把渐变色带只染在**已有笔画**上
  *    —— 效果是"光流过字面",而不是一条通用 loading 圈。与步骤行的音浪条刻意区分开:
@@ -2006,7 +2006,7 @@ private fun TokenTrendPanel(vm: MainViewModel) {
         // ── 双 Y 轴趋势图 ──
         val maxTok = data.maxOf { maxOf(it.input, it.output, it.cache) }.coerceAtLeast(1L)
         val maxCost = data.maxOf { costOf(it.input, it.output, it.cache) }.coerceAtLeast(0.01)
-        // v1.3.10 A19(用户要求):切换时间范围导致数据变化时,曲线要**过渡渲染**,不能硬切。
+        // v1.3.10 A19(需求要求):切换时间范围导致数据变化时,曲线要**过渡渲染**,不能硬切。
         // 点数本来是变的(1/3/7/14/30),形状无从对应 —— 所以先把每条曲线**线性重采样到
         // 统一分辨率**(48 点)再逐点插值,于是"点数变化"也变成一次平滑形变。
         // 归一化用**目标**上限:轴刻度立刻显示新范围(数字不跳),曲线在归一化空间里过渡。
@@ -2050,7 +2050,7 @@ private fun TokenTrendPanel(vm: MainViewModel) {
         val xLabelStart = com.shiyin.music.data.ai.TokenUsageWindow.dayLabel(s.dayRange.first(), s.tzOffsetMs)
         val xLabelEnd = if (rangeDays == 1) "现在" else "今天"
 
-        // v1.3.10 A19(用户反馈):手指在图上移动时,每个位置都要能读到"那一天用了多少"。
+        // v1.3.10 A19(实测反馈):手指在图上移动时,每个位置都要能读到"那一天用了多少"。
         // null = 没在触摸;否则 = 命中的**原始数据天序号**(不是重采样后的下标——数值必须是
         // 真实某天的数字,不能是插值出来的)。
         var hoverIdx by remember { mutableStateOf<Int?>(null) }
@@ -2098,7 +2098,7 @@ private fun TokenTrendPanel(vm: MainViewModel) {
             // (usable=plotH*0.9,5 条线),即自上而下 10% / 32.5% / 55% / 77.5% / 100%。
             // 所以标签列只占 [10% .. 100%] 这一段(高度 90%),而不是 fillMaxHeight()——
             // 原来占满整个 Box,最下方的 "0"/"¥0" 落到 X 轴日期那一行上,两组小字正好
-            // 叠在一起(用户实测"字体重叠了数字")。
+            // 叠在一起(真机实测"字体重叠了数字")。
             val axisTop = chartH * 0.1f
             val axisSpan = chartH * 0.9f
             Canvas(Modifier.fillMaxWidth().height(chartH).padding(top = padTop)) {
@@ -2209,7 +2209,7 @@ private fun TokenTrendPanel(vm: MainViewModel) {
                 }
             }
             // 左 Y 轴(Token 刻度)。字号 8→10sp:8sp 在手机上几乎读不出来,
-            // 用户反馈"XY 轴没有任何内容"有一部分就是字太小看不清。
+            // 实测反馈"XY 轴没有任何内容"有一部分就是字太小看不清。
             // 5 档刻度(与 4 等分的 5 条网格线一一对应)。
             Column(
                 Modifier.padding(top = padTop + axisTop).height(axisSpan),

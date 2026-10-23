@@ -89,7 +89,7 @@ object AgentEngine {
         fun albumTracks(): List<com.shiyin.music.data.Track>
         /** 读任意专辑(按 albumKey)的曲目(当前排序),技能按名找到专辑后用。 */
         fun albumTracksOf(key: String): List<com.shiyin.music.data.Track>
-        /** 按用户说的专辑名在音乐库里找专辑(忽略大小写/空格/标点),返回 albumKey;找不到 null。 */
+        /** 按使用场景的专辑名在音乐库里找专辑(忽略大小写/空格/标点),返回 albumKey;找不到 null。 */
         fun findAlbum(query: String): String?
         /** v1.3.6: 全库搜歌(标题/歌手/专辑模糊匹配,按播放次数排序),供
          *  library_query 技能回答"库里有没有XX"类问题。空列表=没搜到。 */
@@ -135,7 +135,7 @@ object AgentEngine {
          * v1.3.10 需求 A27:把歌词文本落到**当前曲目**(模型联网搜到歌词后用这个保存)。
          *
          * 为什么必须有这条桥:在此之前,模型即使 web_search 搜到了歌词,**也没有任何工具
-         * 能把它落地**——于是它只能回一句"内置源没有"(用户实测:"死死限定住,那就是
+         * 能把它落地**——于是它只能回一句"内置源没有"(真机实测:"死死限定住,那就是
          * workflow 不是 agent")。复用 .lrc 导入通道(见 importLrcContent:导入即自动保存)。
          *
          * @param name 来源标签(会显示在歌词卡片的"来源 · X"),如 "联网"
@@ -151,7 +151,7 @@ object AgentEngine {
          * 开放式选曲(discover_music)拿候选池。
          *
          * 为什么要加这条桥:在此之前 Agent 拿不到任何"全库视角"的入口,searchTracks 又
-         * 必须给关键词 —— 用户说「你自己挑一首」时模型手里空无一物,只能反问歌名(用户
+         * 必须给关键词 —— 使用场景「你自己挑一首」时模型手里空无一物,只能反问歌名(用户
          * 反馈的缺陷根因之一)。**只读,不改库**。
          */
         fun listAllTracks(): List<com.shiyin.music.data.Track>
@@ -197,7 +197,7 @@ object AgentEngine {
          * v1.3.15: 本轮**推荐槽位**的外部状态(上一轮意图 + 会话序号 + 时间 + 本轮原话)。
          *
          * 为什么走桥:技能是无状态的,不知道"上一轮说过什么、这是第几轮、现在几点"。
-         * 而「推荐适合睡觉的歌」→ 下一轮只补一句「方大同的」要能接上场景,必须由持有
+         * 而「推荐适合睡觉的歌」→ 下一轮只补一句「某歌手的」要能接上场景,必须由持有
          * 会话状态的一侧(vm)提供;技能据此自行调 [RecommendationPlan.mergeIntent] 判定,
          * 不在分发层做特例。
          */
@@ -206,7 +206,7 @@ object AgentEngine {
         /**
          * v1.3.15: 记下**本轮推荐槽位**(场景/歌手/专辑) —— discover_music 执行完调用。
          *
-         * 记的是**合并后**的槽位(含代码从上一轮继承来的场景),这样「方大同的」这种
+         * 记的是**合并后**的槽位(含代码从上一轮继承来的场景),这样「某歌手的」这种
          * 补充轮不会把上一轮的场景冲掉。只活在内存里、只在本会话内有效,新会话清空。
          */
         fun recordRecIntent(scene: String?, artist: String?, album: String?) = Unit
@@ -222,7 +222,7 @@ object AgentEngine {
         /**
          * v1.3.13:**可点选项**(如"你自己挑一首"给出的几首候选)。
          *
-         * 为什么加它(用户定调):智能助手应该让用户**少输入** —— 列了 A/B/C 三首还让用户
+         * 为什么加它(定调):智能助手应该让用户**少输入** —— 列了 A/B/C 三首还让用户
          * 打字说歌名是很蠢的交互;应该直接给按钮,点一下就把那首放上。
          * 非空时调用方把它渲染成选择卡片(复用既有 clarify 卡片),点选即发一条消息。
          *
@@ -540,7 +540,7 @@ object AgentEngine {
             .containsMatchIn(intent) ||
             Regex("""按\s*(官方|正确)\s*(顺序|曲序)""").containsMatchIn(intent)
         if (!sortHit) return null
-        // v1.3.4: 书名号里抓到的名字做资格判定——纯数字(如用户说"排第15首歌"被《15》
+        // v1.3.4: 书名号里抓到的名字做资格判定——纯数字(如使用场景"排第15首歌"被《15》
         // 误抓)、单字符不作为专辑名;空则不带 album 参数(技能自己回退当前专辑页)。
         val albumArgRaw = Regex("""《([^》]+)》""").find(intent)?.groupValues?.get(1)
             ?: Regex("""「([^」]+)」""").find(intent)?.groupValues?.get(1)

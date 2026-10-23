@@ -13,7 +13,7 @@ import java.net.URLEncoder
  * 抓取歌词页 HTML → UtaTenParser.parsePage → LyricAligner.align → List<OccurrenceReading>。
  *
  * ⚠️ Phase 2 修复：resolve 不再吞异常返回 null——改为抛 [ResolveException]（带可区分
- * 的 reason），让调用方（VM）能给用户明确的失败原因（"没找到歌曲"/"页面访问失败"/
+ * 的 reason），让调用方（VM）能给需求方明确的失败原因（"没找到歌曲"/"页面访问失败"/
  * "解析失败"/"对齐失败"）。网络/IO 异常仍会抛，但包装为 reason=NETWORK。
  *
  * 合规：UtaTen ふりがな为其自有内容、利用規约通常禁止自动抓取——**不适合未经评估直接
@@ -26,7 +26,7 @@ class UtaTenProvider(
 
     override val id: String = "utaten"
 
-    /** resolve 的可区分失败原因。VM 据此给用户明确反馈。 */
+    /** resolve 的可区分失败原因。VM 据此给需求方明确反馈。 */
     enum class Reason { NO_MATCH, NO_FURIGANA, NETWORK, PARSE, ALIGN }
     class ResolveException(val reason: Reason, message: String) : Exception(message)
 
