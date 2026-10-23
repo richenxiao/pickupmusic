@@ -638,9 +638,25 @@ object KaraokeMixControl {
          * 分离就绪回调、`seed` 调试命令…），漏掉任何一处都会变成"伴奏永远不出声"。
          */
         set(value) {
-            if (value != null) arm()
+            if (value != null) arm(currentItemId)
             field = value
         }
+
+    /**
+     * **当前播放条目的身份**（mediaId；由 app 在每次 `onTrackStarted` 写入）。
+     *
+     * 与 [armedForItemId] 配对使用：音频线程只在"这份源武装时所属的条目 == 当前条目"
+     * 时才认它（见 [MixArming.onControl]）。**这是单曲循环 bug 的修法核心** ——
+     * 循环时"条目切换"与"app 重新武装"的先后顺序不定，只比令牌新旧无法区分
+     * "武装属于新条目"还是"属于上一个条目"，比身份才没有歧义。
+     */
+    @Volatile
+    var currentItemId: Long = -1L
+
+    /** 最近一次 [arm] 是为哪个条目武装的。 */
+    @Volatile
+    var armedForItemId: Long = -1L
+        private set
 
     /**
      * **伴奏源的"武装令牌"**（2026-10-19 真机报障的 BUG：换曲时漏出上一首开头 ~0.5 秒）。
@@ -658,8 +674,9 @@ object KaraokeMixControl {
         private set
 
     /** 重新武装伴奏源（换曲后若是**同一首重播**，缓存目录仍有效，需要重新武装）。 */
-    fun arm() {
+    fun arm(itemId: Long = currentItemId) {
         armToken++
+        armedForItemId = itemId
     }
 
     fun coeffOf(m: Int): FloatArray = when (m) {
@@ -702,11 +719,24 @@ class MixArming {
     var armed: Boolean = false
         private set
 
-    /** 音频线程每块调一次：app 挂过新源（令牌变了）就武装。 */
-    fun onControl(token: Int) {
+    /**
+     * 音频线程每块调一次。
+     * @param token 当前武装令牌（[KaraokeMixControl.armToken]）
+     * @param armedForItemId 该令牌对应的条目（[KaraokeMixControl.armedForItemId]）
+     * @param currentItemId 正在播放的条目（[KaraokeMixControl.currentItemId]）
+     *
+     * ⚠️ 2026-10-23 补**身份判据**（单曲循环 bug）：只比令牌新旧会漏 —— 循环时 app 可能
+     * **先**重新武装（令牌+1）、音频线程**后**才收到条目切换通知（[onItemChange] 解除武装），
+     * 此后令牌不再变化 ⇒ 伴奏永久停在原曲，而 UI 仍显示"展开"（需要手动再点一次）。
+     * 带上条目身份后"这次武装是为哪一首"没有歧义：同曲循环身份相同 ⇒ 仍能武装。
+     */
+    fun onControl(token: Int, armedForItemId: Long, currentItemId: Long) {
         if (token != lastToken) {
             lastToken = token
-            armed = true
+            armed = armedForItemId == currentItemId
+        } else if (armed && armedForItemId != currentItemId) {
+            // 条目已经换过、而 app 还没为它重新武装 —— 这份源不属于当前条目，弃用
+            armed = false
         }
     }
 
@@ -1292,7 +1322,11 @@ class KaraokeMixProcessor(
         // 真伴奏（块 3）优先 —— 但**必须"武装"过才用**：条目一切换，音频线程就解除武装
         // （见 [MixArming]），等 app 重新挂源。解除武装期间退回占位源（默认 = 原曲本身），
         // 于是"换曲后按新条目的第 0 帧读到上一首缓存"在时间上不可能发生。
-        arming.onControl(KaraokeMixControl.armToken)
+        arming.onControl(
+            KaraokeMixControl.armToken,
+            KaraokeMixControl.armedForItemId,
+            KaraokeMixControl.currentItemId,
+        )
         val real = KaraokeMixControl.realSource
         val src = (if (arming.armed) real else null) ?: sourceOf(KaraokeMixControl.sourceKind)
         val ready = src.readAbs(startFrame, inputSampleRate, mixSrc, mixAcc, frames)

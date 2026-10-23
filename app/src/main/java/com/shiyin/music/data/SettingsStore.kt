@@ -368,7 +368,7 @@ private val keyPinnedLibItems = stringSetPreferencesKey("pinned_lib_items")
             com.shiyin.music.data.karaoke.RetentionMode.valueOf(p[keyStemRetentionMode] ?: "")
         }.getOrDefault(com.shiyin.music.data.karaoke.RetentionMode.COUNT)
         val count = (p[keyStemRetentionCount] ?: 10).coerceIn(1, 200)
-        val mb = (p[keyStemRetentionMb] ?: 600).coerceIn(0, 1_000_000)   // 0 = 不限制
+        val mb = (p[keyStemRetentionMb] ?: 500).coerceIn(0, 1_000_000)   // 0 = 不限制
         return Triple(mode, count, mb)
     }
 

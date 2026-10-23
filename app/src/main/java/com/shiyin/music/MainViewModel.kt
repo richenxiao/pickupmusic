@@ -5145,6 +5145,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         // A71（定稿）：**真换曲**时把伴唱复位。不复位的话处理器仍按绝对帧号
         // 读**上一首**的缓存目录 ⇒ 自动续播时听到上一首的伴奏，界面也停在 Active。
         // 判定同上去重口径：同一个 id（单曲循环重播）不复位——缓存目录与 epoch 偏移都还有效。
+        //
+        // ⚠️ 2026-10-23 单曲循环 bug：循环时"条目切换"与"app 重新武装"的先后**顺序不定**，
+        // 若 app 先武装、音频线程后才收到条目切换（会把武装解除），令牌不再变化 ⇒ 伴奏
+        // 永久停在原曲、UI 却还是"展开"。修法：把**当前条目身份**告诉音频线程，让它按
+        // "这份源属于哪一首"判定（见 MixArming.onControl），与先后顺序无关。
+        com.shiyin.music.playback.KaraokeMixControl.currentItemId = id
         if (id != lastKaraokeTrackId) {
             lastKaraokeTrackId = id
             // **换曲才丢缓存目录**（A75）：`stopKaraoke` 现在会保留它，好让"取消后再点"走秒切；
@@ -5157,9 +5163,21 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             }
         } else if (com.shiyin.music.playback.KaraokeMixControl.realSource != null) {
             // **同一首重播**（单曲循环）：条目确实切换了 —— 音频线程已经**解除武装**（那是修
-            // "换曲漏上一首开头"的关键），但缓存目录仍属于这一首 ⇒ 必须**重新武装**，
-            // 否则伴奏会被无声地停掉，用户以为伴唱坏了。
-            com.shiyin.music.playback.KaraokeMixControl.arm()
+            // "换曲漏上一首开头"的关键），但缓存目录仍属于这一首 ⇒ 必须**重新武装**（带上
+            // 条目身份，让音频线程能判定"这份源就是当前这首的"），否则伴奏会被无声地停掉。
+            //
+            // ⚠️ 两次武装（立即 + 150ms 后补一次）不是冗余：音频线程对"条目切换"的感知
+            // （sink 渲染器偏移）与这里**顺序不定** —— 它晚于本次武装时会把武装解除，而
+            // 令牌不再变化 ⇒ 伴奏永久停在原曲、UI 却仍显示"展开"（真机报障）。补的那次
+            // 与顺序无关地覆盖这条路径；若期间用户已切歌，身份判据（[arm] 记的条目）会
+            // 让这次迟到武装自动失效，不会拿旧缓存给新歌用。
+            com.shiyin.music.playback.KaraokeMixControl.arm(id)
+            viewModelScope.launch {
+                kotlinx.coroutines.delay(150)
+                if (com.shiyin.music.playback.KaraokeMixControl.realSource != null) {
+                    com.shiyin.music.playback.KaraokeMixControl.arm(id)
+                }
+            }
         }
         // v2: 恢复全局播放速度设置
         player.setPlaybackSpeed(playbackSpeed, retroSpeedMode)

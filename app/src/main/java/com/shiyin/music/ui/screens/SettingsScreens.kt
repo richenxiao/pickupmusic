@@ -45,6 +45,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -2034,7 +2035,7 @@ private fun KaraokeSettingsScreen(vm: MainViewModel, scrollStates: MutableMap<St
                     unit = "首",
                     onCommit = { vm.setStemRetentionLimits(it, vm.stemRetentionMb) },
                     presets = listOf(
-                        0 to "不保留", 5 to "5 首", 10 to "10 首",
+                        0 to "不限", 5 to "5 首", 10 to "10 首",
                         20 to "20 首", 50 to "50 首", 100 to "100 首",
                     ),
                 )
@@ -2240,21 +2241,29 @@ private fun RetentionNumberField(value: Int, unit: String, onCommit: (Int) -> Un
     var draft by androidx.compose.runtime.remember(value) {
         androidx.compose.runtime.mutableStateOf(if (value <= 0) "" else value.toString())
     }
+    // ⚠️ **只在输入完成时提交**（回车 / 移开焦点），不能每敲一个字符提交一次：
+    // 占用空间这类上限是**破坏性**的（一提交就按新上限淘汰缓存），逐字符提交意味着
+    // 敲 "500" 会先按 5MB、50MB 淘汰两轮 —— 真机表现就是"改个上限缓存全没了"。
+    fun commit() {
+        val v = if (draft.isEmpty()) 0 else draft.toIntOrNull() ?: return
+        if (v != value) onCommit(v)
+    }
     Row(verticalAlignment = Alignment.CenterVertically) {
         androidx.compose.foundation.text.BasicTextField(
             value = draft,
-            onValueChange = { s ->
-                val digits = s.filter { it.isDigit() }.take(7)
-                draft = digits
-                // 空串 = 不限制（0）；非空且合法才提交
-                val v = if (digits.isEmpty()) 0 else digits.toIntOrNull() ?: return@BasicTextField
-                onCommit(v)
-            },
+            onValueChange = { s -> draft = s.filter { it.isDigit() }.take(7) },
             singleLine = true,
+            keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                keyboardType = androidx.compose.ui.text.input.KeyboardType.Number,
+                imeAction = androidx.compose.ui.text.input.ImeAction.Done,
+            ),
+            keyboardActions = androidx.compose.foundation.text.KeyboardActions(onDone = { commit() }),
             textStyle = body(13.5f, FontWeight.SemiBold, c.text),
             cursorBrush = androidx.compose.ui.graphics.SolidColor(c.accent),
-            modifier = Modifier.width(54.dp).padding(start = 12.dp),
-            decorationBox = { inner ->
+            modifier = Modifier
+                .width(54.dp)
+                .padding(start = 12.dp)
+                .onFocusChanged { st -> if (!st.isFocused) commit() },            decorationBox = { inner ->
                 Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterEnd) {
                     if (draft.isEmpty()) {
                         Text("不限", style = body(13.5f, FontWeight.Normal, c.n500))
@@ -3310,25 +3319,20 @@ private fun AboutScreen(vm: MainViewModel) {
                     Text("发现新版本 v${vm.updateState.latestVersion}", style = body(16f, FontWeight.ExtraBold, c.text))
                 },
                 text = {
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text("当前版本 v${vm.currentVersion}", style = body(12f, FontWeight.Normal, c.n600))
+                    // v1.5.0: 正文是 GitHub Release 的 markdown 源码 —— 交给 MarkdownLite
+                    // 渲染（原先原样贴进 Text，"##"/"**" 记号会一起显示，观感很乱）。
+                    // 同时删掉两行没信息量的小字（"当前版本 vX.X.X"/"将下载最新 APK…"），
+                    // 把高度让给正文（260dp → 420dp）。
+                    Column {
                         if (notes.isNotBlank()) {
-                            Text("更新内容", style = body(12.5f, FontWeight.ExtraBold, c.text))
-                            Text(
+                            com.shiyin.music.ui.components.MarkdownLiteText(
                                 notes,
-                                style = body(12f, FontWeight.Normal, c.n700).copy(lineHeight = 18.sp),
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .heightIn(max = 260.dp)
+                                    .heightIn(max = 420.dp)
                                     .verticalScroll(rememberScrollState()),
                             )
                         }
-                        Text(
-                            if (vm.updateState.apkUrl.isBlank())
-                                "将打开 Release 页面，下载最新 APK 后按系统提示安装"
-                            else "将下载最新 APK，完成后按系统提示安装",
-                            style = body(11.5f, FontWeight.Normal, c.n600),
-                        )
                     }
                 },
                 confirmButton = {
