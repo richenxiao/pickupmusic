@@ -60,6 +60,9 @@ class SettingsStore(private val context: Context) {
     // fanartApiKey/lastfmApiKey 空串=未配(源跳过);disabledSources=用户手动关掉的源 key 集合。
     private val keyFanartApiKey = stringPreferencesKey("fanart_api_key")
     private val keyLastfmApiKey = stringPreferencesKey("lastfm_api_key")
+    // 2026-10-24: LrcShare 站方改版后要求使用者**自己申请** API Key(并明确禁止把它硬编码
+    // 进公开仓库),空串 = 未配置 ⇒ 该源整源不可用(见 LyricsFetcher.activeSources)。
+    private val keyLrcShareApiKey = stringPreferencesKey("lrcshare_api_key")
     private val keyDisabledImageSources = stringSetPreferencesKey("disabled_image_sources")
 /** v1.5.0 右滑固定：被用户固定的音乐库条目 key（"pl:p3" / "album:<key>" / "artist:<name>" / "song:<id>"）。 */
 private val keyPinnedLibItems = stringSetPreferencesKey("pinned_lib_items")
@@ -163,6 +166,8 @@ private val keyPinnedLibItems = stringSetPreferencesKey("pinned_lib_items")
         val retroSpeedMode: Boolean,
         val fanartApiKey: String,
         val lastfmApiKey: String,
+        /** 2026-10-24: LrcShare 自己的 API Key（使用者申请，空 = 未配置 ⇒ 该源不可用）。 */
+        val lrcshareApiKey: String,
         val disabledImageSources: Set<String>,
         /** v1.5.0 右滑固定：被固定的音乐库条目 key，**有序**（index 0 = 最近固定）。 */
         val pinnedLibItems: List<String>,
@@ -239,6 +244,7 @@ private val keyPinnedLibItems = stringSetPreferencesKey("pinned_lib_items")
             retroSpeedMode = p[keyRetroSpeedMode] ?: true,
             fanartApiKey = p[keyFanartApiKey] ?: "",
             lastfmApiKey = p[keyLastfmApiKey] ?: "",
+            lrcshareApiKey = p[keyLrcShareApiKey] ?: "",
             disabledImageSources = p[keyDisabledImageSources] ?: emptySet(),
             pinnedLibItems = readPinnedOrder(p),
             customImageSources = com.shiyin.music.data.image.CustomImageSourceCodec.decode(p[keyCustomImageSources] ?: ""),
@@ -306,6 +312,9 @@ private val keyPinnedLibItems = stringSetPreferencesKey("pinned_lib_items")
     suspend fun setRetroSpeedMode(v: Boolean) = context.dataStore.edit { it[keyRetroSpeedMode] = v }
     suspend fun setFanartApiKey(v: String) = context.dataStore.edit { it[keyFanartApiKey] = v.trim() }
     suspend fun setLastfmApiKey(v: String) = context.dataStore.edit { it[keyLastfmApiKey] = v.trim() }
+
+    /** 2026-10-24: LrcShare API Key（使用者自己申请，空串 = 关掉这个源）。 */
+    suspend fun setLrcShareApiKey(v: String) = context.dataStore.edit { it[keyLrcShareApiKey] = v.trim() }
     /** v1.2.1: 启用/禁用某写真源(源 key,如 "discogs"/"fanart")。enabled=false→加入禁用集。 */
     suspend fun setImageSourceEnabled(sourceKey: String, enabled: Boolean) = context.dataStore.edit { p ->
         val cur = p[keyDisabledImageSources] ?: emptySet()
@@ -564,6 +573,7 @@ private val keyPinnedLibItems = stringSetPreferencesKey("pinned_lib_items")
         "llm_active_provider" to SettingsValueCodec.STR,
         "fanart_api_key" to SettingsValueCodec.STR,
         "lastfm_api_key" to SettingsValueCodec.STR,
+        "lrcshare_api_key" to SettingsValueCodec.STR,
         "disabled_image_sources" to SettingsValueCodec.STR_SET,
         "custom_image_sources" to SettingsValueCodec.STR,
         // v1.3.12:拾光 Agent 行为偏好(用户偏好,换机后应恢复)
@@ -608,6 +618,7 @@ private val keyPinnedLibItems = stringSetPreferencesKey("pinned_lib_items")
      */
     val BACKUP_SECRET_KEYS: Set<String> = setOf(
         "deepseek_api_key", "tavily_api_key", "fanart_api_key", "lastfm_api_key",
+        "lrcshare_api_key",
         "llm_providers", "llm_active_provider",
         "webdav_url", "webdav_user", "webdav_password", "webdav_profiles",
     )
@@ -685,6 +696,7 @@ internal val SECRET_BACKUP_KEYS = setOf(
     "tavily_api_key",
     "fanart_api_key",
     "lastfm_api_key",
+    "lrcshare_api_key",
     "llm_providers",
 )
 

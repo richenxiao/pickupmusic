@@ -15,17 +15,26 @@ import kotlin.math.abs
  * with a ±2s duration tolerance. Sources rotate LRCLIB → 网易云音乐.
  */
 object LyricsFetcher {
-    // v1.3.10 需求 A30:加 LrcShare(api.lrcshare.com,无 key)——覆盖两个内置源搜不到的冷门歌。
+    // v1.3.10 需求 A30:加 LrcShare(api.lrcshare.com)——覆盖两个内置源搜不到的冷门歌。
     // 放在最后 = 兜底(不顶替前两个,只补它们搜不到的)。
+    // ⚠️ 2026-10-24 站方改版:接口不再是"无 key 的 GET" —— 必须带**使用者自己申请的**
+    // X-API-Key(且要先拉 /v1/catalog 换会话令牌)。未配 Key ⇒ 整源不可用:一个请求都不发。
+    // Key 只存在用户设置里:站方明确要求"不要把 Key 硬编码到开源仓库的公开代码中"。
     /** **内置**源(静态清单)。用户开关/自定义源见 [activeSources]。 */
-    val SOURCES = listOf("LRCLIB", "网易云音乐", "LrcShare")
+    val SOURCES = listOf("LRCLIB", "网易云音乐", LRCSHARE)
+
+    const val LRCSHARE = "LrcShare"
 
     /**
      * v1.3.10 需求 A29:当前**实际可用**的源 = 内置(去掉用户关掉的) + 用户自定义源。
      * 取歌词链路(自动匹配级联 / 来源菜单)一律用这个,不再直接用 [SOURCES]。
+     *
+     * 2026-10-24:[LRCSHARE] 还要求已配置 API Key。没配就当它不存在 —— 否则用户库里
+     * **每一首**前两个源没命中的歌都会去撞一个必然 401 的接口(既白费又扰人)。
      */
     fun activeSources(): List<String> =
-        SOURCES.filterNot { it in LyricsSourceConfig.disabledBuiltins } +
+        SOURCES.filterNot { it in LyricsSourceConfig.disabledBuiltins }
+            .filterNot { it == LRCSHARE && !LrcShareApi.hasKey() } +
             LyricsSourceConfig.customSources.map { it.name }
 
     /** 该名字对应的自定义源定义(内置源/未知名字 → null)。 */
@@ -48,7 +57,7 @@ object LyricsFetcher {
                 when (source) {
                     "LRCLIB" -> fetchLrclib(title, artist, album, durationSec)
                     "网易云音乐" -> fetchNetease(title, artist, durationSec)
-                    "LrcShare" -> fetchLrcShare(title, artist, album, durationSec)
+                    LRCSHARE -> fetchLrcShare(title, artist, album, durationSec)
                     // v1.3.10 需求 A29:用户自定义源(URL 模板 + JSON 路径)
                     else -> customSource(source)?.let { fetchCustom(it, title, artist, album) }
                 }
@@ -61,7 +70,20 @@ object LyricsFetcher {
         url: String,
         referer: String? = null,
         headers: List<Pair<String, String>> = emptyList(),
-    ): String? {
+    ): String? = httpEx(url, headers, referer).second.let { body ->
+        if (body != null) body else null
+    }
+
+    /**
+     * 带**状态码**的 GET。大多数源只关心"成不成"，但 LrcShare 必须区分：
+     * 419 = 会话过期（重拉目录重试），429 = 被限流（**本次放弃、不退避重试**，站方明确要求）。
+     * 网络异常 → `(0, null)`，与"非 2xx"对调用方是同一种结果（拿不到正文）。
+     */
+    private fun httpEx(
+        url: String,
+        headers: List<Pair<String, String>> = emptyList(),
+        referer: String? = null,
+    ): Pair<Int, String?> {
         val conn = URL(url).openConnection() as HttpURLConnection
         return try {
             conn.connectTimeout = 8000
@@ -70,8 +92,11 @@ object LyricsFetcher {
             if (referer != null) conn.setRequestProperty("Referer", referer)
             // v1.3.10 需求 A29:自定义源的附加请求头(如鉴权)——用户填的,原样带上
             for ((k, v) in headers) runCatching { conn.setRequestProperty(k, v) }
-            if (conn.responseCode !in 200..299) null
-            else conn.inputStream.bufferedReader().readText()
+            val code = conn.responseCode
+            val body = if (code in 200..299) conn.inputStream.bufferedReader().readText() else null
+            code to body
+        } catch (_: Exception) {
+            0 to null
         } finally {
             conn.disconnect()
         }
@@ -272,19 +297,36 @@ object LyricsFetcher {
     }
 
     /**
-     * v1.3.10 需求 A30:LrcShare(api.lrcshare.com,无 key、GET、JSON)。
+     * v1.3.10 需求 A30:LrcShare(api.lrcshare.com)。2026-10-24 站方改版后是**四步**
+     * (规则与理由见 [LrcShareApi] 的类注释):
+     *  ⓪ **Key 未配置 ⇒ 直接返回,一个请求都不发**。Key 由使用者自己申请(站方明确禁止
+     *     硬编码进公开仓库),没配就当这个源不存在(见 [activeSources])。
+     *  ① GET /v1/catalog:全库可搜索文本(负向过滤用)+ session_token(24h),缓存 24h;
+     *  ② 本地负向过滤:目录里连一个匹配键都找不到 ⇒ 搜索必然 0 结果,跳过不发请求;
+     *  ③ GET /v1/search?type=song&title=…&artist=…(结构化,不把 title+artist 拼成 keyword)
+     *     → 候选按 title/artist/album 归一化打分,阈值拦"同名异曲"(不盲目取第一条);
+     *  ④ GET /v1/lyric/{id}?lyric_format=line → LRC → [LrcShareAttribution.clean] 去署名。
      *
-     * 两阶段(官方文档明确"不要在搜索阶段取歌词"):
-     *  ① GET /v1/search?type=song&title=…&artist=…(结构化,不把 title+artist 拼成 keyword)
-     *  ② 候选按 title/artist 归一化命中 + album 一致打分,阈值拦"同名异曲"(不盲目取第一条)
-     *  ③ GET /v1/lyric/{id}?lyric_format=line 取 LRC → [LrcShareAttribution.clean] 去署名。
-     *
-     * 失败(网络/无候选/无歌词)一律 null——丢给下一个源,不把异常或半截结果透出去。
+     * 会话过期(419)自动重拉目录重试**一次**;被限流(429)**本次放弃、不退避重试**(站方要求)。
+     * 其余失败(网络/无候选/无歌词)一律 null:丢给下一个源,不把异常或半截结果透出去。
      */
     private fun fetchLrcShare(title: String, artist: String, album: String, durationSec: Long): String? {
-        android.util.Log.i("Lyrics", "lrcshare 查询: title=$title artist=$artist dur=${durationSec}s")
+        if (!LrcShareApi.hasKey()) {
+            android.util.Log.i("Lyrics", "lrcshare 跳过:未配置 API Key")
+            return null
+        }
+        // ① 目录(Catalog-First)。拿不到目录就没有会话令牌,搜索也用不了 ⇒ 本次放弃。
+        if (!LrcShareApi.sessionValid(System.currentTimeMillis()) &&
+            !refreshLrcShareCatalog(System.currentTimeMillis())
+        ) return null
+        // ② 负向过滤。只用来**省请求**:目录拿不到/过期时 [LrcShareApi.catalogMayContain] 一律放行。
+        if (!LrcShareApi.catalogMayContain(title, artist, System.currentTimeMillis())) {
+            android.util.Log.i("Lyrics", "lrcshare 跳过:目录里没有「$title / $artist」")
+            return null
+        }
+        // ③ 结构化搜索
         val q = buildString {
-            append("https://api.lrcshare.com/v1/search?type=song")
+            append("${LrcShareApi.HOST}/v1/search?type=song")
             append("&title=${enc(title)}")
             // LrcShare 支持重复 artist 参数(AND)。只按明确的合作分隔符拆——
             // 不拆 "/":AC/DC 这类乐队名不能误拆(规格 V)。
@@ -292,18 +334,73 @@ object LyricsFetcher {
                 .ifEmpty { listOf(artist.trim()) }
             ) append("&artist=${enc(a)}")
         }
-        val body = http(q, referer = null) ?: return null
-        val items = runCatching { JSONObject(body).optJSONObject("data")?.optJSONArray("items") }.getOrNull()
+        val (searchCode, searchBody) = lrcShareGetWithSessionRetry(q)
+        if (searchCode == 429) {
+            android.util.Log.i("Lyrics", "lrcshare 被限流(429):本次放弃,不退避重试")
+            return null
+        }
+        if (searchBody == null) {
+            android.util.Log.i("Lyrics", "lrcshare 搜索失败: HTTP $searchCode")
+            return null
+        }
+        val items = runCatching { JSONObject(searchBody).optJSONObject("data")?.optJSONArray("items") }.getOrNull()
         android.util.Log.i("Lyrics", "lrcshare 搜索: 候选 ${items?.length() ?: 0}")
+        // 空结果是**正常业务结果**(小众人工曲库,命中本就是概率事件)——静默掉给下一个源
         if (items == null || items.length() == 0) return null
         val picked = pickLrcShareCandidate(items, title, artist, album) ?: return null
         val id = picked.optString("id").takeIf { it.isNotBlank() } ?: return null
         android.util.Log.i("Lyrics", "lrcshare 选中 id=$id")
-        val lyricBody = http("https://api.lrcshare.com/v1/lyric/$id?lyric_format=line", referer = null) ?: return null
+        // ④ 取歌词
+        val (lyricCode, lyricBody) =
+            lrcShareGetWithSessionRetry("${LrcShareApi.HOST}/v1/lyric/$id?lyric_format=line")
+        if (lyricBody == null) {
+            android.util.Log.i("Lyrics", "lrcshare 歌词接口失败: HTTP $lyricCode")
+            return null
+        }
         val lrc = runCatching { JSONObject(lyricBody).optJSONObject("data")?.optString("lrc") }
             .getOrNull()?.takeIf { it.isNotBlank() } ?: return null
         android.util.Log.i("Lyrics", "lrcshare 歌词接口: ${lrc.length}字")
         return LrcShareAttribution.clean(lrc, title, artist).takeIf { it.isNotBlank() }
+    }
+
+    /** 拉一次目录(带 Key):全库文本 + session_token。失败 = 本次取词放弃。 */
+    private fun refreshLrcShareCatalog(nowMs: Long): Boolean {
+        val (code, body) = lrcShareGet("${LrcShareApi.HOST}/v1/catalog", nowMs)
+        if (body == null) {
+            android.util.Log.i("Lyrics", "lrcshare 目录拉取失败: HTTP $code")
+            return false
+        }
+        val parsed = LrcShareApi.parseCatalog(body) ?: run {
+            android.util.Log.i("Lyrics", "lrcshare 目录响应里没有 text/session_token")
+            return false
+        }
+        LrcShareApi.putCatalog(parsed.first, parsed.second, nowMs)
+        android.util.Log.i("Lyrics", "lrcshare 目录就绪: 文本 ${parsed.first.length} 字")
+        return true
+    }
+
+    /**
+     * 带 Key(+会话)的 LrcShare GET,并遵守站方要求的请求间隔。
+     * @return (HTTP 码, 正文);网络异常 = `(0, null)`
+     */
+    private fun lrcShareGet(url: String, nowMs: Long): Pair<Int, String?> {
+        val wait = LrcShareApi.throttleWaitMs(nowMs)
+        if (wait > 0) runCatching { Thread.sleep(wait) }
+        val headers = ArrayList<Pair<String, String>>(2)
+        headers += "X-API-Key" to LrcShareApi.apiKey
+        LrcShareApi.sessionTokenOrNull()?.let { headers += "X-LrcShare-Session" to it }
+        LrcShareApi.markRequest(System.currentTimeMillis())
+        return httpEx(url, headers)
+    }
+
+    /** 会话过期(419)⇒ 重拉一次目录再来。**只重试一次**,不连环撞站方。 */
+    private fun lrcShareGetWithSessionRetry(url: String): Pair<Int, String?> {
+        val first = lrcShareGet(url, System.currentTimeMillis())
+        if (first.first != 419) return first
+        android.util.Log.i("Lyrics", "lrcshare 会话过期(419) ⇒ 重拉目录后重试一次")
+        LrcShareApi.invalidateSession()
+        if (!refreshLrcShareCatalog(System.currentTimeMillis())) return first
+        return lrcShareGet(url, System.currentTimeMillis())
     }
 
     /**

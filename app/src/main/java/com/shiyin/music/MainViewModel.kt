@@ -240,6 +240,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     // v1.2.1: 写真源运行时可配(设置·写真源里填/开关)。空串=未配;disabledImageSources=关掉的源 key。
     var fanartApiKey by mutableStateOf(""); private set
     var lastfmApiKey by mutableStateOf(""); private set
+    /** 2026-10-24: LrcShare 的 API Key（使用者自己申请；空 = 该源不可用，一个请求都不发）。 */
+    var lrcshareApiKey by mutableStateOf(""); private set
     var disabledImageSources by mutableStateOf<Set<String>>(emptySet()); private set
     /**
      * v1.5.0 右滑固定（右滑固定定稿规格）：被用户固定的音乐库条目 key。
@@ -1824,6 +1826,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 // v1.2.1: 写真源运行时配置同步到 ImageSourceConfig(源读取它,即时生效)
                 fanartApiKey = s.fanartApiKey
                 lastfmApiKey = s.lastfmApiKey
+                lrcshareApiKey = s.lrcshareApiKey
                 disabledImageSources = s.disabledImageSources
         pinnedLibItems = s.pinnedLibItems
                 customImageSources = s.customImageSources
@@ -1831,6 +1834,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 com.shiyin.music.data.image.ImageSourceConfig.lastfmApiKey = s.lastfmApiKey
                 com.shiyin.music.data.image.ImageSourceConfig.disabledSources = s.disabledImageSources
                 com.shiyin.music.data.image.ImageSourceConfig.customSources = s.customImageSources
+                // 2026-10-24: LrcShare 的 Key 直接推给协议层（它零依赖地读；未配则整源不可用）
+                com.shiyin.music.data.lyrics.LrcShareApi.apiKey = s.lrcshareApiKey
                 if (!settingsLoaded) {
                     settingsLoaded = true
                     isOnboarding = !s.onboarded
@@ -6704,6 +6709,18 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** v1.2.1: 写真源 API key / 源开关(设置·写真源用)。 */
     fun setFanartApiKey(v: String) = viewModelScope.launch { settingsStore.setFanartApiKey(v) }
     fun setLastfmApiKey(v: String) = viewModelScope.launch { settingsStore.setLastfmApiKey(v) }
+
+    /**
+     * 2026-10-24: 写 LrcShare 的 API Key（歌词源管理页填）。
+     *
+     * 换 Key **必须连缓存一起清**（[com.shiyin.music.data.lyrics.LrcShareApi.reset]）：
+     * 旧 Key 换来的 `session_token` 属于旧 Key，留着只会白撞一次 419。
+     */
+    fun setLrcShareApiKey(v: String) {
+        viewModelScope.launch { settingsStore.setLrcShareApiKey(v) }
+        com.shiyin.music.data.lyrics.LrcShareApi.reset()
+        com.shiyin.music.data.lyrics.LrcShareApi.apiKey = v.trim()
+    }
     fun setImageSourceEnabled(sourceKey: String, enabled: Boolean) = viewModelScope.launch {
         settingsStore.setImageSourceEnabled(sourceKey, enabled)
 
@@ -6856,7 +6873,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun rematchNextSource() {
         val track = trackById(player.currentId) ?: return
         val curSrc = currentLyrics?.source
-        val idx = (LyricsFetcher.SOURCES.indexOf(curSrc) + 1).mod(LyricsFetcher.SOURCES.size)
+        // 必须用**可用**源表:matchOnline 就是按它取 sources[sourceIndex] 的,
+        // 这里拿 SOURCES 算下标会把"用户关掉的源"和"没配 Key 的 LrcShare"也排进轮换 ⇒ 错位白点。
+        val sources = LyricsFetcher.activeSources()
+        if (sources.isEmpty()) return
+        // curSrc 不在表里（比如当前歌词来自 agent websearch）时 indexOf = -1 ⇒ 从第一个可用源开始
+        val idx = (sources.indexOf(curSrc) + 1).mod(sources.size)
         lySheet = false
         lyricsJob?.cancel()
         lyricsJob = viewModelScope.launch {

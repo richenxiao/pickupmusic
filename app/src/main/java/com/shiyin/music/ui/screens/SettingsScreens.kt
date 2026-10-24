@@ -4140,8 +4140,24 @@ private fun AddMemoryDialog(onDismiss: () -> Unit, onAdd: (String, String) -> Un
 // ── v1.3.10 需求 A29:歌词源管理 ─────────────────────────────────────────────
 
 /**
+ * LrcShare 的申请步骤 —— 挂在源管理页该行右上角的「？」上。
+ *
+ * 站方 2026-10-24 起要求 Key **由使用者自己申请**，并且明确写了"不要把 Key 硬编码到
+ * 开源仓库的公开代码中" ⇒ 拾音不内置任何 Key，只提供填写入口；步骤写在能用得到的地方，
+ * 用户就不会去翻文档。
+ */
+private val LRCSHARE_HELP =
+    "① 发邮件到 lrcshare@qq.com 申请（免费），说明用途并附上项目地址或软件官网。\n\n" +
+        "② 站长审核后回你一个 ls_ 开头的 Key，点这一行填进去即可。\n\n" +
+        "③ **没填 Key 时这个源完全不会被使用** —— 一个请求都不会发出去。\n\n" +
+        "拾音会自己守站方的规矩：先拉一次全库目录并缓存 24 小时，只对目录里真的有的歌发搜索" +
+        "请求；请求串行、限速，被限流就放弃这一次、不重试。\n\n" +
+        "申请要求与接口文档：api.lrcshare.com/docs/guide/requirements"
+
+/**
  * 「歌词源管理」——把歌词来源从"写死的几个"变成**用户可管**:
  *  · 内置源(LRCLIB / 网易云音乐 / LrcShare)可单独开关(关掉的不再参与自动匹配与来源菜单);
+ *  · LrcShare 需要用户**自己申请**的 API Key(站方要求,见 [LRCSHARE_HELP])，点这一行填;
  *  · 可以添加**自己的歌词 API**(URL 模板 + JSON 路径 + 可选请求头)。
  *
  * 设计要点(需求原话:"不能说用户到时候要填什么参数找不到能填写的地方"):
@@ -4181,12 +4197,23 @@ private fun LyricsSourcesScreen(vm: MainViewModel, scrollStates: MutableMap<Stri
             // 界面按钮要和谐不冲突。" ⇒ 每行右侧加**删除**圆钮（与下方自定义源的铅笔/垃圾桶同语言）；
             // 删除 = 计入禁用集（与开关同一存储，持久化、全链路生效）。有删除项时出现一行「恢复官方源」。
             var pendingDeleteBuiltin by remember { mutableStateOf<String?>(null) }
+            // 2026-10-24：LrcShare 站方改版后必须带**使用者自己申请**的 API Key，且明确
+            // 禁止把它硬编码进公开仓库 ⇒ 这一行多一个"填 Key"入口；未配置时整源不可用
+            // （见 LyricsFetcher.activeSources），所以副标题要**明说**，不能让它静默消失。
+            var lrcShareKeyDialog by remember { mutableStateOf(false) }
+            val lrcSrc = com.shiyin.music.data.lyrics.LyricsFetcher.LRCSHARE
+            val lrcConfigured = vm.lrcshareApiKey.isNotBlank()
             builtins.forEachIndexed { i, src ->
                 val deleted = src in vm.lyricsDisabledSources
+                val isLrc = src == lrcSrc
                 SettingsRowScaffold(
                     title = src,
-                    sub = if (deleted) "已删除" else null,
-                    subColor = if (deleted) c.a700 else null,
+                    sub = when {
+                        deleted -> "已删除"
+                        isLrc && !lrcConfigured -> "未配置 API Key（点此行填写）"
+                        else -> null
+                    },
+                    subColor = if (deleted || (isLrc && !lrcConfigured)) c.a700 else null,
                     leading = {
                         val res = brandIcon[src]
                         if (res != null) {
@@ -4196,11 +4223,19 @@ private fun LyricsSourcesScreen(vm: MainViewModel, scrollStates: MutableMap<Stri
                         }
                     },
                     divider = i != builtins.lastIndex || vm.lyricsDisabledSources.isNotEmpty(),
+                    // 点这一行 = 填 Key（删掉的源先恢复再填，避免"已删除却弹出配置"的错乱）
+                    onClick = if (isLrc && !deleted) ({ lrcShareKeyDialog = true }) else null,
                     trailing = {
-                        Box(
-                            Modifier.size(34.dp).clip(CircleShape).clickableNoRipple { pendingDeleteBuiltin = src },
-                            contentAlignment = Alignment.Center,
-                        ) { OIcon(Lucide.Trash, 16.dp, c.n500) }
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        ) {
+                            if (isLrc) HelpInfoButton("LrcShare 的 Key 从哪来", LRCSHARE_HELP)
+                            Box(
+                                Modifier.size(34.dp).clip(CircleShape).clickableNoRipple { pendingDeleteBuiltin = src },
+                                contentAlignment = Alignment.Center,
+                            ) { OIcon(Lucide.Trash, 16.dp, c.n500) }
+                        }
                     },
                 )
             }
@@ -4221,6 +4256,14 @@ private fun LyricsSourcesScreen(vm: MainViewModel, scrollStates: MutableMap<Stri
                         style = body(15f, FontWeight.SemiBold, c.accent),
                     )
                 }
+            }
+            // 填 LrcShare 的 Key（复用写真源那套 API Key 弹窗：空着保存 = 清除/停用）
+            if (lrcShareKeyDialog) {
+                SourceKeyDialog(
+                    "LrcShare API Key",
+                    vm.lrcshareApiKey,
+                    onDismiss = { lrcShareKeyDialog = false },
+                ) { vm.setLrcShareApiKey(it); lrcShareKeyDialog = false }
             }
             // 删除确认（与清空缓存/删除模型同一套 DialogAction 红色强调惯例）
             pendingDeleteBuiltin?.let { name ->
