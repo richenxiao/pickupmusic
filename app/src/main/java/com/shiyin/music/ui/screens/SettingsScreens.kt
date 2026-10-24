@@ -1972,8 +1972,10 @@ private fun KaraokeSettingsScreen(vm: MainViewModel, scrollStates: MutableMap<St
                         KaraokeBadge(com.shiyin.music.data.karaoke.MdxModel.humanSize(m.sizeBytes), c)
                     }
                     if (downloading && vm.karaokeDownloadHost.isNotEmpty()) {
+                        // 2026-10-24：探测/连接的那几秒进度是 0%，光有主机名还是会像卡住——
+                        // 阶段文字（"正在连接"/"测试源…"/"开始下载"）跟着一起显示。
                         Text(
-                            "来源 ${vm.karaokeDownloadHost}",
+                            "${vm.karaokeDownloadPhase} · ${vm.karaokeDownloadHost}",
                             style = body(11f, FontWeight.Normal, c.n500),
                             modifier = Modifier.padding(top = 4.dp),
                         )

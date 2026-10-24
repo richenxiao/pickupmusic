@@ -103,31 +103,38 @@ class KaraokeModelStore(private val dir: File) {
         model: MdxModel,
         urls: List<String>,
         onProgress: (Long, Long, String) -> Unit = { _, _, _ -> },
+        /** 阶段上报：(给人看的中文短语，来源主机)。2026-10-24 需求：探测/连接那几秒
+         *  不能只有"下载中…"+0%——用户会以为卡死。 */
+        onPhase: (String, String) -> Unit = { _, _ -> },
     ): Pair<Boolean, String> = withContext(Dispatchers.IO) {
         dir.mkdirs()
         val errors = mutableListOf<String>()
         for (url in urls) {
+            val host = hostOf(url)
             try {
-                val f = fetchSegmented(url, model, onProgress)
+                onPhase("正在连接", host)
+                val f = fetchSegmented(url, model, onProgress, onPhase)
                 if (f == null) {
-                    errors += "${hostOf(url)}：取不到完整文件"
+                    errors += "$host：取不到完整文件"
                     continue
                 }
+                onPhase("校验完整性", host)
                 if (!verifySha256(f, model.sha256)) {
                     f.delete()
-                    errors += "${hostOf(url)}：sha256 校验不过"
+                    errors += "$host：sha256 校验不过"
                     continue
                 }
+                onPhase("安装", host)
                 val dst = fileOf(model)
                 if (dst.exists()) dst.delete()
                 if (!f.renameTo(dst)) {
                     f.delete()
-                    errors += "${hostOf(url)}：落盘失败"
+                    errors += "$host：落盘失败"
                     continue
                 }
                 return@withContext true to "已下载 ${model.displayName}"
             } catch (t: Throwable) {
-                errors += "${hostOf(url)}：${t.javaClass.simpleName}"
+                errors += "$host：${t.javaClass.simpleName}"
             }
         }
         false to ("所有下载源都失败了：" + errors.joinToString("；"))
@@ -153,6 +160,7 @@ class KaraokeModelStore(private val dir: File) {
         url: String,
         model: MdxModel,
         onProgress: (Long, Long, String) -> Unit,
+        onPhase: (String, String) -> Unit,
     ): File? = coroutineScope {
         val total = model.sizeBytes
         val host = hostOf(url)
@@ -162,13 +170,16 @@ class KaraokeModelStore(private val dir: File) {
             }
             onProgress(got, total, host)
         }
+        onPhase("测试源（是否支持断点续传）", host)
         val rangesOk = runCatching { probeRanges(url) }.getOrDefault(false)
 
         if (!rangesOk) {
             // 不支持分段：单连接整取（仍然保留"已有 .part0 就续传"的能力）
+            onPhase("单连接下载", host)
             val ok = fetchOneRange(url, File(dir, "${model.assetName}.part0"), 0L, total - 1) { progress() }
             if (!ok) return@coroutineScope null
         } else {
+            onPhase("已连接，开始下载", host)
             val per = (total + SEGMENTS - 1) / SEGMENTS
             val jobs = (0 until SEGMENTS).map { i ->
                 val start = i.toLong() * per

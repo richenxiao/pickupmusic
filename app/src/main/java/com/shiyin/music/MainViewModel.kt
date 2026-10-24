@@ -446,6 +446,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     var karaokeDownloadHost by mutableStateOf(""); private set
     var karaokeDownloadMsg by mutableStateOf(""); private set
 
+    /** 下载进行到的**阶段**（"正在连接"/"测试源…"/"开始下载"…）——探测与握手的几秒
+     *  里进度条是 0%，没有这行字用户会以为卡死了（2026-10-24 需求）。 */
+    var karaokeDownloadPhase by mutableStateOf(""); private set
+
     /** 下载渠道（自动 / 国内镜像 / 官方直连）。 */
     var karaokeDownloadChannel by mutableStateOf(com.shiyin.music.data.karaoke.DownloadChannel.AUTO)
         private set
@@ -528,10 +532,20 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         karaokeDownloadMsg = "下载中…"
         viewModelScope.launch {
             val urls = m.urlsFor(karaokeDownloadChannel)
-            val (ok, msg) = karaokeModelStore.download(m, urls) { got, total, host ->
-                karaokeDownloadPct = if (total > 0) (got.toDouble() / total).toFloat().coerceIn(0f, 1f) else 0f
-                karaokeDownloadHost = host
-            }
+            val (ok, msg) = karaokeModelStore.download(
+                m,
+                urls,
+                onProgress = { got, total, host ->
+                    karaokeDownloadPct = if (total > 0) (got.toDouble() / total).toFloat().coerceIn(0f, 1f) else 0f
+                    karaokeDownloadHost = host
+                },
+                // 阶段上报：连接/测速那几秒让用户看得见在干什么（2026-10-24 需求，
+                // "否则感觉像卡住了一样"）。
+                onPhase = { phase, host ->
+                    karaokeDownloadPhase = phase
+                    karaokeDownloadHost = host
+                },
+            )
             karaokeDownloadMsg = msg
             karaokeDownloadId = null
             refreshKaraokeSettings()
