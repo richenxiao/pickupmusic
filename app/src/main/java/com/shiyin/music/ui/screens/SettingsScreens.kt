@@ -778,7 +778,17 @@ private fun HelpInfoButton(title: String, text: String) {
             onDismissRequest = { open = false },
             containerColor = c.surface,
             title = { Text(title, style = body(15f, FontWeight.ExtraBold, c.text)) },
-            text = { Text(text, style = body(12.5f, FontWeight.Normal, c.n700).copy(lineHeight = 19.sp)) },
+            // 提示弹窗是"结构化说明"的集中地，文字里带 **加粗** 等记号是常态——统一走
+            // 轻量 markdown 渲染，调用方想不适配都做不到（直用 Text 的写法被禁止）。
+            text = {
+                com.shiyin.music.ui.components.MarkdownLiteText(
+                    text,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 400.dp)
+                        .verticalScroll(rememberScrollState()),
+                )
+            },
             confirmButton = { DialogActionsRow(listOf(DialogAction("知道了") { open = false })) },
         )
     }

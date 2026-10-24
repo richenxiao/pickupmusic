@@ -1434,8 +1434,11 @@ private fun AgentReplyText(
     }
     val shown = text.take(shownCount)
 
-    // v1.3.8: Markdown 渲染——支持 **bold** / *italic* / `code`
-    val annotated = remember(shown) { parseMarkdown(shown, c) }
+    // v1.5.0 末(2026-10-24): markdown 渲染收口到全 App 唯一出口 MarkdownLiteText。
+    // 此前这里是一套私有 parseMarkdown(只有行内三种格式),块级记号(##、-、```)
+    // 全部原样露出 —— 需求复报「拾光回复没有正常渲染 markdown」就是它。
+    // 字号/行高按原气泡观感(13.5sp/20sp);未闭合记号由 MarkdownLite.spans 保持原样,
+    // 打字机流式吐字不会闪烁。
 
     Box(
         Modifier
@@ -1444,10 +1447,13 @@ private fun AgentReplyText(
             .background(c.surface)
             .padding(horizontal = 14.dp, vertical = 10.dp),
     ) {
-        Text(
-            // v1.3.9: 去掉打字光标(用户:黑色粗「▍」难看)——纯文字逐字出现即可。
-            text = annotated,
-            style = body(13.5f, FontWeight.Normal, c.text),
+        com.shiyin.music.ui.components.MarkdownLiteText(
+            shown,
+            textColor = c.text,
+            baseSize = 13.5f,
+            baseLineHeight = 20f,
+            // 等宽片段的底色给 null：气泡本身就是 surface，再填一层没差别还发灰
+            monoBackground = null,
         )
     }
 }
@@ -1603,70 +1609,6 @@ private fun TypewriterGreeting(
  * 实测反馈"打字到倒数第三个字时有打光效果,显示并不好"—— 打字机本身已经把"正在写"讲清楚了,
  * 再给尾字加一道由浅到深的光只会让那两个字看起来像没渲染出来。现在所有字素同色,写出来即完整。
  */
-
-/**
- * v1.3.8: 简化 Markdown 解析器——支持 **bold** / *italic* / `code`。
- *
- * 参考主流 AI 产品（ChatGPT/Claude）的格式支持，仅解析最常用的三种内联格式。
- * 缓冲策略：未闭合的格式标记（如 `**bol`）保持原样，等到配对完成再渲染。
- */
-private fun parseMarkdown(text: String, c: com.shiyin.music.ui.theme.OrganicColors): androidx.compose.ui.text.AnnotatedString {
-    return androidx.compose.ui.text.buildAnnotatedString {
-        var i = 0
-        while (i < text.length) {
-            when {
-                // **bold** (需要至少 4 个字符才尝试匹配: **X*)
-                text.startsWith("**", i) && i + 4 <= text.length -> {
-                    val end = text.indexOf("**", i + 2)
-                    if (end != -1) {
-                        pushStyle(androidx.compose.ui.text.SpanStyle(fontWeight = FontWeight.Bold))
-                        append(text.substring(i + 2, end))
-                        pop()
-                        i = end + 2
-                    } else {
-                        // 未闭合，保持原样
-                        append(text[i])
-                        i++
-                    }
-                }
-                // *italic* (需要至少 3 个字符: *X*)
-                text.startsWith("*", i) && i + 2 < text.length && text[i + 1] != '*' -> {
-                    val end = text.indexOf("*", i + 1)
-                    if (end != -1 && (end == text.lastIndex || text[end + 1] != '*')) {
-                        pushStyle(androidx.compose.ui.text.SpanStyle(fontStyle = androidx.compose.ui.text.font.FontStyle.Italic))
-                        append(text.substring(i + 1, end))
-                        pop()
-                        i = end + 1
-                    } else {
-                        append(text[i])
-                        i++
-                    }
-                }
-                // `code` (需要至少 3 个字符: `X`)
-                text.startsWith("`", i) && i + 2 <= text.length -> {
-                    val end = text.indexOf("`", i + 1)
-                    if (end != -1) {
-                        pushStyle(androidx.compose.ui.text.SpanStyle(
-                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
-                            background = c.surface,
-                            color = c.n700,
-                        ))
-                        append(text.substring(i + 1, end))
-                        pop()
-                        i = end + 1
-                    } else {
-                        append(text[i])
-                        i++
-                    }
-                }
-                else -> {
-                    append(text[i])
-                    i++
-                }
-            }
-        }
-    }
-}
 
 /** v1.3.9(P6): 动作类型 → 图标。换图标就是"这是一条新类型的记录"的信号。 */
 private fun processTypeIcon(type: String) = when {
