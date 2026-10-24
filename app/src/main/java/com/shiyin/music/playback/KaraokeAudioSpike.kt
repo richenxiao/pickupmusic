@@ -653,10 +653,26 @@ object KaraokeMixControl {
     @Volatile
     var currentItemId: Long = -1L
 
-    /** 最近一次 [arm] 是为哪个条目武装的。 */
+    /** 最近一次 [arm] 是为哪个条目武装的。**它同时就是这份缓存的条目身份**。 */
     @Volatile
     var armedForItemId: Long = -1L
         private set
+
+    /**
+     * **音频线程侧的武装结果**（[MixArming.armed] 的镜像，每块刷新）。
+     *
+     * 给 app 侧一句准话：「我挂的源此刻到底生效没有」。app 拿它做**补挂闭环** ——
+     * 解除武装之后反复重新武装，直到这里回 `true` 为止（见 MainViewModel 的arm协调）。
+     * 没有它，app 只能"挂了源就当成了"，而音频线程解除武装这件事 app 完全看不见。
+     */
+    @Volatile
+    var armedNow: Boolean = false
+        private set
+
+    /** 音频线程每块上报一次武装结果（见 [armedNow]）。 */
+    fun publishArmed(v: Boolean) {
+        armedNow = v
+    }
 
     /**
      * **伴奏源的"武装令牌"**（2026-10-19 真机报障的 BUG：换曲时漏出上一首开头 ~0.5 秒）。
@@ -743,6 +759,60 @@ class MixArming {
     /** 音频线程：条目切换（换下一首 / 列表续播）—— 立刻弃用旧源。 */
     fun onItemChange() {
         armed = false
+    }
+}
+
+/**
+ * **「同一首之内的位置跳变」检测**（纯逻辑，可 JVM 单测）—— 补挂闭环的**触发依据**。
+ *
+ * 要回答的只有一个问题：音频线程解除武装，是不是**同一首的重播 / 拖动进度**造成的？
+ * 只有这种时候才该补挂。
+ *
+ * ⚠️ 为什么不能拿"当前条目 id == 缓存所属 id"直接补挂：那个判断读的是**快照**
+ * （`MediaController` 的当前媒体项），真换曲时快照可能还没更新（主线程正忙）——
+ * 对着旧 id 补挂就把**上一首的缓存**塞给了新歌，正是 2026-10-19 那个"换曲漏出上一首
+ * 开头"的 bug。位置跳变不一样：快照没更新时，它报的是**旧条目的位置继续往前走**
+ * （位置由客户端按钟插值），永远表现不出"跳变"。所以真换曲**不可能**触发本检测。
+ *
+ * 而"同一首的回绕"（单曲循环 / 一张专辑只有一首歌时按下一首）**未必发任何回调**
+ * —— 见 [com.shiyin.music.playback.PlayerController] 里同一条实测结论 ——
+ * 所以补挂只能从"位置自己跳了"推出来，不能等回调。
+ */
+class KaraokeArmWatch(
+    /** 位置与"按钟应走到的位置"差多少毫秒才算跳变。播放中正常推进只有几十毫秒误差。 */
+    private val jumpMs: Long = 1200L,
+    /** 发现跳变后，补挂窗口保持多久（音频线程的解除可能晚于本次采样，要留够时间）。 */
+    private val windowMs: Long = 3000L,
+) {
+
+    private var lastItemId: Long? = null
+    private var lastPosMs: Long = 0L
+    private var lastAtMs: Long = 0L
+    private var rearmUntilMs = 0L
+
+    /** 本次采样后是否仍在补挂窗口内。 */
+    var inRearmWindow: Boolean = false
+        private set
+
+    /**
+     * 采一次样。返回 true = 现在应当尝试补挂。
+     *
+     * @param itemId 播放器当前条目（null = 会话还没就绪）
+     * @param posMs 当前位置（与 [itemId] **取自同一份快照**，两者必须一致）
+     * @param playing 是否正在播放（暂停时位置本就该不动，不能按钟外推）
+     */
+    fun sample(itemId: Long?, posMs: Long, nowMs: Long, playing: Boolean): Boolean {
+        val prevId = lastItemId
+        val elapsed = if (playing) nowMs - lastAtMs else 0L
+        // 条目没变、位置却离开了"按钟该在的地方" ⇒ 同一首之内跳了（回绕重播 / 拖动进度）
+        val jumped = prevId != null && prevId == itemId &&
+            kotlin.math.abs(posMs - lastPosMs - elapsed) > jumpMs
+        if (jumped) rearmUntilMs = nowMs + windowMs
+        lastItemId = itemId
+        lastPosMs = posMs
+        lastAtMs = nowMs
+        inRearmWindow = nowMs < rearmUntilMs
+        return inRearmWindow
     }
 }
 
@@ -1327,12 +1397,22 @@ class KaraokeMixProcessor(
             KaraokeMixControl.armedForItemId,
             KaraokeMixControl.currentItemId,
         )
+        KaraokeMixControl.publishArmed(arming.armed)
         val real = KaraokeMixControl.realSource
-        val src = (if (arming.armed) real else null) ?: sourceOf(KaraokeMixControl.sourceKind)
-        val ready = src.readAbs(startFrame, inputSampleRate, mixSrc, mixAcc, frames)
+        val usedReal = arming.armed && real != null
+        val src = (if (usedReal) real else null) ?: sourceOf(KaraokeMixControl.sourceKind)
+        val readOk = src.readAbs(startFrame, inputSampleRate, mixSrc, mixAcc, frames)
 
         // P1-1：把"伴奏**是否真的生效**"报给 UI —— 按钮的完成态以这个为准，
         // 而不是以"分离开关已打开 / 缓存已写好"为准（那两者之间还隔着这一次读）。
+        //
+        // ⚠️ 2026-10-24：**有源却被解除武装**要算"没生效" —— 那时取到的是**占位源**（默认
+        // 就是原曲本身），它读得到样本、`readOk` 为真，旧口径于是把"其实在放原曲"报成
+        // "伴奏已生效"，按钮一直显示展开（真机：一张专辑只有一首歌时开伴唱，按下一首回绕
+        // 到本曲，耳朵里是原曲、按钮却还是展开）。
+        // 判据只认这一条，**不波及占位源本身**（对位验证靠"占位=原曲时人声档恰好静音"，
+        // 那是要读到样本的；见 KaraokeMixProcessorTest）。
+        val ready = readOk && !(real != null && !usedReal)
         val audibleBefore = KaraokeAccompState.audibleSeq
         KaraokeAccompState.onBlock(ready, mode, android.os.SystemClock.elapsedRealtime())
         if (KaraokeAccompState.audibleSeq != audibleBefore) {

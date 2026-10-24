@@ -5,6 +5,7 @@ import androidx.media3.common.audio.AudioProcessor
 import org.junit.After
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -50,6 +51,43 @@ class KaraokeMixProcessorTest {
         KaraokeMixControl.mode = KaraokeMixControl.MODE_ORIGINAL
         KaraokeMixControl.sourceKind = KaraokeMixControl.SRC_IDENTITY
         KaraokeMixControl.rampMs = 300
+        KaraokeMixControl.realSource = null
+        KaraokeAccompState.reset()
+    }
+
+    @Test
+    fun `有源却被解除武装_退回原曲且如实报未生效`() {
+        // 真机报障的机制：一张专辑只有一首歌时开伴唱，按下一首回绕到本曲 —— 音频线程一见
+        // 条目切换就**解除武装**（那是修"换曲漏上一首开头"的必要动作），此时取到的是
+        // **占位源**（默认就是原曲本身），它**读得到样本**。若拿"读到了"当"伴奏已生效"，
+        // 按钮就一直显示展开、耳朵里却是原曲 —— 正是用户看到的那一幕。
+        KaraokeMixControl.mode = KaraokeMixControl.MODE_ACCOMP
+        KaraokeMixControl.sourceKind = KaraokeMixControl.SRC_IDENTITY
+        KaraokeMixControl.rampMs = 0
+        // 真源一律输出静音 ⇒ 伴奏档就该是"全零"，与"退回原曲"一眼可分
+        KaraokeMixControl.realSource = SilenceAccompaniment
+        val p = proc()
+        p.configure(fmt())
+
+        // ① 已武装：真源生效（全零），且不被判成回退
+        p.queueInput(buf(1000, 2000, 3000, 4000))
+        assertArrayEquals("武装着就该听到伴奏", ShortArray(4), shortsOf(p.getOutput()))
+        assertEquals(false, KaraokeAccompState.inFallback)
+
+        // ② 条目切换（音频线程在此解除武装）⇒ 必须退回原曲
+        p.onSinkOffset(1_000L)
+        p.onSinkOffset(2_000L)
+        p.queueInput(buf(1000, 2000, 3000, 4000))
+        assertArrayEquals(
+            "解除武装后必须退回原曲",
+            shortArrayOf(1000, 2000, 3000, 4000),
+            shortsOf(p.getOutput()),
+        )
+
+        // ③ 并且**如实报未生效**（连续两块才算回退，见 FALLBACK_MIN_BLOCKS）
+        p.queueInput(buf(1000, 2000, 3000, 4000))
+        p.getOutput()
+        assertTrue("按钮不能显示「展开」（耳朵里明明是原曲）", KaraokeAccompState.inFallback)
     }
 
     @Test

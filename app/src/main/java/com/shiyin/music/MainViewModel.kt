@@ -306,6 +306,20 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private var karaokeAwaitingAudible = false
 
     /**
+     * 伴奏源的**补挂闭环**（判据见 [com.shiyin.music.playback.KaraokeArmWatch]）。
+     *
+     * 音频线程一见到条目切换就解除武装 —— 那是"换曲漏出上一首开头"的修法，必须保留。
+     * 但**同一首的重播 / 拖动进度**同样会让它看到"条目切换"，而这类情况：
+     *  · 单曲循环回绕，app **未必收到任何回调**（同一条实测结论见 PlayerController）；
+     *  · 拖动进度干脆不会有条目切换。
+     * 于是 app 不补挂，伴奏就无声地停在原曲、按钮却还是展开（真机报障）。
+     *
+     * 判据取"位置在**同一首之内**跳了"，不是"当前 id 还对得上" —— 后者读的是快照，
+     * 真换曲时快照可能还没更新，对着旧 id 补挂就会把上一首的缓存塞给新歌。
+     */
+    private val karaokeArmWatch = com.shiyin.music.playback.KaraokeArmWatch()
+
+    /**
      * P1-1：**按钮完成态的触发源**。
      *
      * 以前是"分离回调说缓存写好"就直接切完成态；但缓存写好 ≠ 耳朵听到 ——
@@ -324,6 +338,30 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             val LOADING = com.shiyin.music.ui.components.KaraokeButtonState.Loading
             while (true) {
                 kotlinx.coroutines.delay(100L)
+                // 伴奏源补挂闭环（与"条目切换"的先后顺序无关）。放在本循环里是因为它就
+                // 是"每 100ms 看一眼"的活儿：补挂要**反复做**，只挂一次会再被音频线程解除。
+                runCatching {
+                    val C = com.shiyin.music.playback.KaraokeMixControl
+                    val wasInWindow = karaokeArmWatch.inRearmWindow
+                    val inWindow = karaokeArmWatch.sample(
+                        itemId = player.currentId,
+                        posMs = player.positionMs,
+                        nowMs = android.os.SystemClock.elapsedRealtime(),
+                        playing = player.isPlaying,
+                    )
+                    if (inWindow && !wasInWindow) {
+                        android.util.Log.i(
+                            "KaraokeMix",
+                            "[补挂] 检出同一首之内的位置跳变 → 开始补挂 " +
+                                "item=${C.armedForItemId} 已武装=${C.armedNow}",
+                        )
+                    }
+                    if (inWindow && C.realSource != null && !C.armedNow &&
+                        C.armedForItemId == player.currentId
+                    ) {
+                        C.arm(C.armedForItemId)
+                    }
+                }
                 runCatching {
                     if (karaokeAwaitingAudible && A.audibleMode == karaokePendingMode && !A.inFallback) {
                         val next = M.onReady(karaokeState)
@@ -5162,22 +5200,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 stopKaraoke()
             }
         } else if (com.shiyin.music.playback.KaraokeMixControl.realSource != null) {
-            // **同一首重播**（单曲循环）：条目确实切换了 —— 音频线程已经**解除武装**（那是修
-            // "换曲漏上一首开头"的关键），但缓存目录仍属于这一首 ⇒ 必须**重新武装**（带上
-            // 条目身份，让音频线程能判定"这份源就是当前这首的"），否则伴奏会被无声地停掉。
+            // **同一首重播**（单曲循环 / 一张专辑只有一首歌）：条目确实切换了 —— 音频线程
+            // 已经**解除武装**（那是修"换曲漏上一首开头"的关键），但缓存目录仍属于这一首
+            // ⇒ 必须重新武装，否则伴奏会被无声地停掉。
             //
-            // ⚠️ 两次武装（立即 + 150ms 后补一次）不是冗余：音频线程对"条目切换"的感知
-            // （sink 渲染器偏移）与这里**顺序不定** —— 它晚于本次武装时会把武装解除，而
-            // 令牌不再变化 ⇒ 伴奏永久停在原曲、UI 却仍显示"展开"（真机报障）。补的那次
-            // 与顺序无关地覆盖这条路径；若期间用户已切歌，身份判据（[arm] 记的条目）会
-            // 让这次迟到武装自动失效，不会拿旧缓存给新歌用。
+            // 这里只挂一次，**不再依赖时序**：音频线程对"条目切换"的感知（sink 渲染器偏移）
+            // 可能晚于本次武装，那次解除会把武装打掉、而令牌不再变化 ⇒ 伴奏停在原曲。
+            // 收尾交给主循环里的补挂闭环（[karaokeArmWatch]）—— 它与先后顺序无关，
+            // 也兜住"同一首回绕压根不发本回调"的机型。
             com.shiyin.music.playback.KaraokeMixControl.arm(id)
-            viewModelScope.launch {
-                kotlinx.coroutines.delay(150)
-                if (com.shiyin.music.playback.KaraokeMixControl.realSource != null) {
-                    com.shiyin.music.playback.KaraokeMixControl.arm(id)
-                }
-            }
         }
         // v2: 恢复全局播放速度设置
         player.setPlaybackSpeed(playbackSpeed, retroSpeedMode)
