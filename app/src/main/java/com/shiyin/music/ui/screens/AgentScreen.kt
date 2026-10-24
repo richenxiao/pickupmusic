@@ -1554,7 +1554,12 @@ private fun TypewriterGreeting(
         Modifier.fillMaxWidth().clickableNoRipple { skip = true },
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        BoxWithConstraints(Modifier.fillMaxWidth()) {
+        // 文本框宽度 = 最长行 ⇒ **整块必须由本容器居中**：容器默认是 TopStart 摆放，
+        // 少了下面这个 contentAlignment，问候语就贴在左边缘（2026-10-24 复报的"没有居中对齐"）。
+        BoxWithConstraints(
+            Modifier.fillMaxWidth(),
+            contentAlignment = Alignment.TopCenter,
+        ) {
             val measurer = rememberTextMeasurer()
             val availPx = with(LocalDensity.current) { maxWidth.toPx() }
             // heading() 是 @Composable,只能在组合里取一次"字体模板",再在 remember 里
@@ -1568,10 +1573,11 @@ private fun TypewriterGreeting(
                     }
                 } ?: GREETING_SIZES.last()
             }
-            // 2026-10-23 用户："欢迎语视觉上不对齐，改得自然些"。
-            // 原来 textAlign=Center + fillMaxWidth ⇒ **每一行各自居中**：第二行短，看起来就"错位"。
-            // 现在把文本框收到**最长行**的宽度、整体左对齐（块本身仍由外层居中）——
-            // 两行左缘对齐，是这类问候语最自然的排法。
+            // 2026-10-23 实测反馈"欢迎语视觉上不对齐"：原先是 textAlign=Center + fillMaxWidth，
+            // **每一行各自居中**，第二行短就看着"错位"。改成把文本框收到**最长行**的宽度、
+            // 行内左对齐 —— 两行左缘对齐，是这类问候语最自然的排法。
+            // ⚠️ 2026-10-24 复报"根本没有居中对齐"：宽度一收窄，整块就必须由**容器**居中
+            // （见 BoxWithConstraints 的 contentAlignment）。当时漏了这一步 ⇒ 文本框贴左边缘。
             val style = probe.copy(fontSize = size.sp, lineHeight = 34.sp)
             val widestPx = remember(lines, size, availPx) {
                 lines.maxOf { measurer.measure(AnnotatedString(it), style = style).size.width }
