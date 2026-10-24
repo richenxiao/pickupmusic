@@ -184,7 +184,17 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
                 // 同样被本守卫吸收,playQueue 末尾自有直调 startTracking,不会漏计。
                 val isSelfReplace = reason == Player.MEDIA_ITEM_TRANSITION_REASON_PLAYLIST_CHANGED &&
                     id == currentId
-                if (!isSelfReplace) {
+                // 2026-10-24 真机报障(单曲循环 + 从歌手页点歌):装载新队列瞬间 transition
+                // 携带的条目**不可信** —— REPEAT_MODE_ONE 下 setMediaItems 的过渡事件可能
+                // 带着尚未 seek 到位的条目(= 队列第 0 首),isSelfReplace 拦不住它(id 不等),
+                // 于是 startTracking 把 currentId/统计 session 全覆盖成第一首;而循环模式
+                // 下 Media3 不再补发纠正事件 ⇒ 界面定格在第一首、波浪消失,耳朵里却是
+                // 点的那首。修法:PLAYLIST_CHANGED 且回调 id ≠ player 的**实际当前项**
+                // 时,以实际当前项为准(它此刻必然已经 seek 好,否则 Media3 不会报过渡完成)。
+                val actualId = controller?.currentMediaItem?.mediaId?.toLongOrNull()
+                val staleTransition = reason == Player.MEDIA_ITEM_TRANSITION_REASON_PLAYLIST_CHANGED &&
+                    actualId != null && actualId != id
+                if (!isSelfReplace && !staleTransition) {
                     manualQueue.removeAll { it.id == id }
                     // v22: 把回调带来的 mediaItem 一起传进去 —— 它是这次切歌最权威的
                     // 描述（含拆分方案），短曲阈值据此取分段时长。
@@ -406,6 +416,13 @@ class PlayerController(context: Context, private val scope: CoroutineScope) {
                         )
                     }
                     positionMs = newPos
+                    // 2026-10-24 真机报障(单曲循环 + 从歌手页点歌)的兜底:transition 事件
+                    // 在 REPEAT_MODE_ONE + 装载新队列的组合下可能带着未 seek 的条目,而循环
+                    // 模式下 Media3 不再补发纠正事件 ⇒ currentId/isPlaying 定格在错误值
+                    // (界面显示第一首、波浪消失,耳朵里却是点的那首)。onMediaItemTransition
+                    // 里已经挡住"事件条目 ≠ 实际当前项"的那次覆盖;这里每拍对齐一次真值,
+                    // 有变化才写(不写则无重组),兜住任何其他路径漏发的事件。
+                    syncFromPlayer()
                     // 升降 Key 卡死取证（定稿 修改0）：Key 变化后位置 >2 秒不前进
                     // ⇒ 抓**全部**线程栈。**只诊断，不做任何自愈动作**（用户明令不许用
                     // 超时/吞异常/重试掩盖）。关闭时这里是一次布尔短路，零影响。
